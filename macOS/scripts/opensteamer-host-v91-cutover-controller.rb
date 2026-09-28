@@ -46,6 +46,7 @@ module OpenSteamerV91Cutover
       "macOS/scripts/opensteamer-v91-coreaudio-route-monitor.swift" => 0o644,
       "macOS/scripts/prepare-v91-sealed-host-oracle-handoff.sh" => 0o755,
       "macOS/scripts/run-opensteamer-host-v91-cutover.sh" => 0o755,
+      "macOS/scripts/verify-mac-host-bundle.sh" => 0o755,
       "macOS/scripts/verify-v91-secondary-viewer-readiness.sh" => 0o755
     }.freeze
 
@@ -134,6 +135,9 @@ module OpenSteamerV91Cutover
     V90_APP_MANIFEST_SHA256 = "c73d15ffab6a7a09b348a6eeb67d657e355ab6b8ff586084271ce4d1120faf28"
     V90_TERMINAL = "2026-09-24T18:19:11Z STATE COMMITTED_V90"
     OBSERVER_EVIDENCE = "#{V90_EVIDENCE}/pinned-v86-observer-tools"
+    V90_BUNDLE_VERIFIER_SOURCE = File.expand_path("verify-mac-host-bundle.sh", __dir__)
+    V90_BUNDLE_VERIFIER_SHA256 = "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745"
+    V90_COMMITTED_COPY_MANIFEST = "#{V90_EVIDENCE}/v90-candidate-app-copy-manifest.txt"
 
     LIVE_LOCK_PATH = "/Users/ahmed/Library/Application Support/com.elamin.AudioStreamer.CaptureServer.runtime/worldwide-host.lock"
     LIVE_DISPLAY_MODE = "1080x1920@1080x1920 60.00Hz"
@@ -1504,6 +1508,7 @@ module OpenSteamerV91Cutover
       @route_monitor_module_cache_path = nil
       @route_monitor_compiler_tmp_path = nil
       @update_root_created = false
+      @predecessor_root_xattrs = nil
     end
 
     def preflight!(capsule)
@@ -2818,6 +2823,13 @@ module OpenSteamerV91Cutover
         Util.exact_file!(File.join(Pins::V90_EVIDENCE, relative), sha,
                          "committed V90 #{relative}", mode: 0o600, owner: 501)
       end
+      Util.exact_file!(
+        Pins::V90_BUNDLE_VERIFIER_SOURCE,
+        Pins::V90_BUNDLE_VERIFIER_SHA256,
+        "V90-compatible bundle verifier",
+        mode: 0o755,
+        owner: 501
+      )
       verify_predecessor_commit_proof!(
         File.binread(File.join(Pins::V90_EVIDENCE, "journal.log")),
         File.binread(File.join(Pins::V90_EVIDENCE, "commit-safety-proof.txt"))
@@ -2928,6 +2940,20 @@ module OpenSteamerV91Cutover
         end
         @post_stop_helpers[name] = { path: destination, identity: identity, digest: digest }
       end
+      @post_stop_v90_verifier = File.join(helpers_root, "verify-v90-mac-host-bundle.sh")
+      write_durable(
+        @post_stop_v90_verifier,
+        File.binread(Pins::V90_BUNDLE_VERIFIER_SOURCE),
+        0o500,
+        exclusive: true
+      ) { |identity| @post_stop_v90_verifier_identity = identity }
+      @post_stop_v90_manifest = File.join(@transaction, "v90-predecessor-app-copy-manifest.txt")
+      write_durable(
+        @post_stop_v90_manifest,
+        File.binread(Pins::V90_COMMITTED_COPY_MANIFEST),
+        0o600,
+        exclusive: true
+      ) { |identity| @post_stop_v90_manifest_identity = identity }
       verify_post_stop_evidence!(capsule)
       true
     end
@@ -3011,6 +3037,44 @@ module OpenSteamerV91Cutover
           owner: Process.euid
         )
       end
+      Util.exact_file!(
+        Pins::V90_BUNDLE_VERIFIER_SOURCE,
+        Pins::V90_BUNDLE_VERIFIER_SHA256,
+        "V90-compatible bundle verifier",
+        mode: 0o755,
+        owner: Process.euid
+      )
+      Util.exact_file!(
+        Pins::V90_COMMITTED_COPY_MANIFEST,
+        Pins::V90_APP_MANIFEST_SHA256,
+        "committed V90 app copy manifest",
+        mode: 0o600,
+        owner: Process.euid
+      )
+      assert_identity!(
+        @post_stop_v90_verifier,
+        @post_stop_v90_verifier_identity,
+        "staged V90-compatible bundle verifier"
+      )
+      Util.exact_file!(
+        @post_stop_v90_verifier,
+        Pins::V90_BUNDLE_VERIFIER_SHA256,
+        "staged V90-compatible bundle verifier",
+        mode: 0o500,
+        owner: Process.euid
+      )
+      assert_identity!(
+        @post_stop_v90_manifest,
+        @post_stop_v90_manifest_identity,
+        "staged committed V90 app copy manifest"
+      )
+      Util.exact_file!(
+        @post_stop_v90_manifest,
+        Pins::V90_APP_MANIFEST_SHA256,
+        "staged committed V90 app copy manifest",
+        mode: 0o600,
+        owner: Process.euid
+      )
       true
     end
 
@@ -3098,17 +3162,23 @@ module OpenSteamerV91Cutover
       Util.exact_file!(Pins::LIVE_INFO_PLIST, Pins::V90_INFO_PLIST_SHA256, "live V90 Info.plist", mode: 0o644, owner: 501)
       Util.exact_file!(Pins::LAUNCH_AGENT, Pins::LAUNCH_AGENT_SHA256, "live V90 launch plist", mode: 0o600, owner: 501)
       LaunchContract.verify!(Pins::LAUNCH_AGENT)
-      verifier = helper_path("verify-media-v1-host-bundle.sh")
-      reference = @post_stop_reference || @reference_path
-      command_with_environment!(
-        { "OPENSTEAMER_EXPECTED_ARCHITECTURES" => "arm64" },
-        verifier,
-        "--installed-runtime",
-        "--media-integration-v1",
-        Pins::LIVE_APP,
-        Pins::TEAM_ID,
-        reference
-      ) if reference
+      verifier, verifier_mode = v90_bundle_verifier
+      manifest, manifest_mode = v90_copy_manifest
+      reference = v90_reference
+      @predecessor_root_xattrs ||= CopyManifest.capture_published_root_xattrs!(Pins::LIVE_APP)
+      verify_v90_bundle_contract!(
+        app: Pins::LIVE_APP,
+        verifier: verifier,
+        verifier_sha: Pins::V90_BUNDLE_VERIFIER_SHA256,
+        verifier_mode: verifier_mode,
+        manifest: manifest,
+        manifest_sha: Pins::V90_APP_MANIFEST_SHA256,
+        manifest_mode: manifest_mode,
+        reference: reference,
+        reference_sha: Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256,
+        reference_mode: 0o755,
+        allowed_root_xattrs: @predecessor_root_xattrs
+      )
       metadata = combined_capture!("/usr/bin/codesign", "--display", "--verbose=4", Pins::LIVE_EXECUTABLE)
       Util.fail!("live V90 code identifier mismatch") unless
         Util.exact_prefixed_values(metadata, "Identifier=") == [Pins::EXECUTABLE_IDENTIFIER]
@@ -3122,6 +3192,100 @@ module OpenSteamerV91Cutover
       requirement = requirement_output.b.lines.map { |line| line.strip.sub(/\A# /n, "") }
                                       .find { |line| line.start_with?("designated =>") }
       Util.fail!("live V90 designated requirement mismatch") unless requirement == "designated => #{Pins::V90_DESIGNATED_REQUIREMENT}"
+      true
+    end
+
+    def v90_bundle_verifier
+      if @transaction
+        Util.fail!("staged V90-compatible bundle verifier is unavailable") unless
+          @post_stop_v90_verifier && @post_stop_v90_verifier_identity
+        assert_identity!(
+          @post_stop_v90_verifier,
+          @post_stop_v90_verifier_identity,
+          "staged V90-compatible bundle verifier"
+        )
+        [@post_stop_v90_verifier, 0o500]
+      else
+        [Pins::V90_BUNDLE_VERIFIER_SOURCE, 0o755]
+      end
+    end
+
+    def v90_copy_manifest
+      if @transaction
+        Util.fail!("staged committed V90 app copy manifest is unavailable") unless
+          @post_stop_v90_manifest && @post_stop_v90_manifest_identity
+        assert_identity!(
+          @post_stop_v90_manifest,
+          @post_stop_v90_manifest_identity,
+          "staged committed V90 app copy manifest"
+        )
+        [@post_stop_v90_manifest, 0o600]
+      else
+        [Pins::V90_COMMITTED_COPY_MANIFEST, 0o600]
+      end
+    end
+
+    def v90_reference
+      if @transaction
+        Util.fail!("staged V90 designated-requirement reference is unavailable") unless
+          @post_stop_reference && @post_stop_reference_identity
+        assert_identity!(
+          @post_stop_reference,
+          @post_stop_reference_identity,
+          "staged predecessor reference"
+        )
+        reference = @post_stop_reference
+      else
+        Util.fail!("capsule V90 designated-requirement reference is unavailable") unless @reference_path
+        reference = @reference_path
+      end
+      Util.exact_file!(
+        reference,
+        Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256,
+        "V90 designated-requirement reference",
+        mode: 0o755,
+        owner: Process.euid
+      )
+      PredecessorReferenceFingerprint.verify!(reference, label: "V90 designated-requirement reference")
+      reference
+    end
+
+    def verify_v90_bundle_contract!(
+      app:, verifier:, verifier_sha:, verifier_mode:, manifest:, manifest_sha:, manifest_mode:,
+      reference:, reference_sha:, reference_mode:, allowed_root_xattrs:
+    )
+      Util.fail!("V90 designated-requirement reference is unavailable") unless
+        reference.is_a?(String) && !reference.empty?
+      Util.exact_file!(
+        verifier,
+        verifier_sha,
+        "V90-compatible bundle verifier",
+        mode: verifier_mode,
+        owner: Process.euid
+      )
+      Util.exact_file!(
+        manifest,
+        manifest_sha,
+        "committed V90 app copy manifest",
+        mode: manifest_mode,
+        owner: Process.euid
+      )
+      Util.exact_file!(
+        reference,
+        reference_sha,
+        "V90 designated-requirement reference",
+        mode: reference_mode,
+        owner: Process.euid
+      )
+      CopyManifest.new(app, allowed_root_xattrs: allowed_root_xattrs).verify!(manifest)
+      command_with_environment!(
+        { "OPENSTEAMER_EXPECTED_ARCHITECTURES" => "arm64" },
+        verifier,
+        "--installed-runtime",
+        app,
+        Pins::TEAM_ID,
+        reference
+      )
       true
     end
 
@@ -4006,6 +4170,185 @@ module OpenSteamerV91Cutover
         File.symlink(target, File.join(framework, name))
       end
       File.symlink("A", File.join(framework, "Versions/Current"))
+      true
+    end
+
+    def verify_v90_bundle_contract_fixture!
+      Dir.mktmpdir("v91-v90-bundle-contract-") do |temporary|
+        root = File.realpath(temporary)
+        app = File.join(root, "opensteamer Host.app")
+        Dir.mkdir(app, 0o755)
+        File.chmod(0o755, app)
+        create_copy_manifest_fixture(app)
+        macos = File.join(app, "Contents/MacOS")
+        resources = File.join(app, "Contents/Resources")
+        FileUtils.mkdir_p(macos, mode: 0o755)
+        FileUtils.mkdir_p(resources, mode: 0o755)
+        executable = File.join(macos, "CaptureServer")
+        info = File.join(app, "Contents/Info.plist")
+        notices = File.join(resources, "ThirdPartyNotices.md")
+        File.binwrite(executable, "fixture-v90-executable\n")
+        File.chmod(0o755, executable)
+        File.binwrite(info, "fixture-v90-info\n")
+        File.chmod(0o644, info)
+        File.binwrite(notices, "fixture-v90-notices\n")
+        File.chmod(0o644, notices)
+        assert("V90 fixture has the committed no-icon resource schema") do
+          Dir.children(resources) == ["ThirdPartyNotices.md"]
+        end
+
+        manifest = File.join(root, "v90-candidate-app-copy-manifest.txt")
+        File.binwrite(manifest, CopyManifest.new(app).render.first)
+        File.chmod(0o600, manifest)
+        verifier = File.join(root, "verify-v90-mac-host-bundle.sh")
+        verifier_bytes = <<~SH
+          #!/bin/sh
+          set -eu
+          [ "$#" -eq 4 ]
+          [ "$1" = "--installed-runtime" ]
+          [ "$3" = "#{Pins::TEAM_ID}" ]
+          [ -d "$2" ]
+          [ -f "$2/Contents/Resources/ThirdPartyNotices.md" ]
+          [ ! -e "$2/Contents/Resources/AppIcon.icns" ]
+          [ "${OPENSTEAMER_EXPECTED_ARCHITECTURES:-}" = "arm64" ]
+          [ -f "$4" ]
+        SH
+        File.binwrite(verifier, verifier_bytes)
+        File.chmod(0o500, verifier)
+        reference = File.join(root, "approved-reference")
+        File.binwrite(reference, "fixture-reference\n")
+        File.chmod(0o755, reference)
+        Util.capture!("/usr/bin/xattr", "-w", "-x", "com.apple.macl", "00" * 72, app)
+        root_xattrs = CopyManifest.capture_published_root_xattrs!(app)
+        assert("V90 root metadata baseline is exact and immutable") do
+          root_xattrs == Pins::APP_ROOT_ALLOWED_XATTRS && root_xattrs.frozen? &&
+            root_xattrs.values.all?(&:frozen?)
+        end
+
+        host = RealHost.new
+        verify = lambda do
+          host.send(
+            :verify_v90_bundle_contract!,
+            app: app,
+            verifier: verifier,
+            verifier_sha: Digest::SHA256.hexdigest(verifier_bytes),
+            verifier_mode: 0o500,
+            manifest: manifest,
+            manifest_sha: Util.sha256(manifest),
+            manifest_mode: 0o600,
+            reference: reference,
+            reference_sha: Util.sha256(reference),
+            reference_mode: 0o755,
+            allowed_root_xattrs: root_xattrs
+          )
+        end
+        assert("V90-compatible production path accepts the no-icon committed schema") { verify.call }
+
+        File.chmod(0o700, verifier)
+        File.open(verifier, "ab") { |file| file.write("# drift\n") }
+        expect_failure("tampered staged V90 verifier") { verify.call }
+        File.binwrite(verifier, verifier_bytes)
+        File.chmod(0o500, verifier)
+
+        original_manifest = File.binread(manifest)
+        expected_manifest_sha = Util.sha256(manifest)
+        verify_with_pinned_manifest = lambda do
+          host.send(
+            :verify_v90_bundle_contract!,
+            app: app,
+            verifier: verifier,
+            verifier_sha: Digest::SHA256.hexdigest(verifier_bytes),
+            verifier_mode: 0o500,
+            manifest: manifest,
+            manifest_sha: expected_manifest_sha,
+            manifest_mode: 0o600,
+            reference: reference,
+            reference_sha: Digest::SHA256.hexdigest("fixture-reference\n"),
+            reference_mode: 0o755,
+            allowed_root_xattrs: root_xattrs
+          )
+        end
+        File.open(manifest, "ab") { |file| file.write("drift\n") }
+        expect_failure("tampered committed V90 manifest") { verify_with_pinned_manifest.call }
+        File.binwrite(manifest, original_manifest)
+        File.chmod(0o600, manifest)
+
+        original_notices = File.binread(notices)
+        File.open(notices, "ab") { |file| file.write("drift\n") }
+        expect_failure("tampered V90 resource") { verify_with_pinned_manifest.call }
+        File.binwrite(notices, original_notices)
+        File.chmod(0o644, notices)
+
+        expect_failure("missing V90 designated-requirement reference") do
+          host.send(
+            :verify_v90_bundle_contract!,
+            app: app,
+            verifier: verifier,
+            verifier_sha: Digest::SHA256.hexdigest(verifier_bytes),
+            verifier_mode: 0o500,
+            manifest: manifest,
+            manifest_sha: expected_manifest_sha,
+            manifest_mode: 0o600,
+            reference: nil,
+            reference_sha: Digest::SHA256.hexdigest("fixture-reference\n"),
+            reference_mode: 0o755,
+            allowed_root_xattrs: root_xattrs
+          )
+        end
+
+        File.open(reference, "ab") { |file| file.write("drift\n") }
+        expect_failure("tampered V90 designated-requirement reference") do
+          verify_with_pinned_manifest.call
+        end
+        File.binwrite(reference, "fixture-reference\n")
+        File.chmod(0o755, reference)
+
+        Util.capture!("/usr/bin/xattr", "-w", "-x", "com.apple.macl", "01" + ("00" * 71), app)
+        expect_failure("captured V90 root metadata drift") { verify_with_pinned_manifest.call }
+
+        missing_staged = RealHost.new
+        missing_staged.instance_variable_set(:@transaction, root)
+        expect_failure("transaction cannot fall back to source V90 verifier") do
+          missing_staged.send(:v90_bundle_verifier)
+        end
+        expect_failure("transaction cannot fall back to committed V90 manifest source") do
+          missing_staged.send(:v90_copy_manifest)
+        end
+        expect_failure("transaction cannot fall back to capsule predecessor reference") do
+          missing_staged.send(:v90_reference)
+        end
+
+        staged_host = RealHost.new
+        staged_host.instance_variable_set(:@transaction, root)
+        staged_host.instance_variable_set(:@post_stop_v90_verifier, verifier)
+        staged_host.instance_variable_set(
+          :@post_stop_v90_verifier_identity,
+          staged_host.send(:file_identity, verifier)
+        )
+        staged_host.instance_variable_set(:@post_stop_v90_manifest, manifest)
+        staged_host.instance_variable_set(
+          :@post_stop_v90_manifest_identity,
+          staged_host.send(:file_identity, manifest)
+        )
+        assert("staged rollback verifier and manifest retain their recorded identities") do
+          staged_host.send(:v90_bundle_verifier) == [verifier, 0o500] &&
+            staged_host.send(:v90_copy_manifest) == [manifest, 0o600]
+        end
+        replaced_manifest = manifest + ".replaced"
+        File.rename(manifest, replaced_manifest)
+        File.binwrite(manifest, original_manifest)
+        File.chmod(0o600, manifest)
+        expect_failure("same-byte staged V90 manifest inode substitution") do
+          staged_host.send(:v90_copy_manifest)
+        end
+        replaced = verifier + ".replaced"
+        File.rename(verifier, replaced)
+        File.binwrite(verifier, verifier_bytes)
+        File.chmod(0o500, verifier)
+        expect_failure("same-byte staged V90 verifier inode substitution") do
+          staged_host.send(:v90_bundle_verifier)
+        end
+      end
       true
     end
 
@@ -5455,10 +5798,12 @@ module OpenSteamerV91Cutover
           "/Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/LiveKitWebRTC" &&
           Pins::LIVE_FRAMEWORK_IDENTITY_PATH != Pins::LIVE_FRAMEWORK
       end
-      assert("V90 verification preserves the sealed media-integration contract") do
+      assert("V90 verification keeps the historical media helper immutable and separate") do
         Pins::V90_HELPERS["verify-media-v1-host-bundle.sh"] ==
           "e8a486a8e7360e5d3c8517e237e046fc21b3ccc2a3eb5e14ccd5d40135742e0c" &&
-          !Pins::V90_HELPERS.key?("verify-mac-host-bundle.sh")
+          !Pins::V90_HELPERS.key?("verify-mac-host-bundle.sh") &&
+          Pins::V90_BUNDLE_VERIFIER_SHA256 ==
+            "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745"
       end
       assert("dynamic codesign verification uses the supported PID contract") do
         Pins::DYNAMIC_CODESIGN_VERIFY_ARGUMENTS == ["--verify"]
@@ -5624,6 +5969,7 @@ module OpenSteamerV91Cutover
         duplicate.close!
       end
 
+      verify_v90_bundle_contract_fixture!
       verify_copy_stable_manifest_fixture!
       verify_published_candidate_root_xattrs_fixture!
       verify_predecessor_signature_layout_fixture!

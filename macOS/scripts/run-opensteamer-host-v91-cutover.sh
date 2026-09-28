@@ -16,8 +16,10 @@ readonly MONITOR_BASENAME='opensteamer-v91-coreaudio-route-monitor.swift'
 readonly ASSEMBLER_BASENAME='assemble-v91-sealed-host-oracle-capsule.sh'
 readonly PREPARER_BASENAME='prepare-v91-sealed-host-oracle-handoff.sh'
 readonly READINESS_BASENAME='verify-v91-secondary-viewer-readiness.sh'
-readonly CONTROLLER_SHA256='cd20090515eacf5a6874dc3c9534c28e83bb30bc8b791c5512b8a74c37b6ce10'
+readonly V90_BUNDLE_VERIFIER_BASENAME='verify-mac-host-bundle.sh'
+readonly CONTROLLER_SHA256='5a3bddbc19765e2abe93eb5de39c6c5d190c319d331f39747b8a8e1962844e71'
 readonly MONITOR_SHA256='b7ffc3c939ff2b19d1f85305335b3363555a967a76b38b034db377209f88bf86'
+readonly V90_BUNDLE_VERIFIER_SHA256='02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745'
 readonly RUBY='/usr/bin/ruby'
 readonly RUBY_SHA256='9d6ff3e289c7d908e3c785e0bedd6692d1d6a3377965c88c04d847104b7c892c'
 readonly SWIFTC='/Volumes/t7/opensteamer-space-recovery-20260804/nonrepo/Xcode-26.6.0.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'
@@ -128,11 +130,12 @@ verify_clean_remote_tooling() {
         "macOS/scripts/${MONITOR_BASENAME}" \
         "macOS/scripts/${PREPARER_BASENAME}" \
         "macOS/scripts/${READINESS_BASENAME}" \
+        "macOS/scripts/${V90_BUNDLE_VERIFIER_BASENAME}" \
         "macOS/scripts/${LAUNCHER_BASENAME}"
     do
         path="${TOOLING_ROOT}/${relative}"
         case "$relative" in
-            *"/${ASSEMBLER_BASENAME}"|*"/${PREPARER_BASENAME}"|*"/${LAUNCHER_BASENAME}"|*"/${READINESS_BASENAME}") mode=755 ;;
+            *"/${ASSEMBLER_BASENAME}"|*"/${PREPARER_BASENAME}"|*"/${LAUNCHER_BASENAME}"|*"/${READINESS_BASENAME}"|*"/${V90_BUNDLE_VERIFIER_BASENAME}") mode=755 ;;
             *) mode=644 ;;
         esac
         verify_regular_metadata "$path" 501 "$mode" 0 "tracked V91 tooling file ${relative}"
@@ -159,11 +162,15 @@ readonly SCRIPT_DIRECTORY=${LAUNCHER:h}
     || fail 'launcher path differs from the canonical reviewed path'
 readonly CONTROLLER="${SCRIPT_DIRECTORY}/${CONTROLLER_BASENAME}"
 readonly MONITOR="${SCRIPT_DIRECTORY}/${MONITOR_BASENAME}"
+readonly V90_BUNDLE_VERIFIER="${SCRIPT_DIRECTORY}/${V90_BUNDLE_VERIFIER_BASENAME}"
 
 verify_regular_metadata "$LAUNCHER" 501 755 0 'V91 launcher'
 
 verify_regular_file "$CONTROLLER" "$CONTROLLER_SHA256" 501 644 0 'controller source'
 verify_regular_file "$MONITOR" "$MONITOR_SHA256" 501 644 0 'route-monitor source'
+verify_regular_file \
+    "$V90_BUNDLE_VERIFIER" "$V90_BUNDLE_VERIFIER_SHA256" 501 755 0 \
+    'V90-compatible bundle verifier'
 verify_regular_file "$RUBY" "$RUBY_SHA256" 0 555 524320 'system Ruby'
 
 [[ -L "$SWIFTC" && "$(/usr/bin/readlink "$SWIFTC")" == "$SWIFTC_TARGET" ]] \
