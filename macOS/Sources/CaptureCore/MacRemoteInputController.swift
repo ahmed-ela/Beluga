@@ -85,8 +85,10 @@ public enum MacRemoteInputResult: Equatable, Sendable {
 ///
 /// The controller is disabled unless the host explicitly opts in. Each action must
 /// match both the active Show request and its fresh input-session UUID. Keyboard
-/// authorization is narrower still: it is granted only after the same editable AX
-/// element that was hit-tested before a click becomes focused after that click.
+/// authorization is narrower still: it is granted only after the clicked editable AX
+/// element becomes focused after that click. When a host (such as a WebKit view wrapped
+/// by SwiftUI) reports a non-editable hosting group for the hit-test, the focused editable
+/// element must still contain the click point before it can receive keyboard authority.
 /// The controller lock owns session identity, focus grants, and all token buckets;
 /// no remote action can interleave between its final authorization check and posting.
 public final class MacRemoteInputController: @unchecked Sendable {
@@ -94,6 +96,11 @@ public final class MacRemoteInputController: @unchecked Sendable {
     private static let maximumFocusWait: TimeInterval = 0.050
     private static let maximumEditableAncestorDepth = 12
     private static let minimumFrameGeometryStability: TimeInterval = 0.750
+    private static let focusFallbackHitRoles: Set<String> = [
+        "AXGroup",
+        "AXScrollArea",
+        "AXWebArea"
+    ]
 
     private let allowRemoteControl: Bool
     private let system: any MacRemoteInputSystem
@@ -306,7 +313,8 @@ public final class MacRemoteInputController: @unchecked Sendable {
             contentNormalizedPoint,
             in: displayBounds
         )
-        let hitEditable = system.element(at: globalPoint).flatMap(editableAncestor(from:))
+        let hitElement = system.element(at: globalPoint)
+        let hitEditable = hitElement.flatMap(editableAncestor(from:))
 
         // The real backend constructs both events before it posts either one.
         guard system.postMouseClick(at: globalPoint) else {
@@ -314,7 +322,15 @@ public final class MacRemoteInputController: @unchecked Sendable {
         }
 
         guard let hitEditable else {
-            return .accepted(.none)
+            guard let hitElement,
+                  Self.focusFallbackHitRoles.contains(system.role(of: hitElement) ?? "")
+                    || system.subrole(of: hitElement) == "AXHostingView" else {
+                return .accepted(.none)
+            }
+            guard let focusedEditable = waitForFocusedEditableElement(at: globalPoint) else {
+                return .accepted(.none)
+            }
+            return grantKeyboardFocus(for: focusedEditable)
         }
 
         guard let focusedEditable = waitForFocusedEditableElement(
@@ -323,16 +339,7 @@ public final class MacRemoteInputController: @unchecked Sendable {
             return .accepted(.none)
         }
 
-        nextFocusGeneration &+= 1
-        if nextFocusGeneration == 0 {
-            nextFocusGeneration = 1
-        }
-        let focus = AuthorizedFocus(
-            element: focusedEditable.element,
-            generation: nextFocusGeneration
-        )
-        authorizedFocus = focus
-        return .accepted(.editable(generation: focus.generation, secure: false))
+        return grantKeyboardFocus(for: focusedEditable)
     }
 
     /// Performs one complete primary-button drag for the exact active screen share.
@@ -723,6 +730,42 @@ public final class MacRemoteInputController: @unchecked Sendable {
         return nil
     }
 
+    /// Handles WebKit/SwiftUI hosts whose coordinate hit-test stops at a generic
+    /// wrapper even though the focused AX element is an editable descendant. The
+    /// editable frame must contain the click point, so clicking a separate control
+    /// while a text field retains focus cannot grant remote keyboard authority.
+    private func waitForFocusedEditableElement(at point: CGPoint) -> EditableElement? {
+        let start = clock.now()
+        let deadline = start + Self.maximumFocusWait
+
+        for attempt in 0...10 {
+            if let focused = system.focusedElement(),
+               let editable = editableAncestor(from: focused),
+               let frame = system.frame(of: editable.element),
+               frame.contains(point) {
+                return editable
+            }
+
+            let now = clock.now()
+            guard attempt < 10, now < deadline else { break }
+            clock.sleep(for: min(Self.focusPollInterval, deadline - now))
+        }
+        return nil
+    }
+
+    private func grantKeyboardFocus(for editable: EditableElement) -> MacRemoteInputResult {
+        nextFocusGeneration &+= 1
+        if nextFocusGeneration == 0 {
+            nextFocusGeneration = 1
+        }
+        let focus = AuthorizedFocus(
+            element: editable.element,
+            generation: nextFocusGeneration
+        )
+        authorizedFocus = focus
+        return .accepted(.editable(generation: focus.generation, secure: false))
+    }
+
     /// Confirms the previously authorized AX object still owns editable focus.
     private func verifyFocusedElement(_ focus: AuthorizedFocus) -> Bool {
         guard let currentlyFocused = system.focusedElement(),
@@ -878,6 +921,7 @@ protocol MacRemoteInputSystem: Sendable {
     func isEnabled(_ element: MacRemoteAccessibilityElement) -> Bool?
     func isEditable(_ element: MacRemoteAccessibilityElement) -> Bool?
     func isValueSettable(_ element: MacRemoteAccessibilityElement) -> Bool
+    func frame(of element: MacRemoteAccessibilityElement) -> CGRect?
     func focusedElement() -> MacRemoteAccessibilityElement?
     func elementsEqual(
         _ lhs: MacRemoteAccessibilityElement,
@@ -969,6 +1013,25 @@ private struct CoreGraphicsMacRemoteInputSystem: MacRemoteInputSystem {
             return false
         }
         return settable.boolValue
+    }
+
+    func frame(of element: MacRemoteAccessibilityElement) -> CGRect? {
+        guard let position = copyAttribute(kAXPositionAttribute as CFString, from: element),
+              let size = copyAttribute(kAXSizeAttribute as CFString, from: element),
+              CFGetTypeID(position) == AXValueGetTypeID(),
+              CFGetTypeID(size) == AXValueGetTypeID() else {
+            return nil
+        }
+
+        let positionValue = unsafeDowncast(position, to: AXValue.self)
+        let sizeValue = unsafeDowncast(size, to: AXValue.self)
+        var origin = CGPoint.zero
+        var dimensions = CGSize.zero
+        guard AXValueGetValue(positionValue, .cgPoint, &origin),
+              AXValueGetValue(sizeValue, .cgSize, &dimensions) else {
+            return nil
+        }
+        return CGRect(origin: origin, size: dimensions)
     }
 
     func focusedElement() -> MacRemoteAccessibilityElement? {
