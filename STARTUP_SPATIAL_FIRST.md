@@ -111,3 +111,40 @@ The startup mode remains at 5 fps at lower qualified tiers; moderate qualified c
 can now improve motion without requiring the full tier. These fixtures do not establish
 moving-content load, Internet packet loss, simultaneous microphone/audio load, or iPhone presentation.
 No deployment or physical-device result is implied by these source-level experiments.
+
+## User-reported live quality/latency observation — 2026-09-28
+
+The user reported that the image looked substantially better, but interaction/video
+felt more delayed. Record this as an important qualitative observation: **better
+perceived clarity together with greater perceived latency**, not yet a measured or
+causally established tradeoff.
+
+The proposed promotion-threshold experiment in commit
+`6484f8698ae5e9e7829648282453779f211059bd` was **not installed** when this observation
+was reported. A read-only check on 2026-09-28 found the same host process that had
+started on 2026-09-27, with executable SHA-256
+`f83ce7986aee069d3b7dac27ed6bdcdfa621695fc12d0fd9a240737fa57a3209`.
+The observation therefore is not a before/after result for that experiment.
+
+The prepared change lowers direct quality-promotion admission from 1.35 to 1.25 times
+calibrated sustainable demand (about 7.4% lower; full-tier admission 16.2 to 15 Mbps).
+Sender ceilings retain their independent 1.35 multiplier. It does not add buffering,
+change tier geometry/FPS presets, or relax congestion/freshness safeguards. Source
+validation passed; deployment and user-visible benefit remain separate, unproven stages.
+
+A quality/latency tradeoff is plausible, not inevitable: more demanding frames may
+increase encoding work or queueing on a constrained path; infrequent frame updates
+can also feel like lag without a higher network RTT. These are hypotheses for this
+observation, not diagnosed causes or an accepted latency regression.
+
+To evaluate a later deployment, compare timestamped intervals with the exact host
+artifact, client build, peer/Show identity, route, host/client load, and comparable content.
+Record actual encoded/received dimensions and FPS, delivered video bitrate, bandwidth
+estimate, RTT, loss/retransmission, and available encoder/sender/receiver timing.
+Use counter deltas within one statistics-object lifetime: average sender buffering is
+`delta(totalPacketSendDelay) / delta(packetsSent)`, and average receiver jitter-buffer
+delay is `delta(jitterBufferDelay) / delta(jitterBufferEmittedCount)` when denominators
+advance. These are component timings, **not end-to-end interaction latency**; do not
+sum overlapping receiver metrics. See the [WebRTC statistics definitions](https://www.w3.org/TR/webrtc-stats/).
+No synchronized before/after latency measurement was captured for the user's report,
+and this documentation adds no telemetry collection or runtime change.
