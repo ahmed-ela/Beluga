@@ -188,7 +188,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private static let audioAndControlReserveBps = 320_000.0
     private static let baselineReferenceMaximumVideoBitrateBps = 9_344_000
     private static let downgradeHeadroomMultiplier = 1.25
-    private static let upgradeMarginMultiplier = 1.35
+    // Admit the next quality tier with 25% spare capacity after fresh healthy evidence.
+    // Keep this distinct from sender headroom: tuning admission must not shrink the
+    // transport budget that native bandwidth estimation and capacity probes use.
+    private static let upgradeMarginMultiplier = 1.25
+    private static let totalRTPHeadroomMultiplier = 1.35
     /// The native controller is capped at the same configured total. Treat a small estimator gap
     /// at that ceiling as cap saturation rather than requiring an exact floating-point sample.
     private static let configuredCapacitySaturationRatio = 0.95
@@ -2133,7 +2137,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             min(
                 Double(configuredTotalRTPBitrateBps),
                 requiredOutgoingBitrateBps(for: tier)
-                    * Self.upgradeMarginMultiplier
+                    * Self.totalRTPHeadroomMultiplier
             ).rounded(.up)
         )
     }
