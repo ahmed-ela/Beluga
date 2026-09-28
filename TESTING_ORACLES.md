@@ -192,6 +192,40 @@ valid spelling is not permission to trust the object at that path. Require the
 exact signed candidate to pass this isolated socket fixture before switching the
 installed host, so this class of client-side rejection is caught offline.
 
+### V91 host-only quality-step successor
+
+The V91 assembler and cutover scripts are a fresh successor for the small promotion-margin
+change at product commit `0af3846c4c9c81411e87d6ab997fac55dddc1e5d`, tree
+`d820ce85893abafabecde33735763d5082bc31d3`. They preserve the V90 build/attempt separation,
+same-filesystem rollback, readiness, session, display, and sticky audio-route gates above.
+The exact installed V90 executable is pinned independently from the older approved
+designated-requirement compatibility reference; the reference is not the live predecessor.
+No iPhone binary changes are included in this host-only update.
+
+Use `assemble-v91-sealed-host-oracle-capsule.sh` once with the clean pinned product checkout,
+a fresh private capsule path, and the independently pinned compatibility reference and digest.
+Current clean, pushed tooling supplies the V91 handoff preparer and readiness observer; it must
+not modify the exported product tree. Exercise the exact signed candidate against the isolated
+real-socket readiness fixture before `run-opensteamer-host-v91-cutover.sh` preflight/execution.
+Each execution gets a fresh transaction even when reusing a verified artifact after exact rollback.
+
+The session fence streams bounded chunks while retaining full-log and prior-prefix hashes.
+The host-owned final `Worldwide media ended; the Mac remains available for the paired iPhone`
+event is a quiescent boundary only after confirmed capture teardown. A queued heartbeat before
+that boundary is historical; any authenticated peer or capture marker after it rejects cutover.
+Pairing checks compare metadata-only digests for the two product-owned Keychain records before
+and after commit or rollback, without retrieving or persisting secret values.
+
+Only terminal `COMMITTED_V91`, fresh exact live/installed/readiness/session/display/route
+readback, unchanged pairing metadata, and clean zero-notification monitor teardown establish
+host deployment. `ROLLED_BACK_EXACT_V90` means the update was not applied.
+`COMMITTED_V91_UNVERIFIED` leaves the new host live without a deployment-success claim or a
+rollback past the irreversible boundary. None of these host checks establishes improved image
+quality or end-to-end latency; those require the matched live measurements described in
+`STARTUP_SPATIAL_FIRST.md`.
+
+### Physical promotion and development boundaries
+
 After a terminal `COMMITTED_V90` host result and fresh sealed-host readback, run
 `validate-iphone15-dev-screen-visual-oracle.sh` on the paired iPhone 15. That pass is development
 diagnosis only. Only after it passes may the production iOS candidate proceed through the
