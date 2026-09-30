@@ -4017,6 +4017,17 @@ function plist_typed_raw_value() {
 function build_settings_entry_value() {
   local key=$3
   case "$key" in
+    PROJECT_NAME|TARGET_NAME) print -r -- opensteamer ;;
+    CONFIGURATION) print -r -- "$EXPECTED_CONFIGURATION" ;;
+    EFFECTIVE_PLATFORM_NAME) print -r -- -iphoneos ;;
+    DERIVED_FILE_DIR|DERIVED_FILES_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/DerivedFiles" ;;
+    DERIVED_SOURCES_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/DerivedSources" ;;
+    PROJECT_DERIVED_FILE_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/ProjectDerivedFiles" ;;
+    PROJECT_DERIVED_DATA_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/ProjectDerivedData" ;;
     BUILD_DIR) print -r -- "$ROOTS_BUILD_DIR" ;;
     BUILD_ROOT|SYMROOT) print -r -- "$ROOTS_BUILD_PRODUCTS_PATH" ;;
     BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|DWARF_DSYM_FOLDER_PATH)

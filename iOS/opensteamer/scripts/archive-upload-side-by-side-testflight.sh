@@ -2589,6 +2589,20 @@ function remove_exact_private_file() {
   [[ ! -e "${file}" && ! -L "${file}" ]]
 }
 
+function remove_private_build_settings_documents() {
+  verify_control_directory_identity || return 1
+  local file
+  for file in \
+      "${TESTFLIGHT_CONTROL_DIRECTORY}/archive-build-settings.json" \
+      "${TESTFLIGHT_CONTROL_DIRECTORY}/media-extension-build-settings.json"; do
+    [[ ! -e "${file}" && ! -L "${file}" ]] && continue
+    require_private_regular_file "${file}" || return 1
+    [[ "$(/usr/bin/stat -f '%l' "${file}" 2>/dev/null)" == 1 ]] || return 1
+  done
+  remove_exact_private_file "${TESTFLIGHT_CONTROL_DIRECTORY}/archive-build-settings.json" || return 1
+  remove_exact_private_file "${TESTFLIGHT_CONTROL_DIRECTORY}/media-extension-build-settings.json"
+}
+
 function remove_current_run_tmp_directory() {
   [[ -z "${TESTFLIGHT_BUILD_TMP_DIRECTORY:-}" ]] && return 0
   [[ -n "${TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY:-}" \
@@ -2823,9 +2837,7 @@ function cleanup_private_build_volume() {
         "${TESTFLIGHT_CONTROL_DIRECTORY}/created-image-info.plist" || cleanup_failed=1
       remove_exact_private_file \
         "${TESTFLIGHT_CONTROL_DIRECTORY}/hdiutil-info.plist" || cleanup_failed=1
-      remove_exact_private_file \
-        "${TESTFLIGHT_CONTROL_DIRECTORY}/archive-build-settings.json" \
-        || cleanup_failed=1
+      remove_private_build_settings_documents || cleanup_failed=1
       if (( cleanup_failed == 0 )) \
           && [[ -n "${TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH:-}" ]]; then
         if [[ -e "${TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH}" \
@@ -3227,6 +3239,49 @@ function effective_path_is_inside_build_sandbox() {
         == "${canonical_value}" ]]
 }
 
+function target_generated_intermediate_arguments() {
+  # Keep the Xcode substitutions literal until each target evaluates its settings.
+  local target_root="${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}"'/Targets/$(PROJECT_NAME)/$(TARGET_NAME)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)'
+  reply=(
+    "DERIVED_FILE_DIR=${target_root}/DerivedFiles"
+    "DERIVED_FILES_DIR=${target_root}/DerivedFiles"
+    "DERIVED_SOURCES_DIR=${target_root}/DerivedSources"
+    "PROJECT_DERIVED_FILE_DIR=${target_root}/ProjectDerivedFiles"
+    "PROJECT_DERIVED_DATA_DIR=${target_root}/ProjectDerivedData"
+  )
+}
+
+function verify_effective_target_generated_intermediates() {
+  local document=$1 index=$2 target_name=$3
+  local project_name effective_target configuration platform_name
+  project_name=$(build_settings_entry_value "${document}" "${index}" PROJECT_NAME) || return 1
+  effective_target=$(build_settings_entry_value "${document}" "${index}" TARGET_NAME) || return 1
+  configuration=$(build_settings_entry_value "${document}" "${index}" CONFIGURATION) || return 1
+  platform_name=$(build_settings_entry_value "${document}" "${index}" EFFECTIVE_PLATFORM_NAME) || return 1
+  [[ "${project_name}" == opensteamer \
+      && ("${target_name}" == opensteamer || "${target_name}" == MediaNotificationContent) \
+      && "${effective_target}" == "${target_name}" \
+      && "${configuration}" == "${EXPECTED_CONFIGURATION}" \
+      && "${platform_name}" == -iphoneos ]] || return 1
+  local expected_root="${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/Targets/${project_name}/${target_name}/${configuration}${platform_name}"
+  [[ "${expected_root:A}" == "${expected_root}" \
+      && "${expected_root}" == "${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY}/"* ]] || return 1
+  local -a contract=(
+    DERIVED_FILE_DIR DerivedFiles
+    DERIVED_FILES_DIR DerivedFiles
+    DERIVED_SOURCES_DIR DerivedSources
+    PROJECT_DERIVED_FILE_DIR ProjectDerivedFiles
+    PROJECT_DERIVED_DATA_DIR ProjectDerivedData
+  )
+  local -i item
+  local actual
+  for (( item = 1; item <= ${#contract[@]}; item += 2 )); do
+    effective_path_is_inside_build_sandbox "${document}" "${index}" "${contract[item]}" || return 1
+    actual=$(build_settings_entry_value "${document}" "${index}" "${contract[item]}") || return 1
+    [[ "${actual:A}" == "${expected_root}/${contract[item + 1]}" ]] || return 1
+  done
+}
+
 function verify_xcode_tmp_alias_identity() {
   [[ -L "${XCODE_TMP_ALIAS_ROOT}" \
       && "$(/usr/bin/readlink "${XCODE_TMP_ALIAS_ROOT}" 2>/dev/null)" \
@@ -3525,7 +3580,8 @@ function verify_media_notification_effective_settings_document() {
     [[ "${actual}" == "${expected}" ]] || return 1
   done
   actual=$(plist_typed_raw_value "${destination}" 0.buildSettings.CODE_SIGN_IDENTITY string) || return 1
-  [[ "${actual}" == 'iPhone Developer' || "${actual}" == 'Apple Development' ]]
+  [[ "${actual}" == 'iPhone Developer' || "${actual}" == 'Apple Development' ]] || return 1
+  verify_effective_target_generated_intermediates "${destination}" 0 MediaNotificationContent
 }
 
 function verify_effective_media_extension_build_settings() {
@@ -3555,6 +3611,8 @@ function verify_effective_archive_build_roots() {
   for (( entry_index = 0; entry_index < entry_count; entry_index += 1 )); do
     target_name=$(plist_typed_raw_value \
       "${destination}" "${entry_index}.target" string) || return 1
+    verify_effective_target_generated_intermediates \
+      "${destination}" "${entry_index}" "${target_name}" || return 1
     [[ "$(build_settings_entry_value "${destination}" "${entry_index}" SHARED_PRECOMPS_DIR)" \
           == "${TESTFLIGHT_BUILD_PRECOMPILED_DIRECTORY}" \
         && "$(build_settings_entry_value "${destination}" "${entry_index}" CACHE_ROOT)" \
@@ -4323,6 +4381,9 @@ function initialize_private_testflight_build_volume() {
   # splits compilation from archive finalization and leaves an incomplete archive
   # even after compilation and signing pass.
   TESTFLIGHT_BUILD_DSTROOT_DIRECTORY="${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Build/Intermediates.noindex/ArchiveIntermediates/${EXPECTED_SCHEME}/InstallationBuildProductsLocation"
+  local -a reply=()
+  target_generated_intermediate_arguments
+  local -a generated_intermediate_arguments=("${reply[@]}")
   TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS=(
     -project "${PROJECT_PATH}"
     -scheme "${EXPECTED_SCHEME}"
@@ -4338,11 +4399,7 @@ function initialize_private_testflight_build_volume() {
     "MODULE_CACHE_DIR=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
     "CLANG_MODULE_CACHE_PATH=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
     "SWIFT_MODULE_CACHE_PATH=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
-    "DERIVED_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/DerivedFiles"
-    "DERIVED_FILES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/DerivedFiles"
-    "DERIVED_SOURCES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/DerivedSources"
-    "PROJECT_DERIVED_DATA_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/ProjectDerivedData"
-    "PROJECT_DERIVED_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/ProjectDerivedFiles"
+    "${generated_intermediate_arguments[@]}"
     "TEMP_FILES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/TempFiles"
     "INDEX_DATA_STORE_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Index.noindex/DataStore"
     "LOCSYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}/LocalizedSymbols"
@@ -4365,11 +4422,7 @@ function initialize_private_testflight_build_volume() {
     "SWIFTPM_MODULECACHE_OVERRIDE=${TESTFLIGHT_BUILD_MODULE_CACHE_DIRECTORY}"
     "XDG_CACHE_HOME=${TESTFLIGHT_BUILD_CACHE_DIRECTORY}"
     "SOURCE_PACKAGES_DIR_PATH=${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"
-    "DERIVED_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/DerivedFiles"
-    "DERIVED_FILES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/DerivedFiles"
-    "DERIVED_SOURCES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/DerivedSources"
-    "PROJECT_DERIVED_DATA_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/ProjectDerivedData"
-    "PROJECT_DERIVED_FILE_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/ProjectDerivedFiles"
+    "${generated_intermediate_arguments[@]}"
     "TEMP_FILES_DIR=${TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY}/TempFiles"
     "INDEX_DATA_STORE_DIR=${TESTFLIGHT_DERIVED_DATA_DIRECTORY}/Index.noindex/DataStore"
     "LOCSYMROOT=${TESTFLIGHT_BUILD_PRODUCTS_DIRECTORY}/LocalizedSymbols"

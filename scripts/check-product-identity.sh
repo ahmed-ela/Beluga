@@ -1305,6 +1305,24 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-derivedDataPath "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"' 1 \
   'side-by-side TestFlight fixed private DerivedData'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${generated_intermediate_arguments[@]}"' 2 \
+  'side-by-side TestFlight identical target-local generated arguments and environment'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/Targets/$(PROJECT_NAME)/$(TARGET_NAME)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)' 1 \
+  'side-by-side TestFlight target-local generated intermediate namespace'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '    verify_effective_target_generated_intermediates \' 1 \
+  'side-by-side TestFlight main effective generated-root verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '  verify_effective_target_generated_intermediates "${destination}" 0 MediaNotificationContent' 1 \
+  'side-by-side TestFlight extension effective generated-root verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '      remove_private_build_settings_documents || cleanup_failed=1' 1 \
+  'side-by-side TestFlight owned build-settings cleanup reachability'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '  remove_exact_private_file "${TESTFLIGHT_CONTROL_DIRECTORY}/media-extension-build-settings.json"' 1 \
+  'side-by-side TestFlight exact extension build-settings cleanup'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"' 1 \
   'side-by-side TestFlight fixed private package cache'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
