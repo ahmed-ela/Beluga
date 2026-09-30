@@ -55,7 +55,7 @@ File.write(File.join(framework, 'Info.plist'), plist({ 'CFBundleIdentifier' => '
 checks = 0
 run = lambda do |name, expression, expected|
   command = 'source <(/usr/bin/sed \'/^verify_static_contract$/,$d\' "$WRAPPER_PATH"); ' \
-            'trap - EXIT HUP INT QUIT TERM; ' + expression
+            'trap - EXIT ZERR HUP INT QUIT TERM; ' + expression
   output, error, status = Open3.capture3({ 'WRAPPER_PATH' => wrapper }, '/bin/zsh', '-c', command)
   raise "#{name}: expected #{expected}, got #{status.exitstatus}: #{output} #{error}" unless status.success? == expected
   checks += 1

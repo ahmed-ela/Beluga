@@ -3076,7 +3076,7 @@ mkdir -p "$VENDOR_FIXTURE_ROOT"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" VENDOR_FIXTURE_ROOT="$VENDOR_FIXTURE_ROOT" \
 /bin/zsh <<'VENDORARCHIVETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset archive="$VENDOR_FIXTURE_ROOT/fixture.zip"
 typeset original="$VENDOR_FIXTURE_ROOT/original.zip"
@@ -3151,7 +3151,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" DOTTED_KEY_FIXTURE="$DOTTED_KEY_FIXTURE" \
 /bin/zsh <<'DOTTEDKEYTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset document
 document=$(<"$DOTTED_KEY_FIXTURE")
@@ -3178,7 +3178,7 @@ HELD_DIRECTORY="$BEHAVIOR_ROOT/held-certificate-directory"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" HELD_DIRECTORY="$HELD_DIRECTORY" \
 /bin/zsh <<'HELDDIRECTORYTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset -i held_fd=-1
 sysopen -r -o nofollow -u held_fd "$HELD_DIRECTORY"
@@ -3313,7 +3313,7 @@ SNAP_EFI_FIRST="$HDIEFIFIRST" \
 SNAP_MALFORMED_TAIL="$HDIMALFORMEDTAIL" \
 /bin/zsh <<'HDITEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=$CONTROL_PATH
 TESTFLIGHT_BUILD_IMAGE_PATH=$TARGET_IMAGE
@@ -3443,7 +3443,7 @@ STORE_FIXTURE="$T7_STORE_FIXTURE" \
 DISK_FIXTURE="$T7_DISK_FIXTURE" \
 /bin/zsh <<'T7TEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=$CONTROL_PATH
 TESTFLIGHT_BUILD_ROOT_PARENT_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_ROOT:h}")
@@ -3559,7 +3559,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" MANIFEST_ARCHIVE="$MANIFEST_ARCHIVE" \
 /bin/zsh <<'MANIFESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function expect_manifest_rejection() {
   if verify_reviewed_archive_product_manifest "$MANIFEST_ARCHIVE" \
@@ -3620,7 +3620,7 @@ print -r -- baseline-symbols >"$TREE_DIGEST_ROOT/dSYMs/opensteamer.symbols"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" TREE_DIGEST_ROOT="$TREE_DIGEST_ROOT" \
 /bin/zsh <<'TREEDIGESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset full_baseline
 typeset excluded_baseline
@@ -3707,7 +3707,7 @@ BASELINE_ARCHIVE_INFO="$BASELINE_ARCHIVE_INFO" \
 POSTUPLOAD_ARCHIVE_INFO="$POSTUPLOAD_ARCHIVE_INFO" \
 /bin/zsh <<'DISTRIBUTIONTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function expect_distribution_rejection() {
   if verify_successful_upload_distribution_record "$POSTUPLOAD_ARCHIVE_INFO" \
@@ -3801,7 +3801,7 @@ for BUILD_OVERRIDE in \
     'SYMROOT=/Applications/AudioStreamer Host.app' \
     'CACHE_ROOT=/Applications/AudioStreamer Host.app'; do
   if /usr/bin/env "$BUILD_OVERRIDE" WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
-      /bin/zsh -c 'source <(/usr/bin/sed "/^verify_static_contract$/,$d" "$WRAPPER_PATH"); trap - EXIT HUP INT QUIT TERM; reject_unsafe_build_environment' \
+      /bin/zsh -c 'source <(/usr/bin/sed "/^verify_static_contract$/,$d" "$WRAPPER_PATH"); trap - EXIT ZERR HUP INT QUIT TERM; reject_unsafe_build_environment' \
       >/dev/null 2>&1; then
     print -u2 -r -- "unsafe inherited build override passed: $BUILD_OVERRIDE"
     exit 1
@@ -3823,7 +3823,7 @@ DIGEST_RUN_TMP_PARENT="$DIGEST_RUN_TMP_PARENT" \
 DIGEST_RUN_TMP="$DIGEST_RUN_TMP" \
 /bin/zsh <<'DIGESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 function reject_unsafe_build_environment() { return 0 }
 function verify_reviewed_xcode_toolchain_identity() { return 0 }
 function verify_private_build_volume_identity() { return 0 }
@@ -3869,7 +3869,7 @@ DIGESTTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'XCODECONTRACTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset -gi PINNED_CONTRACT_CALLS=0
 function verify_pinned_xcodebuild_filesystem_contract() {
@@ -3896,7 +3896,7 @@ XCODECONTRACTTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DESTINATIONROUTINGTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset -gi OUTER_SANDBOX_CALLS=0
 typeset -ga OUTER_SANDBOX_CONTRACTS=()
@@ -3920,7 +3920,7 @@ DESTINATIONROUTINGTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'EXPORTACTIONARGUMENTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_ARCHIVE_PATH=/private/tmp/opensteamer-action-contract.xcarchive
 TESTFLIGHT_EXPORT_DIRECTORY=/private/tmp/opensteamer-action-contract-export
@@ -3983,7 +3983,7 @@ EXPORTACTIONARGUMENTSTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=/private/tmp/opensteamer-archive-roots-behavior/control
 TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/private/tmp/opensteamer-archive-roots-behavior/BuildSandbox
@@ -4103,7 +4103,7 @@ print -r -- '(version 1)
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" PROFILE_CONTROL="$PROFILE_CONTROL" \
 PROFILE_PATH="$PROFILE_PATH" /bin/zsh <<'PROFILETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
 TESTFLIGHT_CONTROL_DIRECTORY=$PROFILE_CONTROL
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH=$PROFILE_PATH
@@ -4146,7 +4146,7 @@ print -r -- 'repeatable-secret' >"$FD_CONTROL/image.key"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" FD_CONTROL="$FD_CONTROL" \
 /bin/zsh <<'FDCONSUMERTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
 function verify_build_key_identity() { return 0 }
 
@@ -4173,7 +4173,7 @@ WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
 CLEANUP_MARKER="$BEHAVIOR_ROOT/cleanup-tristate.log" \
 /bin/zsh <<'CLEANUPTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=''
 TESTFLIGHT_BUILD_IMAGE_CONTAINER=''
@@ -4222,7 +4222,7 @@ LATE_IMAGE="$LATE_CLEANUP_IMAGE" \
 LATE_MARKER="$LATE_CLEANUP_MARKER" \
 /bin/zsh <<'LATECLEANUPTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=$LATE_CONTROL
 TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY=control
@@ -4310,7 +4310,7 @@ IMAGE_INFO_CONTROL="$IMAGE_INFO_CONTROL" \
 IMAGE_INFO_FIXTURE="$IMAGE_INFO_FIXTURE" \
 /bin/zsh <<'IMAGEINFOTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_image_storage_identity() { return 0 }
 function verify_build_key_identity() { return 0 }
@@ -4382,7 +4382,7 @@ source <(/usr/bin/sed \
   -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${STALE_RECOVERY_ROOT}"|' \
   -e 's|/usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}"|mock_hdiutil_detach "${TESTFLIGHT_IMAGE_DEVICE}"|g' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_build_cache_lock_identity() { return 0 }
 function verify_image_storage_identity() { return 0 }
@@ -4422,7 +4422,7 @@ WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
 WORKSPACE_ATOMIC_PARENT="$WORKSPACE_ATOMIC_PARENT" \
 /bin/zsh <<'WORKSPACEATOMICTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
 typeset -i WORKSPACE_LOCK_CHECKS=0
@@ -4684,7 +4684,7 @@ RUN_TMP_MIGRATION_PARENT="$RUN_TMP_MIGRATION_PARENT" \
 RUN_TMP_MIGRATION_TARGET="$RUN_TMP_MIGRATION_TARGET" \
 /bin/zsh <<'RUNTMPMIGRATIONTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
 function verify_build_cache_lock_identity() { return 0 }
@@ -4736,7 +4736,7 @@ RUN_TMP_CURRENT="$RUN_TMP_CURRENT" \
 RUN_TMP_SIBLING="$RUN_TMP_SIBLING" \
 /bin/zsh <<'RUNTMPCLEANUPTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=$RUN_TMP_SANDBOX
 TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY=$RUN_TMP_PARENT
@@ -4777,7 +4777,7 @@ source <(/usr/bin/sed \
   -e 's|^readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5$|readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=1|' \
   -e 's|^readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5$|readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=1|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_app_store_connect_api_key_identity() { return 0 }
 function verify_reviewed_xcode_toolchain_identity() { return 0 }
@@ -4848,7 +4848,7 @@ ENROLLMENT_DIVERGENCE_MARKER="$ENROLLMENT_DIVERGENCE_MARKER" \
 source <(/usr/bin/sed \
   -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_package_dependency_contract() { return 0 }
 function initialize_private_testflight_build_volume() {
@@ -4885,7 +4885,7 @@ source <(/usr/bin/sed \
   -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="${EXPECTED_PACKAGE_MANIFEST_SHA256}"|' \
   -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="${EXPECTED_PACKAGE_RESOLVED_STATE}"|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_package_dependency_contract() { return 0 }
 function find_current_attachment_record() { return 1 }
@@ -5083,7 +5083,7 @@ ROLLBACK_LOCK="$ROLLBACK_LOCK" \
 ROLLBACK_SENTINEL="$ROLLBACK_SENTINEL" \
 /bin/zsh <<'ENROLLMENTROLLBACKTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_control_directory_identity() {
   [[ -d "$TESTFLIGHT_CONTROL_DIRECTORY" \
@@ -5275,7 +5275,7 @@ print -r -- '{
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" PROCESSING_STATUS="$PROCESSING_STATUS" \
 /bin/zsh <<'PROCESSINGSTATUSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function repin_processing_status() {
   /bin/chmod 600 "$PROCESSING_STATUS"
@@ -5376,7 +5376,7 @@ fi
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DESTINATIONTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function expect_rejection() {
   if "$@" >/dev/null 2>&1; then

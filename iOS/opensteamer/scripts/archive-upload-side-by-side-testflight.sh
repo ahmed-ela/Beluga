@@ -3053,10 +3053,12 @@ function mask_release_cleanup_signals() {
 }
 
 function install_release_signal_traps() {
-  trap 'exit 129' HUP
-  trap 'exit 130' INT
-  trap 'exit 131' QUIT
-  trap 'exit 143' TERM
+  # Explicit signal statuses avoid zsh's internal -2 status when a trapped exit unwinds a
+  # nested function through ZERR. The same owner-only cleanup masks further signals.
+  trap 'cleanup_on_exit 129' HUP
+  trap 'cleanup_on_exit 130' INT
+  trap 'cleanup_on_exit 131' QUIT
+  trap 'cleanup_on_exit 143' TERM
 }
 
 function cleanup_private_build_volume_signal_masked() {
@@ -3148,9 +3150,13 @@ function remove_processing_tmp_directory() {
 }
 
 function cleanup_on_exit() {
-  local original_status=$?
+  local original_status=${1:-$?}
+  # ZERR is inherited by command substitutions and pipeline workers. Only the owning shell
+  # may detach its build volume or close its retained descriptors; propagate child failures
+  # so the owner can perform the one cleanup after the child has finished.
+  (( ZSH_SUBSHELL == 0 )) || return ${original_status}
   mask_release_cleanup_signals
-  trap - EXIT
+  trap - EXIT ZERR
   (( RELEASE_EXIT_CLEANUP_COMPLETE == 0 )) || exit ${original_status}
   if (( RELEASE_EXIT_CLEANUP_RUNNING != 0 )); then
     print -u2 -r -- \
@@ -3177,6 +3183,9 @@ function cleanup_on_exit() {
 }
 
 trap cleanup_on_exit EXIT
+# zsh ERR_EXIT inside a nested function can terminate without running the global EXIT trap.
+# Invoke cleanup directly on that error path; merely exiting a ZERR trap also skips EXIT.
+trap cleanup_on_exit ZERR
 install_release_signal_traps
 
 function require_exact_plist_value() {

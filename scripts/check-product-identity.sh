@@ -2044,6 +2044,12 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'trap cleanup_on_exit EXIT' 1 \
   'side-by-side TestFlight single exit-cleanup entrypoint'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'trap cleanup_on_exit ZERR' 1 \
+  'side-by-side TestFlight nested errexit cleanup entrypoint'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '(( ZSH_SUBSHELL == 0 )) || return ${original_status}' 1 \
+  'side-by-side TestFlight cleanup belongs only to the owning shell'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'cleanup_release_scratch || cleanup_status=1' 1 \
   'side-by-side TestFlight idempotent masked normal cleanup'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
