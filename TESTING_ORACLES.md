@@ -579,7 +579,26 @@ Native Apple Event tests must bind PID/launch identity and stable window/tab IDs
 reject changed targets, enforce final host authorization/deadlines, verify actual
 command readback, and fail closed on ambiguous or indeterminate player discovery.
 Mutation oracles must reject removal of final renderer/native admission and expiry
-checks and relative-command duplicate interception. Permission-only helper IPC must
+checks and relative-command duplicate interception.
+
+Chrome selection bootstraps from the first freshly confirmed playing tab, not global
+play chronology or complete inventory ordering. Discovery is bounded by 32 windows,
+512 total tabs, a stable-tab-identity round-robin cursor and the existing absolute
+deadline; an unknown unrelated tab is not no-media and must not starve healthy tabs.
+A freshly verified playing owner remains sticky. A freshly verified paused owner
+remains explicitly controllable while successor discovery is incomplete (this is not
+an all-paused claim); re-read that owner before promotion and retain it if it resumed.
+Unknown selected state blocks promotion and revokes command authority; only a fresh
+same-item read may recover with a new token. Confirmed absence/replacement retires the
+ownership hold. A bootstrap paused fallback requires a complete fresh determinate
+inventory. Commands refresh only their exact currently published item, not unrelated
+tabs; automatic promotion revokes queued old commands. Preserve original snapshot
+expiry, capability checks, final authorization and observed effect readback; command
+uncertainty also revokes absolute Play/Pause authority. Cover 39 eligible tabs, excess
+capacity, unknown selected versus unrelated renderers, cursor churn, paused-resume
+handoff races, and current-item command operation despite unrelated timeouts.
+
+Permission-only helper IPC must
 work without an extension or connected peer, reject media-state injection, tolerate
 ordinary consent latency, recover from a transient listener failure, and retire on
 stop/disconnect. Ordinary polling must never prompt or activate Chrome.

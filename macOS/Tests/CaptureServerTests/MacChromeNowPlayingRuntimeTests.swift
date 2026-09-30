@@ -45,9 +45,11 @@ private final class ChromeTestBackend: MacChromeNowPlayingBackend, @unchecked Se
     var permissions = 0
     var onPermission: (() -> Void)?
     var onCommand: ((MacChromeCommand) -> Void)?
+    var onRead: (() -> Void)?
     func readSnapshots(deadline: TimeInterval) throws -> [MacChromePlayerSnapshot] {
         reads += 1
         if let error { throw error }
+        onRead?()
         return snapshots
     }
     func requestAutomationPermission() throws { permissions += 1; onPermission?() }
@@ -86,6 +88,11 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
     var owner: MacChromePlayerIdentity? = chromeOwner
     var windows = [Window(id: "1", tabs: [("2", chromeURL)])]
     var media = chromeMedia()
+    var mediaByTab: [String: MacChromeScriptSnapshot] = [:]
+    var errorByTab: [String: OSStatus] = [:]
+    var noMediaTabs = Set<String>()
+    var scriptTabIDs: [String] = []
+    var onReadTab: ((String) -> Void)?
     var permissionStatus: OSStatus = noErr
     var permissionRequests: [Bool] = []
     var options: [NSAppleEventDescriptor.SendOptions] = []
@@ -97,6 +104,7 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
     var pendingPlay = false
     var ignoreCommands = false
     var commandError: OSStatus?
+    var commandReply: (status: String, media: MacChromeScriptSnapshot?)?
     var scriptError: (OSStatus, String)?
     var oversizedResult = false
     var urlReads = 0
@@ -121,7 +129,10 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
             XCTAssertEqual(event.eventID, 0x45784A61)
             let targetTab = try XCTUnwrap(event.paramDescriptor(forKeyword: keyDirectObject))
             XCTAssertEqual(targetTab.forKeyword(AEKeyword(keyAEKeyForm))?.enumCodeValue, OSType(formUniqueID))
-            XCTAssertEqual(targetTab.forKeyword(AEKeyword(keyAEKeyData))?.stringValue, "2")
+            let tabID = try XCTUnwrap(targetTab.forKeyword(AEKeyword(keyAEKeyData))?.stringValue)
+            let windowID = targetTab.forKeyword(AEKeyword(keyAEContainer))?.forKeyword(AEKeyword(keyAEKeyData))?.stringValue
+            XCTAssertTrue(windows.contains { $0.id == windowID && $0.tabs.contains { $0.id == tabID } })
+            scriptTabIDs.append(tabID)
             let script = try XCTUnwrap(event.paramDescriptor(forKeyword: 0x4A765363)?.stringValue)
             let marker = try XCTUnwrap(script.range(of: "\n)(", options: .backwards))
             let request = try XCTUnwrap(JSONSerialization.jsonObject(with:
@@ -130,11 +141,23 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
             if let scriptError { return answer(.null(), error: scriptError.0, message: scriptError.1) }
             if oversizedResult { return answer(.init(string: String(repeating: "x", count: 262_145))) }
             let operation = request["operation"] as? String
+            if operation == "read" {
+                onReadTab?(tabID)
+                if let error = errorByTab[tabID] { throw NSError(domain: NSOSStatusErrorDomain, code: Int(error)) }
+                if noMediaTabs.contains(tabID) { return answer(.init(string: "{\"schemaVersion\":1,\"status\":\"noMedia\"}")) }
+            }
             var status = "ok"
             var seekFrom: Double?
             var seekTarget: Double?
             if operation == "command" {
                 commandDispatches += 1
+                if let commandReply {
+                    var payload: [String: Any] = ["schemaVersion": 1, "status": commandReply.status]
+                    if let media = commandReply.media {
+                        payload["snapshot"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(media))
+                    }
+                    return answer(.init(string: String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)))
+                }
                 if ["seekForward30", "seekBackward30", "seekToPosition"].contains(request["command"] as? String ?? "") {
                     seekFrom = media.elapsedTime
                     seekTarget = min(media.duration ?? 0, max(0, request["positionSeconds"] as? Double ??
@@ -160,7 +183,8 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
                 else { media = chromeMedia(paused: false) }
             } else { XCTAssertEqual(operation, "read") }
             var object: [String: Any] = ["schemaVersion": 1, "status": status,
-                                        "snapshot": try JSONSerialization.jsonObject(with: JSONEncoder().encode(media))]
+                "snapshot": try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+                    operation == "read" ? (mediaByTab[tabID] ?? media) : media))]
             if let seekFrom, let seekTarget { object["seekFrom"] = seekFrom; object["seekTarget"] = seekTarget }
             result = .init(string: String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
         } else {
@@ -212,6 +236,200 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
 }
 
 final class MacChromeNowPlayingRuntimeTests: XCTestCase {
+    func testThirtyNineYouTubeCandidatesDiscoverLatePlayingItemWithoutTruncation() throws {
+        let client = ChromeTestClient()
+        client.windows[0].tabs = (2...40).map { (String($0), chromeURL) }
+        client.media = chromeMedia(paused: true)
+        client.mediaByTab["40"] = chromeMedia()
+        guard case .selected(let selected) = makeBackend(client).readSelection(preferred: nil, deadline: 11.5)
+        else { return XCTFail("39-tab discovery failed") }
+        XCTAssertEqual(selected.tab.tabID, "40")
+        XCTAssertEqual(client.scriptTabIDs, (2...40).map(String.init))
+    }
+
+    func testInventoryCapacityAndDuplicateIdentityStillFailBeforePageReads() {
+        for duplicate in [false, true] {
+            let client = ChromeTestClient()
+            client.windows[0].tabs = duplicate ? [("2", chromeURL), ("2", chromeURL)]
+                : (2...514).map { (String($0), chromeURL) }
+            guard case .incomplete(.invalidData, holding: nil) = makeBackend(client).readSelection(preferred: nil, deadline: 11.5)
+            else { return XCTFail("Invalid inventory admitted") }
+            XCTAssertTrue(client.scriptTabIDs.isEmpty)
+        }
+    }
+
+    func testUnrelatedTimeoutDoesNotHideLaterFreshPlayingItemButIsNotNoMedia() {
+        let client = ChromeTestClient()
+        client.windows[0].tabs.append(("3", chromeURL))
+        client.errorByTab["2"] = OSStatus(errAETimeout)
+        let backend = makeBackend(client)
+        guard case .selected(let selected) = backend.readSelection(preferred: nil, deadline: 11.5)
+        else { return XCTFail("Healthy successor starved") }
+        XCTAssertEqual(selected.tab.tabID, "3")
+        client.media = chromeMedia(paused: true)
+        guard case .incomplete(.timedOut, holding: nil) = backend.readSelection(preferred: nil, deadline: 11.5)
+        else { return XCTFail("Unknown tab was treated as paused/noMedia") }
+    }
+
+    func testSelectedUnknownBlocksPromotionAndFreshRecoveryRotatesAuthority() async throws {
+        let client = ChromeTestClient()
+        client.windows[0].tabs.append(("3", chromeURL))
+        let backend = makeBackend(client)
+        let runtime = MacChromeNowPlayingRuntime(backend: backend, now: { 10 })
+        let old = try await snapshot(runtime)
+        for failure in [OSStatus(errAETimeout), OSStatus(-1700)] {
+            client.errorByTab["2"] = failure
+            client.scriptTabIDs = []
+            guard case .retry = await fetch(runtime) else { return XCTFail("Unknown owner promoted another tab") }
+            XCTAssertEqual(client.scriptTabIDs, ["2"])
+            await assertSend(runtime, command: 1, snapshot: old, equals: .staleContext)
+        }
+        client.errorByTab = [:]
+        let fresh = try await snapshot(runtime)
+        XCTAssertFalse(old.client === fresh.client)
+        await assertSend(runtime, command: 1, snapshot: fresh, equals: .applied)
+    }
+
+    func testRoundRobinProgressUsesStableIdentityAcrossInventoryChurn() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.windows[0].tabs = [("2", chromeURL), ("3", chromeURL), ("4", chromeURL), ("5", chromeURL)]
+        client.errorByTab = ["2": OSStatus(errAETimeout), "3": OSStatus(errAETimeout), "4": OSStatus(errAETimeout)]
+        client.onReadTab = { _ in clock.update { $0 += 0.35 } }
+        let backend = makeBackend(client, now: { clock.get() })
+        guard case .incomplete = backend.readSelection(preferred: nil, deadline: 11.5)
+        else { return XCTFail("Unfinished slice published authority") }
+        XCTAssertEqual(client.scriptTabIDs, ["2", "3"])
+        client.windows[0].tabs = [("6", chromeURL), ("3", chromeURL), ("5", chromeURL), ("4", chromeURL)]
+        client.scriptTabIDs = []
+        guard case .selected(let selected) = backend.readSelection(preferred: nil, deadline: clock.get() + 1.5)
+        else { return XCTFail("Cursor lost stable successor") }
+        XCTAssertEqual(selected.tab.tabID, "5")
+        XCTAssertEqual(client.scriptTabIDs, ["3", "5"])
+    }
+
+    func testHealthyTabAtSliceBoundaryGetsFullBudgetOnNextPass() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.windows[0].tabs = [("2", chromeURL), ("3", chromeURL), ("4", chromeURL)]
+        client.noMediaTabs = ["2", "3"]
+        client.onReadTab = { tab in clock.update { $0 += tab == "4" ? 0.1 : 0.35 } }
+        let backend = makeBackend(client, now: { clock.get() })
+        guard case .incomplete = backend.readSelection(preferred: nil, deadline: 11.5)
+        else { return XCTFail("A slice-expired read published authority") }
+        XCTAssertEqual(client.scriptTabIDs, ["2", "3", "4"])
+        client.scriptTabIDs = []
+        guard case .selected(let selected) = backend.readSelection(preferred: nil, deadline: clock.get() + 1.5)
+        else { return XCTFail("Healthy tab starved at slice boundary") }
+        XCTAssertEqual(selected.tab.tabID, "4")
+        XCTAssertEqual(client.scriptTabIDs, ["4"])
+    }
+
+    func testFullSliceFirstCandidateTimeoutWithOverheadCannotPinDiscovery() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.windows[0].tabs = [("2", chromeURL), ("3", chromeURL)]
+        client.errorByTab = ["2": OSStatus(errAETimeout)]
+        client.onReadTab = { tab in clock.update { $0 += tab == "2" ? 0.41 : 0.1 } }
+        guard case .selected(let selected) = makeBackend(client, now: { clock.get() })
+            .readSelection(preferred: nil, deadline: 11.5)
+        else { return XCTFail("First candidate timeout pinned discovery") }
+        XCTAssertEqual(selected.tab.tabID, "3")
+        XCTAssertEqual(client.scriptTabIDs, ["2", "3"])
+    }
+
+    func testFreshPlayingOwnerSkipsUnrelatedRendererAndPausedOwnerStaysControllable() throws {
+        let client = ChromeTestClient()
+        client.windows[0].tabs.append(("3", chromeURL)); client.errorByTab["3"] = OSStatus(errAETimeout)
+        let backend = makeBackend(client), expected = chromePlayer()
+        guard case .selected = backend.readSelection(preferred: expected, deadline: 11.5)
+        else { return XCTFail("Selected playing owner disappeared") }
+        XCTAssertEqual(client.scriptTabIDs, ["2"])
+        client.media = chromeMedia(paused: true); client.scriptTabIDs = []
+        guard case .selected(let paused) = backend.readSelection(preferred: expected, deadline: 11.5)
+        else { return XCTFail("Fresh paused owner disappeared during incomplete search") }
+        XCTAssertTrue(paused.media.paused)
+        client.scriptTabIDs = []
+        XCTAssertEqual(try backend.send(.play, expected: paused, deadline: 11.5, isAuthorized: { true }), .applied)
+        XCTAssertTrue(client.scriptTabIDs.allSatisfy { $0 == "2" })
+        XCTAssertEqual(client.commandDispatches, 1)
+    }
+
+    func testPausedOwnerResumedDuringDiscoveryWinsFinalPromotionFence() {
+        let client = ChromeTestClient()
+        client.windows[0].tabs.append(("3", chromeURL))
+        client.mediaByTab["2"] = chromeMedia(paused: true)
+        client.onReadTab = { tab in if tab == "3" { client.mediaByTab["2"] = chromeMedia() } }
+        guard case .selected(let selected) = makeBackend(client).readSelection(preferred: chromePlayer(), deadline: 11.5)
+        else { return XCTFail("Selection unavailable") }
+        XCTAssertEqual(selected.tab.tabID, "2")
+        XCTAssertFalse(selected.media.paused)
+        XCTAssertEqual(client.scriptTabIDs, ["2", "3", "2"])
+    }
+
+    func testPausedOwnerBecomingUnknownDuringPromotionDoesNotHandOff() {
+        let client = ChromeTestClient()
+        client.windows[0].tabs.append(("3", chromeURL))
+        client.mediaByTab["2"] = chromeMedia(paused: true)
+        client.onReadTab = { tab in if tab == "3" { client.errorByTab["2"] = OSStatus(errAETimeout) } }
+        guard case .incomplete(.timedOut, holding: let held) = makeBackend(client).readSelection(preferred: chromePlayer(), deadline: 11.5)
+        else { return XCTFail("Unknown paused owner handed off") }
+        XCTAssertEqual(held?.tab.tabID, "2")
+    }
+
+    func testCommandUncertaintyRevokesAbsoluteCommandTokenUntilFreshRead() async throws {
+        for command in [0, 1] {
+            let backend = ChromeTestBackend()
+            backend.snapshots = [chromePlayer(media: chromeMedia(paused: command == 0))]
+            let runtime = makeRuntime(backend), old = try await snapshot(runtime)
+            backend.commandError = .timedOut
+            await assertSend(runtime, command: command, snapshot: old, equals: .failed)
+            await assertSend(runtime, command: command, snapshot: old, equals: .staleContext)
+            backend.commandError = nil
+            let fresh = try await snapshot(runtime)
+            XCTAssertFalse(fresh.client === old.client)
+            await assertSend(runtime, command: command, snapshot: fresh, equals: .applied)
+            XCTAssertEqual(backend.commands.count, 2)
+        }
+    }
+
+    func testLateConfirmedAbsenceOrReplacementCannotRestorePreviousOwnership() async throws {
+        for replacement in [false, true] {
+            let backend = ChromeTestBackend(), clock = ChromeTestBox(10.0)
+            let runtime = MacChromeNowPlayingRuntime(backend: backend, now: { clock.get() })
+            let old = try await snapshot(runtime)
+            backend.snapshots = replacement ? [chromePlayer(media: chromeMedia(item: UUID().uuidString))] : []
+            backend.onRead = { clock.update { $0 += 2 } }
+            guard case .retry = await fetch(runtime) else { return XCTFail("Late result published authority") }
+            backend.onRead = nil
+            backend.snapshots = [chromePlayer(media: chromeMedia(paused: true)), chromePlayer(tab: "3", media: chromeMedia(paused: true))]
+            guard case .retry = await fetch(runtime) else { return XCTFail("Old ownership resurrected after retirement") }
+            await assertSend(runtime, command: 1, snapshot: old, equals: .staleContext)
+        }
+    }
+
+    func testCommandConfirmedRetirementClearsOwnershipBeforeOldItemReturns() async throws {
+        let backend = ChromeTestBackend(), runtime = makeRuntime(backend)
+        let old = try await snapshot(runtime)
+        backend.commandError = .retiredItem
+        await assertSend(runtime, command: 1, snapshot: old, equals: .staleContext)
+        backend.commandError = nil
+        backend.snapshots = [chromePlayer(media: chromeMedia(paused: true)), chromePlayer(tab: "3", media: chromeMedia(paused: true))]
+        guard case .retry = await fetch(runtime) else { return XCTFail("Command-proven retired owner returned") }
+    }
+
+    func testFinalCommandFenceSeparatesProvenReplacementFromUnknownState() throws {
+        for status in ["staleContext", "noMedia"] {
+            let client = ChromeTestClient(), backend = makeBackend(client)
+            client.commandReply = (status, status == "noMedia" ? nil : chromeMedia(item: UUID().uuidString))
+            XCTAssertThrowsError(try backend.send(.pause, expected: chromePlayer(), deadline: 11.5, isAuthorized: { true })) {
+                XCTAssertEqual($0 as? MacChromeBackendError, .retiredItem)
+            }
+        }
+        for snapshot in [nil, chromeMedia()] as [MacChromeScriptSnapshot?] {
+            let client = ChromeTestClient(), backend = makeBackend(client)
+            client.commandReply = ("staleContext", snapshot)
+            XCTAssertEqual(try backend.send(.pause, expected: chromePlayer(), deadline: 11.5, isAuthorized: { true }), .staleContext)
+        }
+    }
+
     func testArtworkUsesValidatedVideoIDWithoutChangingItemIdentity() throws {
         let original = try XCTUnwrap(MacChromeNowPlayingRuntime.metadata(chromePlayer()))
         XCTAssertEqual(original.artwork, WebRTCRemoteMediaArtworkReference(videoID: "abcdefghijk"))
@@ -316,7 +534,9 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         XCTAssertThrowsError(try backend.send(.pause, expected: expected, deadline: 11, isAuthorized: { true }))
         client.owner = chromeOwner
         client.media = chromeMedia(item: "00000000-0000-4000-8000-000000000003", generation: 3)
-        XCTAssertEqual(try backend.send(.pause, expected: expected, deadline: 11, isAuthorized: { true }), .staleContext)
+        XCTAssertThrowsError(try backend.send(.pause, expected: expected, deadline: 11, isAuthorized: { true })) {
+            XCTAssertEqual($0 as? MacChromeBackendError, .retiredItem)
+        }
         XCTAssertEqual(client.commandDispatches, 0)
     }
 
@@ -680,7 +900,7 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         await assertSend(runtime, command: 1, snapshot: old, equals: .staleContext)
     }
 
-    func testStopAndNonTimeoutFailuresClearSelectionHint() async throws {
+    func testStopClearsOwnershipButEveryUncertainReadRetainsOnlyHint() async throws {
         let failures: [MacChromeBackendError?] = [nil, .permissionRequired, .permissionDenied,
             .javascriptPermissionRequired, .staleItem, .invalidData, .unavailable, .ambiguousPlayers]
         for failure in failures {
@@ -694,13 +914,19 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
             } else { runtime.stop() }
             backend.error = nil
             backend.snapshots = [chromePlayer(media: chromeMedia(paused: true)), chromePlayer(tab: "3", media: chromeMedia(paused: true))]
-            guard case .retry = await fetch(runtime) else { return XCTFail("Retired hint survived stop or non-timeout failure") }
+            if failure == nil {
+                guard case .retry = await fetch(runtime) else { return XCTFail("Retired hint survived stop") }
+            } else {
+                let recovered = try await snapshot(runtime)
+                XCTAssertFalse(recovered.client === old.client)
+                XCTAssertEqual(recovered.metadata.playbackRate, 0)
+            }
             await assertSend(runtime, command: 1, snapshot: old, equals: .staleContext)
             XCTAssertTrue(backend.commands.isEmpty)
         }
     }
 
-    func testConfirmedAbsenceAndInvalidMetadataClearTimeoutHint() async throws {
+    func testConfirmedAbsenceRetiresButInvalidMetadataHoldsOwnershipWithoutAuthority() async throws {
         let unavailableSnapshots: [[MacChromePlayerSnapshot]] = [[], [chromePlayer(media: chromeMedia(title: ""))]]
         for unavailable in unavailableSnapshots {
             let backend = ChromeTestBackend(), runtime = makeRuntime(backend)
@@ -708,9 +934,15 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
             backend.error = .timedOut
             guard case .retry = await fetch(runtime) else { return XCTFail("Timeout published") }
             backend.error = nil; backend.snapshots = unavailable
-            guard case .noActiveMedia = await fetch(runtime) else { return XCTFail("Invalid or absent media published") }
+            if unavailable.isEmpty {
+                guard case .noActiveMedia = await fetch(runtime) else { return XCTFail("Absent media published") }
+            } else {
+                guard case .retry = await fetch(runtime) else { return XCTFail("Invalid metadata published") }
+            }
             backend.snapshots = [chromePlayer(media: chromeMedia(paused: true)), chromePlayer(tab: "3", media: chromeMedia(paused: true))]
-            guard case .retry = await fetch(runtime) else { return XCTFail("Confirmed absence preserved old hint") }
+            if unavailable.isEmpty {
+                guard case .retry = await fetch(runtime) else { return XCTFail("Confirmed absence preserved old hint") }
+            } else { _ = try await snapshot(runtime) }
         }
     }
 

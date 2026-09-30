@@ -37,30 +37,40 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
         let deadline = now() + 1.5
         queue.async { [self] in
             let preferred = lock.withLock { selectionHint }
-            var selected: MacChromePlayerSnapshot?
-            var failure: Error?
-            do {
-                guard lock.withLock({ epoch == admitted }), now() < deadline else {
-                    throw MacChromeBackendError.timedOut
+            var read: MacChromeSelectionRead = .incomplete(.timedOut, holding: preferred)
+            if lock.withLock({ epoch == admitted }), now() < deadline {
+                read = backend.readSelection(preferred: preferred, deadline: deadline)
+                if now() >= deadline {
+                    switch read {
+                    case .selected(let player): read = .incomplete(.timedOut, holding: player)
+                    case .noPlayer: read = .incomplete(.timedOut, holding: nil)
+                    case .incomplete(_, let holding): read = .incomplete(.timedOut, holding: holding)
+                    }
                 }
-                selected = try MacChromeAppleEventsBackend.select(backend.readSnapshots(deadline: deadline),
-                                                                  preferred: preferred)
-                guard now() < deadline else { throw MacChromeBackendError.timedOut }
-            } catch { failure = error }
+            }
             let result: MacNowPlayingRuntimeSnapshotResult = lock.withLock {
                 fetchPending = false
                 guard epoch == admitted else { return .retry }
-                if let failure {
+                let selected: MacChromePlayerSnapshot?
+                switch read {
+                case .selected(let player): selected = player
+                case .noPlayer: selected = nil
+                case .incomplete(let failure, let holding):
                     epoch &+= 1; current = nil; relativeConsumed = false; confirmedSameItemSeek = false
-                    if failure as? MacChromeBackendError != .timedOut { selectionHint = nil }
+                    selectionHint = holding
                     discoveryStatus = MacChromeDiscoveryStatus(error: failure)
-                    // Unknown browser state must revoke its commands without choosing another tab.
+                    // Uncertain selected ownership survives only as a hold, never authority.
                     return .retry
                 }
-                guard let selected, let metadata = Self.metadata(selected) else {
+                guard let selected else {
                     epoch &+= 1; current = nil; selectionHint = nil; relativeConsumed = false; confirmedSameItemSeek = false
-                    discoveryStatus = selected == nil ? .noPlayer : .invalidData
+                    discoveryStatus = .noPlayer
                     return .noActiveMedia
+                }
+                guard let metadata = Self.metadata(selected) else {
+                    epoch &+= 1; current = nil; selectionHint = selected; relativeConsumed = false; confirmedSameItemSeek = false
+                    discoveryStatus = .invalidData
+                    return .retry
                 }
                 let token: MacNowPlayingClientToken
                 if let current, current.player.hasSameItem(as: selected),
@@ -135,11 +145,15 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
         }
         queue.async { [self] in
             let result: WebRTCRemoteMediaCommandResult
+            var retiredItem = false
             if !authorized() || now() >= deadline { result = .staleContext }
             else {
                 do { result = try backend.send(command, positionSeconds: positionSeconds,
                                                expected: expected, deadline: deadline, isAuthorized: authorized) }
-                catch { result = error as? MacChromeBackendError == .staleItem ? .staleContext : .failed }
+                catch {
+                    retiredItem = error as? MacChromeBackendError == .retiredItem
+                    result = retiredItem || error as? MacChromeBackendError == .staleItem ? .staleContext : .failed
+                }
             }
             let confirmedSeek = command.isSeek && result == .applied && authorized()
             lock.withLock {
@@ -147,6 +161,12 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
                     // Fresh same-item readback may preserve selection after a confirmed seek.
                     // Ambiguous relative results still consume and rotate the old authority.
                     confirmedSameItemSeek = confirmedSeek
+                    if result == .failed || result == .staleContext || result == .noActiveMedia {
+                        // Unknown command/readback outcomes revoke even absolute Play/Pause.
+                        // Only a fresh exact-owner read may create replacement authority.
+                        epoch &+= 1; current = nil; relativeConsumed = false; confirmedSameItemSeek = false
+                        if retiredItem || result == .noActiveMedia { selectionHint = nil }
+                    }
                 }
                 commandPending = false
             }

@@ -69,7 +69,7 @@ struct MacChromePlayerSnapshot: Sendable {
 
 enum MacChromeBackendError: Error, Equatable {
     case permissionRequired, permissionDenied, javascriptPermissionRequired, timedOut
-    case staleItem, invalidData, unavailable, ambiguousPlayers
+    case staleItem, retiredItem, invalidData, unavailable, ambiguousPlayers
 }
 
 enum MacChromeDiscoveryStatus: String, Sendable {
@@ -83,7 +83,7 @@ enum MacChromeDiscoveryStatus: String, Sendable {
         case .permissionDenied: self = .permissionDenied
         case .javascriptPermissionRequired: self = .javascriptPermissionRequired
         case .timedOut: self = .timedOut
-        case .staleItem: self = .staleItem
+        case .staleItem, .retiredItem: self = .staleItem
         case .invalidData: self = .invalidData
         case .unavailable: self = .unavailable
         case .ambiguousPlayers: self = .ambiguousPlayers
@@ -115,12 +115,36 @@ enum MacChromeCommand: Int, Sendable {
     }
 }
 
+enum MacChromeSelectionRead: Sendable {
+    case selected(MacChromePlayerSnapshot)
+    case noPlayer
+    // A hint is an ownership hold, never command authority or cached metadata.
+    case incomplete(MacChromeBackendError, holding: MacChromePlayerSnapshot?)
+}
+
 protocol MacChromeNowPlayingBackend: Sendable {
     func readSnapshots(deadline: TimeInterval) throws -> [MacChromePlayerSnapshot]
+    func readSelection(preferred: MacChromePlayerSnapshot?, deadline: TimeInterval) -> MacChromeSelectionRead
     func requestAutomationPermission() throws
     func send(_ command: MacChromeCommand, positionSeconds: TimeInterval?, expected: MacChromePlayerSnapshot,
               deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
         -> WebRTCRemoteMediaCommandResult
+}
+
+extension MacChromeNowPlayingBackend {
+    func readSelection(preferred: MacChromePlayerSnapshot?, deadline: TimeInterval) -> MacChromeSelectionRead {
+        var holding = preferred
+        do {
+            let snapshots = try readSnapshots(deadline: deadline)
+            holding = preferred.flatMap { old in snapshots.first { $0.hasSameItem(as: old) } }
+            if let selected = try MacChromeAppleEventsBackend.select(snapshots, preferred: holding) {
+                return .selected(selected)
+            }
+            return .noPlayer
+        } catch {
+            return .incomplete(error as? MacChromeBackendError ?? .unavailable, holding: holding)
+        }
+    }
 }
 
 protocol MacChromeAppleEventsClient: Sendable {
@@ -159,6 +183,8 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
     private let client: any MacChromeAppleEventsClient
     private let now: @Sendable () -> TimeInterval
     private let wallNow: @Sendable () -> TimeInterval
+    private let cursorLock = NSLock()
+    private var nextDiscoveryTab: MacChromeTabIdentity?
 
     init(client: any MacChromeAppleEventsClient = MacChromeSystemAppleEventsClient(),
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
@@ -172,8 +198,8 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         guard client.runningOwner() == owner else { throw MacChromeBackendError.staleItem }
     }
 
-    func readSnapshots(deadline: TimeInterval) throws -> [MacChromePlayerSnapshot] {
-        guard let owner = client.runningOwner() else { return [] }
+    private func inventory(owner: MacChromePlayerIdentity, deadline: TimeInterval)
+        throws -> [(MacChromeTabIdentity, String)] {
         try check(owner: owner, deadline: deadline)
         try Self.checkStatus(client.automationPermission(owner: owner, askUser: false))
         let windows = try identifiers(get(property(0x49442020, of: all(0x6377696E)),
@@ -194,26 +220,135 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             guard urls.count == tabIDs.count else { throw MacChromeBackendError.staleItem }
             for (tabID, url) in zip(tabIDs, urls) where Self.videoID(from: url) != nil {
                 candidates.append((.init(owner: owner, windowID: windowID, tabID: tabID), url))
-                guard candidates.count <= 16 else { throw MacChromeBackendError.invalidData }
             }
         }
         guard Set(candidates.map(\.0)).count == candidates.count else { throw MacChromeBackendError.invalidData }
+        return candidates
+    }
+
+    private func readPlayer(_ tab: MacChromeTabIdentity, url: String? = nil, deadline: TimeInterval)
+        throws -> MacChromePlayerSnapshot? {
+        let url = try url ?? currentURL(tab, deadline: deadline, isAuthorized: { true })
+        let response = try execute(.init(operation: "read"), tab: tab, expectedURL: url,
+                                   deadline: deadline, isAuthorized: { true })
+        switch response.status {
+        case "ok":
+            guard let media = response.snapshot else { throw MacChromeBackendError.invalidData }
+            try validate(media, url: url)
+            return .init(tab: tab, media: media, receivedAtUptime: now())
+        case "noMedia": return nil
+        case "staleContext": throw MacChromeBackendError.staleItem
+        default: throw MacChromeBackendError.invalidData
+        }
+    }
+
+    func readSnapshots(deadline: TimeInterval) throws -> [MacChromePlayerSnapshot] {
+        guard let owner = client.runningOwner() else { return [] }
+        let candidates = try inventory(owner: owner, deadline: deadline)
         var snapshots: [MacChromePlayerSnapshot] = []
         for (tab, url) in candidates {
-            let response = try execute(.init(operation: "read"), tab: tab, expectedURL: url,
-                                       deadline: deadline, isAuthorized: { true })
-            switch response.status {
-            case "ok":
-                guard let media = response.snapshot else { throw MacChromeBackendError.invalidData }
-                try validate(media, url: url)
-                snapshots.append(.init(tab: tab, media: media, receivedAtUptime: now()))
-            case "noMedia": break
-            case "staleContext": throw MacChromeBackendError.staleItem
-            default: throw MacChromeBackendError.invalidData
-            }
+            if let player = try readPlayer(tab, url: url, deadline: deadline) { snapshots.append(player) }
         }
         try check(owner: owner, deadline: deadline)
         return snapshots
+    }
+
+    /// Bootstrap chooses the first freshly confirmed playing tab, not an unknowable global
+    /// start chronology. Unknown unrelated tabs remain unknown and cannot starve discovery.
+    func readSelection(preferred: MacChromePlayerSnapshot?, deadline: TimeInterval) -> MacChromeSelectionRead {
+        guard let owner = client.runningOwner() else { return .noPlayer }
+        var holding = preferred.flatMap { $0.tab.owner == owner ? $0 : nil }
+        do {
+            try check(owner: owner, deadline: deadline)
+            try Self.checkStatus(client.automationPermission(owner: owner, askUser: false))
+            var candidates: [(MacChromeTabIdentity, String)]?
+            var observed: [MacChromePlayerSnapshot] = []
+            if let previous = holding {
+                do {
+                    if let fresh = try readPlayer(previous.tab, deadline: deadline), fresh.hasSameItem(as: previous) {
+                        holding = fresh
+                        if Self.isPlaying(fresh) { return .selected(fresh) }
+                    } else {
+                        // A positive absent/replaced item retires the ownership hold.
+                        holding = nil
+                    }
+                } catch {
+                    // A closed/navigated target may be positively disproved by inventory;
+                    // an unknown selected renderer must never fall through to bootstrap.
+                    let current = try inventory(owner: owner, deadline: deadline)
+                    candidates = current
+                    if let entry = current.first(where: { $0.0 == previous.tab }),
+                       Self.videoID(from: entry.1) == previous.media.videoID {
+                        throw error
+                    }
+                    holding = nil
+                }
+            }
+            let census = try candidates ?? inventory(owner: owner, deadline: deadline)
+            if let held = holding, !census.contains(where: { $0.0 == held.tab && Self.videoID(from: $0.1) == held.media.videoID }) {
+                holding = nil
+            }
+            let next = cursorLock.withLock { nextDiscoveryTab }
+            let start = next.flatMap { hint in census.firstIndex(where: { $0.0 == hint }) } ?? 0
+            var complete = true
+            var firstFailure: MacChromeBackendError?
+            // Preserve command/readback and paused-owner promotion headroom. This is a
+            // work slice within (never an extension of) the caller's absolute deadline.
+            let scanDeadline = min(deadline, now() + 0.75)
+            for offset in census.indices {
+                guard now() < scanDeadline else { complete = false; firstFailure = firstFailure ?? .timedOut; break }
+                let index = (start + offset) % census.count
+                let (tab, url) = census[index]
+                cursorLock.withLock { nextDiscoveryTab = census[(index + 1) % census.count].0 }
+                let fresh: MacChromePlayerSnapshot?
+                do {
+                    fresh = try holding.flatMap { $0.tab == tab ? $0 : nil }
+                        ?? readPlayer(tab, url: url, deadline: scanDeadline)
+                } catch {
+                    let failure = error as? MacChromeBackendError ?? .unavailable
+                    if failure == .permissionDenied || failure == .permissionRequired || failure == .javascriptPermissionRequired {
+                        throw error
+                    }
+                    try check(owner: owner, deadline: deadline)
+                    complete = false; firstFailure = firstFailure ?? failure
+                    if offset > 0, failure == .timedOut, scanDeadline - now() < 0.35 {
+                        // Give a clipped tail candidate one fresh-slice retry. A first
+                        // candidate must advance on failure, even with slow URL checks.
+                        cursorLock.withLock { nextDiscoveryTab = tab }
+                        break
+                    }
+                    continue
+                }
+                guard let fresh else { continue }
+                observed.append(fresh)
+                guard Self.isPlaying(fresh) else { continue }
+                if let held = holding {
+                    // The selected owner may have resumed during the successor scan.
+                    // Revalidate it immediately before a handoff; uncertainty blocks it.
+                    if let final = try readPlayer(held.tab, deadline: deadline), final.hasSameItem(as: held) {
+                        holding = final
+                        if Self.isPlaying(final) { return .selected(final) }
+                    } else { holding = nil }
+                }
+                try check(owner: owner, deadline: deadline)
+                return .selected(fresh)
+            }
+            try check(owner: owner, deadline: deadline)
+            if let held = holding {
+                // Freshly verified paused owners remain explicitly controllable during
+                // an incomplete successor search; this does not assert that all tabs paused.
+                return .selected(held)
+            }
+            guard complete else { return .incomplete(firstFailure ?? .timedOut, holding: nil) }
+            if let paused = try Self.select(observed, preferred: nil) { return .selected(paused) }
+            return .noPlayer
+        } catch {
+            return .incomplete(error as? MacChromeBackendError ?? .unavailable, holding: holding)
+        }
+    }
+
+    private static func isPlaying(_ snapshot: MacChromePlayerSnapshot) -> Bool {
+        !snapshot.media.paused && snapshot.media.playbackRate > 0
     }
 
     func send(_ command: MacChromeCommand, positionSeconds: TimeInterval? = nil, expected: MacChromePlayerSnapshot,
@@ -222,9 +357,11 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         guard command.accepts(positionSeconds: positionSeconds) else { return .failed }
         let deadline = min(deadline, expected.receivedAtUptime + Self.maximumSnapshotAge)
         try check(owner: expected.tab.owner, deadline: deadline, isAuthorized: isAuthorized)
-        let candidates = try readSnapshots(deadline: deadline)
-        guard let selected = try Self.select(candidates, preferred: expected), selected.hasSameItem(as: expected)
-        else { return .staleContext }
+        // The current publication/epoch authorizes this exact selected item. Automatic
+        // handoff belongs to readSelection; unrelated renderers cannot delay a command.
+        try Self.checkStatus(client.automationPermission(owner: expected.tab.owner, askUser: false))
+        guard let selected = try readPlayer(expected.tab, deadline: deadline), selected.hasSameItem(as: expected)
+        else { throw MacChromeBackendError.retiredItem }
         guard selected.media.enabledCommands.contains(command.rawValue) else { return .unsupported }
         let remainingFromObservation = (deadline - expected.receivedAtUptime) * 1000
         guard remainingFromObservation > 0 else { throw MacChromeBackendError.timedOut }
@@ -237,7 +374,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
                 expected.media.observedAtUnixMilliseconds + remainingFromObservation),
             expiresAtPageMilliseconds: expected.media.observedAtPageMilliseconds + remainingFromObservation)
         let url = try currentURL(expected.tab, deadline: deadline, isAuthorized: isAuthorized)
-        guard Self.videoID(from: url) == expected.media.videoID else { return .staleContext }
+        guard Self.videoID(from: url) == expected.media.videoID else { throw MacChromeBackendError.retiredItem }
         var response = try execute(request, tab: expected.tab, expectedURL: url,
                                    deadline: deadline, isAuthorized: isAuthorized,
                                    allowSuccessor: command.changesTrack)
@@ -258,12 +395,12 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             guard let media = response.snapshot else { return .failed }
             let finalURL = try currentURL(expected.tab, deadline: deadline, isAuthorized: isAuthorized)
             try validate(media, url: finalURL)
-            guard media.documentID == expected.media.documentID else { return .staleContext }
+            guard media.documentID == expected.media.documentID else { throw MacChromeBackendError.retiredItem }
             if command.changesTrack {
                 return media.videoID != expected.media.videoID && media.identity != expected.media.identity
                     ? .applied : .failed
             }
-            guard media.identity == expected.media.identity else { return .staleContext }
+            guard media.identity == expected.media.identity else { throw MacChromeBackendError.retiredItem }
             if command.isSeek {
                 guard let origin = response.seekFrom, let target = response.seekTarget,
                       let duration = media.duration, let elapsed = media.elapsedTime,
@@ -275,9 +412,17 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
                 return .applied
             }
             return (command == .play && !media.paused) || (command == .pause && media.paused) ? .applied : .failed
-        case "staleContext": return .staleContext
+        case "staleContext":
+            if let media = response.snapshot {
+                let finalURL = try currentURL(expected.tab, deadline: deadline, isAuthorized: isAuthorized)
+                try validate(media, url: finalURL)
+                if media.identity != expected.media.identity || media.videoID != expected.media.videoID {
+                    throw MacChromeBackendError.retiredItem
+                }
+            }
+            return .staleContext
         case "unsupported": return .unsupported
-        case "noMedia": return .noActiveMedia
+        case "noMedia": throw MacChromeBackendError.retiredItem
         default: return .failed
         }
     }
