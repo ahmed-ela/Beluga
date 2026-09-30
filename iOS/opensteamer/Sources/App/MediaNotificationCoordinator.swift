@@ -90,6 +90,17 @@ final class MediaNotificationCoordinator: NSObject, UNUserNotificationCenterDele
     private func publishCurrent() -> Bool {
         guard let state, let store else { return false }
         let now = ProcessInfo.processInfo.systemUptime
+        do {
+            try store.publishSnapshot(snapshot(for: state, at: now))
+            lastPublished = now
+            return true
+        } catch {
+            // A busy or unavailable shared container never weakens the live command gate.
+            return false
+        }
+    }
+
+    private func snapshot(for state: WebRTCReceivedRemoteMediaState, at now: Double) -> MediaNotificationSnapshot {
         let entries = state.update.allItems.map { item in
             MediaNotificationEntry(contextID: item.contextID, sourceName: item.sourceName,
                 title: item.title, isPlaying: item.playbackState == .playing,
@@ -97,17 +108,13 @@ final class MediaNotificationCoordinator: NSObject, UNUserNotificationCenterDele
                 capabilities: .init(canPlay: item.capabilities.canPlay,
                     canPause: item.capabilities.canPause,
                     canSeekBackward: item.capabilities.canSeekBackward,
-                    canSeekForward: item.capabilities.canSeekForward))
+                    canSeekForward: item.capabilities.canSeekForward,
+                    canNext: item.capabilities.canSkipForward,
+                    canPrevious: item.capabilities.canSkipBackward,
+                    canSeekToPosition: item.capabilities.canSeekToPosition))
         }
-        do {
-            try store.publishSnapshot(.init(epoch: epoch, revision: state.update.revision,
-                publishedAtUptime: now, ready: true, entries: entries))
-            lastPublished = now
-            return true
-        } catch {
-            // A busy or unavailable shared container never weakens the live command gate.
-            return false
-        }
+        return .init(epoch: epoch, revision: state.update.revision,
+                     publishedAtUptime: now, ready: true, entries: entries)
     }
 
     func pollOnce() {
@@ -126,9 +133,14 @@ final class MediaNotificationCoordinator: NSObject, UNUserNotificationCenterDele
         }
         if now - lastPublished >= 1, !publishCurrent() { return }
         ensureNotification()
-        guard let request = try? store.claimPendingRequest(epoch: epoch, now: now) else { return }
-        guard let state, request.epoch == epoch, request.revision <= state.update.revision,
-              request.deadlineUptime > now, let dispatch else {
+        // Heartbeat publication samples a later uptime. Claim against a fresh clock so that
+        // this process's new snapshot cannot appear future-dated; the request deadline is fixed.
+        let claimTime = ProcessInfo.processInfo.systemUptime
+        guard let request = try? store.claimPendingRequest(epoch: epoch, now: claimTime) else { return }
+        let dispatchTime = ProcessInfo.processInfo.systemUptime
+        guard let state,
+              request.isAdmitted(by: snapshot(for: state, at: dispatchTime), at: dispatchTime),
+              let dispatch else {
             finish(request, result: .stale)
             return
         }

@@ -562,6 +562,31 @@ and production browser-script mutations. Legacy hosts must keep the scrubber dis
 iOS chooses the system player's visible transport layout; registered commands and
 simulator tests do not prove simultaneous buttons or physical locked-screen scrubbing.
 
+The expanded Beluga notification must expose distinct previous/next, backward/forward
+30 seconds and play/pause buttons with a draggable timeline when the exact selected
+item advertises a finite seekable timeline. A drag is preview-only until release:
+capture its epoch/context/duration, reject stale or replaced authority and submit at
+most one bounded absolute-position intent. Hiding the extension, retiring selection,
+losing fresh state or changing the timeline cancels the draft without retargeting.
+The mailbox and deferred app dispatch must revalidate capability, payload and the
+original intent deadline; a queued intent may not acquire a fresh lifetime. Missing
+new capabilities from old snapshots decode disabled, and non-seek actions reject a
+position payload. Acknowledgement must reflect actual host execution, not optimistic
+slider or playback state.
+
+Run the real simulator notification extension and native WebRTC loopback oracle for
+the five-button layout and a real thumb drag. Require one position-bearing host
+receipt, returned timeline agreement, exact next/previous receipts and explicit
+source reselection after each context retirement. Keep the existing five-command
+source-switch test and failed same-notification reopening evidence separate. This
+isolated test does not prove a real YouTube effect or physical locked-screen behavior.
+
+Exercise a pending command on the same poll that refreshes the mailbox heartbeat.
+Claim-time freshness must use a timestamp sampled after publication, not the earlier
+poll-start time; otherwise a valid new snapshot appears to come from the future.
+Require one dispatch and durable at-most-once consumption without extending the
+original command deadline or allowing future-dated snapshots.
+
 Before shipping a change to Now Playing controls, require deterministic coverage of
 negotiation with legacy peers, the 4 KiB wire bound, exact current-source command
 admission, at-most-once Next/Previous execution, and fresh state after startup and

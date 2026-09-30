@@ -75,7 +75,7 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
           BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
           DEVELOPMENT_TEAM: MSMG8CJLB3
-          CURRENT_PROJECT_VERSION: 89
+          CURRENT_PROJECT_VERSION: 90
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:
@@ -113,7 +113,7 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer.MediaNotificationContent
           BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
           DEVELOPMENT_TEAM: MSMG8CJLB3
-          CURRENT_PROJECT_VERSION: 89
+          CURRENT_PROJECT_VERSION: 90
   opensteamerTests:
     type: bundle.unit-test
     platform: iOS

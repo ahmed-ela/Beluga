@@ -51,18 +51,34 @@ struct RemoteMediaCommandDispatch: Sendable {
     let authorization: WebRTCControlAuthorization
     let contextID: String?
     let positionSeconds: TimeInterval?
+    let deadlineUptime: TimeInterval?
+    let expectedDurationSeconds: TimeInterval?
     let completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)?
 
     init(command: WebRTCRemoteMediaCommand, state: WebRTCReceivedRemoteMediaState,
          authorization: WebRTCControlAuthorization, contextID: String? = nil,
          positionSeconds: TimeInterval? = nil,
+         deadlineUptime: TimeInterval? = nil,
+         expectedDurationSeconds: TimeInterval? = nil,
          completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)? = nil) {
         self.command = command
         self.state = state
         self.authorization = authorization
         self.contextID = contextID
         self.positionSeconds = positionSeconds
+        self.deadlineUptime = deadlineUptime
+        self.expectedDurationSeconds = expectedDurationSeconds
         self.completion = completion
+    }
+
+    func isWithinDeadline(at now: TimeInterval) -> Bool {
+        Self.isWithinDeadline(deadlineUptime, at: now)
+    }
+
+    static func isWithinDeadline(_ deadline: TimeInterval?, at now: TimeInterval) -> Bool {
+        guard let deadline else { return true }
+        return now.isFinite && now >= 0 && deadline.isFinite && deadline > now
+            && deadline - now <= MediaNotificationRequest.maximumLifetime
     }
 }
 
@@ -189,13 +205,23 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
 
     func dispatch(_ intent: RemoteMediaCommandIntent, contextID: String?,
                   observedRevision: UInt64?,
+                  deadlineUptime: TimeInterval? = nil,
+                  expectedDurationSeconds: TimeInterval? = nil,
                   completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)?) -> Bool {
         let admitted: (RemoteMediaCommandSender, RemoteMediaCommandDispatch)? = lock.withLock {
-            guard transportIsReady,
+            guard RemoteMediaCommandDispatch.isWithinDeadline(deadlineUptime,
+                      at: ProcessInfo.processInfo.systemUptime),
+                  transportIsReady,
                   let state,
                   observedRevision.map({ $0 > 0 && $0 <= state.update.revision }) ?? true,
                   let item = contextID.map({ state.update.item(contextID: $0) }) ?? state.update.item,
                   let command = intent.permittedCommand(for: item),
+                  expectedDurationSeconds.map({ expected in
+                      guard case .seekToPosition(let position) = intent else { return false }
+                      return expected.isFinite && expected > 0
+                          && expected <= 31_536_000 && item.duration == expected
+                          && position <= expected
+                  }) ?? true,
                   state.update.revision > 0,
                   let authorization,
                   authorization.isValid,
@@ -206,6 +232,8 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
                 authorization: authorization,
                 contextID: item.contextID,
                 positionSeconds: intent.positionSeconds(for: item),
+                deadlineUptime: deadlineUptime,
+                expectedDurationSeconds: expectedDurationSeconds,
                 completion: completion
             ))
         }
@@ -489,9 +517,17 @@ final class BackgroundPlaybackCoordinator {
         let gate = commandGate
         mediaNotifications?.update(state: remoteMediaState, ready: remoteMediaTransportIsReady) {
             request, completion in
-            guard let command = WebRTCRemoteMediaCommand(rawValue: request.action.rawValue) else { return false }
-            return gate.dispatch(.explicit(command), contextID: request.contextID,
-                                 observedRevision: request.revision, completion: completion)
+            guard request.isValid(at: ProcessInfo.processInfo.systemUptime),
+                  let command = WebRTCRemoteMediaCommand(rawValue: request.action.rawValue) else { return false }
+            let intent: RemoteMediaCommandIntent
+            if command == .seekToPosition {
+                guard let position = request.positionSeconds else { return false }
+                intent = .seekToPosition(position)
+            } else { intent = .explicit(command) }
+            return gate.dispatch(intent, contextID: request.contextID,
+                                 observedRevision: request.revision,
+                                 deadlineUptime: request.deadlineUptime,
+                                 expectedDurationSeconds: request.expectedDurationSeconds, completion: completion)
         }
     }
 

@@ -1194,7 +1194,8 @@ enum RemoteMediaCommandAdmission {
         contextID: String,
         observedRevision: UInt64,
         currentUpdate: WebRTCRemoteMediaStateUpdate?,
-        positionSeconds: TimeInterval? = nil
+        positionSeconds: TimeInterval? = nil,
+        expectedDurationSeconds: TimeInterval? = nil
     ) -> Bool {
         guard observedRevision > 0,
               let currentUpdate,
@@ -1209,7 +1210,11 @@ enum RemoteMediaCommandAdmission {
         if command == .seekToPosition {
             guard let elapsed = item.elapsedTime, elapsed.isFinite, elapsed >= 0,
                   let duration = item.duration, duration.isFinite,
-                  duration > 0, duration <= 31_536_000 else { return false }
+                  duration > 0, duration <= 31_536_000,
+                  let positionSeconds, positionSeconds <= duration else { return false }
+            if let expectedDurationSeconds, expectedDurationSeconds != duration { return false }
+        } else if expectedDurationSeconds != nil {
+            return false
         }
         return true
     }
@@ -12936,7 +12941,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ dispatch: RemoteMediaCommandDispatch
     ) -> Task<Void, Never>? {
         let command = dispatch.command
-        guard dispatch.authorization.isValid,
+        guard dispatch.isWithinDeadline(at: ProcessInfo.processInfo.systemUptime),
+              dispatch.authorization.isValid,
               let contextID = dispatch.contextID ?? dispatch.state.update.item?.contextID,
               let currentRemoteMediaState,
               currentRemoteMediaState.isSameNegotiation(as: dispatch.state),
@@ -12953,7 +12959,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 contextID: contextID,
                 observedRevision: dispatch.state.update.revision,
                 currentUpdate: currentRemoteMediaUpdate,
-                positionSeconds: dispatch.positionSeconds
+                positionSeconds: dispatch.positionSeconds,
+                expectedDurationSeconds: dispatch.expectedDurationSeconds
               ) else {
             dispatch.completion?(.staleContext)
             reconcileRemoteMediaCommandAvailability()
@@ -12963,6 +12970,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         let sourceTransportGeneration = transportAuthorizationGeneration
         return Task { @MainActor [weak self, weak sourcePeer] in
             guard let self, let sourcePeer,
+                  dispatch.isWithinDeadline(at: ProcessInfo.processInfo.systemUptime),
                   dispatch.authorization.isValid,
                   self.peer === sourcePeer,
                   self.sessionGeneration == sourceGeneration,
@@ -12982,7 +12990,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                     contextID: contextID,
                     observedRevision: dispatch.state.update.revision,
                     currentUpdate: self.currentRemoteMediaUpdate,
-                    positionSeconds: dispatch.positionSeconds
+                    positionSeconds: dispatch.positionSeconds,
+                    expectedDurationSeconds: dispatch.expectedDurationSeconds
                   ) else {
                 dispatch.completion?(.staleContext)
                 return
@@ -13000,6 +13009,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                         authorization: dispatch.authorization,
                         contextID: contextID,
                         positionSeconds: dispatch.positionSeconds,
+                        deadlineUptime: dispatch.deadlineUptime,
+                        expectedDurationSeconds: dispatch.expectedDurationSeconds,
                         acknowledgementHandler: dispatch.completion
                     )
                 }
@@ -13010,6 +13021,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                     authorization: dispatch.authorization,
                     contextID: contextID,
                     positionSeconds: dispatch.positionSeconds,
+                    deadlineUptime: dispatch.deadlineUptime,
+                    expectedDurationSeconds: dispatch.expectedDurationSeconds,
                     acknowledgementHandler: dispatch.completion
                 )
                 #endif

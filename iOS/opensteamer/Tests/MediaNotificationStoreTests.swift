@@ -120,6 +120,78 @@ final class MediaNotificationStoreTests: XCTestCase {
         XCTAssertNil(try store.claimPendingRequest(epoch: epoch, now: now))
     }
 
+    func testLegacyCapabilitiesAndRequestsDecodeWithNewAuthorityDisabled() throws {
+        let legacy = Data(#"{"canPlay":true,"canPause":false,"canSeekBackward":true,"canSeekForward":true}"#.utf8)
+        let decoded = try JSONDecoder().decode(MediaNotificationCapabilities.self, from: legacy)
+        XCTAssertFalse(decoded.canNext)
+        XCTAssertFalse(decoded.canPrevious)
+        XCTAssertFalse(decoded.canSeekToPosition)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(request())) as? [String: Any])
+        object.removeValue(forKey: "positionSeconds")
+        let oldRequest = try JSONDecoder().decode(MediaNotificationRequest.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(oldRequest.positionSeconds)
+        XCTAssertNil(oldRequest.expectedDurationSeconds)
+        XCTAssertTrue(oldRequest.isValid(at: now))
+        object["action"] = "unknown-action"
+        XCTAssertThrowsError(try JSONDecoder().decode(MediaNotificationRequest.self,
+            from: JSONSerialization.data(withJSONObject: object)))
+        let malformed = Data(#"{"canPlay":true,"canPause":false,"canSeekBackward":true,"canSeekForward":true,"canNext":"true"}"#.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(MediaNotificationCapabilities.self, from: malformed))
+    }
+
+    func testAbsoluteSeekRequiresBoundedPayloadAndCurrentTimeline() {
+        let current = snapshot(entries: [entry(expanded: true)])
+        for position: Double? in [nil, .nan, .infinity, -.infinity, -1, 31_536_001, 900.001] {
+            XCTAssertFalse(request(action: .seekToPosition, position: position).isAdmitted(by: current, at: now))
+        }
+        for position in [0.0, 47.125, 900] {
+            XCTAssertTrue(request(action: .seekToPosition, position: position).isAdmitted(by: current, at: now))
+        }
+        for action in [MediaNotificationAction.play, .pause, .nextTrack, .previousTrack, .seekBackward30, .seekForward30] {
+            XCTAssertFalse(request(action: action, position: 47.125).isValid(at: now))
+        }
+        let seek = request(action: .seekToPosition, position: 47.125)
+        for duration: Double? in [nil, 0, 20] {
+            XCTAssertFalse(seek.isAdmitted(by: snapshot(entries: [entry(expanded: true, duration: duration)]), at: now))
+        }
+        XCTAssertFalse(seek.isAdmitted(by: snapshot(entries: [entry(expanded: true, position: nil)]), at: now))
+        XCTAssertFalse(seek.isAdmitted(by: snapshot(), at: now))
+        for expectedDuration: Double? in [nil, .nan, .infinity, 0, -1, 31_536_001] {
+            let malformed = MediaNotificationRequest(id: UUID(), epoch: epoch, revision: 1, contextID: "A",
+                action: .seekToPosition, deadlineUptime: now + 2, positionSeconds: 47.125,
+                expectedDurationSeconds: expectedDuration)
+            XCTAssertFalse(malformed.isValid(at: now))
+        }
+    }
+
+    func testTrackAndAbsoluteSeekCommandsRemainAtMostOnceAcrossMailboxInstances() throws {
+        let store = MediaNotificationStore(directoryURL: directory)
+        try store.publishSnapshot(snapshot(entries: [entry(expanded: true)]))
+        for action in [MediaNotificationAction.nextTrack, .previousTrack, .seekToPosition] {
+            let command = request(action: action, position: action == .seekToPosition ? 47.125 : nil)
+            XCTAssertTrue(try store.submit(command, now: now))
+            XCTAssertEqual(try store.claimPendingRequest(epoch: epoch, now: now), command)
+            XCTAssertNil(try MediaNotificationStore(directoryURL: directory).claimPendingRequest(epoch: epoch, now: now))
+            XCTAssertTrue(try store.acknowledge(.init(id: command.id, epoch: epoch, result: .applied)))
+            XCTAssertFalse(try store.submit(command, now: now))
+        }
+    }
+
+    func testQueuedSeekRevalidatesTimelineAndCapabilitiesAtClaim() throws {
+        for replacement in [entry(expanded: true, duration: 600), entry(expanded: true, duration: 1_000),
+                            entry(expanded: true, duration: 20), entry(), entry(context: "retired", expanded: true)] {
+            let store = MediaNotificationStore(directoryURL: directory)
+            let testEpoch = UUID()
+            try store.publishSnapshot(snapshot(epoch: testEpoch, entries: [entry(expanded: true)]))
+            let command = request(epoch: testEpoch, action: .seekToPosition, position: 47.125)
+            XCTAssertTrue(try store.submit(command, now: now))
+            try store.publishSnapshot(snapshot(epoch: testEpoch, revision: 2, entries: [replacement]))
+            XCTAssertNil(try store.claimPendingRequest(epoch: testEpoch, now: now))
+            XCTAssertEqual(try store.acknowledgement(for: command)?.result, .stale)
+        }
+    }
+
     func testNonblockingLockRefusesConcurrentOwner() throws {
         let store = MediaNotificationStore(directoryURL: directory)
         try store.publishSnapshot(snapshot())
@@ -219,10 +291,12 @@ final class MediaNotificationStoreTests: XCTestCase {
         XCTAssertNil(try second.claimPendingRequest(epoch: epoch, now: now))
     }
 
-    private func entry(context: String = "A", playing: Bool = false) -> MediaNotificationEntry {
+    private func entry(context: String = "A", playing: Bool = false, expanded: Bool = false,
+                       position: Double? = 120, duration: Double? = 900) -> MediaNotificationEntry {
         .init(contextID: context, sourceName: "Player", title: "Track", isPlaying: playing,
-              position: 120, duration: 900,
-              capabilities: .init(canPlay: !playing, canPause: playing, canSeekBackward: true, canSeekForward: true))
+              position: position, duration: duration,
+              capabilities: .init(canPlay: !playing, canPause: playing, canSeekBackward: true, canSeekForward: true,
+                                  canNext: expanded, canPrevious: expanded, canSeekToPosition: expanded))
     }
 
     private func snapshot(epoch: UUID? = nil, revision: UInt64 = 1, time: Double? = nil,
@@ -232,9 +306,11 @@ final class MediaNotificationStoreTests: XCTestCase {
     }
 
     private func request(epoch: UUID? = nil, revision: UInt64 = 1, context: String = "A",
-                         action: MediaNotificationAction = .seekForward30, deadline: Double? = nil) -> MediaNotificationRequest {
+                         action: MediaNotificationAction = .seekForward30, deadline: Double? = nil,
+                         position: Double? = nil) -> MediaNotificationRequest {
         .init(id: UUID(), epoch: epoch ?? self.epoch, revision: revision, contextID: context,
-              action: action, deadlineUptime: deadline ?? now + 2)
+              action: action, deadlineUptime: deadline ?? now + 2, positionSeconds: position,
+              expectedDurationSeconds: action == .seekToPosition ? 900 : nil)
     }
 }
 

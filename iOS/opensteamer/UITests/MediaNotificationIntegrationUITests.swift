@@ -31,6 +31,57 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
         wait(NSPredicate(format: "label == %@", "Stopped"), on: app.staticTexts["notificationFixtureStatus"])
     }
 
+    func testTimelineDragAndTrackButtonsReachExactHostWithoutRetargeting() throws {
+        try openFreshNotification()
+        let slider = springboard.sliders["mediaPlaybackPosition"]
+        XCTAssertTrue(slider.waitForExistence(timeout: 3), springboard.debugDescription)
+        wait(NSPredicate(format: "hittable == true AND enabled == true"), on: slider)
+        for label in ["Previous track", "Backward 30 seconds", "Pause", "Forward 30 seconds", "Next track"] {
+            XCTAssertTrue(springboard.buttons[label].isHittable, "Missing visible control: \(label)")
+        }
+        // Touch the real initial thumb and release once; no accessibility set-value shortcut.
+        let width = slider.frame.width
+        let start = slider.coordinate(withNormalizedOffset: .init(dx: (16 + (120.0 / 900) * (width - 32)) / width, dy: 0.5))
+        let end = slider.coordinate(withNormalizedOffset: .init(dx: (16 + 0.6 * (width - 32)) / width, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        wait(NSPredicate(format: "label == %@", "Updated on your Mac."),
+             on: springboard.staticTexts["mediaControlsStatus"])
+        wait(NSPredicate(format: "value != %@", "2:00 of 15:00"), on: slider)
+        let returnedPosition = try XCTUnwrap(slider.value as? String)
+        let positionText = try XCTUnwrap(returnedPosition.components(separatedBy: " of ").first)
+        let timeParts = positionText.split(separator: ":").compactMap { Double($0) }
+        XCTAssertEqual(timeParts.count, 2, returnedPosition)
+        let shownSeconds = timeParts[0] * 60 + timeParts[1]
+        XCTAssertGreaterThan(shownSeconds, 400, "Drag did not advance the video timeline")
+        XCTAssertLessThan(shownSeconds, 700)
+        capture("timeline-after-real-drag-and-host-ack")
+
+        try command("Next track")
+        XCTAssertFalse(slider.exists, "A retired selection must not retarget its slider")
+        let second = springboard.buttons["Browser, Fixture A • Track 2, Playing"]
+        XCTAssertTrue(second.waitForExistence(timeout: 3), springboard.debugDescription)
+        second.tap()
+        try command("Previous track")
+        XCTAssertFalse(slider.exists, "A second track transition must retire selection again")
+        XCTAssertTrue(springboard.buttons["Browser, Fixture A • Track 3, Playing"].waitForExistence(timeout: 3))
+        capture("track-change-requires-explicit-reselection")
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        let evidence = app.staticTexts["notificationFixtureEvidence"]
+        wait(NSPredicate(format: "label CONTAINS %@", "commands=3;"), on: evidence)
+        let receiptText = try XCTUnwrap(evidence.label.components(separatedBy: ";received=").last)
+        let receipts = receiptText.components(separatedBy: ",")
+        XCTAssertEqual(receipts.count, 3, evidence.label)
+        XCTAssertTrue(receipts[0].hasPrefix("A:seekToPosition@"), evidence.label)
+        let hostPosition = try XCTUnwrap(Double(receipts[0].components(separatedBy: "@").last ?? ""))
+        XCTAssertEqual(floor(hostPosition), shownSeconds, "The UI must show the actual fractional host seek readback")
+        XCTAssertEqual(Array(receipts.dropFirst()), ["A:nextTrack", "A:previousTrack"])
+        XCTAssertTrue(evidence.label.contains("A=playing:0;B=paused:240;"), evidence.label)
+        app.buttons["Stop local peers"].tap()
+        wait(NSPredicate(format: "label == %@", "Stopped"), on: app.staticTexts["notificationFixtureStatus"])
+    }
+
     func testSameDeliveredNotificationReopensWithoutRescheduling() throws {
         try openFreshNotification()
         try exerciseControls()
@@ -106,8 +157,10 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
         // Wait for an observed completion after one tap. Exact host receipts below reject a
         // missed, duplicate, wrong-source, optimistic or unacknowledged UI transition.
         let status = springboard.staticTexts["mediaControlsStatus"]
-        wait(NSPredicate(format: "label == %@", "Updated on your Mac."), on: status)
-        wait(NSPredicate(format: "enabled == true"), on: springboard.buttons["Forward 30 seconds"])
+        wait(NSPredicate(format: "label BEGINSWITH %@", "Updated on your Mac."), on: status)
+        if label != "Next track" && label != "Previous track" {
+            wait(NSPredicate(format: "enabled == true"), on: springboard.buttons["Forward 30 seconds"])
+        }
     }
 
     private func wait(_ predicate: NSPredicate, on element: XCUIElement, timeout: TimeInterval = 5) {

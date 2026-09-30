@@ -26,6 +26,8 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     private var bPlaying = false
     private var aPosition: Double = 120
     private var bPosition: Double = 240
+    private var aTrack = 1
+    private var bTrack = 1
     private var commands: [String] = []
 
     func start() async {
@@ -41,11 +43,17 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
             self.viewer = viewer
             gate.claim(owner: owner) { dispatch in
                 Task {
+                    guard dispatch.isWithinDeadline(at: ProcessInfo.processInfo.systemUptime) else {
+                        dispatch.completion?(.staleContext)
+                        return
+                    }
                     do {
                         _ = try await viewer.requestRemoteMediaCommand(dispatch.command,
                             state: dispatch.state, authorization: dispatch.authorization,
                             contextID: dispatch.contextID,
                             positionSeconds: dispatch.positionSeconds,
+                            deadlineUptime: dispatch.deadlineUptime,
+                            expectedDurationSeconds: dispatch.expectedDurationSeconds,
                             acknowledgementHandler: dispatch.completion)
                     } catch { dispatch.completion?(.failed) }
                 }
@@ -110,9 +118,17 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
         guard armed else { return }
         let gate = gate
         notifications.update(state: state, ready: ready) { request, completion in
-            guard let command = WebRTCRemoteMediaCommand(rawValue: request.action.rawValue) else { return false }
-            return gate.dispatch(.explicit(command), contextID: request.contextID,
-                                 observedRevision: request.revision, completion: completion)
+            guard request.isValid(at: ProcessInfo.processInfo.systemUptime),
+                  let command = WebRTCRemoteMediaCommand(rawValue: request.action.rawValue) else { return false }
+            let intent: RemoteMediaCommandIntent
+            if command == .seekToPosition {
+                guard let position = request.positionSeconds else { return false }
+                intent = .seekToPosition(position)
+            } else { intent = .explicit(command) }
+            return gate.dispatch(intent, contextID: request.contextID,
+                                 observedRevision: request.revision,
+                                 deadlineUptime: request.deadlineUptime,
+                                 expectedDurationSeconds: request.expectedDurationSeconds, completion: completion)
         }
     }
 
@@ -124,40 +140,57 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     }
 
     private var update: WebRTCRemoteMediaStateUpdate {
-        func item(_ context: String, _ source: String, _ playing: Bool, _ position: Double) -> WebRTCRemoteMediaItem {
-            .init(contextID: context, sourceName: source, title: "Fixture \(context)",
+        func item(_ sourceID: String, _ source: String, _ playing: Bool, _ position: Double, _ track: Int) -> WebRTCRemoteMediaItem {
+            .init(contextID: Self.contextID(sourceID, track: track), sourceName: source,
+                  title: track == 1 ? "Fixture \(sourceID)" : "Fixture \(sourceID) • Track \(track)",
                   playbackState: playing ? .playing : .paused, elapsedTime: position,
                   duration: 900, playbackRate: playing ? 1 : 0,
                   capabilities: .init(canPlay: true, canPause: true,
-                      canSkipForward: false, canSkipBackward: false,
-                      canSeekForward: true, canSeekBackward: true))
+                      canSkipForward: true, canSkipBackward: true,
+                      canSeekForward: true, canSeekBackward: true, canSeekToPosition: true))
         }
-        return .init(revision: revision, item: item("A", "Browser", aPlaying, aPosition),
-                     additionalItems: [item("B", "Music", bPlaying, bPosition)])
+        return .init(revision: revision, item: item("A", "Browser", aPlaying, aPosition, aTrack),
+                     additionalItems: [item("B", "Music", bPlaying, bPosition, bTrack)])
+    }
+
+    private static func contextID(_ sourceID: String, track: Int) -> String {
+        track == 1 ? sourceID : "\(sourceID)-track\(track)"
     }
 
     private func applyOnFixtureHost(_ command: WebRTCReceivedRemoteMediaCommand) async throws {
         // A real asynchronous host boundary: the UI cannot authorize an optimistic local update.
         try await Task.sleep(for: .milliseconds(120))
         let request = command.request
-        guard request.observedRevision == revision, ["A", "B"].contains(request.contextID) else {
+        guard request.observedRevision == revision,
+              [Self.contextID("A", track: aTrack), Self.contextID("B", track: bTrack)].contains(request.contextID) else {
             try await host?.acknowledgeRemoteMediaCommand(command, result: .staleContext)
             return
         }
-        var playing = request.contextID == "A" ? aPlaying : bPlaying
-        var position = request.contextID == "A" ? aPosition : bPosition
+        let sourceID = request.contextID == Self.contextID("A", track: aTrack) ? "A" : "B"
+        var playing = sourceID == "A" ? aPlaying : bPlaying
+        var position = sourceID == "A" ? aPosition : bPosition
         switch request.command {
         case .play: playing = true
         case .pause: playing = false
         case .seekBackward30: position = max(0, position - 30)
         case .seekForward30: position = min(900, position + 30)
-        default:
-            try await host?.acknowledgeRemoteMediaCommand(command, result: .unsupported)
-            return
+        case .seekToPosition:
+            guard let requested = request.positionSeconds, requested.isFinite,
+                  requested >= 0, requested <= 900 else {
+                try await host?.acknowledgeRemoteMediaCommand(command, result: .unsupported)
+                return
+            }
+            position = requested
+        case .nextTrack, .previousTrack:
+            // Each track transition retires the old context, including Previous back to an
+            // earlier track; a stale card must never acquire authority through an ABA identity.
+            if sourceID == "A" { aTrack += 1 } else { bTrack += 1 }
+            position = 0
         }
-        if request.contextID == "A" { aPlaying = playing; aPosition = position }
+        if sourceID == "A" { aPlaying = playing; aPosition = position }
         else { bPlaying = playing; bPosition = position }
-        commands.append("\(request.contextID):\(request.command.rawValue)")
+        let positionReceipt = request.command == .seekToPosition ? "@\(position)" : ""
+        commands.append("\(sourceID):\(request.command.rawValue)\(positionReceipt)")
         revision += 1
         try await host?.sendRemoteMediaState(update)
         try await host?.acknowledgeRemoteMediaCommand(command, result: .applied)

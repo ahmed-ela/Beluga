@@ -96,6 +96,100 @@ final class MediaNotificationCoordinatorTests: XCTestCase {
         coordinator.invalidate()
     }
 
+    func testExpandedCapabilitiesPublishAndCurrentStateRejectsQueuedSeekAfterFailedPublish() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaNotificationStore(directoryURL: directory)
+        let coordinator = MediaNotificationCoordinator(store: store,
+            allowsNotificationDelivery: false, automaticallyPolls: false)
+        let initial = makeState(expanded: true)
+        var dispatchCount = 0
+        coordinator.update(state: initial, ready: true) { _, _ in dispatchCount += 1; return true }
+        let snapshot = try XCTUnwrap(store.readSnapshot())
+        let capabilities = try XCTUnwrap(snapshot.entries.last?.capabilities)
+        XCTAssertTrue(capabilities.canNext)
+        XCTAssertTrue(capabilities.canPrevious)
+        XCTAssertTrue(capabilities.canSeekToPosition)
+        let request = MediaNotificationRequest(id: UUID(), epoch: snapshot.epoch, revision: snapshot.revision,
+            contextID: "music", action: .seekToPosition,
+            deadlineUptime: ProcessInfo.processInfo.systemUptime + 2, positionSeconds: 47.125,
+            expectedDurationSeconds: 500)
+        XCTAssertTrue(try store.submit(request))
+        let lock = Darwin.open(directory.appendingPathComponent("mailbox.lock").path, O_RDWR)
+        XCTAssertGreaterThanOrEqual(lock, 0)
+        defer { Darwin.close(lock) }
+        XCTAssertEqual(flock(lock, LOCK_EX | LOCK_NB), 0)
+        coordinator.update(state: makeState(revision: 2, authorization: initial.authorization,
+            expanded: true, duration: 20), ready: true) { _, _ in dispatchCount += 1; return true }
+        XCTAssertEqual(flock(lock, LOCK_UN), 0)
+        coordinator.pollOnce()
+        XCTAssertEqual(dispatchCount, 0, "A stale mailbox is never current command authority")
+        XCTAssertEqual(try store.acknowledgement(for: request)?.result, .stale)
+        coordinator.invalidate()
+    }
+
+    func testHeartbeatRefreshDoesNotMakeFreshSeekAppearFromFuture() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaNotificationStore(directoryURL: directory)
+        let coordinator = MediaNotificationCoordinator(store: store,
+            allowsNotificationDelivery: false, automaticallyPolls: false)
+        var dispatched: [MediaNotificationRequest] = []
+        coordinator.update(state: makeState(expanded: true), ready: true) { request, _ in
+            dispatched.append(request)
+            return true
+        }
+        defer { coordinator.invalidate() }
+        let snapshot = try XCTUnwrap(store.readSnapshot())
+        // Force pollOnce's heartbeat branch, while keeping this catalog within its five-second
+        // freshness window. Give the request its full lifetime only after this wait.
+        Thread.sleep(forTimeInterval: 1.05)
+        let now = ProcessInfo.processInfo.systemUptime
+        let request = MediaNotificationRequest(id: UUID(), epoch: snapshot.epoch,
+            revision: snapshot.revision, contextID: "music", action: .seekToPosition,
+            deadlineUptime: now + 2, positionSeconds: 47.125, expectedDurationSeconds: 500)
+        XCTAssertTrue(try store.submit(request, now: now))
+        coordinator.pollOnce()
+        let refreshed = try XCTUnwrap(store.readSnapshot())
+        XCTAssertGreaterThan(refreshed.publishedAtUptime, snapshot.publishedAtUptime)
+        XCTAssertEqual(dispatched, [request], "A freshly published heartbeat must not be future-dated relative to its claim")
+        XCTAssertEqual(try store.acknowledgement(for: request)?.result, .pending)
+        coordinator.pollOnce()
+        XCTAssertEqual(dispatched, [request], "A second poll must not replay the durably claimed seek")
+        XCTAssertEqual(try store.acknowledgement(for: request)?.result, .pending)
+    }
+
+    func testNotificationDeadlineIsBoundedAndSurvivesGateAdmission() throws {
+        let gate = RemoteMediaCommandDispatchGate()
+        let owner = RemoteMediaCommandOwnerToken()
+        let sent = DispatchCapture()
+        gate.claim(owner: owner) { sent.append($0) }
+        gate.update(owner: owner, state: makeState(expanded: true), transportIsReady: true)
+        let now = ProcessInfo.processInfo.systemUptime
+        for deadline in [now - 1, .nan, .infinity, now + 60] {
+            XCTAssertFalse(gate.dispatch(.explicit(.nextTrack), contextID: "music", observedRevision: 1,
+                deadlineUptime: deadline, completion: nil))
+        }
+        let deadline = now + 2
+        XCTAssertTrue(gate.dispatch(.seekToPosition(47.125), contextID: "music", observedRevision: 1,
+            deadlineUptime: deadline, expectedDurationSeconds: 500, completion: nil))
+        let dispatch = try XCTUnwrap(sent.values.first)
+        XCTAssertEqual(dispatch.deadlineUptime, deadline)
+        XCTAssertEqual(dispatch.positionSeconds, 47.125)
+        XCTAssertEqual(dispatch.expectedDurationSeconds, 500)
+        XCTAssertFalse(gate.dispatch(.seekToPosition(47.125), contextID: "music", observedRevision: 1,
+            deadlineUptime: deadline, expectedDurationSeconds: 300, completion: nil))
+        XCTAssertFalse(gate.dispatch(.seekToPosition(700), contextID: "music", observedRevision: 1,
+            deadlineUptime: deadline, expectedDurationSeconds: 500, completion: nil),
+            "An exact notification seek must not clamp a malformed payload")
+        XCTAssertTrue(dispatch.isWithinDeadline(at: now))
+        XCTAssertFalse(dispatch.isWithinDeadline(at: deadline))
+        XCTAssertFalse(dispatch.isWithinDeadline(at: deadline + 1))
+        XCTAssertTrue(gate.dispatch(.explicit(.previousTrack), contextID: "music", observedRevision: 1, completion: nil))
+        XCTAssertNil(sent.values.last?.deadlineUptime, "Native controls retain their existing lifetime")
+        gate.release(owner: owner)
+    }
+
     func testExplicitUnknownContextNeverFallsBackToPrimaryAndFutureRevisionIsRejected() {
         let gate = RemoteMediaCommandDispatchGate()
         let owner = RemoteMediaCommandOwnerToken()
@@ -140,12 +234,14 @@ final class MediaNotificationCoordinatorTests: XCTestCase {
         coordinator.invalidate()
     }
 
-    private func makeState(revision: UInt64 = 1, authorization: WebRTCRemoteMediaAuthorization = .init()) -> WebRTCReceivedRemoteMediaState {
+    private func makeState(revision: UInt64 = 1, authorization: WebRTCRemoteMediaAuthorization = .init(),
+                           expanded: Bool = false, duration: Double = 500) -> WebRTCReceivedRemoteMediaState {
         func item(_ context: String) -> WebRTCRemoteMediaItem {
             .init(contextID: context, sourceName: context, title: "Track", playbackState: .playing,
-                  elapsedTime: 120, duration: 500, playbackRate: 1,
-                  capabilities: .init(canPlay: true, canPause: true, canSkipForward: false,
-                                      canSkipBackward: false, canSeekForward: true, canSeekBackward: true))
+                  elapsedTime: 120, duration: duration, playbackRate: 1,
+                  capabilities: .init(canPlay: true, canPause: true, canSkipForward: expanded,
+                                      canSkipBackward: expanded, canSeekForward: true, canSeekBackward: true,
+                                      canSeekToPosition: expanded))
         }
         return .init(envelope: .init(authorization: authorization,
             update: .init(revision: revision, item: item("browser"), additionalItems: [item("music")]), refreshID: nil))
@@ -267,8 +363,55 @@ final class NativeMediaSeekingTests: XCTestCase {
         XCTAssertFalse(permits(revision: 2))
         XCTAssertFalse(permits(position: nil))
         XCTAssertFalse(permits(position: .nan))
+        XCTAssertFalse(permits(position: 300.001), "A shorter current duration must not retarget a pending seek")
         XCTAssertFalse(permits(.play))
         XCTAssertTrue(permits(.play, position: nil))
+    }
+
+    func testNotificationDeadlineExpiresAcrossQueuedProductionSend() async throws {
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [], mediaTopology: .videoControlOnly))
+        let model = WorldwideSessionViewModel()
+        let current = state()
+        let sent = DispatchCapture()
+        model.debugInstallRemoteMediaCommandPathForTests(peer: peer, state: current) { sent.append($0) }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.05
+        let dispatch = RemoteMediaCommandDispatch(command: .seekToPosition, state: current,
+            authorization: WebRTCControlAuthorization(), contextID: "youtube-video",
+            positionSeconds: 47.125, deadlineUptime: deadline)
+        let task = try XCTUnwrap(model.debugEnqueueRemoteMediaCommandForTests(dispatch))
+        // Do not yield MainActor until the captured deadline has expired. The queued task
+        // cannot acquire fresh authority after this deterministic local queue boundary.
+        expireDeadlineWithoutYielding(deadline)
+        await task.value
+        XCTAssertTrue(sent.values.isEmpty)
+        XCTAssertNil(model.debugEnqueueRemoteMediaCommandForTests(dispatch))
+        model.disconnect()
+        _ = await peer.close()
+    }
+
+    func testCapturedDurationIsRecheckedAfterProductionActorQueue() async throws {
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [], mediaTopology: .videoControlOnly))
+        let model = WorldwideSessionViewModel()
+        let sent = DispatchCapture()
+        for duration in [100.0, 600.0] {
+            let current = state()
+            model.debugInstallRemoteMediaCommandPathForTests(peer: peer, state: current) { sent.append($0) }
+            let dispatch = RemoteMediaCommandDispatch(command: .seekToPosition, state: current,
+                authorization: WebRTCControlAuthorization(), contextID: "youtube-video", positionSeconds: 47.125,
+                deadlineUptime: ProcessInfo.processInfo.systemUptime + 2, expectedDurationSeconds: 300)
+            let task = try XCTUnwrap(model.debugEnqueueRemoteMediaCommandForTests(dispatch))
+            let replacement = WebRTCReceivedRemoteMediaState(envelope: .init(authorization: current.authorization,
+                update: state(revision: 2, duration: duration).update, refreshID: nil))
+            model.debugInstallRemoteMediaCommandPathForTests(peer: peer, state: replacement) { sent.append($0) }
+            await task.value
+        }
+        XCTAssertTrue(sent.values.isEmpty)
+        model.disconnect()
+        _ = await peer.close()
+    }
+
+    private func expireDeadlineWithoutYielding(_ deadline: TimeInterval) {
+        Thread.sleep(forTimeInterval: max(0, deadline - ProcessInfo.processInfo.systemUptime) + 0.001)
     }
 
     private func state(context: String = "youtube-video", revision: UInt64 = 1,

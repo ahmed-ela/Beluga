@@ -224,10 +224,46 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             let state = try XCTUnwrap(received.receivedStates.last)
             XCTAssertEqual(state.update.additionalItems.map(\.contextID), ["secondary"])
             XCTAssertNotEqual(state.update, oversized, "Oversized display metadata must be shortened before actual transport")
+            let rejectedResults = RemoteMediaCallbackResults()
+            for deadline in [ProcessInfo.processInfo.systemUptime - 1, .nan, .infinity,
+                             ProcessInfo.processInfo.systemUptime + 60] {
+                do {
+                    _ = try await viewer.requestRemoteMediaCommand(.seekToPosition, state: state,
+                        authorization: WebRTCControlAuthorization(), contextID: "secondary", positionSeconds: 47.125,
+                        deadlineUptime: deadline, acknowledgementHandler: { rejectedResults.append($0) })
+                    XCTFail("Expired or malformed local authority must not send")
+                } catch {
+                    XCTAssertEqual(error as? WebRTCTransportError, .controlAuthorizationRevoked)
+                }
+            }
+            let heldAuthorization = WebRTCControlAuthorization()
+            let lockHeld = XCTestExpectation(description: "presentation lock held across deadline")
+            let lockReleased = XCTestExpectation(description: "presentation lock released")
+            DispatchQueue.global().async {
+                try? heldAuthorization.withValidAuthorization {
+                    lockHeld.fulfill()
+                    Thread.sleep(forTimeInterval: 0.25)
+                }
+                lockReleased.fulfill()
+            }
+            await fulfillment(of: [lockHeld], timeout: 1)
+            do {
+                _ = try await viewer.requestRemoteMediaCommand(.seekToPosition, state: state,
+                    authorization: heldAuthorization, contextID: "secondary", positionSeconds: 47.125,
+                    deadlineUptime: ProcessInfo.processInfo.systemUptime + 0.05,
+                    expectedDurationSeconds: 200)
+                XCTFail("Local authority expiring while the send lock is held must not send")
+            } catch {
+                XCTAssertEqual(error as? WebRTCTransportError, .controlAuthorizationRevoked)
+            }
+            await fulfillment(of: [lockReleased], timeout: 1)
             let results = RemoteMediaCallbackResults()
             let id = try await viewer.requestRemoteMediaCommand(.seekToPosition, state: state,
                 authorization: WebRTCControlAuthorization(), contextID: "secondary", positionSeconds: 57.125,
+                deadlineUptime: ProcessInfo.processInfo.systemUptime + 2,
+                expectedDurationSeconds: 200,
                 acknowledgementHandler: { results.append($0) })
+            XCTAssertEqual(id, 1, "Rejected local authority must not consume a command ID")
             try await waitForRemoteMediaCondition { results.read() == [.applied] }
             let commands = await recorder.snapshot()
             let command = try XCTUnwrap(commands.receivedCommands.last)
@@ -245,6 +281,7 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             XCTAssertEqual(results.read(), [.applied])
             let final = await recorder.snapshot()
             XCTAssertEqual(final.commands.count, 1)
+            XCTAssertTrue(rejectedResults.read().isEmpty)
             let relativeResults = RemoteMediaCallbackResults()
             _ = try await viewer.requestRemoteMediaCommand(.seekForward30, state: state,
                 authorization: WebRTCControlAuthorization(), contextID: "secondary",
@@ -254,6 +291,24 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             XCTAssertEqual(relative.commands.count, 2)
             XCTAssertEqual(relative.commands.last?.command, .seekForward30)
             XCTAssertNil(relative.commands.last?.positionSeconds)
+            for (offset, duration) in [100.0, 300.0].enumerated() {
+                let secondary = WebRTCRemoteMediaItem(contextID: "secondary", sourceName: "secondary", title: "Track",
+                    playbackState: .playing, elapsedTime: 40, duration: duration, playbackRate: 1,
+                    capabilities: Self.catalogItem("secondary").capabilities)
+                try await host.sendRemoteMediaState(.init(revision: UInt64(offset + 2),
+                    item: Self.catalogItem("primary"), additionalItems: [secondary]))
+                try await waitForRemoteMediaCondition { await recorder.snapshot().states.count == offset + 2 }
+                do {
+                    _ = try await viewer.requestRemoteMediaCommand(.seekToPosition, state: state,
+                        authorization: WebRTCControlAuthorization(), contextID: "secondary", positionSeconds: 57.125,
+                        deadlineUptime: ProcessInfo.processInfo.systemUptime + 2, expectedDurationSeconds: 200)
+                    XCTFail("A newer same-context duration invalidates the captured timeline")
+                } catch {
+                    XCTAssertEqual(error as? WebRTCTransportError, .controlAuthorizationRevoked)
+                }
+            }
+            let afterTimelineChanges = await recorder.snapshot()
+            XCTAssertEqual(afterTimelineChanges.commands.count, 2)
         } catch {
             hostForwarder.cancel(); viewerForwarder.cancel()
             _ = await host.close(reason: .protocolError); _ = await viewer.close(reason: .protocolError)

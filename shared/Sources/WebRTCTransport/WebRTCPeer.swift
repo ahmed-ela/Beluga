@@ -3885,6 +3885,7 @@ public actor WebRTCPeer {
     #endif
     private var highestSentRemoteMediaStateRevision: UInt64 = 0
     private var highestReceivedRemoteMediaStateRevision: UInt64 = 0
+    private var latestReceivedRemoteMediaState: WebRTCReceivedRemoteMediaState?
     private var lastSentRemoteMediaStateUpdate:
         WebRTCRemoteMediaStateUpdate?
     private var screenClientDiagnosticsCapabilityIsLocallyAvailable = false
@@ -6200,9 +6201,22 @@ public actor WebRTCPeer {
         authorization presentationAuthorization: WebRTCControlAuthorization,
         contextID: String? = nil,
         positionSeconds: TimeInterval? = nil,
+        deadlineUptime: TimeInterval? = nil,
+        expectedDurationSeconds: TimeInterval? = nil,
         acknowledgementHandler: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)? = nil
     ) throws -> UInt64 {
         try ensureOpen()
+        // Local notification authority crosses an actor hop, but is never serialized on the
+        // wire. Native controls retain their existing nil-deadline behavior.
+        func requireUnexpiredDeadline() throws {
+            guard let deadlineUptime else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard deadlineUptime.isFinite, deadlineUptime > now,
+                  deadlineUptime - now <= 2 else {
+                throw WebRTCTransportError.controlAuthorizationRevoked
+            }
+        }
+        try requireUnexpiredDeadline()
         guard role == .viewer else { throw WebRTCTransportError.invalidRole }
         guard remoteMediaControlsAreNegotiated(),
               let authorization = activeRemoteMediaAuthorization,
@@ -6228,9 +6242,26 @@ public actor WebRTCPeer {
             positionSeconds: positionSeconds
         )
         guard request.isValid else { throw WebRTCTransportError.unexpectedSignal }
+        if let expectedDurationSeconds {
+            guard command == .seekToPosition,
+                  expectedDurationSeconds.isFinite, expectedDurationSeconds > 0,
+                  expectedDurationSeconds <= 31_536_000,
+                  let latest = latestReceivedRemoteMediaState,
+                  latest.isSameNegotiation(as: state), latest.update.revision >= state.update.revision,
+                  let currentItem = latest.update.item(contextID: item.contextID),
+                  currentItem.capabilities.permits(command), currentItem.duration == expectedDurationSeconds,
+                  let elapsed = currentItem.elapsedTime, elapsed.isFinite, elapsed >= 0,
+                  let positionSeconds, positionSeconds <= expectedDurationSeconds else {
+                throw WebRTCTransportError.controlAuthorizationRevoked
+            }
+        }
+        let data = try JSONEncoder().encode(ControlChannelMessage.remoteMediaCommand(
+            WebRTCRemoteMediaCommandEnvelope(authorization: authorization, request: request)
+        ))
         let completionToken = UUID()
         do {
             try presentationAuthorization.withValidAuthorization {
+                try requireUnexpiredDeadline()
                 // Revoked admission must not consume a wire ID; register accepted work before
                 // sending so an immediate acknowledgement always finds its exact callback.
                 nextRemoteMediaCommandID += 1
@@ -6239,16 +6270,7 @@ public actor WebRTCPeer {
                 if let acknowledgementHandler {
                     remoteMediaCompletionHandlers[request.id] = (completionToken, acknowledgementHandler)
                 }
-                try delegateProxy.sendControlData(
-                    try JSONEncoder().encode(
-                        ControlChannelMessage.remoteMediaCommand(
-                            WebRTCRemoteMediaCommandEnvelope(
-                                authorization: authorization,
-                                request: request
-                            )
-                        )
-                    )
-                )
+                try delegateProxy.sendControlData(data)
             }
         } catch {
             sentRemoteMediaCommands.removeValue(forKey: request.id)
@@ -9722,7 +9744,9 @@ public actor WebRTCPeer {
             return
         }
         highestReceivedRemoteMediaStateRevision = update.revision
-        emit(.remoteMediaStateChanged(WebRTCReceivedRemoteMediaState(envelope: envelope)))
+        let state = WebRTCReceivedRemoteMediaState(envelope: envelope)
+        latestReceivedRemoteMediaState = isTransportHealthyForMedia() ? state : nil
+        emit(.remoteMediaStateChanged(state))
     }
 
     private func receiveRemoteMediaStateRefresh(
@@ -10178,6 +10202,7 @@ public actor WebRTCPeer {
         #endif
         highestSentRemoteMediaStateRevision = 0
         highestReceivedRemoteMediaStateRevision = 0
+        latestReceivedRemoteMediaState = nil
         lastSentRemoteMediaStateUpdate = nil
         if wasNegotiated, emitAvailability {
             emit(.remoteMediaControlsAvailabilityChanged(false))
@@ -11003,6 +11028,7 @@ public actor WebRTCPeer {
     }
 
     private func revokeRemoteMediaCommandAuthorization() {
+        latestReceivedRemoteMediaState = nil
         delegateProxy.installMediaCommandAuthorization(nil)
         activeRemoteMediaCommandAuthorization?.revoke()
         activeRemoteMediaCommandAuthorization = nil

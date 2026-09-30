@@ -22,7 +22,7 @@ final class NotificationViewController: UIViewController, @preconcurrency UNNoti
             content.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
         content.didMove(toParent: self)
-        preferredContentSize = CGSize(width: 360, height: 360)
+        preferredContentSize = CGSize(width: 360, height: 430)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -68,6 +68,7 @@ final class MediaNotificationPresentation: ObservableObject {
     @Published private(set) var snapshot: MediaNotificationSnapshot?
     @Published private(set) var selectedContextID: String?
     @Published private(set) var pending: MediaNotificationRequest?
+    @Published private(set) var scrub: MediaNotificationScrub?
     @Published private(set) var status = "Connect to your Mac in Beluga."
     private let store: MediaNotificationStore?
     private var epoch: UUID?
@@ -88,16 +89,21 @@ final class MediaNotificationPresentation: ObservableObject {
             selectedContextID = nil
             selection = MediaNotificationSelection()
             pending = nil
+            scrub = nil
         }
         refresh()
     }
 
-    func becameHidden() { snapshot = nil }
+    func becameHidden() {
+        snapshot = nil
+        scrub = nil
+    }
 
     func refresh() {
         let now = ProcessInfo.processInfo.systemUptime
         guard let store, let epoch else {
             snapshot = nil
+            scrub = nil
             status = "Controls unavailable. Open Beluga to reconnect."
             return
         }
@@ -113,22 +119,32 @@ final class MediaNotificationPresentation: ObservableObject {
             }
             guard let value = try store.readSnapshot(now: now), value.epoch == epoch, value.ready else {
                 snapshot = nil
+                scrub = nil
                 status = "Controls unavailable. Open Beluga to reconnect."
                 return
             }
             snapshot = value
             selection.refresh(contextIDs: value.entries.map(\.contextID))
             selectedContextID = selection.contextID
+            if let scrub, !scrub.matches(value, selectedContextID: selectedContextID, now: now) {
+                self.scrub = nil
+            }
             if pending != nil { status = "Waiting for your Mac…" }
-            else if selectedContextID == nil { status = "Source changed. Choose a source." }
+            else if selectedContextID == nil {
+                status = status.hasPrefix("Updated on your Mac.")
+                    ? "Updated on your Mac. Choose a source."
+                    : "Source changed. Choose a source."
+            }
             else if status == "Controls unavailable. Open Beluga to reconnect." || status == "Connect to your Mac in Beluga." {
                 status = "Choose a source to control."
             }
         } catch MediaNotificationStore.StoreError.busy {
             // A contended read is not fresh authority, even when old UI remains visible.
             snapshot = nil
+            scrub = nil
         } catch {
             snapshot = nil
+            scrub = nil
             status = "Controls unavailable. Open Beluga to reconnect."
         }
     }
@@ -137,16 +153,55 @@ final class MediaNotificationPresentation: ObservableObject {
         guard ready, snapshot?.entries.contains(where: { $0.contextID == contextID }) == true else { return }
         selection.select(contextID, available: snapshot?.entries.map(\.contextID) ?? [])
         selectedContextID = selection.contextID
+        scrub = nil
         status = "Choose a source to control."
     }
 
     func send(_ action: MediaNotificationAction) {
-        guard pending == nil, let store, let snapshot, snapshot.epoch == epoch,
+        guard pending == nil, scrub == nil, let snapshot, snapshot.epoch == epoch,
               let selected, selected.capabilities.permits(action) else { return }
         let now = ProcessInfo.processInfo.systemUptime
         let request = MediaNotificationRequest(id: UUID(), epoch: snapshot.epoch, revision: snapshot.revision,
                                                contextID: selected.contextID, action: action,
                                                deadlineUptime: now + MediaNotificationRequest.maximumLifetime)
+        submit(request, now: now)
+    }
+
+    func beginScrubbing() {
+        guard ready, let snapshot, let selectedContextID else { return }
+        scrub = MediaNotificationScrub(snapshot: snapshot, contextID: selectedContextID,
+                                      now: ProcessInfo.processInfo.systemUptime)
+    }
+
+    func previewPosition(_ position: Double) {
+        guard let snapshot, let current = scrub,
+              current.matches(snapshot, selectedContextID: selectedContextID,
+                              now: ProcessInfo.processInfo.systemUptime) else {
+            scrub = nil
+            return
+        }
+        scrub?.update(position: position)
+    }
+
+    func endScrubbing() {
+        guard var current = scrub else { return }
+        scrub = nil
+        guard pending == nil, let snapshot else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let request = current.finish(snapshot: snapshot, selectedContextID: selectedContextID, now: now) else { return }
+        submit(request, now: now)
+    }
+
+    func adjustPosition(by seconds: Double) {
+        guard scrub == nil else { return }
+        beginScrubbing()
+        if let scrub { previewPosition(scrub.position + seconds) }
+        endScrubbing()
+    }
+
+    private func submit(_ request: MediaNotificationRequest, now: Double) {
+        guard pending == nil, let store, let snapshot,
+              request.isAdmitted(by: snapshot, at: now) else { return }
         do {
             guard try store.submit(request, now: now) else {
                 status = "Source changed or another command is pending. Try again."
@@ -158,6 +213,7 @@ final class MediaNotificationPresentation: ObservableObject {
         } catch {
             status = "Controls unavailable. Try again."
             self.snapshot = nil
+            scrub = nil
         }
     }
 }
@@ -191,11 +247,16 @@ private struct MediaNotificationView: View {
                     .accessibilityAddTraits(entry.contextID == presentation.selectedContextID ? .isSelected : [])
                 }
                 if let selected = presentation.selected {
-                    HStack {
+                    if let duration = MediaNotificationScrub.timelineDuration(selected) {
+                        timeline(selected, duration: duration)
+                    }
+                    HStack(spacing: 6) {
+                        transport("Previous track", symbol: "backward.end.fill", action: .previousTrack, entry: selected)
                         transport("Backward 30 seconds", symbol: "gobackward.30", action: .seekBackward30, entry: selected)
                         transport(selected.isPlaying ? "Pause" : "Play", symbol: selected.isPlaying ? "pause.fill" : "play.fill",
                                   action: selected.isPlaying ? .pause : .play, entry: selected)
                         transport("Forward 30 seconds", symbol: "goforward.30", action: .seekForward30, entry: selected)
+                        transport("Next track", symbol: "forward.end.fill", action: .nextTrack, entry: selected)
                     }
                 }
                 Text(presentation.status).font(.caption).foregroundStyle(.secondary)
@@ -205,13 +266,50 @@ private struct MediaNotificationView: View {
         }
     }
 
+    private func timeline(_ entry: MediaNotificationEntry, duration: Double) -> some View {
+        let position = presentation.scrub?.position ?? min(entry.position ?? 0, duration)
+        return VStack(spacing: 4) {
+            Slider(value: Binding(get: { position }, set: { presentation.previewPosition($0) }),
+                   in: 0...duration, onEditingChanged: { editing in
+                if editing { presentation.beginScrubbing() }
+                else { presentation.endScrubbing() }
+            })
+            .disabled(!presentation.ready)
+            .accessibilityLabel("Playback position")
+            .accessibilityIdentifier("mediaPlaybackPosition")
+            .accessibilityValue("\(time(position)) of \(time(duration))")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: presentation.adjustPosition(by: 30)
+                case .decrement: presentation.adjustPosition(by: -30)
+                @unknown default: break
+                }
+            }
+            HStack {
+                Text(time(position))
+                Spacer()
+                Text(time(duration))
+            }
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private func time(_ seconds: Double) -> String {
+        let value = Int(seconds)
+        return value >= 3_600
+            ? String(format: "%d:%02d:%02d", value / 3_600, value / 60 % 60, value % 60)
+            : String(format: "%d:%02d", value / 60, value % 60)
+    }
+
     private func transport(_ title: String, symbol: String, action: MediaNotificationAction,
                            entry: MediaNotificationEntry) -> some View {
         Button { presentation.send(action) } label: {
-            Image(systemName: symbol).font(.title2).frame(maxWidth: .infinity, minHeight: 48)
+            Image(systemName: symbol).font(.title3).frame(maxWidth: .infinity, minHeight: 48)
         }
         .buttonStyle(.bordered)
         .accessibilityLabel(title)
-        .disabled(!presentation.ready || !entry.capabilities.permits(action))
+        .disabled(!presentation.ready || presentation.scrub != nil || !entry.capabilities.permits(action))
     }
 }

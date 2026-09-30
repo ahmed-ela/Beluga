@@ -23,6 +23,7 @@
 		40AFC270DF77FF0D0BAB3BB3 /* WebRTCRemoteScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */; };
 		410A20E5A1359F7ACEC16FEE /* RemoteMediaArtworkNetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2929FAEAC7A483ECCCDA903 /* RemoteMediaArtworkNetworkTests.swift */; };
 		442A7D004ECD12C8DCF14225 /* MediaNotificationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E46ECD3A741BE3F41BD29377 /* MediaNotificationStoreTests.swift */; };
+		49F1CBD5FC9B1DF0215D2B4B /* MediaNotificationScrub.swift in Sources */ = {isa = PBXBuildFile; fileRef = C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */; };
 		4D7160E2C12B45C36CA6F0B5 /* WorldwideCallActivityObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE7AAEDB7B667B93413D7D8E /* WorldwideCallActivityObserver.swift */; };
 		5064C8F281FF866CB5B78379 /* MediaNotificationIntegrationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E552F2D705E384A530F30AB /* MediaNotificationIntegrationUITests.swift */; };
 		521C0187485723B087C6009E /* MediaNotificationSimulatorFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC8E4343323AB6F87940C484 /* MediaNotificationSimulatorFixture.swift */; };
@@ -69,9 +70,11 @@
 		BBCF4C3DE1A3016C7790E01D /* H264SampleBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */; };
 		C0190D2FEB98D536396D2C2D /* PhysicalScreenImageOracle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C98B7E2E267B10F3812ED68 /* PhysicalScreenImageOracle.swift */; };
 		C27325B4E2559EA2F8AEE99C /* AppArtifactContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62EE29F300BD14D456C513EA /* AppArtifactContractTests.swift */; };
+		C30389304851FFADB4E55817 /* MediaNotificationScrub.swift in Sources */ = {isa = PBXBuildFile; fileRef = C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */; };
 		C70D90B1D6A781720B3E38F6 /* PhysicalOracleEvaluator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */; };
 		C8262450EBF279627543D271 /* ServerInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 132D234332E7CDAD5F0F3213 /* ServerInfo.swift */; };
 		C9E6069A49A4706FF9BF6058 /* MetricRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DBE9263C82F3F738B8AA3DF /* MetricRow.swift */; };
+		D121ECC471389B159C114326 /* MediaNotificationScrubTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A26FA936D45B35BF36F46DB1 /* MediaNotificationScrubTests.swift */; };
 		D1336366C939E9D02ECF6925 /* WorldwideScreenViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22BA2C0E3FA5E56CBEFF2B54 /* WorldwideScreenViewerView.swift */; };
 		D2E0A90468F5B64F496F77B6 /* ScreenVisualOraclePhysicalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3DDCE4C6F7143536E9111F3 /* ScreenVisualOraclePhysicalUITests.swift */; };
 		D2FB014BB9E23EC04BBBE548 /* ScreenVideoClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */; };
@@ -175,6 +178,7 @@
 		8BDB3748CE96A0E684F2EF76 /* ScreenVideoClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoClient.swift; sourceTree = "<group>"; };
 		8CAA833D0E3961518CB2AF39 /* InvitationAcceptanceAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InvitationAcceptanceAction.swift; sourceTree = "<group>"; };
 		90600912C0AAEC02C723EDA9 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A26FA936D45B35BF36F46DB1 /* MediaNotificationScrubTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationScrubTests.swift; sourceTree = "<group>"; };
 		A39705431F48504775D14924 /* source */ = {isa = PBXFileReference; lastKnownFileType = folder; name = source; path = ../..; sourceTree = SOURCE_ROOT; };
 		A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewerView.swift; sourceTree = "<group>"; };
 		A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePointerGestureSurface.swift; sourceTree = "<group>"; };
@@ -184,6 +188,7 @@
 		B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
 		B91C374837F36DA0427D311B /* MediaNotificationContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MediaNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationScrub.swift; sourceTree = "<group>"; };
 		C7B1BF8B41EA3FE864A61077 /* RemoteMediaArtworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMediaArtworkTests.swift; sourceTree = "<group>"; };
 		C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		CC8E4343323AB6F87940C484 /* MediaNotificationSimulatorFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationSimulatorFixture.swift; sourceTree = "<group>"; };
@@ -258,6 +263,7 @@
 			isa = PBXGroup;
 			children = (
 				CDEF370B9E9DFB71FE481F9E /* MediaNotificationModels.swift */,
+				C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */,
 				4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */,
 			);
 			path = MediaNotificationShared;
@@ -464,6 +470,7 @@
 				5EAE7108773997E7E6897AE1 /* AspectFitCoordinateMapperTests.swift */,
 				05F997BDA71C2DC04DB754E9 /* KeychainStoreTests.swift */,
 				7F06E1C3C90ECEA0551E3A92 /* MediaNotificationCoordinatorTests.swift */,
+				A26FA936D45B35BF36F46DB1 /* MediaNotificationScrubTests.swift */,
 				E46ECD3A741BE3F41BD29377 /* MediaNotificationStoreTests.swift */,
 				DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */,
 				6059D9C4EAF612456387AF8B /* PhysicalScreenImageOracleTests.swift */,
@@ -658,6 +665,7 @@
 				DB46B27CD3BB1CC0812D07A0 /* KeychainStore.swift in Sources */,
 				B0EDA89C9BF154451E3109D6 /* MediaNotificationCoordinator.swift in Sources */,
 				8173D8987877F5927E0C040E /* MediaNotificationModels.swift in Sources */,
+				49F1CBD5FC9B1DF0215D2B4B /* MediaNotificationScrub.swift in Sources */,
 				521C0187485723B087C6009E /* MediaNotificationSimulatorFixture.swift in Sources */,
 				F8D2517FF85FB96B2BA6908E /* MediaNotificationStore.swift in Sources */,
 				C9E6069A49A4706FF9BF6058 /* MetricRow.swift in Sources */,
@@ -694,6 +702,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				237AC40EAB83BAD40B0B2964 /* MediaNotificationModels.swift in Sources */,
+				C30389304851FFADB4E55817 /* MediaNotificationScrub.swift in Sources */,
 				F6A34A96DBB573F8703BC7EE /* MediaNotificationStore.swift in Sources */,
 				3A5EB408BB3A725650ACE3EF /* NotificationViewController.swift in Sources */,
 			);
@@ -707,6 +716,7 @@
 				9AAA1E27A24734789A6CBEA1 /* AspectFitCoordinateMapperTests.swift in Sources */,
 				2AB8172E29C70E7D96DA0A8A /* KeychainStoreTests.swift in Sources */,
 				5FDBD67FEF680D5E23CC2E58 /* MediaNotificationCoordinatorTests.swift in Sources */,
+				D121ECC471389B159C114326 /* MediaNotificationScrubTests.swift in Sources */,
 				442A7D004ECD12C8DCF14225 /* MediaNotificationStoreTests.swift in Sources */,
 				D89D6AFCD4145A0A6EF255D9 /* PhysicalOracleEvaluator.swift in Sources */,
 				1E220F17ECE4F06A1552C770 /* PhysicalOracleEvaluatorTests.swift in Sources */,
@@ -863,7 +873,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 89;
+				CURRENT_PROJECT_VERSION = 90;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1116,7 +1126,7 @@
 				BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
 				CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 89;
+				CURRENT_PROJECT_VERSION = 90;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = MediaNotificationContent/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
