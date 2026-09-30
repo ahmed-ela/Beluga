@@ -34,6 +34,66 @@ module OpenSteamerV91Cutover
   module Pins
     extend self
 
+    RELEASE_KEYS = %i[
+      SOURCE_BRANCH SOURCE_UPSTREAM SOURCE_COMMIT SOURCE_TREE TOOLING_FILES
+      V90_CDHASH V90_DESIGNATED_REQUIREMENT V90_EXECUTABLE_SHA256
+      V90_FRAMEWORK_SHA256 V90_INFO_PLIST_SHA256 V90_APP_MANIFEST_SHA256
+      V90_BUNDLE_VERIFIER_SOURCE V90_BUNDLE_VERIFIER_SHA256 V90_COMMITTED_COPY_MANIFEST
+      OBSERVER_EVIDENCE V90_HELPERS V91_UPDATE_ROOT V91_PENDING_POINTER
+      V91_ACTIVE_POINTER V91_LOCK V91_JOURNAL_HEADER PAYLOAD_KEYS PAYLOAD_SCHEMA
+    ].freeze
+
+    def bind_contract!(contract)
+      raise Failure, "release contract was already bound" if @contract
+      raise Failure, "release pins were already observed; late binding is forbidden" if @pins_observed
+      raise Failure, "release contract must be a verified immutable successor contract" unless
+        defined?(OpenSteamerHostSuccessor::ReleaseContract) &&
+        contract.instance_of?(OpenSteamerHostSuccessor::ReleaseContract) && contract.frozen?
+      raise Failure, "release contract pin set differs" unless contract.pins.keys.sort == RELEASE_KEYS.sort
+      @contract = contract
+    end
+
+    def fetch(name)
+      @pins_observed = true
+      @contract && RELEASE_KEYS.include?(name) ? @contract.pins.fetch(name) : const_get(name, false)
+    end
+
+    def contract
+      @contract
+    end
+
+    def release_name
+      @contract ? @contract.namespace : "v91"
+    end
+
+    def candidate_basename
+      @contract ? "Beluga Host.app" : "opensteamer Host.app"
+    end
+
+    def candidate_verifier_relative
+      @contract ? "macOS/scripts/verify-beluga-host-bundle.sh" : "macOS/scripts/verify-mac-host-bundle.sh"
+    end
+
+    def candidate_verifier_flags
+      @contract ? ["--media-integration-v1"] : []
+    end
+
+    def state_out(state)
+      @contract ? @contract.state_out(state) : state
+    end
+
+    def state_in(state)
+      @contract ? @contract.state_in(state) : state
+    end
+
+    def record_out(text)
+      @contract ? @contract.record_out(text) : text
+    end
+
+    def record_in(text)
+      @contract ? @contract.record_in(text) : text
+    end
+
     SOURCE_BRANCH = "fix/screen-quality-small-step"
     SOURCE_UPSTREAM = "origin/fix/screen-quality-small-step"
     SOURCE_COMMIT = "0af3846c4c9c81411e87d6ab997fac55dddc1e5d"
@@ -369,40 +429,40 @@ module OpenSteamerV91Cutover
     def verify!(path, label: "capsule predecessor reference")
       stat, data = read_snapshot(path, label)
       Util.fail!("#{label} size differs from approved predecessor") unless
-        stat.size == Pins::APPROVED_PREDECESSOR_REFERENCE_FILE_SIZE
+        stat.size == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_FILE_SIZE)
       Util.fail!("#{label} full-file digest differs from approved predecessor") unless
-        Digest::SHA256.hexdigest(data) == Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256
+        Digest::SHA256.hexdigest(data) == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256)
 
       data_offset, data_size = signature_layout(data)
       Util.fail!("#{label} LC_CODE_SIGNATURE layout differs from approved predecessor") unless
-        data_offset == Pins::APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_OFFSET &&
-        data_size == Pins::APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_SIZE &&
+        data_offset == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_OFFSET) &&
+        data_size == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_SIZE) &&
         data_offset + data_size == data.bytesize
       prefix = data.byteslice(0, data_offset)
       Util.fail!("#{label} unsigned-prefix digest differs from approved predecessor") unless
-        prefix && Digest::SHA256.hexdigest(prefix) == Pins::APPROVED_PREDECESSOR_REFERENCE_UNSIGNED_PREFIX_SHA256
+        prefix && Digest::SHA256.hexdigest(prefix) == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_UNSIGNED_PREFIX_SHA256)
 
       metadata = combined_codesign!("--display", "--verbose=6", path)
-      exact_field!(metadata, "Identifier=", Pins::APPROVED_PREDECESSOR_REFERENCE_IDENTIFIER, label)
-      exact_field!(metadata, "TeamIdentifier=", Pins::APPROVED_PREDECESSOR_REFERENCE_TEAM_ID, label)
-      exact_field!(metadata, "CDHash=", Pins::APPROVED_PREDECESSOR_REFERENCE_CDHASH, label)
+      exact_field!(metadata, "Identifier=", Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_IDENTIFIER), label)
+      exact_field!(metadata, "TeamIdentifier=", Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_TEAM_ID), label)
+      exact_field!(metadata, "CDHash=", Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CDHASH), label)
       exact_field!(
         metadata,
         "CandidateCDHashFull sha256=",
-        Pins::APPROVED_PREDECESSOR_REFERENCE_CODE_DIRECTORY_SHA256,
+        Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CODE_DIRECTORY_SHA256),
         label
       )
 
       requirements = combined_codesign!("--display", "--requirements", "-", path)
       designated = requirements.lines.map { |line| line.strip.sub(/\A# /, "") }
                                .select { |line| line.start_with?("designated => ") }
-      expected = "designated => #{Pins::APPROVED_PREDECESSOR_REFERENCE_DESIGNATED_REQUIREMENT}"
+      expected = "designated => #{Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_DESIGNATED_REQUIREMENT)}"
       Util.fail!("#{label} designated requirement differs from approved predecessor") unless
         designated == [expected]
       final_stat, final_data = read_snapshot(path, label)
       Util.fail!("#{label} identity or bytes changed during fingerprint verification") unless
         [final_stat.dev, final_stat.ino, final_stat.size] == [stat.dev, stat.ino, stat.size] &&
-        Digest::SHA256.hexdigest(final_data) == Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256
+        Digest::SHA256.hexdigest(final_data) == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256)
       true
     rescue Errno::ENOENT, Errno::EACCES => error
       Util.fail!("could not fingerprint #{label}: #{error.message}")
@@ -480,20 +540,20 @@ module OpenSteamerV91Cutover
     extend self
 
     def verify!(remote: true)
-      root = Pins::TOOLING_ROOT
+      root = Pins.fetch(:TOOLING_ROOT)
       Util.fail!("tooling root is not canonical") unless
         File.expand_path(root) == root && File.realpath(root) == root
       Util.directory!(root, "V91 tooling root", mode: 0o755, owner: Process.euid)
 
       branch = git!("symbolic-ref", "--short", "HEAD").strip
       upstream = git!("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").strip
-      Util.fail!("tooling branch differs from pinned V91 branch") unless branch == Pins::SOURCE_BRANCH
-      Util.fail!("tooling upstream differs from pinned V91 upstream") unless upstream == Pins::SOURCE_UPSTREAM
+      Util.fail!("tooling branch differs from pinned V91 branch") unless branch == Pins.fetch(:SOURCE_BRANCH)
+      Util.fail!("tooling upstream differs from pinned V91 upstream") unless upstream == Pins.fetch(:SOURCE_UPSTREAM)
 
       fetch_urls = git!("remote", "get-url", "--all", "origin").lines.map(&:chomp)
       push_urls = git!("remote", "get-url", "--push", "--all", "origin").lines.map(&:chomp)
-      Util.fail!("tooling origin fetch URL differs") unless fetch_urls == [Pins::TOOLING_REMOTE_URL]
-      Util.fail!("tooling origin push URL differs") unless push_urls == [Pins::TOOLING_REMOTE_URL]
+      Util.fail!("tooling origin fetch URL differs") unless fetch_urls == [Pins.fetch(:TOOLING_REMOTE_URL)]
+      Util.fail!("tooling origin push URL differs") unless push_urls == [Pins.fetch(:TOOLING_REMOTE_URL)]
 
       head = git!("rev-parse", "HEAD").strip
       tree = git!("rev-parse", "HEAD^{tree}").strip
@@ -512,7 +572,7 @@ module OpenSteamerV91Cutover
       end
 
       blobs = {}
-      Pins::TOOLING_FILES.each do |relative, mode|
+      Pins.fetch(:TOOLING_FILES).each do |relative, mode|
         path = File.join(root, relative)
         Util.fail!("tooling file path is not canonical: #{relative}") unless File.realpath(path) == path
         Util.regular_file!(
@@ -554,18 +614,18 @@ module OpenSteamerV91Cutover
 
     def readiness_observer!(proof)
       TrackedToolSnapshot.read!(
-        Pins::TOOLING_ROOT,
+        Pins.fetch(:TOOLING_ROOT),
         "macOS/scripts/verify-v91-secondary-viewer-readiness.sh",
         proof,
-        mode: Pins::READINESS_SOURCE_MODE
+        mode: Pins.fetch(:READINESS_SOURCE_MODE)
       )
     end
 
     def verify_launcher_environment!(proof)
       expected = {
-        "OPENSTEAMER_V91_LAUNCHER_ATTESTATION" => Pins::LAUNCHER_ATTESTATION,
+        "OPENSTEAMER_V91_LAUNCHER_ATTESTATION" => Pins.fetch(:LAUNCHER_ATTESTATION),
         "OPENSTEAMER_V91_LAUNCHER_PATH" => File.join(
-          Pins::TOOLING_ROOT,
+          Pins.fetch(:TOOLING_ROOT),
           "macOS/scripts/run-opensteamer-host-v91-cutover.sh"
         ),
         "OPENSTEAMER_V91_TOOLING_COMMIT" => proof.fetch(:commit),
@@ -582,7 +642,7 @@ module OpenSteamerV91Cutover
     private
 
     def git!(*arguments)
-      Util.capture!("/usr/bin/git", "-C", Pins::TOOLING_ROOT, *arguments)
+      Util.capture!("/usr/bin/git", "-C", Pins.fetch(:TOOLING_ROOT), *arguments)
     end
   end
 
@@ -598,7 +658,7 @@ module OpenSteamerV91Cutover
           payload.fetch(key).match?(/\A[0-9a-f]{40}\z/)
       end
       Util.fail!("build provenance assembler path differs") unless
-        assembler == "macOS/scripts/assemble-v91-sealed-host-oracle-capsule.sh"
+        assembler == (Pins.contract ? "macOS/scripts/import-prebuilt-host-successor.rb" : "macOS/scripts/assemble-v91-sealed-host-oracle-capsule.sh")
       {
         "#{source_commit}^{commit}" => source_commit,
         "#{source_commit}^{tree}" => payload.fetch("sourceTree"),
@@ -663,7 +723,7 @@ module OpenSteamerV91Cutover
       actual, symlinks = render
       Util.fail!("#{@kind} tree manifest does not exactly match filesystem") unless actual == expected
       if @kind == :candidate
-        Util.fail!("candidate aliases differ from reviewed five-link set") unless symlinks == Pins::ALLOWED_CANDIDATE_SYMLINKS
+        Util.fail!("candidate aliases differ from reviewed five-link set") unless symlinks == Pins.fetch(:ALLOWED_CANDIDATE_SYMLINKS)
       else
         Util.fail!("source export contains a symbolic link") unless symlinks.empty?
       end
@@ -727,7 +787,7 @@ module OpenSteamerV91Cutover
 
     def assert_reviewed_alias_resolution!(relative, path, target)
       return unless @kind == :candidate
-      Util.fail!("candidate tree has unreviewed symlink") unless Pins::ALLOWED_CANDIDATE_SYMLINKS[relative] == target
+      Util.fail!("candidate tree has unreviewed symlink") unless Pins.fetch(:ALLOWED_CANDIDATE_SYMLINKS)[relative] == target
       resolved = File.realpath(File.join(File.dirname(path), target))
       Util.fail!("candidate alias escapes app") unless resolved.start_with?(File.realpath(@root) + "/")
       if relative == "Contents/Frameworks/LiveKitWebRTC.framework/LiveKitWebRTC"
@@ -743,7 +803,7 @@ module OpenSteamerV91Cutover
   class CopyManifest
     def self.capture_published_root_xattrs!(root)
       names = Util.capture!("/usr/bin/xattr", root).lines.map(&:chomp).reject(&:empty?).sort
-      allowed = names.empty? ? {} : Pins::APP_ROOT_ALLOWED_XATTRS
+      allowed = names.empty? ? {} : Pins.fetch(:APP_ROOT_ALLOWED_XATTRS)
       captured = allowed.transform_values { |value| value.dup.freeze }.freeze
       new(root, allowed_root_xattrs: captured).send(:verify_root!)
       captured
@@ -764,7 +824,7 @@ module OpenSteamerV91Cutover
       expected = File.binread(manifest_path)
       actual, aliases = render
       Util.fail!("candidate copy-stable manifest mismatch") unless actual == expected
-      Util.fail!("candidate copy aliases differ from reviewed set") unless aliases == Pins::ALLOWED_CANDIDATE_SYMLINKS
+      Util.fail!("candidate copy aliases differ from reviewed set") unless aliases == Pins.fetch(:ALLOWED_CANDIDATE_SYMLINKS)
       true
     end
 
@@ -783,7 +843,7 @@ module OpenSteamerV91Cutover
         if stat.symlink?
           target = File.readlink(path)
           aliases[relative] = target
-          Util.fail!("candidate copy has unreviewed symlink") unless Pins::ALLOWED_CANDIDATE_SYMLINKS[relative] == target
+          Util.fail!("candidate copy has unreviewed symlink") unless Pins.fetch(:ALLOWED_CANDIDATE_SYMLINKS)[relative] == target
           Util.fail!("candidate copy has hard-linked symlink") unless stat.nlink == 1
           assert_alias_resolution!(relative, path, target)
           "L\t#{Util.sha256_text(target)}\t#{target}\t#{relative}\n"
@@ -873,13 +933,13 @@ module OpenSteamerV91Cutover
       value = parse_node(dict)
       expected = {
         "Label" => "org.example.opensteamer.worldwide",
-        "ProgramArguments" => Pins::LAUNCH_ARGUMENTS,
+        "ProgramArguments" => Pins.fetch(:LAUNCH_ARGUMENTS),
         "RunAtLoad" => true,
         "KeepAlive" => true,
         "ThrottleInterval" => 10,
-        "StandardOutPath" => Pins::LAUNCH_STDOUT,
-        "StandardErrorPath" => Pins::LAUNCH_STDERR,
-        "EnvironmentVariables" => Pins::LAUNCH_ENVIRONMENT
+        "StandardOutPath" => Pins.fetch(:LAUNCH_STDOUT),
+        "StandardErrorPath" => Pins.fetch(:LAUNCH_STDERR),
+        "EnvironmentVariables" => Pins.fetch(:LAUNCH_ENVIRONMENT)
       }
       Util.fail!("launch plist differs from exact ten-argument V91 contract") unless value == expected
       true
@@ -928,13 +988,14 @@ module OpenSteamerV91Cutover
     def verify!
       Util.assert_sha!(@external_handoff_sha, "external handoff digest")
       Util.assert_sha!(@external_payload_sha, "external payload digest")
+      OpenSteamerHostSuccessor::Checks.artifact_path!(@root, "successor capsule") if Pins.contract
       Util.canonical_absolute!(@root, "capsule root")
       Util.directory!(@root, "capsule root", mode: 0o700, owner: Process.euid)
       reject_forbidden_root!
 
       payload_path = File.join(@root, "v91-deployment-payload-manifest.json")
       Util.sidecar!(payload_path, payload_path + ".sha256", @external_payload_sha, "payload manifest")
-      @payload = Util.strict_json(payload_path, Pins::PAYLOAD_KEYS, Pins::PAYLOAD_SCHEMA)
+      @payload = Util.strict_json(payload_path, Pins.fetch(:PAYLOAD_KEYS), Pins.fetch(:PAYLOAD_SCHEMA))
       validate_fixed_payload!
       resolve_payload_paths!
       validate_capsule_shape!
@@ -957,13 +1018,13 @@ module OpenSteamerV91Cutover
     end
 
     def fingerprint
-      @payload.values_at(*Pins::PAYLOAD_KEYS).join("\0")
+      @payload.values_at(*Pins.fetch(:PAYLOAD_KEYS)).join("\0")
     end
 
     private
 
     def reject_forbidden_root!
-      forbidden = ["/Applications", Pins::RUNTIME_ROOT]
+      forbidden = ["/Applications", Pins.fetch(:RUNTIME_ROOT)]
       lowered = @root.downcase
       Util.fail!("capsule is inside installed/protected runtime") if forbidden.any? do |prefix|
         lowered == prefix.downcase || lowered.start_with?(prefix.downcase + "/")
@@ -972,52 +1033,59 @@ module OpenSteamerV91Cutover
 
     def validate_fixed_payload!
       fixed = {
-        "sourceCommit" => Pins::SOURCE_COMMIT,
-        "sourceTree" => Pins::SOURCE_TREE,
-        "sourceBranch" => Pins::SOURCE_BRANCH,
-        "sourceUpstream" => Pins::SOURCE_UPSTREAM,
+        "sourceCommit" => Pins.fetch(:SOURCE_COMMIT),
+        "sourceTree" => Pins.fetch(:SOURCE_TREE),
+        "sourceBranch" => Pins.fetch(:SOURCE_BRANCH),
+        "sourceUpstream" => Pins.fetch(:SOURCE_UPSTREAM),
         "sourceExportRelativePath" => "source",
         "sourceTreeManifestRelativePath" => "v91-source-export-tree-manifest.txt",
-        "candidateAppRelativePath" => "candidate/opensteamer Host.app",
+        "candidateAppRelativePath" => "candidate/#{Pins.candidate_basename}",
         "candidateAppTreeManifestRelativePath" => "v91-candidate-app-tree-manifest.txt",
         "candidateAppCopyManifestRelativePath" => "v91-candidate-app-copy-manifest.txt",
-        "candidateExecutableRelativePath" => "candidate/opensteamer Host.app/Contents/MacOS/CaptureServer",
-        "candidateMediaFrameworkExecutableRelativePath" => "candidate/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC",
-        "candidateInfoPlistRelativePath" => "candidate/opensteamer Host.app/Contents/Info.plist",
+        "candidateExecutableRelativePath" => "candidate/#{Pins.candidate_basename}/Contents/MacOS/CaptureServer",
+        "candidateMediaFrameworkExecutableRelativePath" => "candidate/#{Pins.candidate_basename}/Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC",
+        "candidateInfoPlistRelativePath" => "candidate/#{Pins.candidate_basename}/Contents/Info.plist",
         "candidateLaunchPlistRelativePath" => "deployment/org.example.opensteamer.worldwide.plist",
         "capsuleMetadataRelativePath" => "trusted-v91-host-oracle-capsule-metadata.json",
         "handoffRelativePath" => "v91-screen-oracle-handoff/v91-screen-oracle-host-identity-handoff.json",
         "hostIdentityManifestRelativePath" => "v91-screen-oracle-handoff/sealed-live-mac-host-identity.json",
         "designatedRequirementReferenceRelativePath" => "trusted-reference/CaptureServer",
-        "designatedRequirementReferenceSHA256" => Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256,
-        "designatedRequirementReferenceFileSize" => Pins::APPROVED_PREDECESSOR_REFERENCE_FILE_SIZE.to_s,
-        "designatedRequirementReferenceCodeSignatureDataOffset" => Pins::APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_OFFSET.to_s,
-        "designatedRequirementReferenceCodeSignatureDataSize" => Pins::APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_SIZE.to_s,
-        "designatedRequirementReferenceUnsignedPrefixSHA256" => Pins::APPROVED_PREDECESSOR_REFERENCE_UNSIGNED_PREFIX_SHA256,
-        "designatedRequirementReferenceCDHash" => Pins::APPROVED_PREDECESSOR_REFERENCE_CDHASH,
-        "designatedRequirementReferenceCodeDirectorySHA256" => Pins::APPROVED_PREDECESSOR_REFERENCE_CODE_DIRECTORY_SHA256,
-        "designatedRequirementReferenceTeamIdentifier" => Pins::APPROVED_PREDECESSOR_REFERENCE_TEAM_ID,
-        "designatedRequirementReferenceIdentifier" => Pins::APPROVED_PREDECESSOR_REFERENCE_IDENTIFIER,
-        "designatedRequirementReferenceDesignatedRequirement" => Pins::APPROVED_PREDECESSOR_REFERENCE_DESIGNATED_REQUIREMENT,
-        "toolingBranch" => Pins::SOURCE_BRANCH,
-        "toolingUpstream" => Pins::SOURCE_UPSTREAM,
+        "designatedRequirementReferenceSHA256" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256),
+        "designatedRequirementReferenceFileSize" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_FILE_SIZE).to_s,
+        "designatedRequirementReferenceCodeSignatureDataOffset" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_OFFSET).to_s,
+        "designatedRequirementReferenceCodeSignatureDataSize" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CODE_SIGNATURE_DATA_SIZE).to_s,
+        "designatedRequirementReferenceUnsignedPrefixSHA256" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_UNSIGNED_PREFIX_SHA256),
+        "designatedRequirementReferenceCDHash" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CDHASH),
+        "designatedRequirementReferenceCodeDirectorySHA256" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_CODE_DIRECTORY_SHA256),
+        "designatedRequirementReferenceTeamIdentifier" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_TEAM_ID),
+        "designatedRequirementReferenceIdentifier" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_IDENTIFIER),
+        "designatedRequirementReferenceDesignatedRequirement" => Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_DESIGNATED_REQUIREMENT),
+        "toolingBranch" => Pins.fetch(:SOURCE_BRANCH),
+        "toolingUpstream" => Pins.fetch(:SOURCE_UPSTREAM),
         "toolingRemoteURL" => "https://github.com/ahmedelami/opensteamer.git",
         "assemblerScriptRelativePath" => "macOS/scripts/assemble-v91-sealed-host-oracle-capsule.sh"
       }
+      if Pins.contract
+        fixed["assemblerScriptRelativePath"] = "macOS/scripts/import-prebuilt-host-successor.rb"
+        fixed["successorProfileSHA256"] = Pins.contract.profile_sha
+        fixed["artifactBuildEvidenceSHA256"] = Pins.contract.profile.fetch("candidate").fetch("buildEvidence").fetch("sha256")
+        fixed["artifactBuildLogSHA256"] = Pins.contract.build_attestation.fetch("buildLog").fetch("sha256")
+        Pins.contract.validate_payload_binding!(@payload)
+      end
       fixed.each do |key, expected|
         Util.fail!("payload #{key} differs from fixed V91 contract") unless @payload.fetch(key) == expected
       end
-      Pins::PAYLOAD_KEYS.grep(/SHA256\z/).each { |key| Util.assert_sha!(@payload.fetch(key), "payload #{key}") }
+      Pins.fetch(:PAYLOAD_KEYS).grep(/SHA256\z/).each { |key| Util.assert_sha!(@payload.fetch(key), "payload #{key}") }
       %w[toolingCommit toolingTree assemblerScriptGitBlob].each do |key|
         Util.fail!("payload #{key} is not a lowercase Git object id") unless @payload.fetch(key).match?(/\A[0-9a-f]{40}\z/)
       end
       @tooling = @tooling ? ToolingProof.verify_unchanged!(@tooling) : ToolingProof.verify!
       ToolingProof.verify_build_provenance!(@payload, @tooling)
-      Util.assert_sha!(Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256, "compiled approved predecessor-reference digest")
+      Util.assert_sha!(Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256), "compiled approved predecessor-reference digest")
       Util.fail!("predecessor reference lacks explicit compiled approval") unless
-        @payload.fetch("designatedRequirementReferenceSHA256") == Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256
+        @payload.fetch("designatedRequirementReferenceSHA256") == Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256)
       Util.fail!("payload handoff digest differs from external transport") unless @payload.fetch("handoffSHA256") == @external_handoff_sha
-      Util.fail!("candidate launch plist is not byte-identical to pinned live contract") unless @payload.fetch("candidateLaunchPlistSHA256") == Pins::LAUNCH_AGENT_SHA256
+      Util.fail!("candidate launch plist is not byte-identical to pinned live contract") unless @payload.fetch("candidateLaunchPlistSHA256") == Pins.fetch(:LAUNCH_AGENT_SHA256)
     end
 
     def resolve_payload_paths!
@@ -1048,9 +1116,10 @@ module OpenSteamerV91Cutover
         "v91-deployment-payload-manifest.json", "v91-deployment-payload-manifest.json.sha256",
         "v91-screen-oracle-handoff", "v91-source-export-tree-manifest.txt"
       ]
+      expected_top.concat(%w[prebuilt-build-evidence.txt prebuilt-build-log.txt]) if Pins.contract
       Util.fail!("capsule top-level names differ from strict layout") unless Dir.children(@root).sort == expected_top.sort
       {
-        File.join(@root, "candidate") => ["opensteamer Host.app"],
+        File.join(@root, "candidate") => [Pins.candidate_basename],
         File.join(@root, "deployment") => ["org.example.opensteamer.worldwide.plist"],
         File.join(@root, "trusted-reference") => ["CaptureServer"],
         File.join(@root, "v91-screen-oracle-handoff") => [
@@ -1066,6 +1135,14 @@ module OpenSteamerV91Cutover
     end
 
     def validate_direct_bytes!
+      if Pins.contract
+        Util.exact_file!(File.join(@root, "prebuilt-build-evidence.txt"),
+                         @payload.fetch("artifactBuildEvidenceSHA256"), "prebuilt build evidence",
+                         mode: 0o600, owner: Process.euid)
+        Util.exact_file!(File.join(@root, "prebuilt-build-log.txt"),
+                         @payload.fetch("artifactBuildLogSHA256"), "prebuilt build log",
+                         mode: 0o600, owner: Process.euid)
+      end
       {
         executable: "candidateExecutableSHA256",
         framework: "candidateMediaFrameworkExecutableSHA256",
@@ -1094,7 +1171,7 @@ module OpenSteamerV91Cutover
     end
 
     def validate_metadata!
-      metadata = Util.strict_json(@paths.fetch(:metadata), Pins::CAPSULE_KEYS, Pins::CAPSULE_SCHEMA)
+      metadata = Util.strict_json(@paths.fetch(:metadata), Pins.fetch(:CAPSULE_KEYS), Pins.fetch(:CAPSULE_SCHEMA))
       cross = {
         "candidateAppRelativePath" => @payload.fetch("candidateAppRelativePath"),
         "candidateExecutableSHA256" => @payload.fetch("candidateExecutableSHA256"),
@@ -1106,7 +1183,7 @@ module OpenSteamerV91Cutover
     end
 
     def validate_handoff!
-      handoff = Util.strict_json(@paths.fetch(:handoff), Pins::HANDOFF_KEYS, Pins::HANDOFF_SCHEMA)
+      handoff = Util.strict_json(@paths.fetch(:handoff), Pins.fetch(:HANDOFF_KEYS), Pins.fetch(:HANDOFF_SCHEMA))
       expected = {
         "capsuleMetadataSHA256" => @payload.fetch("capsuleMetadataSHA256"),
         "candidateAppRelativePath" => @payload.fetch("candidateAppRelativePath"),
@@ -1114,7 +1191,7 @@ module OpenSteamerV91Cutover
         "candidateMediaFrameworkExecutableSHA256" => @payload.fetch("candidateMediaFrameworkExecutableSHA256"),
         "designatedRequirementReferenceRelativePath" => @payload.fetch("designatedRequirementReferenceRelativePath"),
         "designatedRequirementReferenceSHA256" => @payload.fetch("designatedRequirementReferenceSHA256"),
-        "expectedTeamIdentifier" => Pins::TEAM_ID,
+        "expectedTeamIdentifier" => Pins.fetch(:TEAM_ID),
         "hostIdentityManifestBasename" => File.basename(@paths.fetch(:identity)),
         "hostIdentityManifestSHA256" => @payload.fetch("hostIdentityManifestSHA256"),
         "hostIdentityManifestSHA256Basename" => File.basename(@paths.fetch(:identity)) + ".sha256"
@@ -1124,22 +1201,23 @@ module OpenSteamerV91Cutover
     end
 
     def validate_identity!
-      identity = Util.strict_json(@paths.fetch(:identity), Pins::IDENTITY_KEYS, Pins::IDENTITY_SCHEMA)
+      identity = Util.strict_json(@paths.fetch(:identity), Pins.fetch(:IDENTITY_KEYS), Pins.fetch(:IDENTITY_SCHEMA))
       expected = {
-        "executablePath" => Pins::LIVE_EXECUTABLE,
+        "executablePath" => Pins.fetch(:LIVE_EXECUTABLE),
         "executableSHA256" => @payload.fetch("candidateExecutableSHA256"),
-        "executableIdentifier" => Pins::EXECUTABLE_IDENTIFIER,
-        "executableTeamIdentifier" => Pins::TEAM_ID,
-        "mediaFrameworkExecutablePath" => Pins::LIVE_FRAMEWORK_IDENTITY_PATH,
+        "executableIdentifier" => Pins.fetch(:EXECUTABLE_IDENTIFIER),
+        "executableTeamIdentifier" => Pins.fetch(:TEAM_ID),
+        "mediaFrameworkExecutablePath" => Pins.fetch(:LIVE_FRAMEWORK_IDENTITY_PATH),
         "mediaFrameworkExecutableSHA256" => @payload.fetch("candidateMediaFrameworkExecutableSHA256"),
-        "mediaFrameworkExecutableIdentifier" => Pins::FRAMEWORK_IDENTIFIER,
-        "mediaFrameworkExecutableTeamIdentifier" => Pins::TEAM_ID
+        "mediaFrameworkExecutableIdentifier" => Pins.fetch(:FRAMEWORK_IDENTIFIER),
+        "mediaFrameworkExecutableTeamIdentifier" => Pins.fetch(:TEAM_ID)
       }
       expected.each { |key, value| Util.fail!("host identity #{key} mismatch") unless identity.fetch(key) == value }
       %w[executableCDHash mediaFrameworkExecutableCDHash].each do |key|
         Util.fail!("host identity #{key} malformed") unless identity.fetch(key).match?(/\A[0-9a-f]{40}\z/)
       end
       @identity = identity
+      Pins.contract.validate_payload_binding!(@payload, identity: identity) if Pins.contract
     end
   end
 
@@ -1406,7 +1484,7 @@ module OpenSteamerV91Cutover
         pid.is_a?(Integer) && pid.positive? && runs.is_a?(Integer) && runs.positive? &&
         start.is_a?(String) && !start.empty? && !start.include?("\n") &&
         nonce.is_a?(String) && nonce.match?(/\A[0-9a-f]{64}\z/)
-      expected_paths = Pins::PREDECESSOR_IDENTITY_PATHS + [Pins::LAUNCH_AGENT]
+      expected_paths = Pins.fetch(:PREDECESSOR_IDENTITY_PATHS) + [Pins.fetch(:LAUNCH_AGENT)]
       Util.fail!("predecessor filesystem identity set differs") unless
         files.is_a?(Hash) && files.keys.sort == expected_paths.sort
       identities = files.values + [lock_directory, lock_file]
@@ -1417,8 +1495,8 @@ module OpenSteamerV91Cutover
           %w[file directory].include?(identity[2])
       end
       Util.fail!("predecessor filesystem object types differ") unless
-        files.fetch(Pins::LIVE_APP)[2] == "directory" &&
-        files.reject { |path, _| path == Pins::LIVE_APP }.values.all? { |identity| identity[2] == "file" } &&
+        files.fetch(Pins.fetch(:LIVE_APP))[2] == "directory" &&
+        files.reject { |path, _| path == Pins.fetch(:LIVE_APP) }.values.all? { |identity| identity[2] == "file" } &&
         lock_directory[2] == "directory" && lock_file[2] == "file"
       @pid, @runs = pid, runs
       @start, @nonce = start.dup.freeze, nonce.dup.freeze
@@ -1522,31 +1600,31 @@ module OpenSteamerV91Cutover
     def prepare!(capsule)
       verify_retry_namespace_clean!
       create_owned_directory!(
-        Pins::V91_LOCK,
+        Pins.fetch(:V91_LOCK),
         0o700,
         "V91 runtime root after lock creation"
       ) { |identity| @lock_identity = identity }
       verify_retry_namespace_after_lock!
-      if path_present?(Pins::V91_UPDATE_ROOT)
-        @update_root_identity = file_identity(Pins::V91_UPDATE_ROOT)
+      if path_present?(Pins.fetch(:V91_UPDATE_ROOT))
+        @update_root_identity = file_identity(Pins.fetch(:V91_UPDATE_ROOT))
         @update_root_created = false
       else
-        create_owned_directory!(Pins::V91_UPDATE_ROOT, 0o700, "new V91 history root") do |identity|
+        create_owned_directory!(Pins.fetch(:V91_UPDATE_ROOT), 0o700, "new V91 history root") do |identity|
           @update_root_identity = identity
           @update_root_created = true
         end
         rollback_history.capture!
         @rollback_history_verified = true
       end
-      transaction_name = "paired-v91-update-#{Time.now.to_i}-#{Process.pid}-#{SecureRandom.uuid}"
-      @transaction = File.join(Pins::V91_UPDATE_ROOT, transaction_name)
+      transaction_name = "paired-#{Pins.release_name}-update-#{Time.now.to_i}-#{Process.pid}-#{SecureRandom.uuid}"
+      @transaction = File.join(Pins.fetch(:V91_UPDATE_ROOT), transaction_name)
       create_owned_directory!(
         @transaction,
         0o700,
         "V91 update root after transaction creation"
       ) { |identity| @transaction_identity = identity }
       @journal = File.join(@transaction, "journal.log")
-      write_durable(@journal, "#{Pins::V91_JOURNAL_HEADER}\n", 0o600, exclusive: true) do |identity|
+      write_durable(@journal, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n", 0o600, exclusive: true) do |identity|
         @journal_identity = identity
       end
       journal!("BEGUN")
@@ -1554,19 +1632,19 @@ module OpenSteamerV91Cutover
       persist_pairing_metadata!("pairing-metadata-before.json")
       start_route_monitor!
       stage_post_stop_evidence!(capsule)
-      publish_owned_pointer!(Pins::V91_PENDING_POINTER, "#{@transaction}\n") do |identity|
+      publish_owned_pointer!(Pins.fetch(:V91_PENDING_POINTER), "#{@transaction}\n") do |identity|
         @pending_identity = identity
       end
 
       @token = SecureRandom.uuid
-      @staged_root = "/Applications/.opensteamer-paired-v91-install-#{@token}"
-      @staged_app = File.join(@staged_root, File.basename(Pins::LIVE_APP))
-      @backup_app = "/Applications/.opensteamer-paired-v91-rollback-#{@token}.app"
-      @failed_app = "/Applications/.opensteamer-paired-v91-failed-#{@token}.app"
-      launch_parent = File.dirname(Pins::LAUNCH_AGENT)
-      @staged_plist = File.join(launch_parent, ".org.example.opensteamer.worldwide.v91-install-#{@token}.plist")
-      @backup_plist = File.join(launch_parent, ".org.example.opensteamer.worldwide.v91-predecessor-rollback-#{@token}.plist")
-      @failed_plist = File.join(launch_parent, ".org.example.opensteamer.worldwide.v91-failed-#{@token}.plist")
+      @staged_root = "/Applications/.opensteamer-paired-#{Pins.release_name}-install-#{@token}"
+      @staged_app = File.join(@staged_root, Pins.candidate_basename)
+      @backup_app = "/Applications/.opensteamer-paired-#{Pins.release_name}-rollback-#{@token}.app"
+      @failed_app = "/Applications/.opensteamer-paired-#{Pins.release_name}-failed-#{@token}.app"
+      launch_parent = File.dirname(Pins.fetch(:LAUNCH_AGENT))
+      @staged_plist = File.join(launch_parent, ".org.example.opensteamer.worldwide.#{Pins.release_name}-install-#{@token}.plist")
+      @backup_plist = File.join(launch_parent, ".org.example.opensteamer.worldwide.#{Pins.release_name}-predecessor-rollback-#{@token}.plist")
+      @failed_plist = File.join(launch_parent, ".org.example.opensteamer.worldwide.#{Pins.release_name}-failed-#{@token}.plist")
       verify_staged_install_layout!
       [@staged_root, @staged_app, @backup_app, @failed_app, @staged_plist, @backup_plist, @failed_plist].each do |path|
         Util.fail!("transaction staging name already exists") if File.exist?(path) || File.symlink?(path)
@@ -1590,8 +1668,8 @@ module OpenSteamerV91Cutover
         0o600,
         exclusive: true
       ) { |identity| @staged_plist_identity = identity }
-      ensure_same_filesystem!(@staged_app, Pins::LIVE_APP)
-      ensure_same_filesystem!(@staged_plist, Pins::LAUNCH_AGENT)
+      ensure_same_filesystem!(@staged_app, Pins.fetch(:LIVE_APP))
+      ensure_same_filesystem!(@staged_plist, Pins.fetch(:LAUNCH_AGENT))
       durably_sync_staged_candidate!(capsule)
       route_monitor_clean!
       durably_sync_transaction_topology!
@@ -1629,7 +1707,7 @@ module OpenSteamerV91Cutover
       allowed = JOURNAL_TRANSITIONS.fetch(@last_journal_state, [])
       Util.fail!("invalid journal transition #{@last_journal_state.inspect} -> #{state}") unless
         allowed.include?(state)
-      line = "#{Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ')} STATE #{state}\n"
+      line = "#{Time.now.utc.strftime('%Y-%m-%dT%H:%M:%SZ')} STATE #{Pins.state_out(state)}\n"
       @journal_io ||= File.open(@journal, File::RDWR | File::APPEND | File::NOFOLLOW)
       assert_open_identity!(@journal, @journal_io, "V91 journal")
       write_all!(@journal_io, line, "V91 journal #{state}")
@@ -1671,7 +1749,7 @@ module OpenSteamerV91Cutover
 
     def stop_predecessor!
       route_monitor_clean!
-      command!("/bin/launchctl", "bootout", Pins::LAUNCH_LABEL)
+      command!("/bin/launchctl", "bootout", Pins.fetch(:LAUNCH_LABEL))
       wait_until!(15, "predecessor did not stop cleanly") { runtime_absent? }
       verify_routes!
       route_monitor_clean!
@@ -1681,8 +1759,8 @@ module OpenSteamerV91Cutover
 
     def hold_predecessor!
       Util.fail!("predecessor is not stopped") unless @predecessor_stopped
-      exclusive_rename(Pins::LIVE_APP, @backup_app)
-      exclusive_rename(Pins::LAUNCH_AGENT, @backup_plist)
+      exclusive_rename(Pins.fetch(:LIVE_APP), @backup_app)
+      exclusive_rename(Pins.fetch(:LAUNCH_AGENT), @backup_plist)
       route_monitor_clean!
       journal!("V90_HELD")
     end
@@ -1690,9 +1768,9 @@ module OpenSteamerV91Cutover
     def publish_candidate!
       Util.fail!("V90 app/plist are not held") unless File.exist?(@backup_app) && File.exist?(@backup_plist)
       verify_staged_install_hold!
-      exclusive_rename(@staged_app, Pins::LIVE_APP)
+      exclusive_rename(@staged_app, Pins.fetch(:LIVE_APP))
       remove_staged_root_if_owned!
-      exclusive_rename(@staged_plist, Pins::LAUNCH_AGENT)
+      exclusive_rename(@staged_plist, Pins.fetch(:LAUNCH_AGENT))
       @candidate_installed = true
       route_monitor_clean!
       journal!("V91_PUBLISHED")
@@ -1700,7 +1778,7 @@ module OpenSteamerV91Cutover
 
     def start_candidate!
       Util.fail!("candidate is not installed") unless @candidate_installed
-      command!("/bin/launchctl", "bootstrap", "gui/501", Pins::LAUNCH_AGENT)
+      command!("/bin/launchctl", "bootstrap", "gui/501", Pins.fetch(:LAUNCH_AGENT))
       @candidate_started = true
       route_monitor_clean!
       journal!("V91_BOOTSTRAPPED")
@@ -1734,17 +1812,17 @@ module OpenSteamerV91Cutover
         pid=#{@new_pid}
         nonce=#{@new_nonce}
         target=v91
-        selected=#{Pins::LIVE_DISPLAY_MODE}
+        selected=#{Pins.fetch(:LIVE_DISPLAY_MODE)}
         candidate_executable_sha256=#{@candidate_executable_sha}
         payload_manifest_sha256=#{@payload_sha}
         handoff_sha256=#{@handoff_sha}
       RESULT
-      write_durable(File.join(@transaction, "result.txt"), result, 0o600, exclusive: true)
-      publish_owned_pointer!(Pins::V91_ACTIVE_POINTER, "#{@transaction}\n") do |identity|
+      write_durable(File.join(@transaction, "result.txt"), Pins.record_out(result), 0o600, exclusive: true)
+      publish_owned_pointer!(Pins.fetch(:V91_ACTIVE_POINTER), "#{@transaction}\n") do |identity|
         @active_pointer_identity = identity
       end
       remove_pending_pointer_if_owned!
-      strict_fsync_directory!(Pins::RUNTIME_ROOT, "V91 runtime root before commit decision")
+      strict_fsync_directory!(Pins.fetch(:RUNTIME_ROOT), "V91 runtime root before commit decision")
       verify_candidate_stability_sample!
       verify_pairing_metadata!
       route_monitor_clean!
@@ -1764,21 +1842,21 @@ module OpenSteamerV91Cutover
         pid=#{@new_pid}
         nonce=#{@new_nonce}
         target=v91
-        selected=#{Pins::LIVE_DISPLAY_MODE}
+        selected=#{Pins.fetch(:LIVE_DISPLAY_MODE)}
         candidate_executable_sha256=#{@candidate_executable_sha}
         payload_manifest_sha256=#{@payload_sha}
         handoff_sha256=#{@handoff_sha}
-        route_monitor=#{Pins::ROUTE_MONITOR_RESULT}
+        route_monitor=#{Pins.fetch(:ROUTE_MONITOR_RESULT)}
       RESULT
       write_durable(
         File.join(@transaction, "commit-safety-proof.txt"),
-        result,
+        Pins.record_out(result),
         0o600,
         exclusive: true
       )
       verify_routes!
       remove_lock_if_owned!
-      strict_fsync_directory!(Pins::RUNTIME_ROOT, "V91 runtime root after irreversible commit proof")
+      strict_fsync_directory!(Pins.fetch(:RUNTIME_ROOT), "V91 runtime root after irreversible commit proof")
       true
     end
 
@@ -1816,7 +1894,7 @@ module OpenSteamerV91Cutover
       RESULT
       write_durable(
         File.join(@transaction, "committed-but-unverified.txt"),
-        evidence,
+        Pins.record_out(evidence),
         0o600,
         exclusive: true
       )
@@ -1855,14 +1933,14 @@ module OpenSteamerV91Cutover
       attempt_cleanup(errors, "transaction lock") { remove_lock_if_owned! }
       attempt_cleanup(errors, "retained V91 retry baseline") { verify_retry_namespace_clean! }
       attempt_cleanup(errors, "runtime directory sync") do
-        strict_fsync_directory!(Pins::RUNTIME_ROOT, "V91 runtime root after abort")
+        strict_fsync_directory!(Pins.fetch(:RUNTIME_ROOT), "V91 runtime root after abort")
       end
       @aborted = true
       Util.fail!("pre-stop cleanup errors: #{errors.join('; ')}") unless errors.empty?
       true
     end
 
-    def remove_new_update_root_if_owned!(path: Pins::V91_UPDATE_ROOT)
+    def remove_new_update_root_if_owned!(path: Pins.fetch(:V91_UPDATE_ROOT))
       return true unless @update_root_created && @update_root_identity
       Util.fail!("new update root acquired retained history") if @rollback_history &&
         (!@rollback_history.transactions.empty? || !@rollback_history.applications.empty? ||
@@ -1882,27 +1960,27 @@ module OpenSteamerV91Cutover
 
     def rollback_exact_v90!
       journal!("ROLLBACK_STARTED") if @journal
-      system("/bin/launchctl", "bootout", Pins::LAUNCH_LABEL, out: File::NULL, err: File::NULL)
+      system("/bin/launchctl", "bootout", Pins.fetch(:LAUNCH_LABEL), out: File::NULL, err: File::NULL)
       wait_until!(15, "host did not become absent for rollback") { runtime_absent? }
       journal!("V91_STOPPED") if @journal
-      archive_candidate_exact!(@staged_app_identity, [Pins::LIVE_APP, @staged_app], @failed_app, "V91 app")
-      archive_candidate_exact!(@staged_plist_identity, [Pins::LAUNCH_AGENT, @staged_plist], @failed_plist, "V91 plist")
+      archive_candidate_exact!(@staged_app_identity, [Pins.fetch(:LIVE_APP), @staged_app], @failed_app, "V91 app")
+      archive_candidate_exact!(@staged_plist_identity, [Pins.fetch(:LAUNCH_AGENT), @staged_plist], @failed_plist, "V91 plist")
       journal!("FAILED_V91_ARCHIVED") if @journal
       restore_predecessor_exact!(
-        Pins::LIVE_APP,
+        Pins.fetch(:LIVE_APP),
         @backup_app,
-        @predecessor_runtime.files.fetch(Pins::LIVE_APP),
+        @predecessor_runtime.files.fetch(Pins.fetch(:LIVE_APP)),
         "V90 app"
       )
       restore_predecessor_exact!(
-        Pins::LAUNCH_AGENT,
+        Pins.fetch(:LAUNCH_AGENT),
         @backup_plist,
-        @predecessor_runtime.files.fetch(Pins::LAUNCH_AGENT),
+        @predecessor_runtime.files.fetch(Pins.fetch(:LAUNCH_AGENT)),
         "V90 plist"
       )
       verify_installed_v90_bytes!
       journal!("V90_RESTORED") if @journal
-      command!("/bin/launchctl", "bootstrap", "gui/501", Pins::LAUNCH_AGENT)
+      command!("/bin/launchctl", "bootstrap", "gui/501", Pins.fetch(:LAUNCH_AGENT))
       journal!("V90_BOOTSTRAPPED") if @journal
       wait_until!(90, "exact V90 did not restart after rollback") do
         begin
@@ -1912,15 +1990,15 @@ module OpenSteamerV91Cutover
           @predecessor_runtime.fresh_generation!(pid, record.fetch(:nonce))
           @rollback_pid = pid
           @rollback_nonce = record.fetch(:nonce)
-          verify_dynamic_process!(pid, expected_cdhash: Pins::V90_CDHASH) && verify_installed_v90_bytes!
+          verify_dynamic_process!(pid, expected_cdhash: Pins.fetch(:V90_CDHASH)) && verify_installed_v90_bytes!
         rescue Failure
           false
         end
       end
       restore_display_if_needed!
-      wait_until!(15, "V90 display mode was not restored") { current_display_mode == Pins::LIVE_DISPLAY_MODE }
+      wait_until!(15, "V90 display mode was not restored") { current_display_mode == Pins.fetch(:LIVE_DISPLAY_MODE) }
       31.times do
-        verify_dynamic_process!(@rollback_pid, expected_cdhash: Pins::V90_CDHASH)
+        verify_dynamic_process!(@rollback_pid, expected_cdhash: Pins.fetch(:V90_CDHASH))
         verify_installed_v90_bytes!
         retain_rollback_safety_failure { verify_routes! }
         route_monitor_clean!(allow_failure: true)
@@ -1933,7 +2011,7 @@ module OpenSteamerV91Cutover
       remove_staged_root_if_owned!
       remove_provisional_active_pointer!
       remove_pending_pointer_if_owned!
-      strict_fsync_directory!(Pins::RUNTIME_ROOT, "V91 runtime root after rollback")
+      strict_fsync_directory!(Pins.fetch(:RUNTIME_ROOT), "V91 runtime root after rollback")
       route_monitor_clean!(allow_failure: true) if @route_monitor
       stop_route_monitor!(allow_failure: true) if @route_monitor
       retain_rollback_safety_failure { verify_routes! }
@@ -1948,11 +2026,11 @@ module OpenSteamerV91Cutover
         pid=#{@rollback_pid}
         nonce=#{@rollback_nonce}
         target=exact-v90
-        selected=#{Pins::LIVE_DISPLAY_MODE}
+        selected=#{Pins.fetch(:LIVE_DISPLAY_MODE)}
       RESULT
       write_durable(
         File.join(@transaction, "rollback-result.txt"),
-        rollback_result,
+        Pins.record_out(rollback_result),
         0o600,
         exclusive: true
       )
@@ -1967,7 +2045,7 @@ module OpenSteamerV91Cutover
       )
       strict_fsync_directory!(@transaction, "completed rollback receipt")
       remove_lock_if_owned!
-      strict_fsync_directory!(Pins::RUNTIME_ROOT, "V91 runtime root after terminal receipt")
+      strict_fsync_directory!(Pins.fetch(:RUNTIME_ROOT), "V91 runtime root after terminal receipt")
       true
     end
 
@@ -2116,9 +2194,9 @@ module OpenSteamerV91Cutover
     end
 
     def durably_sync_transaction_topology!(
-      runtime_root: Pins::RUNTIME_ROOT,
-      update_root: Pins::V91_UPDATE_ROOT,
-      lock_path: Pins::V91_LOCK
+      runtime_root: Pins.fetch(:RUNTIME_ROOT),
+      update_root: Pins.fetch(:V91_UPDATE_ROOT),
+      lock_path: Pins.fetch(:V91_LOCK)
     )
       children = [
         [@post_stop_helpers_root, @post_stop_helpers_root_identity, "staged observer-tools directory"],
@@ -2156,12 +2234,12 @@ module OpenSteamerV91Cutover
     def parse_journal_bytes!(bytes)
       lines = bytes.lines
       Util.fail!("V91 journal header is missing or malformed") unless
-        lines.shift == "#{Pins::V91_JOURNAL_HEADER}\n"
+        lines.shift == "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n"
       prior = nil
       states = lines.map do |line|
         match = line.match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z STATE ([A-Z0-9_]+)\n\z/)
         Util.fail!("V91 journal contains a torn or malformed record") unless match
-        state = match[1]
+        state = Pins.state_in(match[1])
         Util.fail!("V91 journal contains an invalid state transition #{prior.inspect} -> #{state}") unless
           JOURNAL_TRANSITIONS.fetch(prior, []).include?(state)
         prior = state
@@ -2284,7 +2362,7 @@ module OpenSteamerV91Cutover
                   verify_staged_install_layout!
                   @staged_root
                 elsif path == @transaction
-                  Pins::V91_UPDATE_ROOT
+                  Pins.fetch(:V91_UPDATE_ROOT)
                 end
       Util.fail!("refusing unapproved recursive cleanup target: #{path}") unless allowed && File.dirname(path) == allowed
       assert_identity!(path, identity, path)
@@ -2299,12 +2377,12 @@ module OpenSteamerV91Cutover
     def verify_staged_install_layout!
       Util.fail!("V91 staging token is malformed") unless
         @token&.match?(/\A[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/)
-      expected_root = "/Applications/.opensteamer-paired-v91-install-#{@token}"
-      expected_app = File.join(expected_root, File.basename(Pins::LIVE_APP))
+      expected_root = "/Applications/.opensteamer-paired-#{Pins.release_name}-install-#{@token}"
+      expected_app = File.join(expected_root, Pins.candidate_basename)
       Util.fail!("V91 staged root escaped the exact install-hold namespace") unless
-        @staged_root == expected_root && File.dirname(@staged_root) == File.dirname(Pins::LIVE_APP)
+        @staged_root == expected_root && File.dirname(@staged_root) == File.dirname(Pins.fetch(:LIVE_APP))
       Util.fail!("V91 staged app lacks the production bundle basename") unless
-        @staged_app == expected_app && File.basename(@staged_app) == File.basename(Pins::LIVE_APP)
+        @staged_app == expected_app && File.basename(@staged_app) == Pins.candidate_basename
       true
     end
 
@@ -2325,7 +2403,7 @@ module OpenSteamerV91Cutover
       Util.directory!(app, "V91 staged app", mode: 0o755, owner: Process.euid)
       assert_identity!(root, root_identity, "V91 staged root")
       assert_identity!(app, app_identity, "V91 staged app")
-      expected_basename = File.basename(Pins::LIVE_APP)
+      expected_basename = Pins.candidate_basename
       Util.fail!("V91 staged app escaped its private root") unless
         File.dirname(app) == root && File.basename(app) == expected_basename
       Util.fail!("V91 staged root contains unexpected entries") unless
@@ -2369,23 +2447,23 @@ module OpenSteamerV91Cutover
 
     def remove_pending_pointer_if_owned!
       return true unless @pending_identity
-      unlink_exact!(Pins::V91_PENDING_POINTER, @pending_identity, expected_contents: "#{@transaction}\n")
+      unlink_exact!(Pins.fetch(:V91_PENDING_POINTER), @pending_identity, expected_contents: "#{@transaction}\n")
       @pending_identity = nil
       true
     end
 
     def remove_lock_if_owned!
       return true unless @lock_identity
-      remove_empty_directory_exact!(Pins::V91_LOCK, @lock_identity)
+      remove_empty_directory_exact!(Pins.fetch(:V91_LOCK), @lock_identity)
       @lock_identity = nil
       true
     end
 
     def remove_provisional_active_pointer!
       if @active_pointer_identity
-        unlink_exact!(Pins::V91_ACTIVE_POINTER, @active_pointer_identity, expected_contents: "#{@transaction}\n")
+        unlink_exact!(Pins.fetch(:V91_ACTIVE_POINTER), @active_pointer_identity, expected_contents: "#{@transaction}\n")
         @active_pointer_identity = nil
-      elsif path_present?(Pins::V91_ACTIVE_POINTER)
+      elsif path_present?(Pins.fetch(:V91_ACTIVE_POINTER))
         Util.fail!("unowned V91 active pointer appeared during rollback")
       end
       true
@@ -2420,40 +2498,40 @@ module OpenSteamerV91Cutover
     end
 
     def restore_display_if_needed!
-      return true if current_display_mode == Pins::LIVE_DISPLAY_MODE
+      return true if current_display_mode == Pins.fetch(:LIVE_DISPLAY_MODE)
       selector = helper_path("select-live-display-mode-v23")
-      command!(selector, Pins::LIVE_DISPLAY_MODE)
+      command!(selector, Pins.fetch(:LIVE_DISPLAY_MODE))
       true
     end
 
     def verify_route_monitor_tools!
       Util.exact_file!(
-        Pins::ROUTE_MONITOR_SOURCE,
-        Pins::ROUTE_MONITOR_SOURCE_SHA256,
+        Pins.fetch(:ROUTE_MONITOR_SOURCE),
+        Pins.fetch(:ROUTE_MONITOR_SOURCE_SHA256),
         "V91 route-monitor source",
         mode: 0o644,
         owner: Process.euid
       )
-      compiler_link = File.lstat(Pins::SWIFTC)
+      compiler_link = File.lstat(Pins.fetch(:SWIFTC))
       Util.fail!("pinned swiftc path is not the reviewed symlink") unless
         compiler_link.symlink? && compiler_link.uid == Process.euid && compiler_link.nlink == 1 &&
-        File.readlink(Pins::SWIFTC) == Pins::SWIFTC_LINK_TARGET
-      compiler = File.realpath(Pins::SWIFTC)
+        File.readlink(Pins.fetch(:SWIFTC)) == Pins.fetch(:SWIFTC_LINK_TARGET)
+      compiler = File.realpath(Pins.fetch(:SWIFTC))
       compiler_stat = Util.regular_file!(compiler, "pinned swiftc executable", mode: 0o755, owner: Process.euid, links: 1)
       Util.fail!("pinned swiftc filesystem identity changed") unless
-        [compiler_stat.dev, compiler_stat.ino] == Pins::SWIFTC_IDENTITY
-      Util.fail!("pinned swiftc executable digest mismatch") unless Util.sha256(Pins::SWIFTC) == Pins::SWIFTC_SHA256
-      sdk_link = File.lstat(Pins::MACOS_SDK)
+        [compiler_stat.dev, compiler_stat.ino] == Pins.fetch(:SWIFTC_IDENTITY)
+      Util.fail!("pinned swiftc executable digest mismatch") unless Util.sha256(Pins.fetch(:SWIFTC)) == Pins.fetch(:SWIFTC_SHA256)
+      sdk_link = File.lstat(Pins.fetch(:MACOS_SDK))
       Util.fail!("pinned macOS SDK path is not the reviewed symlink") unless
         sdk_link.symlink? && sdk_link.uid == Process.euid && sdk_link.nlink == 1 &&
-        File.readlink(Pins::MACOS_SDK) == Pins::MACOS_SDK_LINK_TARGET
-      sdk = File.realpath(Pins::MACOS_SDK)
+        File.readlink(Pins.fetch(:MACOS_SDK)) == Pins.fetch(:MACOS_SDK_LINK_TARGET)
+      sdk = File.realpath(Pins.fetch(:MACOS_SDK))
       sdk_stat = Util.directory!(sdk, "pinned macOS SDK", mode: 0o755, owner: Process.euid)
       Util.fail!("pinned macOS SDK filesystem identity changed") unless
-        [sdk_stat.dev, sdk_stat.ino] == Pins::MACOS_SDK_IDENTITY
+        [sdk_stat.dev, sdk_stat.ino] == Pins.fetch(:MACOS_SDK_IDENTITY)
       Util.exact_file!(
-        File.join(Pins::MACOS_SDK, "SDKSettings.json"),
-        Pins::MACOS_SDK_SETTINGS_SHA256,
+        File.join(Pins.fetch(:MACOS_SDK), "SDKSettings.json"),
+        Pins.fetch(:MACOS_SDK_SETTINGS_SHA256),
         "pinned macOS SDK settings",
         mode: 0o644,
         owner: Process.euid
@@ -2478,7 +2556,7 @@ module OpenSteamerV91Cutover
       stderr_path = File.join(@transaction, "sticky-coreaudio-route-monitor.stderr")
       write_durable(
         monitor_source,
-        File.binread(Pins::ROUTE_MONITOR_SOURCE),
+        File.binread(Pins.fetch(:ROUTE_MONITOR_SOURCE)),
         0o400,
         exclusive: true
       ) { |identity| @route_monitor_source_identity = identity }
@@ -2498,8 +2576,8 @@ module OpenSteamerV91Cutover
           "CLANG_MODULE_CACHE_PATH" => module_cache,
           "SWIFT_MODULECACHE_PATH" => module_cache
         },
-        Pins::SWIFTC,
-        "-sdk", Pins::MACOS_SDK,
+        Pins.fetch(:SWIFTC),
+        "-sdk", Pins.fetch(:MACOS_SDK),
         "-module-cache-path", module_cache,
         monitor_source,
         "-O",
@@ -2512,7 +2590,7 @@ module OpenSteamerV91Cutover
       assert_identity!(monitor_source, @route_monitor_source_identity, "staged route-monitor source")
       Util.exact_file!(
         monitor_source,
-        Pins::ROUTE_MONITOR_SOURCE_SHA256,
+        Pins.fetch(:ROUTE_MONITOR_SOURCE_SHA256),
         "staged route-monitor source",
         mode: 0o400,
         owner: Process.euid,
@@ -2562,7 +2640,7 @@ module OpenSteamerV91Cutover
       wait_until!(15, "sticky CoreAudio monitor did not arm") do
         monitor_reap_nonblocking!
         Util.fail!("sticky CoreAudio monitor exited before READY") if @route_monitor[:status]
-        File.binread(stdout_path) == "#{Pins::ROUTE_MONITOR_READY}\n"
+        File.binread(stdout_path) == "#{Pins.fetch(:ROUTE_MONITOR_READY)}\n"
       end
       route_monitor_clean!
       true
@@ -2596,7 +2674,7 @@ module OpenSteamerV91Cutover
         Util.regular_file!(path, "route monitor #{name}", mode: mode, owner: Process.euid, links: 1)
       end
       Util.fail!("staged route-monitor source bytes changed") unless
-        Util.sha256(@route_monitor.fetch(:source)) == Pins::ROUTE_MONITOR_SOURCE_SHA256
+        Util.sha256(@route_monitor.fetch(:source)) == Pins.fetch(:ROUTE_MONITOR_SOURCE_SHA256)
       Util.fail!("compiled route-monitor bytes changed") unless
         Util.sha256(@route_monitor.fetch(:binary)) == @route_monitor.fetch(:binary_sha)
       true
@@ -2614,7 +2692,7 @@ module OpenSteamerV91Cutover
       Util.fail!("sticky CoreAudio route event was observed") unless File.zero?(@route_monitor.fetch(:event))
       Util.fail!("sticky CoreAudio monitor stderr is nonempty") unless File.zero?(@route_monitor.fetch(:stderr))
       Util.fail!("sticky CoreAudio monitor readiness proof changed") unless
-        File.binread(@route_monitor.fetch(:stdout)) == "#{Pins::ROUTE_MONITOR_READY}\n"
+        File.binread(@route_monitor.fetch(:stdout)) == "#{Pins.fetch(:ROUTE_MONITOR_READY)}\n"
       verify_routes!
       true
     rescue Failure => error
@@ -2667,7 +2745,7 @@ module OpenSteamerV91Cutover
       begin
         verify_route_monitor_files!
         status = @route_monitor[:status]
-        expected_stdout = "#{Pins::ROUTE_MONITOR_READY}\n#{Pins::ROUTE_MONITOR_RESULT}\n"
+        expected_stdout = "#{Pins.fetch(:ROUTE_MONITOR_READY)}\n#{Pins.fetch(:ROUTE_MONITOR_RESULT)}\n"
         Util.fail!("sticky CoreAudio monitor did not exit successfully") unless status&.success?
         Util.fail!("sticky CoreAudio route notifications were observed") unless File.zero?(@route_monitor.fetch(:event))
         Util.fail!("sticky CoreAudio monitor teardown emitted stderr") unless File.zero?(@route_monitor.fetch(:stderr))
@@ -2691,7 +2769,7 @@ module OpenSteamerV91Cutover
         launch_agents: rollback_history.launch_agents
       )
       verify_no_pointer_temps!
-      [Pins::V91_PENDING_POINTER, Pins::V91_ACTIVE_POINTER, Pins::V91_LOCK].each do |path|
+      [Pins.fetch(:V91_PENDING_POINTER), Pins.fetch(:V91_ACTIVE_POINTER), Pins.fetch(:V91_LOCK)].each do |path|
         Util.fail!("V91 retry namespace contains an unexpected live artifact: #{path}") if
           path_present?(path)
       end
@@ -2706,7 +2784,7 @@ module OpenSteamerV91Cutover
         launch_agents: rollback_history.launch_agents
       )
       verify_no_pointer_temps!
-      [Pins::V91_PENDING_POINTER, Pins::V91_ACTIVE_POINTER].each do |path|
+      [Pins.fetch(:V91_PENDING_POINTER), Pins.fetch(:V91_ACTIVE_POINTER)].each do |path|
         Util.fail!("V91 retry namespace contains an unexpected pointer: #{path}") if path_present?(path)
       end
       verify_owned_retry_lock!
@@ -2726,24 +2804,24 @@ module OpenSteamerV91Cutover
       verify_no_pointer_temps!
       verify_owned_retry_lock!
       Util.fail!("V91 pending pointer identity is unavailable") unless @pending_identity
-      assert_identity!(Pins::V91_PENDING_POINTER, @pending_identity, "V91 pending pointer")
+      assert_identity!(Pins.fetch(:V91_PENDING_POINTER), @pending_identity, "V91 pending pointer")
       Util.fail!("V91 pending pointer bytes changed") unless
-        File.binread(Pins::V91_PENDING_POINTER) == "#{@transaction}\n"
-      Util.fail!("V91 active pointer appeared before commit") if path_present?(Pins::V91_ACTIVE_POINTER)
+        File.binread(Pins.fetch(:V91_PENDING_POINTER)) == "#{@transaction}\n"
+      Util.fail!("V91 active pointer appeared before commit") if path_present?(Pins.fetch(:V91_ACTIVE_POINTER))
       true
     end
 
     def rollback_history
       @rollback_history ||= RollbackHistory.new(
-        root: Pins::V91_UPDATE_ROOT,
-        application_parent: File.dirname(Pins::LIVE_APP),
-        launch_parent: File.dirname(Pins::LAUNCH_AGENT)
+        root: Pins.fetch(:V91_UPDATE_ROOT),
+        application_parent: File.dirname(Pins.fetch(:LIVE_APP)),
+        launch_parent: File.dirname(Pins.fetch(:LAUNCH_AGENT))
       )
     end
 
     def verify_rollback_history!
       return rollback_history.unchanged! if @rollback_history_verified
-      if path_present?(Pins::V91_UPDATE_ROOT)
+      if path_present?(Pins.fetch(:V91_UPDATE_ROOT))
         rollback_history.capture!
         @rollback_history_verified = true
       end
@@ -2755,28 +2833,28 @@ module OpenSteamerV91Cutover
       identity = Util.exact_code_identity_values(metadata.b)
       Util.fail!("#{label} code identity changed") unless
         identity.fetch(:identifier) == [identifier] &&
-        identity.fetch(:team_identifier) == [Pins::TEAM_ID] &&
+        identity.fetch(:team_identifier) == [Pins.fetch(:TEAM_ID)] &&
         identity.fetch(:cdhash) == [cdhash]
       true
     end
 
     def verify_update_root_children!(expected)
-      unless path_present?(Pins::V91_UPDATE_ROOT)
+      unless path_present?(Pins.fetch(:V91_UPDATE_ROOT))
         Util.fail!("V91 history disappeared") unless expected.empty?
         return true
       end
-      actual = Dir.children(Pins::V91_UPDATE_ROOT).sort
+      actual = Dir.children(Pins.fetch(:V91_UPDATE_ROOT)).sort
       Util.fail!("V91 update-root children differ from exact retry allowlist") unless
         actual == expected.sort
       true
     end
 
     def verify_retry_prefix_names!(applications:, launch_agents:)
-      application_names = Dir.children(File.dirname(Pins::LIVE_APP)).select do |name|
-        name.start_with?(".opensteamer-paired-v91-")
+      application_names = Dir.children(File.dirname(Pins.fetch(:LIVE_APP))).select do |name|
+        name.start_with?(".opensteamer-paired-#{Pins.release_name}-")
       end.sort
-      launch_names = Dir.children(File.dirname(Pins::LAUNCH_AGENT)).select do |name|
-        name.start_with?(".org.example.opensteamer.worldwide.v91-")
+      launch_names = Dir.children(File.dirname(Pins.fetch(:LAUNCH_AGENT))).select do |name|
+        name.start_with?(".org.example.opensteamer.worldwide.#{Pins.release_name}-")
       end.sort
       Util.fail!("V91 application retry namespace differs from exact allowlist") unless
         application_names == applications.sort
@@ -2786,9 +2864,9 @@ module OpenSteamerV91Cutover
     end
 
     def verify_no_pointer_temps!
-      pointer_temps = Dir.children(Pins::RUNTIME_ROOT).select do |name|
-        name.start_with?(".pending-paired-host-update-v91.") ||
-          name.start_with?(".active-paired-host-update-v91.")
+      pointer_temps = Dir.children(Pins.fetch(:RUNTIME_ROOT)).select do |name|
+        name.start_with?(".#{File.basename(Pins.fetch(:V91_PENDING_POINTER))}.") ||
+          name.start_with?(".#{File.basename(Pins.fetch(:V91_ACTIVE_POINTER))}.")
       end
       Util.fail!("V91 pointer temporary namespace is not empty") unless pointer_temps.empty?
       true
@@ -2796,46 +2874,47 @@ module OpenSteamerV91Cutover
 
     def verify_owned_retry_lock!
       Util.fail!("V91 transaction lock identity is unavailable") unless @lock_identity
-      assert_identity!(Pins::V91_LOCK, @lock_identity, "V91 transaction lock")
+      assert_identity!(Pins.fetch(:V91_LOCK), @lock_identity, "V91 transaction lock")
       lock_stat = Util.directory!(
-        Pins::V91_LOCK,
+        Pins.fetch(:V91_LOCK),
         "V91 transaction lock",
         mode: 0o700,
         owner: Process.euid
       )
       Util.fail!("V91 transaction lock group changed") unless lock_stat.gid == 20
-      Util.fail!("V91 transaction lock is not empty") unless Dir.empty?(Pins::V91_LOCK)
+      Util.fail!("V91 transaction lock is not empty") unless Dir.empty?(Pins.fetch(:V91_LOCK))
       true
     end
 
     def verify_origins!
+      return Pins.contract.verify_baseline_evidence! if Pins.contract
       verify_pointer!(
-        Pins::V90_POINTER, Pins::V90_POINTER_SHA256,
-        Pins::V90_EVIDENCE, Pins::V90_EVIDENCE_IDENTITY, "committed V90"
+        Pins.fetch(:V90_POINTER), Pins.fetch(:V90_POINTER_SHA256),
+        Pins.fetch(:V90_EVIDENCE), Pins.fetch(:V90_EVIDENCE_IDENTITY), "committed V90"
       )
       exact = {
-        "journal.log" => Pins::V90_JOURNAL_SHA256,
-        "result.txt" => Pins::V90_RESULT_SHA256,
-        "commit-safety-proof.txt" => Pins::V90_COMMIT_PROOF_SHA256,
-        "v90-candidate-app-copy-manifest.txt" => Pins::V90_APP_MANIFEST_SHA256
+        "journal.log" => Pins.fetch(:V90_JOURNAL_SHA256),
+        "result.txt" => Pins.fetch(:V90_RESULT_SHA256),
+        "commit-safety-proof.txt" => Pins.fetch(:V90_COMMIT_PROOF_SHA256),
+        "v90-candidate-app-copy-manifest.txt" => Pins.fetch(:V90_APP_MANIFEST_SHA256)
       }
       exact.each do |relative, sha|
-        Util.exact_file!(File.join(Pins::V90_EVIDENCE, relative), sha,
+        Util.exact_file!(File.join(Pins.fetch(:V90_EVIDENCE), relative), sha,
                          "committed V90 #{relative}", mode: 0o600, owner: 501)
       end
       Util.exact_file!(
-        Pins::V90_BUNDLE_VERIFIER_SOURCE,
-        Pins::V90_BUNDLE_VERIFIER_SHA256,
+        Pins.fetch(:V90_BUNDLE_VERIFIER_SOURCE),
+        Pins.fetch(:V90_BUNDLE_VERIFIER_SHA256),
         "V90-compatible bundle verifier",
         mode: 0o755,
         owner: 501
       )
       verify_predecessor_commit_proof!(
-        File.binread(File.join(Pins::V90_EVIDENCE, "journal.log")),
-        File.binread(File.join(Pins::V90_EVIDENCE, "commit-safety-proof.txt"))
+        File.binread(File.join(Pins.fetch(:V90_EVIDENCE), "journal.log")),
+        File.binread(File.join(Pins.fetch(:V90_EVIDENCE), "commit-safety-proof.txt"))
       )
-      Pins::V90_HELPERS.each do |relative, sha|
-        path = File.join(Pins::OBSERVER_EVIDENCE, relative)
+      Pins.fetch(:V90_HELPERS).each do |relative, sha|
+        path = File.join(Pins.fetch(:OBSERVER_EVIDENCE), relative)
         Util.exact_file!(path, sha, "trusted observer #{relative}", mode: 0o500, owner: 501)
       end
       true
@@ -2843,16 +2922,16 @@ module OpenSteamerV91Cutover
 
     def verify_predecessor_commit_proof!(journal, proof)
       Util.fail!("predecessor is not terminal committed V90") unless
-        journal.lines.map(&:chomp).last == Pins::V90_TERMINAL
+        journal.lines.map(&:chomp).last == Pins.fetch(:V90_TERMINAL)
       records = proof.lines.map(&:chomp)
       required = [
         "result=success-pending-terminal",
         "terminal_required=COMMITTED_V90",
         "point_of_no_return=V90_COMMIT_IRREVERSIBLE",
         "target=v90",
-        "selected=#{Pins::LIVE_DISPLAY_MODE}",
-        "candidate_executable_sha256=#{Pins::V90_EXECUTABLE_SHA256}",
-        "route_monitor=#{Pins::ROUTE_MONITOR_RESULT}"
+        "selected=#{Pins.fetch(:LIVE_DISPLAY_MODE)}",
+        "candidate_executable_sha256=#{Pins.fetch(:V90_EXECUTABLE_SHA256)}",
+        "route_monitor=#{Pins.fetch(:ROUTE_MONITOR_RESULT)}"
       ]
       Util.fail!("committed V90 safety proof differs") unless
         required.all? { |line| records.count(line) == 1 } &&
@@ -2880,18 +2959,29 @@ module OpenSteamerV91Cutover
       @reference_path = capsule.paths.fetch(:reference)
       @payload_sha = Util.sha256(File.join(capsule.root, "v91-deployment-payload-manifest.json"))
       @handoff_sha = capsule.payload.fetch("handoffSHA256")
-      verifier = File.join(capsule.root, "source/macOS/scripts/verify-mac-host-bundle.sh")
-      command_with_environment!({ "OPENSTEAMER_EXPECTED_ARCHITECTURES" => "arm64" }, verifier, capsule.paths.fetch(:candidate), Pins::TEAM_ID, capsule.paths.fetch(:reference))
+      verifier = File.join(capsule.root, "source", Pins.candidate_verifier_relative)
+      command_with_environment!({ "OPENSTEAMER_EXPECTED_ARCHITECTURES" => "arm64" }, verifier, *Pins.candidate_verifier_flags, capsule.paths.fetch(:candidate), Pins.fetch(:TEAM_ID), capsule.paths.fetch(:reference))
       true
     end
 
     def stage_post_stop_evidence!(capsule)
+      if Pins.contract
+        Pins.contract.verify_baseline_evidence!
+        {
+          "successor-profile.json" => [Pins.contract.profile_path, Pins.contract.profile_sha],
+          "reviewed-current-baseline.json" => Pins.contract.profile.fetch("baseline").values_at("path", "sha256")
+        }.each do |name, (source, digest)|
+          destination = File.join(@transaction, name)
+          write_durable(destination, File.binread(source), 0o600, exclusive: true)
+          Util.exact_file!(destination, digest, name, mode: 0o600, owner: Process.euid)
+        end
+      end
       observer = ToolingProof.readiness_observer!(capsule.tooling)
       @post_stop_readiness_sha = observer.fetch("readinessScriptSHA256")
       @post_stop_tooling_provenance = observer.reject { |key, _| key == "bytes" }.merge(
         "schema" => "opensteamer.host-cutover-tooling-provenance.v1",
-        "artifactBuildToolingCommit" => capsule.payload.fetch("toolingCommit"),
-        "artifactBuildToolingTree" => capsule.payload.fetch("toolingTree"),
+        (Pins.contract ? "artifactSealToolingCommit" : "artifactBuildToolingCommit") => capsule.payload.fetch("toolingCommit"),
+        (Pins.contract ? "artifactSealToolingTree" : "artifactBuildToolingTree") => capsule.payload.fetch("toolingTree"),
         "artifactAssemblerScriptGitBlob" => capsule.payload.fetch("assemblerScriptGitBlob")
       )
       @post_stop_tooling_receipt = File.join(@transaction, "v91-deployment-tooling.json")
@@ -2904,7 +2994,7 @@ module OpenSteamerV91Cutover
       write_durable(
         @post_stop_readiness,
         observer.fetch("bytes"),
-        Pins::READINESS_STAGED_MODE,
+        Pins.fetch(:READINESS_STAGED_MODE),
         exclusive: true
       ) { |identity| @post_stop_readiness_identity = identity }
 
@@ -2931,8 +3021,8 @@ module OpenSteamerV91Cutover
         "V91 transaction after observer-tools creation"
       ) { |identity| @post_stop_helpers_root_identity = identity }
       @post_stop_helpers = {}
-      Pins::V90_HELPERS.each do |name, digest|
-        source = File.join(Pins::OBSERVER_EVIDENCE, name)
+      Pins.fetch(:V90_HELPERS).each do |name, digest|
+        source = File.join(Pins.fetch(:OBSERVER_EVIDENCE), name)
         destination = File.join(helpers_root, name)
         identity = nil
         write_durable(destination, File.binread(source), 0o500, exclusive: true) do |created_identity|
@@ -2943,14 +3033,14 @@ module OpenSteamerV91Cutover
       @post_stop_v90_verifier = File.join(helpers_root, "verify-v90-mac-host-bundle.sh")
       write_durable(
         @post_stop_v90_verifier,
-        File.binread(Pins::V90_BUNDLE_VERIFIER_SOURCE),
+        File.binread(Pins.fetch(:V90_BUNDLE_VERIFIER_SOURCE)),
         0o500,
         exclusive: true
       ) { |identity| @post_stop_v90_verifier_identity = identity }
       @post_stop_v90_manifest = File.join(@transaction, "v90-predecessor-app-copy-manifest.txt")
       write_durable(
         @post_stop_v90_manifest,
-        File.binread(Pins::V90_COMMITTED_COPY_MANIFEST),
+        File.binread(Pins.fetch(:V90_COMMITTED_COPY_MANIFEST)),
         0o600,
         exclusive: true
       ) { |identity| @post_stop_v90_manifest_identity = identity }
@@ -2959,6 +3049,14 @@ module OpenSteamerV91Cutover
     end
 
     def verify_post_stop_evidence!(capsule)
+      if Pins.contract
+        {
+          "successor-profile.json" => Pins.contract.profile_sha,
+          "reviewed-current-baseline.json" => Pins.contract.profile.fetch("baseline").fetch("sha256")
+        }.each do |name, digest|
+          Util.exact_file!(File.join(@transaction, name), digest, name, mode: 0o600, owner: Process.euid)
+        end
+      end
       observer = ToolingProof.readiness_observer!(capsule.tooling)
       observer.reject { |key, _| key == "bytes" }.each do |key, value|
         Util.fail!("deployment readiness provenance changed: #{key}") unless
@@ -2981,7 +3079,7 @@ module OpenSteamerV91Cutover
         @post_stop_readiness,
         @post_stop_readiness_sha,
         "staged V91 readiness observer",
-        mode: Pins::READINESS_STAGED_MODE,
+        mode: Pins.fetch(:READINESS_STAGED_MODE),
         owner: Process.euid
       )
       copy_sha = capsule.payload.fetch("candidateAppCopyManifestSHA256")
@@ -3024,8 +3122,8 @@ module OpenSteamerV91Cutover
         @post_stop_reference,
         label: "staged predecessor reference"
       )
-      Pins::V90_HELPERS.each do |name, digest|
-        source = File.join(Pins::OBSERVER_EVIDENCE, name)
+      Pins.fetch(:V90_HELPERS).each do |name, digest|
+        source = File.join(Pins.fetch(:OBSERVER_EVIDENCE), name)
         Util.exact_file!(source, digest, "V90 helper #{name}", mode: 0o500, owner: Process.euid)
         staged = @post_stop_helpers.fetch(name)
         assert_identity!(staged.fetch(:path), staged.fetch(:identity), "staged V90 helper #{name}")
@@ -3038,15 +3136,15 @@ module OpenSteamerV91Cutover
         )
       end
       Util.exact_file!(
-        Pins::V90_BUNDLE_VERIFIER_SOURCE,
-        Pins::V90_BUNDLE_VERIFIER_SHA256,
+        Pins.fetch(:V90_BUNDLE_VERIFIER_SOURCE),
+        Pins.fetch(:V90_BUNDLE_VERIFIER_SHA256),
         "V90-compatible bundle verifier",
         mode: 0o755,
         owner: Process.euid
       )
       Util.exact_file!(
-        Pins::V90_COMMITTED_COPY_MANIFEST,
-        Pins::V90_APP_MANIFEST_SHA256,
+        Pins.fetch(:V90_COMMITTED_COPY_MANIFEST),
+        Pins.fetch(:V90_APP_MANIFEST_SHA256),
         "committed V90 app copy manifest",
         mode: 0o600,
         owner: Process.euid
@@ -3058,7 +3156,7 @@ module OpenSteamerV91Cutover
       )
       Util.exact_file!(
         @post_stop_v90_verifier,
-        Pins::V90_BUNDLE_VERIFIER_SHA256,
+        Pins.fetch(:V90_BUNDLE_VERIFIER_SHA256),
         "staged V90-compatible bundle verifier",
         mode: 0o500,
         owner: Process.euid
@@ -3070,7 +3168,7 @@ module OpenSteamerV91Cutover
       )
       Util.exact_file!(
         @post_stop_v90_manifest,
-        Pins::V90_APP_MANIFEST_SHA256,
+        Pins.fetch(:V90_APP_MANIFEST_SHA256),
         "staged committed V90 app copy manifest",
         mode: 0o600,
         owner: Process.euid
@@ -3080,17 +3178,17 @@ module OpenSteamerV91Cutover
 
     def helper_path(name)
       staged = @post_stop_helpers && @post_stop_helpers[name]
-      staged ? staged.fetch(:path) : File.join(Pins::OBSERVER_EVIDENCE, name)
+      staged ? staged.fetch(:path) : File.join(Pins.fetch(:OBSERVER_EVIDENCE), name)
     end
 
     def verify_live_v90!(prior_session)
       observed = capture_predecessor_runtime_snapshot!
       @predecessor_runtime.assert_same!(observed) if @predecessor_runtime
       verify_installed_v90_bytes!
-      verify_dynamic_process!(observed.pid, expected_start: observed.start, expected_cdhash: Pins::V90_CDHASH)
+      verify_dynamic_process!(observed.pid, expected_start: observed.start, expected_cdhash: Pins.fetch(:V90_CDHASH))
       verify_routes!
       verify_pairing_metadata!
-      Util.fail!("live display selection differs from pinned V90") unless current_display_mode == Pins::LIVE_DISPLAY_MODE
+      Util.fail!("live display selection differs from pinned V90") unless current_display_mode == Pins.fetch(:LIVE_DISPLAY_MODE)
       session = observe_predecessor_session!(observed, prior_session)
       observed.assert_same!(capture_predecessor_runtime_snapshot!)
       @predecessor_runtime ||= observed
@@ -3116,18 +3214,18 @@ module OpenSteamerV91Cutover
       start = Util.capture!("/bin/ps", "-p", pid.to_s, "-o", "lstart=").split.join(" ")
       lock = strict_lock_record
       Util.fail!("predecessor launch and generation-lock PIDs differ") unless lock.fetch(:pid) == pid
-      files = (Pins::PREDECESSOR_IDENTITY_PATHS + [Pins::LAUNCH_AGENT]).each_with_object({}) do |path, result|
+      files = (Pins.fetch(:PREDECESSOR_IDENTITY_PATHS) + [Pins.fetch(:LAUNCH_AGENT)]).each_with_object({}) do |path, result|
         result[path] = file_identity(path)
       end
       PredecessorRuntimeSnapshot.new(
         pid: pid, runs: runs, start: start, nonce: lock.fetch(:nonce), files: files,
-        lock_directory: file_identity(File.dirname(Pins::LIVE_LOCK_PATH)),
-        lock_file: file_identity(Pins::LIVE_LOCK_PATH)
+        lock_directory: file_identity(File.dirname(Pins.fetch(:LIVE_LOCK_PATH))),
+        lock_file: file_identity(Pins.fetch(:LIVE_LOCK_PATH))
       )
     end
 
     def observe_predecessor_session!(runtime, prior)
-      SessionFence.observe!(Pins::LAUNCH_STDOUT, runtime.pid, runtime.nonce, prior: prior)
+      SessionFence.observe!(Pins.fetch(:LAUNCH_STDOUT), runtime.pid, runtime.nonce, prior: prior)
     end
 
     def persist_predecessor_runtime_snapshot!
@@ -3157,41 +3255,41 @@ module OpenSteamerV91Cutover
           assert_identity!(path, expected, "live V90 #{path}")
         end
       end
-      Util.exact_file!(Pins::LIVE_EXECUTABLE, Pins::V90_EXECUTABLE_SHA256, "live V90 executable", mode: 0o755, owner: 501)
-      Util.exact_file!(Pins::LIVE_FRAMEWORK, Pins::V90_FRAMEWORK_SHA256, "live V90 framework", mode: 0o755, owner: 501)
-      Util.exact_file!(Pins::LIVE_INFO_PLIST, Pins::V90_INFO_PLIST_SHA256, "live V90 Info.plist", mode: 0o644, owner: 501)
-      Util.exact_file!(Pins::LAUNCH_AGENT, Pins::LAUNCH_AGENT_SHA256, "live V90 launch plist", mode: 0o600, owner: 501)
-      LaunchContract.verify!(Pins::LAUNCH_AGENT)
+      Util.exact_file!(Pins.fetch(:LIVE_EXECUTABLE), Pins.fetch(:V90_EXECUTABLE_SHA256), "live V90 executable", mode: 0o755, owner: 501)
+      Util.exact_file!(Pins.fetch(:LIVE_FRAMEWORK), Pins.fetch(:V90_FRAMEWORK_SHA256), "live V90 framework", mode: 0o755, owner: 501)
+      Util.exact_file!(Pins.fetch(:LIVE_INFO_PLIST), Pins.fetch(:V90_INFO_PLIST_SHA256), "live V90 Info.plist", mode: 0o644, owner: 501)
+      Util.exact_file!(Pins.fetch(:LAUNCH_AGENT), Pins.fetch(:LAUNCH_AGENT_SHA256), "live V90 launch plist", mode: 0o600, owner: 501)
+      LaunchContract.verify!(Pins.fetch(:LAUNCH_AGENT))
       verifier, verifier_mode = v90_bundle_verifier
       manifest, manifest_mode = v90_copy_manifest
       reference = v90_reference
-      @predecessor_root_xattrs ||= CopyManifest.capture_published_root_xattrs!(Pins::LIVE_APP)
+      @predecessor_root_xattrs ||= CopyManifest.capture_published_root_xattrs!(Pins.fetch(:LIVE_APP))
       verify_v90_bundle_contract!(
-        app: Pins::LIVE_APP,
+        app: Pins.fetch(:LIVE_APP),
         verifier: verifier,
-        verifier_sha: Pins::V90_BUNDLE_VERIFIER_SHA256,
+        verifier_sha: Pins.fetch(:V90_BUNDLE_VERIFIER_SHA256),
         verifier_mode: verifier_mode,
         manifest: manifest,
-        manifest_sha: Pins::V90_APP_MANIFEST_SHA256,
+        manifest_sha: Pins.fetch(:V90_APP_MANIFEST_SHA256),
         manifest_mode: manifest_mode,
         reference: reference,
-        reference_sha: Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256,
+        reference_sha: Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256),
         reference_mode: 0o755,
         allowed_root_xattrs: @predecessor_root_xattrs
       )
-      metadata = combined_capture!("/usr/bin/codesign", "--display", "--verbose=4", Pins::LIVE_EXECUTABLE)
+      metadata = combined_capture!("/usr/bin/codesign", "--display", "--verbose=4", Pins.fetch(:LIVE_EXECUTABLE))
       Util.fail!("live V90 code identifier mismatch") unless
-        Util.exact_prefixed_values(metadata, "Identifier=") == [Pins::EXECUTABLE_IDENTIFIER]
+        Util.exact_prefixed_values(metadata, "Identifier=") == [Pins.fetch(:EXECUTABLE_IDENTIFIER)]
       Util.fail!("live V90 TeamIdentifier mismatch") unless
-        Util.exact_prefixed_values(metadata, "TeamIdentifier=") == [Pins::TEAM_ID]
+        Util.exact_prefixed_values(metadata, "TeamIdentifier=") == [Pins.fetch(:TEAM_ID)]
       cdhashes = Util.exact_prefixed_values(metadata, "CDHash=")
       Util.fail!("live V90 CDHash mismatch") unless
         cdhashes.length == 1 && cdhashes.first.match?(/\A[0-9A-Fa-f]+\z/n) &&
-          cdhashes.first.downcase == Pins::V90_CDHASH
-      requirement_output = combined_capture!("/usr/bin/codesign", "--display", "--requirements", "-", Pins::LIVE_EXECUTABLE)
+          cdhashes.first.downcase == Pins.fetch(:V90_CDHASH)
+      requirement_output = combined_capture!("/usr/bin/codesign", "--display", "--requirements", "-", Pins.fetch(:LIVE_EXECUTABLE))
       requirement = requirement_output.b.lines.map { |line| line.strip.sub(/\A# /n, "") }
                                       .find { |line| line.start_with?("designated =>") }
-      Util.fail!("live V90 designated requirement mismatch") unless requirement == "designated => #{Pins::V90_DESIGNATED_REQUIREMENT}"
+      Util.fail!("live V90 designated requirement mismatch") unless requirement == "designated => #{Pins.fetch(:V90_DESIGNATED_REQUIREMENT)}"
       true
     end
 
@@ -3206,7 +3304,7 @@ module OpenSteamerV91Cutover
         )
         [@post_stop_v90_verifier, 0o500]
       else
-        [Pins::V90_BUNDLE_VERIFIER_SOURCE, 0o755]
+        [Pins.fetch(:V90_BUNDLE_VERIFIER_SOURCE), 0o755]
       end
     end
 
@@ -3221,7 +3319,7 @@ module OpenSteamerV91Cutover
         )
         [@post_stop_v90_manifest, 0o600]
       else
-        [Pins::V90_COMMITTED_COPY_MANIFEST, 0o600]
+        [Pins.fetch(:V90_COMMITTED_COPY_MANIFEST), 0o600]
       end
     end
 
@@ -3241,7 +3339,7 @@ module OpenSteamerV91Cutover
       end
       Util.exact_file!(
         reference,
-        Pins::APPROVED_PREDECESSOR_REFERENCE_SHA256,
+        Pins.fetch(:APPROVED_PREDECESSOR_REFERENCE_SHA256),
         "V90 designated-requirement reference",
         mode: 0o755,
         owner: Process.euid
@@ -3283,7 +3381,7 @@ module OpenSteamerV91Cutover
         verifier,
         "--installed-runtime",
         app,
-        Pins::TEAM_ID,
+        Pins.fetch(:TEAM_ID),
         reference
       )
       true
@@ -3300,23 +3398,23 @@ module OpenSteamerV91Cutover
       Util.exact_file!(@staged_plist, @candidate_plist_sha, "staged V91 launch plist", mode: 0o600, owner: Process.euid)
       CopyManifest.new(@staged_app).verify!(capsule.paths.fetch(:candidate_copy_manifest))
       LaunchContract.verify!(@staged_plist)
-      verifier = File.join(capsule.root, "source/macOS/scripts/verify-mac-host-bundle.sh")
-      command_with_environment!({ "OPENSTEAMER_EXPECTED_ARCHITECTURES" => "arm64" }, verifier, @staged_app, Pins::TEAM_ID, capsule.paths.fetch(:reference))
+      verifier = File.join(capsule.root, "source", Pins.candidate_verifier_relative)
+      command_with_environment!({ "OPENSTEAMER_EXPECTED_ARCHITECTURES" => "arm64" }, verifier, *Pins.candidate_verifier_flags, @staged_app, Pins.fetch(:TEAM_ID), capsule.paths.fetch(:reference))
     end
 
     def verify_installed_candidate_bytes!
       Util.fail!("installed candidate root xattr baseline is unavailable") unless @candidate_root_xattrs
-      Util.exact_file!(Pins::LIVE_EXECUTABLE, @candidate_executable_sha, "installed V91 executable", mode: 0o755, owner: 501)
-      Util.exact_file!(Pins::LIVE_FRAMEWORK, @candidate_framework_sha, "installed V91 framework", mode: 0o755, owner: 501)
-      Util.exact_file!(Pins::LIVE_INFO_PLIST, @candidate_info_sha, "installed V91 Info.plist", mode: 0o644, owner: 501)
-      Util.exact_file!(Pins::LAUNCH_AGENT, @candidate_plist_sha, "installed V91 launch plist", mode: 0o600, owner: 501)
-      CopyManifest.new(Pins::LIVE_APP, allowed_root_xattrs: @candidate_root_xattrs).verify!(@post_stop_copy_manifest)
-      LaunchContract.verify!(Pins::LAUNCH_AGENT)
+      Util.exact_file!(Pins.fetch(:LIVE_EXECUTABLE), @candidate_executable_sha, "installed V91 executable", mode: 0o755, owner: 501)
+      Util.exact_file!(Pins.fetch(:LIVE_FRAMEWORK), @candidate_framework_sha, "installed V91 framework", mode: 0o755, owner: 501)
+      Util.exact_file!(Pins.fetch(:LIVE_INFO_PLIST), @candidate_info_sha, "installed V91 Info.plist", mode: 0o644, owner: 501)
+      Util.exact_file!(Pins.fetch(:LAUNCH_AGENT), @candidate_plist_sha, "installed V91 launch plist", mode: 0o600, owner: 501)
+      CopyManifest.new(Pins.fetch(:LIVE_APP), allowed_root_xattrs: @candidate_root_xattrs).verify!(@post_stop_copy_manifest)
+      LaunchContract.verify!(Pins.fetch(:LAUNCH_AGENT))
       true
     end
 
     def launch_identity
-      output = Util.capture!("/bin/launchctl", "print", Pins::LAUNCH_LABEL)
+      output = Util.capture!("/bin/launchctl", "print", Pins.fetch(:LAUNCH_LABEL))
       pids = output.scan(/^\s*pid = ([1-9][0-9]*)\s*$/).flatten.map(&:to_i)
       runs = output.scan(/^\s*runs = ([1-9][0-9]*)\s*$/).flatten.map(&:to_i)
       Util.fail!("launch state has ambiguous pid/runs") unless pids.length == 1 && runs.length == 1
@@ -3327,10 +3425,10 @@ module OpenSteamerV91Cutover
       process_set = Util.capture!("/usr/bin/pgrep", "-x", "CaptureServer").strip
       Util.fail!("unexpected CaptureServer process set") unless process_set == pid.to_s
       command = Util.capture!("/bin/ps", "-p", pid.to_s, "-ww", "-o", "command=").strip
-      Util.fail!("host command differs from ten-argument contract") unless command == Pins::LAUNCH_ARGUMENTS.join(" ")
+      Util.fail!("host command differs from ten-argument contract") unless command == Pins.fetch(:LAUNCH_ARGUMENTS).join(" ")
       start = Util.capture!("/bin/ps", "-p", pid.to_s, "-o", "lstart=").split.join(" ")
       Util.fail!("host process-start identity mismatch") if expected_start && start != expected_start
-      command!("/usr/bin/codesign", *Pins::DYNAMIC_CODESIGN_VERIFY_ARGUMENTS, "+#{pid}")
+      command!("/usr/bin/codesign", *Pins.fetch(:DYNAMIC_CODESIGN_VERIFY_ARGUMENTS), "+#{pid}")
       metadata_stdout, metadata_stderr, metadata_status = Open3.capture3(
         "/usr/bin/codesign", "--display", "--verbose=4", "+#{pid}"
       )
@@ -3340,34 +3438,34 @@ module OpenSteamerV91Cutover
         expected_cdhash: expected_cdhash
       )
       text = Util.capture!("/usr/sbin/lsof", "-a", "-p", pid.to_s, "-d", "txt", "-Fn")
-      Util.fail!("live process text mapping differs") unless text.lines.map(&:chomp).count("n#{Pins::LIVE_EXECUTABLE}") == 1
+      Util.fail!("live process text mapping differs") unless text.lines.map(&:chomp).count("n#{Pins.fetch(:LIVE_EXECUTABLE)}") == 1
       mappings = Util.capture!("/usr/sbin/lsof", "-a", "-p", pid.to_s, "-Fn")
-      Util.fail!("live process lacks pinned media-framework mapping") unless mappings.lines.map(&:chomp).include?("n#{Pins::LIVE_FRAMEWORK}")
+      Util.fail!("live process lacks pinned media-framework mapping") unless mappings.lines.map(&:chomp).include?("n#{Pins.fetch(:LIVE_FRAMEWORK)}")
       true
     end
 
     def verify_dynamic_codesign_identity!(metadata, expected_cdhash:)
       identity = Util.exact_code_identity_values(metadata)
       Util.fail!("live process code identity is ambiguous") unless
-        identity.fetch(:identifier) == [Pins::EXECUTABLE_IDENTIFIER] &&
-        identity.fetch(:team_identifier) == [Pins::TEAM_ID] &&
+        identity.fetch(:identifier) == [Pins.fetch(:EXECUTABLE_IDENTIFIER)] &&
+        identity.fetch(:team_identifier) == [Pins.fetch(:TEAM_ID)] &&
         identity.fetch(:cdhash) == [expected_cdhash]
       true
     end
 
     def strict_lock_record
-      directory = File.dirname(Pins::LIVE_LOCK_PATH)
+      directory = File.dirname(Pins.fetch(:LIVE_LOCK_PATH))
       Util.directory!(directory, "host generation-lock directory", mode: 0o700, owner: 501)
       assert_identity!(directory, @predecessor_runtime.lock_directory, "host lock directory") if @predecessor_runtime
-      Util.regular_file!(Pins::LIVE_LOCK_PATH, "host generation lock", mode: 0o600, owner: 501, links: 1)
-      match = File.binread(Pins::LIVE_LOCK_PATH).match(/\AOPENSTEAMER_WORLDWIDE_HOST_GENERATION_V1\npid=([1-9][0-9]*)\nnonce=([0-9a-f]{64})\n\z/)
+      Util.regular_file!(Pins.fetch(:LIVE_LOCK_PATH), "host generation lock", mode: 0o600, owner: 501, links: 1)
+      match = File.binread(Pins.fetch(:LIVE_LOCK_PATH)).match(/\AOPENSTEAMER_WORLDWIDE_HOST_GENERATION_V1\npid=([1-9][0-9]*)\nnonce=([0-9a-f]{64})\n\z/)
       Util.fail!("host generation lock is malformed") unless match
       { pid: match[1].to_i, nonce: match[2] }
     end
 
     def verify_routes!
       tool = helper_path("SwitchAudioSource")
-      Pins::ROUTES.each do |type, expected|
+      Pins.fetch(:ROUTES).each do |type, expected|
         actual = Util.capture!(tool, "-c", "-t", type, "-f", "json").strip
         Util.fail!("#{type} audio route changed") unless actual == expected
       end
@@ -3375,7 +3473,7 @@ module OpenSteamerV91Cutover
     end
 
     def readiness_generation!
-      output = Util.capture!(@post_stop_readiness, Pins::LIVE_EXECUTABLE, @candidate_executable_sha)
+      output = Util.capture!(@post_stop_readiness, Pins.fetch(:LIVE_EXECUTABLE), @candidate_executable_sha)
       pattern = /\AV91_SECONDARY_VIEWER_ENDPOINT_IDLE_OK candidateSHA256=#{Regexp.escape(@candidate_executable_sha)} pid=#{@new_pid} managerGeneration=(0|[1-9][0-9]*) probes=2\n?\z/
       match = output.match(pattern)
       Util.fail!("V91 secondary-viewer readiness proof is malformed or mismatched") unless match
@@ -3384,7 +3482,7 @@ module OpenSteamerV91Cutover
 
     def observe_candidate_session!(prior, fresh_generation: false)
       SessionFence.observe!(
-        Pins::LAUNCH_STDOUT,
+        Pins.fetch(:LAUNCH_STDOUT),
         @new_pid,
         @new_nonce,
         prior: prior,
@@ -3403,7 +3501,7 @@ module OpenSteamerV91Cutover
       verify_dynamic_process!(pid, expected_cdhash: @candidate_cdhash)
       capture_candidate_root_xattrs!
       verify_installed_candidate_bytes!
-      Util.fail!("V91 display mode did not settle") unless current_display_mode == Pins::LIVE_DISPLAY_MODE
+      Util.fail!("V91 display mode did not settle") unless current_display_mode == Pins.fetch(:LIVE_DISPLAY_MODE)
       @candidate_session = observe_candidate_session!(@session, fresh_generation: true)
       verify_routes!
       route_monitor_clean!
@@ -3412,7 +3510,7 @@ module OpenSteamerV91Cutover
     end
 
     def capture_candidate_root_xattrs!
-      @candidate_root_xattrs ||= CopyManifest.capture_published_root_xattrs!(Pins::LIVE_APP)
+      @candidate_root_xattrs ||= CopyManifest.capture_published_root_xattrs!(Pins.fetch(:LIVE_APP))
     end
 
     def verify_candidate_stability_sample!
@@ -3427,7 +3525,7 @@ module OpenSteamerV91Cutover
       Util.fail!("secondary-viewer manager generation changed during stability proof") unless
         readiness_generation! == @candidate_manager_generation
       Util.fail!("V91 display mode changed during stability proof") unless
-        current_display_mode == Pins::LIVE_DISPLAY_MODE
+        current_display_mode == Pins.fetch(:LIVE_DISPLAY_MODE)
       @candidate_session = observe_candidate_session!(@candidate_session)
       verify_routes!
       route_monitor_clean!
@@ -3470,7 +3568,7 @@ module OpenSteamerV91Cutover
     end
 
     def runtime_absent?
-      _out, _err, status = Open3.capture3("/bin/launchctl", "print", Pins::LAUNCH_LABEL)
+      _out, _err, status = Open3.capture3("/bin/launchctl", "print", Pins.fetch(:LAUNCH_LABEL))
       return false if status.success?
       pids, = Open3.capture3("/usr/bin/pgrep", "-x", "CaptureServer")
       return false unless pids.strip.empty?
@@ -3609,7 +3707,7 @@ module OpenSteamerV91Cutover
         Util.clean_node_metadata!(node, "rollback transaction node") if transaction
         if kind == "link"
           Util.fail!("rollback app contains unreviewed alias") unless
-            Pins::ALLOWED_CANDIDATE_SYMLINKS[relative] == File.readlink(node)
+            Pins.fetch(:ALLOWED_CANDIDATE_SYMLINKS)[relative] == File.readlink(node)
           Util.fail!("rollback app alias escapes archive") unless File.realpath(node).start_with?(File.realpath(path) + "/")
         end
         content = kind == "file" ? Util.sha256(node) : (kind == "link" ? File.readlink(node) : "")
@@ -3622,8 +3720,8 @@ module OpenSteamerV91Cutover
 
     def paths(token)
       Util.fail!("rollback receipt token is malformed") unless TOKEN.match?(token.to_s)
-      [File.join(@application_parent, ".opensteamer-paired-v91-failed-#{token}.app"),
-       File.join(@launch_parent, ".org.example.opensteamer.worldwide.v91-failed-#{token}.plist")]
+      [File.join(@application_parent, ".opensteamer-paired-#{Pins.release_name}-failed-#{token}.app"),
+       File.join(@launch_parent, ".org.example.opensteamer.worldwide.#{Pins.release_name}-failed-#{token}.plist")]
     end
 
     def receipt_for(transaction, token)
@@ -3699,7 +3797,8 @@ module OpenSteamerV91Cutover
 
     def validate_transaction_path!(transaction)
       Util.fail!("rollback transaction path is outside owned history root") unless
-        File.dirname(transaction) == @root && TRANSACTION.match?(File.basename(transaction)) &&
+        File.dirname(transaction) == @root &&
+        /\Apaired-#{Regexp.escape(Pins.release_name)}-update-[0-9]+-[0-9]+-[0-9a-f-]{36}\z/.match?(File.basename(transaction)) &&
         File.basename(transaction).split("-").last(5).join("-").match?(TOKEN)
       Util.directory!(transaction, "rollback transaction", mode: 0o700, owner: Process.euid)
     end
@@ -3708,22 +3807,23 @@ module OpenSteamerV91Cutover
       journal = File.join(transaction, "journal.log")
       Util.regular_file!(journal, "rollback journal", mode: 0o600, owner: Process.euid)
       lines = File.readlines(journal, chomp: true)
-      Util.fail!("rollback journal header is invalid") unless lines.shift == Pins::V91_JOURNAL_HEADER
+      Util.fail!("rollback journal header is invalid") unless lines.shift == Pins.fetch(:V91_JOURNAL_HEADER)
       prior = nil
       lines.each do |line|
         state = line[/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z STATE ([A-Z0-9_]+)\z/, 1]
+        state = Pins.state_in(state) if state
         Util.fail!("rollback journal transition is invalid") unless state && RealHost::JOURNAL_TRANSITIONS.fetch(prior, []).include?(state)
         prior = state
       end
       Util.fail!("rollback transaction is not terminal") unless prior == "ROLLED_BACK_EXACT_V90"
       result = File.join(transaction, "rollback-result.txt")
       Util.regular_file!(result, "rollback result", mode: 0o600, owner: Process.euid)
-      expected = /\Aresult=pending-terminal\nterminal_required=ROLLED_BACK_EXACT_V90\npid=[1-9][0-9]*\nnonce=[0-9a-f]{64}\ntarget=exact-v90\nselected=#{Regexp.escape(Pins::LIVE_DISPLAY_MODE)}\n\z/
-      Util.fail!("rollback result proof differs") unless File.binread(result).match?(expected)
+      expected = /\Aresult=pending-terminal\nterminal_required=ROLLED_BACK_EXACT_V90\npid=[1-9][0-9]*\nnonce=[0-9a-f]{64}\ntarget=exact-v90\nselected=#{Regexp.escape(Pins.fetch(:LIVE_DISPLAY_MODE))}\n\z/
+      Util.fail!("rollback result proof differs") unless Pins.record_in(File.binread(result)).match?(expected)
       stdout = File.join(transaction, "sticky-coreaudio-route-monitor.stdout")
       Util.regular_file!(stdout, "rollback CoreAudio stdout", mode: 0o600, owner: Process.euid)
       Util.fail!("rollback lacks clean CoreAudio teardown") unless
-        File.binread(stdout) == "#{Pins::ROUTE_MONITOR_READY}\n#{Pins::ROUTE_MONITOR_RESULT}\n"
+        File.binread(stdout) == "#{Pins.fetch(:ROUTE_MONITOR_READY)}\n#{Pins.fetch(:ROUTE_MONITOR_RESULT)}\n"
       %w[sticky-coreaudio-route-events.log sticky-coreaudio-route-monitor.stderr].each do |name|
         path = File.join(transaction, name)
         Util.regular_file!(path, "rollback CoreAudio empty proof", mode: 0o600, owner: Process.euid)
@@ -3941,12 +4041,12 @@ module OpenSteamerV91Cutover
             Util.capture!("/usr/bin/xattr", "-w", "-x", "com.apple.macl", "00" * 72, app)
           end
           write_private.call(plist, "unchanged-fixture-launch-contract\n")
-          journal = "#{Pins::V91_JOURNAL_HEADER}\n" + states.map { |state| "2026-01-01T00:00:00Z STATE #{state}\n" }.join
+          journal = "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n" + states.map { |state| "2026-01-01T00:00:00Z STATE #{state}\n" }.join
           write_private.call(File.join(transaction, "journal.log"), journal)
           write_private.call(File.join(transaction, "rollback-result.txt"),
-                             "result=pending-terminal\nterminal_required=ROLLED_BACK_EXACT_V90\npid=#{counter}\nnonce=#{'a' * 64}\ntarget=exact-v90\nselected=#{Pins::LIVE_DISPLAY_MODE}\n")
+                             "result=pending-terminal\nterminal_required=ROLLED_BACK_EXACT_V90\npid=#{counter}\nnonce=#{'a' * 64}\ntarget=exact-v90\nselected=#{Pins.fetch(:LIVE_DISPLAY_MODE)}\n")
           write_private.call(File.join(transaction, "sticky-coreaudio-route-monitor.stdout"),
-                             "#{Pins::ROUTE_MONITOR_READY}\n#{Pins::ROUTE_MONITOR_RESULT}\n")
+                             "#{Pins.fetch(:ROUTE_MONITOR_READY)}\n#{Pins.fetch(:ROUTE_MONITOR_RESULT)}\n")
           %w[sticky-coreaudio-route-events.log sticky-coreaudio-route-monitor.stderr].each do |name|
             write_private.call(File.join(transaction, name), "")
           end
@@ -4206,7 +4306,7 @@ module OpenSteamerV91Cutover
           set -eu
           [ "$#" -eq 4 ]
           [ "$1" = "--installed-runtime" ]
-          [ "$3" = "#{Pins::TEAM_ID}" ]
+          [ "$3" = "#{Pins.fetch(:TEAM_ID)}" ]
           [ -d "$2" ]
           [ -f "$2/Contents/Resources/ThirdPartyNotices.md" ]
           [ ! -e "$2/Contents/Resources/AppIcon.icns" ]
@@ -4221,7 +4321,7 @@ module OpenSteamerV91Cutover
         Util.capture!("/usr/bin/xattr", "-w", "-x", "com.apple.macl", "00" * 72, app)
         root_xattrs = CopyManifest.capture_published_root_xattrs!(app)
         assert("V90 root metadata baseline is exact and immutable") do
-          root_xattrs == Pins::APP_ROOT_ALLOWED_XATTRS && root_xattrs.frozen? &&
+          root_xattrs == Pins.fetch(:APP_ROOT_ALLOWED_XATTRS) && root_xattrs.frozen? &&
             root_xattrs.values.all?(&:frozen?)
         end
 
@@ -4469,7 +4569,7 @@ module OpenSteamerV91Cutover
       Dir.mktmpdir("v91-journal-self-test-") do |root|
         success_host = RealHost.new
         success_journal = File.join(root, "success.log")
-        File.binwrite(success_journal, "#{Pins::V91_JOURNAL_HEADER}\n")
+        File.binwrite(success_journal, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
         success_host.instance_variable_set(:@journal, success_journal)
         RealHost::SUCCESS_STATES.each { |state| success_host.journal!(state) }
         expect_failure("journal rejects states after committed terminal") do
@@ -4483,7 +4583,7 @@ module OpenSteamerV91Cutover
         rollback_origins.each_with_index do |origin, index|
           host = RealHost.new
           journal = File.join(root, "rollback-#{index}.log")
-          File.binwrite(journal, "#{Pins::V91_JOURNAL_HEADER}\n")
+          File.binwrite(journal, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
           host.instance_variable_set(:@journal, journal)
           RealHost::SUCCESS_STATES.each do |state|
             host.journal!(state)
@@ -4590,24 +4690,24 @@ module OpenSteamerV91Cutover
     def verify_dynamic_codesign_metadata_fixture!
       metadata = (
         "Executable=/fixture/CaptureServer\n" \
-        "Identifier=#{Pins::EXECUTABLE_IDENTIFIER}\n" \
+        "Identifier=#{Pins.fetch(:EXECUTABLE_IDENTIFIER)}\n" \
         "Signed Time=Sep 19, 2026 at 10:02:48 \xE2\x80\xAFPM\n" \
-        "TeamIdentifier=#{Pins::TEAM_ID}\n" \
-        "CDHash=#{Pins::V90_CDHASH.upcase}\n"
+        "TeamIdentifier=#{Pins.fetch(:TEAM_ID)}\n" \
+        "CDHash=#{Pins.fetch(:V90_CDHASH).upcase}\n"
       ).dup.force_encoding(Encoding::US_ASCII)
       host = RealHost.allocate
       assert("dynamic codesign identity parses non-ASCII metadata on pinned system Ruby") do
         host.send(
           :verify_dynamic_codesign_identity!,
           metadata,
-          expected_cdhash: Pins::V90_CDHASH
+          expected_cdhash: Pins.fetch(:V90_CDHASH)
         )
       end
       expect_failure("dynamic codesign identity rejects duplicate fields") do
         host.send(
           :verify_dynamic_codesign_identity!,
-          metadata + "Identifier=#{Pins::EXECUTABLE_IDENTIFIER}\n",
-          expected_cdhash: Pins::V90_CDHASH
+          metadata + "Identifier=#{Pins.fetch(:EXECUTABLE_IDENTIFIER)}\n",
+          expected_cdhash: Pins.fetch(:V90_CDHASH)
         )
       end
       expect_failure("dynamic codesign identity rejects wrong CDHash") do
@@ -4645,7 +4745,7 @@ module OpenSteamerV91Cutover
       Dir.mktmpdir("v91-journal-faults-") do |root|
         scenarios.each_with_index do |(target, prior), index|
           path = File.join(root, "journal-#{index}.log")
-          File.binwrite(path, "#{Pins::V91_JOURNAL_HEADER}\n")
+          File.binwrite(path, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
           host = RealHost.new
           host.instance_variable_set(:@journal, path)
           host.instance_variable_set(:@journal_identity, host.send(:file_identity, path))
@@ -4674,7 +4774,7 @@ module OpenSteamerV91Cutover
 
 
         path = File.join(root, "prefsync-eio.log")
-        File.binwrite(path, "#{Pins::V91_JOURNAL_HEADER}\n")
+        File.binwrite(path, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
         host = RealHost.new
         host.instance_variable_set(:@journal, path)
         host.instance_variable_set(:@journal_identity, host.send(:file_identity, path))
@@ -4699,7 +4799,7 @@ module OpenSteamerV91Cutover
         close_journal!(host)
 
         path = File.join(root, "torn.log")
-        File.binwrite(path, "#{Pins::V91_JOURNAL_HEADER}\n")
+        File.binwrite(path, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
         host = RealHost.new
         host.instance_variable_set(:@journal, path)
         host.instance_variable_set(:@journal_identity, host.send(:file_identity, path))
@@ -4725,13 +4825,13 @@ module OpenSteamerV91Cutover
 
         path = File.join(root, "replacement.log")
         moved = File.join(root, "replacement.original.log")
-        File.binwrite(path, "#{Pins::V91_JOURNAL_HEADER}\n")
+        File.binwrite(path, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
         host = RealHost.new
         host.instance_variable_set(:@journal, path)
         host.instance_variable_set(:@journal_identity, host.send(:file_identity, path))
         seed_journal!(host, %w[BEGUN INPUTS_VERIFIED STOP_INTENT])
         File.rename(path, moved)
-        File.binwrite(path, "#{Pins::V91_JOURNAL_HEADER}\n")
+        File.binwrite(path, "#{Pins.fetch(:V91_JOURNAL_HEADER)}\n")
         expect_failure("journal pathname replacement") { host.send(:irreversible_on_disk?) }
         close_journal!(host)
       end
@@ -5422,8 +5522,8 @@ module OpenSteamerV91Cutover
 
     def stability_harness(fail_probe: nil, fail_call: nil, sample_seconds: 0.0)
       host = RealHost.new
-      files = (Pins::PREDECESSOR_IDENTITY_PATHS + [Pins::LAUNCH_AGENT]).each_with_index.to_h do |path, index|
-        [path, [1, index + 10, path == Pins::LIVE_APP ? "directory" : "file"]]
+      files = (Pins.fetch(:PREDECESSOR_IDENTITY_PATHS) + [Pins.fetch(:LAUNCH_AGENT)]).each_with_index.to_h do |path, index|
+        [path, [1, index + 10, path == Pins.fetch(:LIVE_APP) ? "directory" : "file"]]
       end
       host.instance_variable_set(:@predecessor_runtime, PredecessorRuntimeSnapshot.new(
         pid: 12_344, runs: 1, start: "Thu Sep 24 12:04:54 2026", nonce: "d" * 64,
@@ -5464,7 +5564,7 @@ module OpenSteamerV91Cutover
       end
       host.define_singleton_method(:current_display_mode) do
         bad = fail_now.call(:display)
-        bad ? "drifted" : Pins::LIVE_DISPLAY_MODE
+        bad ? "drifted" : Pins.fetch(:LIVE_DISPLAY_MODE)
       end
       host.define_singleton_method(:observe_candidate_session!) do |_prior, **_arguments|
         raise Failure, "session drift" if fail_now.call(:session)
@@ -5584,8 +5684,8 @@ module OpenSteamerV91Cutover
     end
 
     def verify_predecessor_runtime_snapshots!
-      identities = (Pins::PREDECESSOR_IDENTITY_PATHS + [Pins::LAUNCH_AGENT]).each_with_index.to_h do |path, index|
-        [path, [1, index + 10, path == Pins::LIVE_APP ? "directory" : "file"]]
+      identities = (Pins.fetch(:PREDECESSOR_IDENTITY_PATHS) + [Pins.fetch(:LAUNCH_AGENT)]).each_with_index.to_h do |path, index|
+        [path, [1, index + 10, path == Pins.fetch(:LIVE_APP) ? "directory" : "file"]]
       end
       first_values = {
         pid: 12_345, runs: 1, start: "Thu Sep 24 12:04:54 2026", nonce: "a" * 64,
@@ -5602,7 +5702,7 @@ module OpenSteamerV91Cutover
       {
         pid: second.pid, runs: second.runs, start: second.start, nonce: second.nonce,
         lock_directory: [1, 32, "directory"], lock_file: [1, 33, "file"],
-        files: identities.merge(Pins::LIVE_APP => [1, 34, "directory"])
+        files: identities.merge(Pins.fetch(:LIVE_APP) => [1, 34, "directory"])
       }.each do |field, changed|
         expect_failure("predecessor runtime drift: #{field}") do
           first.assert_same!(PredecessorRuntimeSnapshot.new(**first_values.merge(field => changed)))
@@ -5611,9 +5711,9 @@ module OpenSteamerV91Cutover
       expect_failure("predecessor launch count must be positive") do
         PredecessorRuntimeSnapshot.new(**first_values.merge(runs: 0))
       end
-      identities.fetch(Pins::LIVE_APP)[1] = 99
-      assert("snapshot copies mutable source identities") { first.files.fetch(Pins::LIVE_APP)[1] == 10 }
-      expect_exception("snapshot nested identity is immutable") { first.files.fetch(Pins::LIVE_APP)[1] = 99 }
+      identities.fetch(Pins.fetch(:LIVE_APP))[1] = 99
+      assert("snapshot copies mutable source identities") { first.files.fetch(Pins.fetch(:LIVE_APP))[1] == 10 }
+      expect_exception("snapshot nested identity is immutable") { first.files.fetch(Pins.fetch(:LIVE_APP))[1] = 99 }
 
       fixture = lambda do |observations|
         host = RealHost.new
@@ -5623,12 +5723,12 @@ module OpenSteamerV91Cutover
         host.define_singleton_method(:verify_installed_v90_bytes!) { true }
         host.define_singleton_method(:verify_dynamic_process!) do |pid, expected_start:, expected_cdhash:|
           raise Failure, "fixture process trust mismatch" unless
-            pid.positive? && !expected_start.empty? && expected_cdhash == Pins::V90_CDHASH
+            pid.positive? && !expected_start.empty? && expected_cdhash == Pins.fetch(:V90_CDHASH)
           true
         end
         host.define_singleton_method(:verify_routes!) { true }
         host.define_singleton_method(:verify_pairing_metadata!) { true }
-        host.define_singleton_method(:current_display_mode) { Pins::LIVE_DISPLAY_MODE }
+        host.define_singleton_method(:current_display_mode) { Pins.fetch(:LIVE_DISPLAY_MODE) }
         host.define_singleton_method(:observe_predecessor_session!) { |_runtime, prior| prior || :idle }
         host
       end
@@ -5676,18 +5776,18 @@ module OpenSteamerV91Cutover
       proof = [
         "result=success-pending-terminal", "terminal_required=COMMITTED_V90",
         "point_of_no_return=V90_COMMIT_IRREVERSIBLE", "target=v90",
-        "selected=#{Pins::LIVE_DISPLAY_MODE}",
-        "candidate_executable_sha256=#{Pins::V90_EXECUTABLE_SHA256}",
-        "route_monitor=#{Pins::ROUTE_MONITOR_RESULT}"
+        "selected=#{Pins.fetch(:LIVE_DISPLAY_MODE)}",
+        "candidate_executable_sha256=#{Pins.fetch(:V90_EXECUTABLE_SHA256)}",
+        "route_monitor=#{Pins.fetch(:ROUTE_MONITOR_RESULT)}"
       ].join("\n") + "\n"
-      journal = "OPENSTEAMER_PAIRED_HOST_UPDATE_V90\n#{Pins::V90_TERMINAL}\n"
+      journal = "OPENSTEAMER_PAIRED_HOST_UPDATE_V90\n#{Pins.fetch(:V90_TERMINAL)}\n"
       assert("committed predecessor receipt is accepted") do
         host.send(:verify_predecessor_commit_proof!, journal, proof)
       end
       [
         [journal.sub("COMMITTED_V90", "COMMITTED_V90_UNVERIFIED"), proof],
         [journal + "2026-09-24T19:00:00Z STATE ROLLED_BACK_EXACT_V86\n", proof],
-        [journal, proof.sub(Pins::V90_EXECUTABLE_SHA256, "f" * 64)],
+        [journal, proof.sub(Pins.fetch(:V90_EXECUTABLE_SHA256), "f" * 64)],
         [journal, proof.sub("notifications=0", "notifications=1")],
         [journal, proof + "terminal_required=COMMITTED_V90\n"],
         [journal, proof.sub("teardown=clean", "teardown=unknown")]
@@ -5727,7 +5827,7 @@ module OpenSteamerV91Cutover
         end
         sync = host.method(:strict_fsync_directory!)
         host.define_singleton_method(:strict_fsync_directory!) do |path, label|
-          sync.call(path == Pins::RUNTIME_ROOT ? runtime : path, label)
+          sync.call(path == Pins.fetch(:RUNTIME_ROOT) ? runtime : path, label)
         end
         assert("fresh namespace prepare boundary abort cleans owned root and empty baseline") do
           host.abort_before_stop! && !File.exist?(update_root) &&
@@ -5794,22 +5894,22 @@ module OpenSteamerV91Cutover
       verify_reusable_rollback_history_fixture!
       verify_deployment_observer_fixture!
       assert("sealed framework identity preserves the public bundle path") do
-        Pins::LIVE_FRAMEWORK_IDENTITY_PATH ==
+        Pins.fetch(:LIVE_FRAMEWORK_IDENTITY_PATH) ==
           "/Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/LiveKitWebRTC" &&
-          Pins::LIVE_FRAMEWORK_IDENTITY_PATH != Pins::LIVE_FRAMEWORK
+          Pins.fetch(:LIVE_FRAMEWORK_IDENTITY_PATH) != Pins.fetch(:LIVE_FRAMEWORK)
       end
       assert("V90 verification keeps the historical media helper immutable and separate") do
-        Pins::V90_HELPERS["verify-media-v1-host-bundle.sh"] ==
+        Pins.fetch(:V90_HELPERS)["verify-media-v1-host-bundle.sh"] ==
           "e8a486a8e7360e5d3c8517e237e046fc21b3ccc2a3eb5e14ccd5d40135742e0c" &&
-          !Pins::V90_HELPERS.key?("verify-mac-host-bundle.sh") &&
-          Pins::V90_BUNDLE_VERIFIER_SHA256 ==
+          !Pins.fetch(:V90_HELPERS).key?("verify-mac-host-bundle.sh") &&
+          Pins.fetch(:V90_BUNDLE_VERIFIER_SHA256) ==
             "02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745"
       end
       assert("dynamic codesign verification uses the supported PID contract") do
-        Pins::DYNAMIC_CODESIGN_VERIFY_ARGUMENTS == ["--verify"]
+        Pins.fetch(:DYNAMIC_CODESIGN_VERIFY_ARGUMENTS) == ["--verify"]
       end
       assert("readiness observer preserves executable source and owner-only staged modes") do
-        Pins::READINESS_SOURCE_MODE == 0o755 && Pins::READINESS_STAGED_MODE == 0o500
+        Pins.fetch(:READINESS_SOURCE_MODE) == 0o755 && Pins.fetch(:READINESS_STAGED_MODE) == 0o500
       end
 
       capsule = FakeCapsule.new
@@ -6009,6 +6109,20 @@ module OpenSteamerV91Cutover
 
     def run(argv)
       mode = argv.shift
+      if mode == "--print-successor-tooling-contract"
+        Util.fail!("profile inspection requires path and external digest") unless argv.length == 2
+        require_relative "opensteamer-host-successor-contract"
+        contract = OpenSteamerHostSuccessor::ReleaseContract.new(argv[0], argv[1])
+        puts contract.profile.fetch("source").values_at("branch", "upstream")
+        return 0
+      end
+      if %w[--verify-successor-cutover-preflight --execute-authorized-successor-cutover].include?(mode)
+        Util.fail!("successor mode requires profile/digest and capsule/two digests") unless argv.length == 5
+        require_relative "opensteamer-host-successor-contract"
+        contract = OpenSteamerHostSuccessor::ReleaseContract.new(argv.shift, argv.shift)
+        Pins.bind_contract!(contract)
+        mode = mode == "--verify-successor-cutover-preflight" ? PREFLIGHT : EXECUTE
+      end
       case mode
       when SELF_TEST
         Util.fail!("self-test accepts no arguments") unless argv.empty?
@@ -6016,7 +6130,7 @@ module OpenSteamerV91Cutover
       when PREFLIGHT, EXECUTE
         Util.fail!("mode requires capsule root and exactly two external digests") unless argv.length == 3
         Util.fail!("live V91 modes require the independently pinned launcher") unless
-          ENV["OPENSTEAMER_V91_LAUNCHER_ATTESTATION"] == Pins::LAUNCHER_ATTESTATION
+          ENV["OPENSTEAMER_V91_LAUNCHER_ATTESTATION"] == Pins.fetch(:LAUNCHER_ATTESTATION)
         Util.fail!("live V91 modes require the pinned uid/euid 501 account") unless Process.uid == 501 && Process.euid == 501
         tooling = ToolingProof.verify!
         ToolingProof.verify_launcher_environment!(tooling)
@@ -6024,7 +6138,7 @@ module OpenSteamerV91Cutover
         coordinator = Coordinator.new(RealHost.new, capsule)
         if mode == PREFLIGHT
           coordinator.preflight!
-          puts "v91_cutover_preflight=pass"
+          puts(Pins.contract ? "successor_cutover_preflight=pass" : "v91_cutover_preflight=pass")
         else
           previous = {}
           %w[HUP INT TERM].each do |signal|
@@ -6032,7 +6146,7 @@ module OpenSteamerV91Cutover
           end
           begin
             coordinator.execute!
-            puts "v91_cutover=committed"
+            puts(Pins.contract ? "successor_cutover=committed" : "v91_cutover=committed")
           ensure
             previous.each { |signal, handler| Signal.trap(signal, handler) }
           end

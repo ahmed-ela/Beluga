@@ -6,8 +6,8 @@ umask 077
 
 readonly SCRIPT_NAME='run-opensteamer-host-v91-cutover'
 readonly TOOLING_ROOT='/Volumes/t7/beluga-quality-step.idpzQO/source'
-readonly TOOLING_BRANCH='fix/screen-quality-small-step'
-readonly TOOLING_UPSTREAM='origin/fix/screen-quality-small-step'
+typeset TOOLING_BRANCH='fix/screen-quality-small-step'
+typeset TOOLING_UPSTREAM='origin/fix/screen-quality-small-step'
 readonly TOOLING_REMOTE_URL='https://github.com/ahmedelami/opensteamer.git'
 readonly EXPECTED_SCRIPT_DIRECTORY="${TOOLING_ROOT}/macOS/scripts"
 readonly LAUNCHER_BASENAME='run-opensteamer-host-v91-cutover.sh'
@@ -17,7 +17,7 @@ readonly ASSEMBLER_BASENAME='assemble-v91-sealed-host-oracle-capsule.sh'
 readonly PREPARER_BASENAME='prepare-v91-sealed-host-oracle-handoff.sh'
 readonly READINESS_BASENAME='verify-v91-secondary-viewer-readiness.sh'
 readonly V90_BUNDLE_VERIFIER_BASENAME='verify-mac-host-bundle.sh'
-readonly CONTROLLER_SHA256='5a3bddbc19765e2abe93eb5de39c6c5d190c319d331f39747b8a8e1962844e71'
+readonly CONTROLLER_SHA256='d390402ae8a7f824ec9e98c46dc09458dc860818e39d773c3cc16aba1c914a74'
 readonly MONITOR_SHA256='b7ffc3c939ff2b19d1f85305335b3363555a967a76b38b034db377209f88bf86'
 readonly V90_BUNDLE_VERIFIER_SHA256='02a348a88d25b76ab95d45620d823339212bb53ee0f39bfb3a52f04240d3d745'
 readonly RUBY='/usr/bin/ruby'
@@ -32,6 +32,9 @@ readonly MACOS_SDK_IDENTITY='16777240:15672618'
 readonly MACOS_SDK_SETTINGS_SHA256='f8d005f09381389167f9e0aeaa169bc9e7dff162ef22ca2fd8e98df7ff1acafe'
 readonly APPROVED_PREDECESSOR_REFERENCE_SHA256='553892526e1f9de1e6d67b5556b3c2c008d9b48bbd553eb799c2260ee184ac66'
 readonly LAUNCHER_ATTESTATION='opensteamer-v91-pinned-launcher-v1'
+readonly SUCCESSOR_INPUTS_SHA256='6a2dbfb41f179f9b222823a581391417359cdc0dd23cd9f7bc97facbe2d8dacf'
+readonly SUCCESSOR_CONTRACT_SHA256='0d7b3c3a49b456ae270cc7f1a234989bb3fcfa83835372b5d0b9ed7c687c2d10'
+readonly SUCCESSOR_IMPORTER_SHA256='bb7d70ad42388627d7680dc85a06136c3cd32f420da27bf120cad28a95556e3c'
 
 fail() {
     print -u2 -- "${SCRIPT_NAME}: $*"
@@ -131,11 +134,19 @@ verify_clean_remote_tooling() {
         "macOS/scripts/${PREPARER_BASENAME}" \
         "macOS/scripts/${READINESS_BASENAME}" \
         "macOS/scripts/${V90_BUNDLE_VERIFIER_BASENAME}" \
+        "macOS/scripts/opensteamer-host-successor-inputs.rb" \
+        "macOS/scripts/opensteamer-host-successor-contract.rb" \
+        "macOS/scripts/import-prebuilt-host-successor.rb" \
+        "macOS/scripts/verify-beluga-host-bundle.sh" \
         "macOS/scripts/${LAUNCHER_BASENAME}"
     do
+        case "$relative" in
+            */opensteamer-host-successor-inputs.rb|*/opensteamer-host-successor-contract.rb|*/import-prebuilt-host-successor.rb|*/verify-beluga-host-bundle.sh)
+                [[ "${1:-}" == successor ]] || continue ;;
+        esac
         path="${TOOLING_ROOT}/${relative}"
         case "$relative" in
-            *"/${ASSEMBLER_BASENAME}"|*"/${PREPARER_BASENAME}"|*"/${LAUNCHER_BASENAME}"|*"/${READINESS_BASENAME}"|*"/${V90_BUNDLE_VERIFIER_BASENAME}") mode=755 ;;
+            *"/${ASSEMBLER_BASENAME}"|*"/${PREPARER_BASENAME}"|*"/${LAUNCHER_BASENAME}"|*"/${READINESS_BASENAME}"|*"/${V90_BUNDLE_VERIFIER_BASENAME}"|*/verify-beluga-host-bundle.sh) mode=755 ;;
             *) mode=644 ;;
         esac
         verify_regular_metadata "$path" 501 "$mode" 0 "tracked V91 tooling file ${relative}"
@@ -208,6 +219,23 @@ case "$MODE" in
         [[ "$APPROVED_PREDECESSOR_REFERENCE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
             || fail 'compiled approved predecessor-reference digest is invalid'
         verify_clean_remote_tooling
+        ;;
+    --verify-successor-cutover-preflight|--execute-authorized-successor-cutover)
+        (( $# == 6 )) || fail 'successor mode requires profile/digest and capsule/two digests'
+        verify_regular_file "${SCRIPT_DIRECTORY}/opensteamer-host-successor-inputs.rb" \
+            "$SUCCESSOR_INPUTS_SHA256" 501 644 0 'successor inputs'
+        verify_regular_file "${SCRIPT_DIRECTORY}/opensteamer-host-successor-contract.rb" \
+            "$SUCCESSOR_CONTRACT_SHA256" 501 644 0 'successor contract'
+        verify_regular_file "${SCRIPT_DIRECTORY}/import-prebuilt-host-successor.rb" \
+            "$SUCCESSOR_IMPORTER_SHA256" 501 644 0 'successor importer'
+        profile_tooling=$(/usr/bin/env -i HOME=/Users/ahmed PATH=/usr/bin:/bin:/usr/sbin:/sbin LC_ALL=C \
+            "$RUBY" --disable-gems "$CONTROLLER" --print-successor-tooling-contract "$2" "$3") \
+            || fail 'successor profile failed strict validation'
+        profile_lines=("${(@f)profile_tooling}")
+        (( ${#profile_lines} == 2 )) || fail 'successor profile tooling contract is ambiguous'
+        TOOLING_BRANCH=$profile_lines[1]
+        TOOLING_UPSTREAM=$profile_lines[2]
+        verify_clean_remote_tooling successor
         ;;
     *)
         fail 'unknown V91 controller mode'
