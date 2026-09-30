@@ -18706,6 +18706,221 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         )
     }
 
+    func testExternalPausePublishesNotificationWhileStatisticsReaderIsSuspended() async throws {
+        let store = try XCTUnwrap(MediaNotificationStore.configured())
+        let signaling = try RendezvousSignalingClient(
+            endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [],
+            mediaTopology: .videoControlOnly, supportsAudioClientDiagnostics: false))
+        let negotiation = WebRTCRemoteMediaAuthorization()
+        func state(revision: UInt64, playing: Bool) -> WebRTCReceivedRemoteMediaState {
+            let item = WebRTCRemoteMediaItem(contextID: "external-pause-same-video",
+                sourceName: "YouTube", title: "Same video", playbackState: playing ? .playing : .paused,
+                elapsedTime: 45, duration: 120, playbackRate: playing ? 1 : 0,
+                capabilities: .init(canPlay: !playing, canPause: playing,
+                                    canSkipForward: false, canSkipBackward: false))
+            return WebRTCReceivedRemoteMediaState(envelope: .init(authorization: negotiation,
+                update: .init(revision: revision, item: item)))
+        }
+        viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
+            state: state(revision: 2, playing: true)) { _ in }
+        let initial = try? store.readSnapshot()
+        XCTAssertEqual(initial?.revision, 2)
+        XCTAssertEqual(initial?.entries.first?.isPlaying, true)
+
+        let readerStarted = expectation(description: "statistics native reader suspended")
+        let readerReturned = expectation(description: "statistics native reader drained")
+        let pausePublished = expectation(description: "unsolicited pause reached notification store")
+        let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        var readerCompleted = false
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readerStarted.fulfill()
+            let value = await gate.wait()
+            readerCompleted = true
+            readerReturned.fulfill()
+            return value
+        }
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        guard let consumer = viewModel.debugStartPeerEventLoopForTests(
+            events: events.stream, signaling: signaling) else {
+            viewModel.disconnect()
+            await peer.close()
+            XCTFail("Configured peer must start the production event consumer")
+            return
+        }
+        events.continuation.yield(.statistics(.init(), wholePeerReportWasCollected: false))
+        await fulfillment(of: [readerStarted], timeout: 2)
+        events.continuation.yield(.remoteMediaStateChanged(state(revision: 3, playing: false)))
+        let publicationObserver = Task { @MainActor in
+            for _ in 0..<100 {
+                if let snapshot = try? store.readSnapshot(), snapshot.revision == 3,
+                   snapshot.entries.first?.isPlaying == false {
+                    pausePublished.fulfill()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        await fulfillment(of: [pausePublished], timeout: 2)
+        XCTAssertFalse(readerCompleted, "Pause publication must precede completion of the held native read")
+        let whileHeld = try? store.readSnapshot()
+        XCTAssertEqual(whileHeld?.revision, 3)
+        XCTAssertEqual(whileHeld?.entries.first?.isPlaying, false)
+
+        // Drain the non-cooperative reader even when the publication assertions fail.
+        await gate.open(healthyIOSPlayoutDiagnostics())
+        await fulfillment(of: [readerReturned], timeout: 2)
+        await viewModel.debugWaitForStatisticsProofWorkForTests()
+        publicationObserver.cancel()
+        await publicationObserver.value
+        events.continuation.finish()
+        await consumer.value
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testStatisticsProofCoalescesNewestSampleWhileExternalPausePublishes() async throws {
+        let store = try XCTUnwrap(MediaNotificationStore.configured())
+        let signaling = try RendezvousSignalingClient(endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [],
+            mediaTopology: .videoControlOnly, supportsAudioClientDiagnostics: false))
+        let negotiation = WebRTCRemoteMediaAuthorization()
+        viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
+            state: statisticsNotificationState(negotiation: negotiation, revision: 2, playing: true)) { _ in }
+        let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        let firstReadStarted = expectation(description: "first coalesced reader suspended")
+        let pausePublished = expectation(description: "consumer passed queued statistics and published pause")
+        var readCount = 0
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readCount += 1
+            if readCount == 1 {
+                firstReadStarted.fulfill()
+                return await gate.wait()
+            }
+            return iosPlayoutDiagnostics(callbacks: 2, frames: 960, failures: 0)
+        }
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        guard let consumer = viewModel.debugStartPeerEventLoopForTests(
+            events: events.stream, signaling: signaling) else {
+            viewModel.disconnect()
+            await peer.close()
+            XCTFail("Configured peer must start the production event consumer")
+            return
+        }
+        func sample(energy: Double) -> WebRTCTransportEvent {
+            .statistics(.init(inboundAudio: .init(totalAudioEnergy: energy, totalSamplesDuration: energy)),
+                        wholePeerReportWasCollected: false)
+        }
+        events.continuation.yield(sample(energy: 1))
+        await fulfillment(of: [firstReadStarted], timeout: 2)
+        events.continuation.yield(sample(energy: 2))
+        events.continuation.yield(sample(energy: 3))
+        events.continuation.yield(.remoteMediaStateChanged(
+            statisticsNotificationState(negotiation: negotiation, revision: 3, playing: false)))
+        let observer = Task { @MainActor in
+            for _ in 0..<100 {
+                if let snapshot = try? store.readSnapshot(), snapshot.revision == 3,
+                   snapshot.entries.first?.isPlaying == false {
+                    pausePublished.fulfill()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        await fulfillment(of: [pausePublished], timeout: 2)
+        XCTAssertEqual(readCount, 1, "Coalesced statistics must not overlap the retained native read")
+        await gate.open(healthyIOSPlayoutDiagnostics())
+        await viewModel.debugWaitForStatisticsProofWorkForTests()
+        XCTAssertEqual(readCount, 2, "Only the first and newest queued statistics may read native state")
+        XCTAssertEqual(viewModel.audioPlayoutOracle?.inboundAudioEnergy, 3)
+        observer.cancel()
+        await observer.value
+        events.continuation.finish()
+        await consumer.value
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testTransportRevocationRetiresHeldStatisticsProofAndPendingSample() async throws {
+        let store = try XCTUnwrap(MediaNotificationStore.configured())
+        let signaling = try RendezvousSignalingClient(endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [],
+            mediaTopology: .videoControlOnly, supportsAudioClientDiagnostics: false))
+        let negotiation = WebRTCRemoteMediaAuthorization()
+        viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
+            state: statisticsNotificationState(negotiation: negotiation, revision: 2, playing: true)) { _ in }
+        let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        let readerStarted = expectation(description: "transport retirement reader suspended")
+        let revocationConsumed = expectation(description: "transport revocation passed held statistics")
+        var readCount = 0
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readCount += 1
+            if readCount == 1 { readerStarted.fulfill() }
+            return await gate.wait()
+        }
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        guard let consumer = viewModel.debugStartPeerEventLoopForTests(
+            events: events.stream, signaling: signaling) else {
+            viewModel.disconnect()
+            await peer.close()
+            XCTFail("Configured peer must start the production event consumer")
+            return
+        }
+        events.continuation.yield(.statistics(.init(), wholePeerReportWasCollected: false))
+        await fulfillment(of: [readerStarted], timeout: 2)
+        events.continuation.yield(.statistics(.init(), wholePeerReportWasCollected: false))
+        events.continuation.yield(.iceStateChanged(.disconnected))
+        events.continuation.yield(.remoteMediaStateChanged(
+            statisticsNotificationState(negotiation: negotiation, revision: 3, playing: false)))
+        events.continuation.yield(.diagnosticFailure("statistics-retirement-consumer-barrier"))
+        let observer = Task { @MainActor in
+            for _ in 0..<100 {
+                if viewModel.lastDiagnostic == "statistics-retirement-consumer-barrier" {
+                    revocationConsumed.fulfill()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        await fulfillment(of: [revocationConsumed], timeout: 2)
+        XCTAssertEqual((try? store.readSnapshot())?.ready, false,
+                       "Transport revocation must remove notification authority before the native reader returns")
+        await gate.open(healthyIOSPlayoutDiagnostics())
+        await viewModel.debugWaitForStatisticsProofWorkForTests()
+        XCTAssertEqual(readCount, 1, "Revocation must discard the coalesced pending sample")
+        XCTAssertNil(viewModel.audioPlayoutOracle, "A retired native completion must not republish playout proof")
+        XCTAssertEqual((try? store.readSnapshot())?.ready, false)
+        observer.cancel()
+        await observer.value
+        events.continuation.finish()
+        await consumer.value
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    private func statisticsNotificationState(
+        negotiation: WebRTCRemoteMediaAuthorization, revision: UInt64, playing: Bool
+    ) -> WebRTCReceivedRemoteMediaState {
+        let item = WebRTCRemoteMediaItem(contextID: "external-pause-same-video", sourceName: "YouTube",
+            title: "Same video", playbackState: playing ? .playing : .paused, elapsedTime: 45, duration: 120,
+            playbackRate: playing ? 1 : 0, capabilities: .init(canPlay: !playing, canPause: playing,
+                canSkipForward: false, canSkipBackward: false))
+        return WebRTCReceivedRemoteMediaState(envelope: .init(authorization: negotiation,
+            update: .init(revision: revision, item: item)))
+    }
+
     func testRetiredPollingProofCannotApplyTerminalDiagnosticsToReplacementAudio() async throws {
         try await assertRetiredPollingProofCannotMutateReplacement(
             diagnostics: terminalIOSPlayoutDiagnostics()

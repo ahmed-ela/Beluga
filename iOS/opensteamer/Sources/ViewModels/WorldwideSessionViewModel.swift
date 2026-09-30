@@ -1506,6 +1506,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var transportAuthorizationGeneration = UUID() {
         didSet {
             guard oldValue != transportAuthorizationGeneration else { return }
+            retireStatisticsProofWork()
             // ICE may recover on the already-forwarded SDP without another offer. Retire sends
             // tied to the old transport generation while preserving the negotiation proof.
             retireMacHostedCallChallengeSendAttempt()
@@ -1572,6 +1573,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var audioPolicyGeneration = UUID() {
         didSet {
             if oldValue != audioPolicyGeneration {
+                retireStatisticsProofWork()
                 audioDiagnostics.policyChanged(audioPolicyGeneration, at: Self.audioDiagnosticsNow())
                 invalidateRawMicrophoneOracle()
                 retireIOSHostedCallPlayoutAttempt()
@@ -1705,6 +1707,18 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var audioClientDiagnosticsTask: Task<Void, Never>?
     private var audioDiagnosticsSampleTask: Task<Void, Never>?
     private var audioDiagnosticsSampleID: UUID?
+    /// Native reads cannot hold the ordered control-event consumer. Retain one in-flight
+    /// operation even after cancellation, plus only the newest waiting statistics sample.
+    private struct StatisticsProofRequest {
+        let snapshot: WebRTCStatisticsSnapshot
+        let peer: WebRTCPeer
+        let session: UUID
+        let policy: UUID
+        let transport: UUID
+    }
+    private var statisticsProofTask: Task<Void, Never>?
+    private var statisticsProofTaskID: UUID?
+    private var pendingStatisticsProof: StatisticsProofRequest?
     private var audioDiagnosticsSchedule = IOSAudioClientDiagnosticsSchedule()
     private var screenMediaViewerAttempt: WorldwideScreenMediaViewerAttempt?
     private var screenMediaCoveredHideTask: Task<Void, Never>?
@@ -1736,6 +1750,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugCurrentScreenPresentationLease: WorldwideScreenPresentationLease?
     private var debugActiveScreenPresentationLease: WorldwideScreenPresentationLease?
     private var debugStatisticsStarter: (@MainActor (WebRTCPeer) async throws -> Void)?
+    private var debugPeerEventStream: AsyncStream<WebRTCTransportEvent>?
     private var debugSessionRunner: (@MainActor () async -> Void)?
     private var debugIPhoneMicrophonePermissionRequester: (@MainActor () async -> Bool)?
     private var debugIPhoneMicrophoneEnableAttemptObserver: (@MainActor () -> Void)?
@@ -1948,6 +1963,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioClientDiagnosticsTask?.cancel()
         audioDiagnosticsSampleTask?.cancel()
         let remoteMediaCommandOwner = remoteMediaCommandOwner
+        statisticsProofTask?.cancel()
         audioTransactionEventTask?.cancel()
         remoteMediaRefreshTask?.cancel()
         focusedWindowInteractionPresentationTimeoutTask?.cancel()
@@ -4212,6 +4228,8 @@ final class WorldwideSessionViewModel: ObservableObject {
         through sourcePeer: WebRTCPeer,
         generation: UUID
     ) async {
+        guard !Task.isCancelled else { return }
+        let expectedTransport = transportAuthorizationGeneration
         guard generation == sessionGeneration,
               peer === sourcePeer,
               let screenRequestID = activeScreenRequestID else {
@@ -4224,8 +4242,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
         let isNegotiated = await sourcePeer
             .screenClientDiagnosticsIsNegotiated()
-        guard generation == sessionGeneration,
+        guard !Task.isCancelled, generation == sessionGeneration,
               peer === sourcePeer,
+              transportAuthorizationGeneration == expectedTransport,
               activeScreenRequestID == screenRequestID else {
             return
         }
@@ -4260,17 +4279,23 @@ final class WorldwideSessionViewModel: ObservableObject {
             screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
             return
         }
+        // Reserve before suspension: native acceptance can precede cancellation. Never reuse
+        // an accepted sequence merely because its completion no longer owns the presentation.
+        nextScreenClientDiagnosticsSequence += 1
         do {
             try await sourcePeer.sendScreenClientDiagnosticsHeartbeat(
                 heartbeat
             )
-            nextScreenClientDiagnosticsSequence += 1
-            guard generation == sessionGeneration,
-                  peer === sourcePeer else { return }
+            guard !Task.isCancelled, generation == sessionGeneration,
+                  peer === sourcePeer,
+                  transportAuthorizationGeneration == expectedTransport,
+                  activeScreenRequestID == screenRequestID else { return }
             screenClientDiagnosticsDeliveryText = "Reporting to Mac"
         } catch {
-            guard generation == sessionGeneration,
-                  peer === sourcePeer else { return }
+            guard !Task.isCancelled, generation == sessionGeneration,
+                  peer === sourcePeer,
+                  transportAuthorizationGeneration == expectedTransport,
+                  activeScreenRequestID == screenRequestID else { return }
             // This best-effort lane never changes the user-visible media or control state.
             screenClientDiagnosticsDeliveryText = "Heartbeat unavailable"
         }
@@ -7209,8 +7234,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         generation: UUID
     ) {
         peerEventTask?.cancel()
+        #if DEBUG
+        let events = debugPeerEventStream ?? peer.events
+        #else
+        let events = peer.events
+        #endif
         peerEventTask = Task { [weak self] in
-            for await event in peer.events {
+            for await event in events {
                 guard !Task.isCancelled else { return }
                 await self?.handlePeerEvent(
                     event,
@@ -7707,32 +7737,77 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         statistics = snapshot
         refreshScreenLivenessDiagnostic()
-        await sendScreenClientDiagnosticsHeartbeat(
-            through: sourcePeer,
-            generation: generation
+        if sessionOwnsAudio {
+            audioDiagnostics.observeStatistics(
+                snapshot,
+                at: Self.audioDiagnosticsNow(),
+                wallNow: Date()
+            )
+            scheduleAudioDiagnosticsSample(from: sourcePeer, generation: generation)
+        }
+        pendingStatisticsProof = StatisticsProofRequest(
+            snapshot: snapshot, peer: sourcePeer, session: generation,
+            policy: audioPolicyGeneration, transport: transportAuthorizationGeneration
         )
-        guard sessionOwnsAudio else { return }
-        audioDiagnostics.observeStatistics(
-            snapshot,
-            at: Self.audioDiagnosticsNow(),
-            wallNow: Date()
-        )
-        // Optional native telemetry must never suspend the sequential peer-event consumer.
-        scheduleAudioDiagnosticsSample(from: sourcePeer, generation: generation)
+        startPendingStatisticsProof()
+    }
+
+    private func retireStatisticsProofWork() {
+        pendingStatisticsProof = nil
+        // A native reader may ignore cancellation. Do not release its slot until it returns:
+        // reconnect/policy churn must not create an unbounded number of retired reads.
+        statisticsProofTask?.cancel()
+    }
+
+    private func statisticsProofRequestIsCurrent(_ request: StatisticsProofRequest) -> Bool {
+        !Task.isCancelled
+            && sessionGeneration == request.session && peer === request.peer
+            && audioPolicyGeneration == request.policy
+            && transportAuthorizationGeneration == request.transport
+    }
+
+    private func startPendingStatisticsProof() {
+        guard statisticsProofTask == nil, let request = pendingStatisticsProof else { return }
+        pendingStatisticsProof = nil
+        let taskID = UUID()
+        statisticsProofTaskID = taskID
+        statisticsProofTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if statisticsProofTaskID == taskID {
+                    statisticsProofTask = nil
+                    statisticsProofTaskID = nil
+                    startPendingStatisticsProof()
+                }
+            }
+            await performStatisticsProof(request)
+        }
+    }
+
+    private func performStatisticsProof(_ request: StatisticsProofRequest) async {
+        guard statisticsProofRequestIsCurrent(request) else { return }
+        let sourcePeer = request.peer
+        let generation = request.session
+        await sendScreenClientDiagnosticsHeartbeat(through: sourcePeer, generation: generation)
+        guard statisticsProofRequestIsCurrent(request), sessionOwnsAudio else { return }
         if hasOwnedIOSHostedCallPlayoutPolicy {
             await refreshIOSHostedCallPlayoutProof(
                 from: sourcePeer,
                 generation: generation,
-                statistics: snapshot
+                statistics: request.snapshot
             )
         } else if !ordinaryIOSPlayoutProofIsSuppressedByHostedCall {
             await refreshIOSPlayoutOracle(
                 from: sourcePeer,
                 generation: generation,
-                statistics: snapshot
+                statistics: request.snapshot
             )
-            refreshIOSPlayoutProof()
+            guard statisticsProofRequestIsCurrent(request) else { return }
+            if let attempt = iosPlayoutProofAttempt, attempt.expectedPeer === sourcePeer {
+                await refreshIOSPlayoutProof(for: attempt, from: sourcePeer)
+            }
         }
+        guard statisticsProofRequestIsCurrent(request) else { return }
         await refreshIOSRawMicrophoneOracle(
             from: sourcePeer,
             generation: generation
@@ -7743,6 +7818,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         from sourcePeer: WebRTCPeer,
         generation: UUID
     ) async {
+        guard !Task.isCancelled else { return }
         guard automaticMicrophoneEligibleSessionGeneration
                 == generation,
               generation == sessionGeneration,
@@ -7797,7 +7873,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             await readIPhoneMicrophoneSenderStatistics(
                 from: sourcePeer
             )
-        guard automaticMicrophoneEligibleSessionGeneration
+        guard !Task.isCancelled,
+              automaticMicrophoneEligibleSessionGeneration
                 == generation,
               generation == sessionGeneration,
               peer === sourcePeer,
@@ -8871,17 +8948,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         statistics: WebRTCStatisticsSnapshot
     ) async {
         let expectedPolicyGeneration = audioPolicyGeneration
-        guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
+        let expectedTransportGeneration = transportAuthorizationGeneration
+        guard !Task.isCancelled, !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
               generation == sessionGeneration,
               peer === sourcePeer,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let diagnostics = await readIOSPlayoutDiagnostics(from: sourcePeer) else {
             return
         }
-        guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
+        guard !Task.isCancelled, !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
               generation == sessionGeneration,
               peer === sourcePeer,
               audioPolicyGeneration == expectedPolicyGeneration,
+              transportAuthorizationGeneration == expectedTransportGeneration,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let oracle = publishIOSPlayoutOracle(
             diagnostics,
@@ -11585,6 +11664,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugStatisticsStarter = starter
     }
 
+    func debugStartPeerEventLoopForTests(
+        events: AsyncStream<WebRTCTransportEvent>,
+        signaling: RendezvousSignalingClient
+    ) -> Task<Void, Never>? {
+        guard let peer else { return nil }
+        // Arm the existing statistics read fence without acquiring native audio ownership.
+        verifiedAudioPolicyGeneration = audioPolicyGeneration
+        debugPeerEventStream = events
+        startPeerEventLoop(peer: peer, signaling: signaling, generation: sessionGeneration)
+        debugPeerEventStream = nil
+        return peerEventTask
+    }
+
     func debugInstallMacHostedCallChallengeSender(
         _ sender: @escaping @MainActor (
             WebRTCPeer,
@@ -11835,6 +11927,12 @@ final class WorldwideSessionViewModel: ObservableObject {
             from: sourcePeer,
             generation: generation
         )
+        await debugWaitForStatisticsProofWorkForTests()
+    }
+
+    func debugWaitForStatisticsProofWorkForTests() async {
+        // Completion can start the latest pending request; drain that successor too.
+        while let task = statisticsProofTask { await task.value }
     }
 
     func debugIOSHostedCallPlayoutProjectionForTests()

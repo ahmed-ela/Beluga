@@ -171,3 +171,42 @@ Evidence: `/Volumes/t7/beluga-mac-pause-observer.TXQmV9/RESULTS.md`,
 `paused-observation-red.log`, and `focused-green.log`. The live host, browser,
 phones and audio routes were untouched. This is not deployed-host or physical
 iPhone proof; the production notification issue remains open pending that check.
+
+#### Production iOS consumer isolation follow-up
+
+The Mac-only observer repair subsequently reached guarded `COMMITTED_CANDIDATE`
+on September 30 at 18:04:54Z. The user still reported stale notification state in
+TestFlight build 90. No production iOS fix was included in that Mac deployment.
+
+The earlier native-loopback notification fixture bypasses
+`WorldwideSessionViewModel`. A new hosted Simulator regression feeds its actual
+ordered event consumer, production BackgroundPlaybackCoordinator, and configured
+App Group store. While the statistics path's native audio read is deliberately
+held, an unsolicited same-context pause revision cannot reach the mailbox: it
+remains revision 2 / Playing instead of revision 3 / Paused. The failing baseline
+cleanly releases the held reader. This proves a scheduling defect, not exclusive
+causation of the remote physical-phone report.
+
+The repair keeps immediate statistics/journal publication on the event consumer,
+but isolates suspending proof work in one retained worker plus one latest-pending
+sample. Original collection timestamps and sequence are retained. Cancellation,
+peer/session, audio policy and transport fences reject retired results; a canceled
+native read keeps its slot until actual return. No audio-route, capture-permission,
+user-intent, or notification-command authority is broadened.
+
+Focused red evidence: `/Volumes/t7/beluga-notification-live-state.mUyXI6/blocked-statistics-red-2.xcresult`.
+The first attempt in that directory failed fixture endpoint validation and is not
+defect evidence. `audio-notification-green.xcresult` passes 485 tests with zero
+failures and 22 existing physical/opt-in skips on the dedicated signed iOS 26.5
+Simulator. All three new regressions pass: held-read pause publication, latest-only
+statistics coalescing, and transport revocation rejecting pending/late proof.
+The pinned Rust audio contract also passes 35 tests.
+
+`expanded-notification-green.xcresult` separately passes the actual expanded-card
+external-pause test (1/1, zero skips, 65.071 seconds). Its screenshots show Pause
+→ Play after the unsolicited pause and Pause after one explicit Play; native test
+host evidence records one command `A:play`, one external change, and final revision
+3. This fixture still bypasses the production view model; the hosted regression
+above covers that formerly missing boundary. Neither is remote physical-iPhone
+proof. Build 91 is the intended iOS release; distribution and the user's phone
+verification remain separate evidence stages.

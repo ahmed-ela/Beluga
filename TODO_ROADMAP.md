@@ -53,8 +53,11 @@ passed the corresponding physical release gate.
 - [ ] Diagnose the reported stale Play/Pause state in the expanded ±30-second
   notification after pausing directly on the Mac. The isolated unsolicited-host-pause
   simulator regression passes. A Mac observer deadline-starvation defect is now
-  reproduced and source-patched with 121 focused tests passing, but the repaired
-  host is not deployed and the user's physical failure remains unverified.
+  reproduced and patched with 121 focused tests passing; that host repair committed
+  on September 30. The user still reports the failure. A production iOS consumer
+  regression reproduces a queued pause blocked behind a native audio read. The
+  bounded-worker repair passes the signed Simulator audio/notification suites and
+  expanded-card check; build 91 still requires distribution and a fresh phone check.
   See [external-pause evidence](docs/notification-media-controls.md#external-pause-follow-up-2026-09-30).
 - [x] Verify simulator same-card reopening through Notification Center's actual
   swipe-left → View action. Three cycles pass with fresh labels before source selection,
