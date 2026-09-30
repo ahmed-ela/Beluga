@@ -11,6 +11,10 @@ module OpenSteamerHostSuccessor
     BASELINE_SCHEMA = "opensteamer.independently-reviewed-current-host-baseline.v1"
     BUILD_SCHEMA = "opensteamer.independently-reviewed-prebuilt-host.v1"
     MODE = "independently-reviewed-current-baseline"
+    PREDECESSOR_VERIFIERS = {
+      "macOS/scripts/verify-beluga-host-bundle.sh" => "e8a486a8e7360e5d3c8517e237e046fc21b3ccc2a3eb5e14ccd5d40135742e0c",
+      "macOS/scripts/verify-opensteamer-media-v1-predecessor.sh" => "8975832e9db849d62b57a2ef25c604afd4e63a8dedd238d62536c01edbe27f20"
+    }.freeze
     STATE_NAMES = {
       "V90_STOPPED" => "PREDECESSOR_STOPPED", "V90_HELD" => "PREDECESSOR_HELD",
       "V91_PUBLISHED" => "CANDIDATE_PUBLISHED", "V91_BOOTSTRAPPED" => "CANDIDATE_BOOTSTRAPPED",
@@ -24,7 +28,8 @@ module OpenSteamerHostSuccessor
       "macOS/scripts/opensteamer-host-successor-inputs.rb" => 0o644,
       "macOS/scripts/opensteamer-host-successor-contract.rb" => 0o644,
       "macOS/scripts/import-prebuilt-host-successor.rb" => 0o644,
-      "macOS/scripts/verify-beluga-host-bundle.sh" => 0o755
+      "macOS/scripts/verify-beluga-host-bundle.sh" => 0o755,
+      "macOS/scripts/verify-opensteamer-media-v1-predecessor.sh" => 0o755
     ).freeze
     attr_reader :profile, :baseline, :build_attestation, :pins, :namespace, :profile_sha, :profile_path
     alias data profile
@@ -184,9 +189,11 @@ module OpenSteamerHostSuccessor
       Util.fail!("baseline changed the preserved launch contract") unless
         @baseline["launchPlistSHA256"] == Legacy::Pins::LAUNCH_AGENT_SHA256
       %w[copyManifest bundleVerifier].each { |key| require_descriptor!(@baseline[key], "baseline #{key}") }
-      Util.fail!("baseline verifier must be the reviewed tracked Beluga verifier") unless
-        @baseline.fetch("bundleVerifier").fetch("path") ==
-          File.join(Legacy::Pins::TOOLING_ROOT, "macOS/scripts/verify-beluga-host-bundle.sh")
+      verifier = @baseline.fetch("bundleVerifier")
+      Util.fail!("baseline verifier must match an exact reviewed tracked predecessor verifier") unless
+        PREDECESSOR_VERIFIERS.any? do |relative, digest|
+          verifier["path"] == File.join(Legacy::Pins::TOOLING_ROOT, relative) && verifier["sha256"] == digest
+        end
       Checks.absolute!(@baseline["observerDirectory"], "baseline observer directory")
       Util.fail!("baseline observer directory differs from immutable trusted observer evidence") unless
         @baseline["observerDirectory"] == Legacy::Pins::OBSERVER_EVIDENCE

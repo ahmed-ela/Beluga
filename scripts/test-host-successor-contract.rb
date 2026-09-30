@@ -17,7 +17,8 @@ class HostSuccessorContractTest < Minitest::Test
       "designatedRequirement" => Engine::Pins::APPROVED_PREDECESSOR_REFERENCE_DESIGNATED_REQUIREMENT,
       "launchPlistSHA256" => Engine::Pins::LAUNCH_AGENT_SHA256,
       "copyManifest" => descriptor("baseline-manifest", "synthetic baseline manifest"),
-      "bundleVerifier" => { "path" => Engine::Pins::TOOLING_ROOT + "/macOS/scripts/verify-beluga-host-bundle.sh", "sha256" => "5" * 64 },
+      "bundleVerifier" => { "path" => Engine::Pins::TOOLING_ROOT + "/macOS/scripts/verify-beluga-host-bundle.sh",
+                            "sha256" => "e8a486a8e7360e5d3c8517e237e046fc21b3ccc2a3eb5e14ccd5d40135742e0c" },
       "observerDirectory" => Engine::Pins::OBSERVER_EVIDENCE
     }
     @profile = {
@@ -151,7 +152,36 @@ class HostSuccessorContractTest < Minitest::Test
 
   def test_arbitrary_verifier_is_not_accepted
     @baseline["bundleVerifier"]["path"] = @root + "/evil-verifier.sh"
-    rejects(/reviewed tracked Beluga verifier/) { contract }
+    rejects(/reviewed tracked predecessor verifier/) { contract }
+  end
+
+  def test_predecessor_verifier_requires_exact_approved_path_and_digest_pair
+    @baseline["bundleVerifier"]["sha256"] = "0" * 64
+    rejects(/reviewed tracked predecessor verifier/) { contract }
+    @baseline["bundleVerifier"]["sha256"] = "8975832e9db849d62b57a2ef25c604afd4e63a8dedd238d62536c01edbe27f20"
+    rejects(/reviewed tracked predecessor verifier/) { contract }
+    @baseline["bundleVerifier"]["path"] = Engine::Pins::TOOLING_ROOT + "/macOS/scripts/verify-opensteamer-media-v1-predecessor.sh"
+    @baseline["bundleVerifier"]["sha256"] = "e8a486a8e7360e5d3c8517e237e046fc21b3ccc2a3eb5e14ccd5d40135742e0c"
+    rejects(/reviewed tracked predecessor verifier/) { contract }
+  end
+
+  def test_historical_media_v1_predecessor_keeps_exact_bytes_and_strict_candidate_verifier
+    path = Engine::Pins::TOOLING_ROOT + "/macOS/scripts/verify-opensteamer-media-v1-predecessor.sh"
+    digest = "8975832e9db849d62b57a2ef25c604afd4e63a8dedd238d62536c01edbe27f20"
+    assert_equal digest, Digest::SHA256.file(path).hexdigest
+    @baseline["bundleVerifier"] = { "path" => path, "sha256" => digest }
+    result = in_child(<<~'RUBY')
+      E::Pins.bind_contract!(c)
+      puts JSON.generate({ predecessor: E::Pins.fetch(:V90_BUNDLE_VERIFIER_SOURCE),
+                           predecessorSHA256: E::Pins.fetch(:V90_BUNDLE_VERIFIER_SHA256),
+                           toolingMode: E::Pins.fetch(:TOOLING_FILES)["macOS/scripts/verify-opensteamer-media-v1-predecessor.sh"],
+                           candidate: E::Pins.candidate_verifier_relative, flags: E::Pins.candidate_verifier_flags })
+    RUBY
+    assert_equal path, result["predecessor"]
+    assert_equal digest, result["predecessorSHA256"]
+    assert_equal 0o755, result["toolingMode"]
+    assert_equal "macOS/scripts/verify-beluga-host-bundle.sh", result["candidate"]
+    assert_equal ["--media-integration-v1"], result["flags"]
   end
 
   def test_observer_helpers_cannot_be_substituted
