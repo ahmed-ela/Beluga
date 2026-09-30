@@ -2093,6 +2093,9 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'side-by-side TestFlight caller-controlled output path rejection'
 
 SIDE_BY_SIDE_EXPORT_OPTIONS='iOS/opensteamer/TestFlightExportOptions.plist'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_reviewed_export_signing_options "${EXPORT_OPTIONS_PATH}"' 1 \
+  'side-by-side TestFlight exact local signing export gate'
 require_absent_file \
   'iOS/opensteamer/ExportOptions.plist' \
   'superseded generic iOS export options'
@@ -2100,8 +2103,19 @@ assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" destination upload \
   'side-by-side TestFlight export destination'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" method app-store-connect \
   'side-by-side TestFlight export method'
-assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingStyle automatic \
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingStyle manual \
   'side-by-side TestFlight export signing style'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingCertificate \
+  CEB61B792A7A5848E9E797BB2E44EA2642611A6F \
+  'side-by-side TestFlight export certificate'
+assert_plist_container_cardinality "$SIDE_BY_SIDE_EXPORT_OPTIONS" provisioningProfiles dict 2 \
+  'side-by-side TestFlight export profile count'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" \
+  'provisioningProfiles.com\.elamin\.opensteamer' 66eb4be5-07eb-49a3-a70f-fcbb76a2a849 \
+  'side-by-side TestFlight main export profile'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" \
+  'provisioningProfiles.com\.elamin\.opensteamer\.MediaNotificationContent' 9401f67d-3ef2-4b0e-af11-9603de6698c2 \
+  'side-by-side TestFlight extension export profile'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" teamID MSMG8CJLB3 \
   'side-by-side TestFlight export team'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" manageAppVersionAndBuildNumber false \

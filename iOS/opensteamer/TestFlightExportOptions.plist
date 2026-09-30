@@ -9,7 +9,16 @@
 	<key>method</key>
 	<string>app-store-connect</string>
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>CEB61B792A7A5848E9E797BB2E44EA2642611A6F</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.elamin.opensteamer</key>
+		<string>66eb4be5-07eb-49a3-a70f-fcbb76a2a849</string>
+		<key>com.elamin.opensteamer.MediaNotificationContent</key>
+		<string>9401f67d-3ef2-4b0e-af11-9603de6698c2</string>
+	</dict>
 	<key>teamID</key>
 	<string>MSMG8CJLB3</string>
 	<key>testFlightInternalTestingOnly</key>

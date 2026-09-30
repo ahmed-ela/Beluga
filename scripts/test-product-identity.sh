@@ -468,7 +468,12 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>destination</key><string>upload</string>
 <key>manageAppVersionAndBuildNumber</key><false/>
 <key>method</key><string>app-store-connect</string>
-<key>signingStyle</key><string>automatic</string>
+<key>signingStyle</key><string>manual</string>
+<key>signingCertificate</key><string>CEB61B792A7A5848E9E797BB2E44EA2642611A6F</string>
+<key>provisioningProfiles</key><dict>
+<key>com.elamin.opensteamer</key><string>66eb4be5-07eb-49a3-a70f-fcbb76a2a849</string>
+<key>com.elamin.opensteamer.MediaNotificationContent</key><string>9401f67d-3ef2-4b0e-af11-9603de6698c2</string>
+</dict>
 <key>teamID</key><string>MSMG8CJLB3</string>
 <key>testFlightInternalTestingOnly</key><true/>
 <key>uploadSymbols</key><true/>
@@ -717,8 +722,40 @@ replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflig
   'true # notification dynamic-loader proof omitted'
 require_rejection "$CASE" 'side-by-side TestFlight notification binary framework validation'
 
+CASE=$(new_case notification-export-style)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '<key>signingStyle</key><string>manual</string>' '<key>signingStyle</key><string>automatic</string>'
+require_rejection "$CASE" 'side-by-side TestFlight export signing style'
+
+CASE=$(new_case notification-export-certificate)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  'CEB61B792A7A5848E9E797BB2E44EA2642611A6F' '0000000000000000000000000000000000000000'
+require_rejection "$CASE" 'side-by-side TestFlight export certificate'
+
+CASE=$(new_case notification-export-main-profile)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '66eb4be5-07eb-49a3-a70f-fcbb76a2a849' '00000000-0000-4000-8000-000000000000'
+require_rejection "$CASE" 'side-by-side TestFlight main export profile'
+
+CASE=$(new_case notification-export-extension-profile)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '9401f67d-3ef2-4b0e-af11-9603de6698c2' '00000000-0000-4000-8000-000000000000'
+require_rejection "$CASE" 'side-by-side TestFlight extension export profile'
+
+CASE=$(new_case notification-export-extra-profile)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '<key>provisioningProfiles</key><dict>' \
+  '<key>provisioningProfiles</key><dict><key>com.example.other</key><string>other</string>'
+require_rejection "$CASE" 'side-by-side TestFlight export profile count'
+
+CASE=$(new_case notification-export-gate-call)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'verify_reviewed_export_signing_options "${EXPORT_OPTIONS_PATH}"' \
+  'true # export signing gate omitted'
+require_rejection "$CASE" 'side-by-side TestFlight exact local signing export gate'
+
 if [[ "${OPENSTEAMER_IDENTITY_NOTIFICATION_ONLY:-0}" == 1 ]]; then
-  print -r -- 'PASS: notification identity baseline and 9 focused mutations'
+  print -r -- 'PASS: notification identity baseline and 15 focused mutations'
   exit 0
 fi
 

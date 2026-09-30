@@ -3213,6 +3213,22 @@ function require_exact_plist_value() {
     || fail "${description} must be ${expected}, found ${actual}"
 }
 
+function verify_reviewed_export_signing_options() {
+  # Export only: archive targets retain their separately checked automatic development signing.
+  # Exact local profiles avoid automatic export falling back to cloud-managed certificates.
+  /usr/bin/plutil -convert json -o - "$1" 2>/dev/null \
+    | /usr/bin/ruby --disable=gems,rubyopt -rjson -e '
+      options = JSON.parse(STDIN.read)
+      expected = {
+        "com.elamin.opensteamer" => "66eb4be5-07eb-49a3-a70f-fcbb76a2a849",
+        "com.elamin.opensteamer.MediaNotificationContent" => "9401f67d-3ef2-4b0e-af11-9603de6698c2"
+      }
+      exit(options["signingStyle"] == "manual" &&
+           options["signingCertificate"] == ARGV.fetch(0) &&
+           options["provisioningProfiles"] == expected ? 0 : 1)
+    ' "${EXPECTED_DISTRIBUTION_CERTIFICATE_SHA1}"
+}
+
 function build_settings_entry_value() {
   local settings_json=$1
   local index=$2
@@ -3762,8 +3778,8 @@ function verify_static_contract() {
   require_exact_plist_value "${EXPORT_OPTIONS_PATH}" destination upload "export destination"
   require_exact_plist_value \
     "${EXPORT_OPTIONS_PATH}" method app-store-connect "export method"
-  require_exact_plist_value \
-    "${EXPORT_OPTIONS_PATH}" signingStyle automatic "export signing style"
+  verify_reviewed_export_signing_options "${EXPORT_OPTIONS_PATH}" \
+    || fail "export must use the exact reviewed local distribution certificate and two profiles"
   require_exact_plist_value "${EXPORT_OPTIONS_PATH}" teamID "${EXPECTED_TEAM_ID}" "export team"
   require_exact_plist_value \
     "${EXPORT_OPTIONS_PATH}" manageAppVersionAndBuildNumber false \
