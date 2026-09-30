@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import XCTest
 import UserNotifications
+import MediaPlayer
 @testable import opensteamer
 @testable import WebRTCTransport
 
@@ -161,4 +162,123 @@ private final class DispatchCapture: @unchecked Sendable {
     private var captured: [RemoteMediaCommandDispatch] = []
     var values: [RemoteMediaCommandDispatch] { lock.withLock { captured } }
     func append(_ value: RemoteMediaCommandDispatch) { lock.withLock { captured.append(value) } }
+}
+
+@MainActor
+final class NativeMediaSeekingTests: XCTestCase {
+    func testSeekCapturesExactPositionContextAndNegotiation() throws {
+        let gate = RemoteMediaCommandDispatchGate()
+        let owner = RemoteMediaCommandOwnerToken()
+        let sent = DispatchCapture()
+        gate.claim(owner: owner) { sent.append($0) }
+        let initial = state()
+        gate.update(owner: owner, state: initial, transportIsReady: true)
+        XCTAssertTrue(gate.dispatch(.seekToPosition(47.125)))
+        let command = try XCTUnwrap(sent.values.first)
+        XCTAssertEqual(command.command, .seekToPosition)
+        XCTAssertEqual(command.positionSeconds, 47.125)
+        XCTAssertEqual(command.contextID, "youtube-video")
+        XCTAssertTrue(command.state.isSameNegotiation(as: initial))
+        XCTAssertTrue(gate.dispatch(.seekToPosition(0)))
+        XCTAssertTrue(gate.dispatch(.seekToPosition(600)))
+        XCTAssertEqual(sent.values.map(\.positionSeconds), [47.125, 0, 300])
+        gate.update(owner: owner, state: state(context: "next-video"), transportIsReady: true)
+        XCTAssertFalse(command.authorization.isValid)
+        gate.release(owner: owner)
+    }
+
+    func testMalformedOrUnavailableSeekNeverDispatches() {
+        let gate = RemoteMediaCommandDispatchGate()
+        let owner = RemoteMediaCommandOwnerToken()
+        let sent = DispatchCapture()
+        gate.claim(owner: owner) { sent.append($0) }
+        gate.update(owner: owner, state: state(), transportIsReady: true)
+        for position in [Double.nan, .infinity, -.infinity, -1, 31_536_001] {
+            XCTAssertFalse(gate.dispatch(.seekToPosition(position)))
+        }
+        XCTAssertFalse(gate.dispatch(WebRTCRemoteMediaCommand.seekToPosition))
+        for duration: Double? in [nil, 0, -1, .infinity, .nan] {
+            gate.update(owner: owner, state: state(duration: duration), transportIsReady: true)
+            XCTAssertFalse(gate.dispatch(.seekToPosition(30)))
+        }
+        gate.update(owner: owner, state: state(capability: false), transportIsReady: true)
+        XCTAssertFalse(gate.dispatch(.seekToPosition(30)))
+        gate.update(owner: owner, state: state(elapsed: nil), transportIsReady: true)
+        XCTAssertFalse(gate.dispatch(.seekToPosition(30)))
+        gate.update(owner: owner, state: state(), transportIsReady: false)
+        XCTAssertFalse(gate.dispatch(.seekToPosition(30)))
+        gate.release(owner: owner)
+        XCTAssertFalse(gate.dispatch(.seekToPosition(30)))
+        XCTAssertTrue(sent.values.isEmpty)
+    }
+
+    func testNativeScrubberTracksCapabilityTimelineAndTransport() {
+        let coordinator = BackgroundPlaybackCoordinator.shared
+        let owner = coordinator.claimRemoteMediaCommandSender { _ in }
+        let center = MPRemoteCommandCenter.shared()
+        defer { coordinator.releaseRemoteMediaCommandSender(owner: owner); coordinator.clear() }
+        XCTAssertTrue(coordinator.debugHasNativeCommandTarget(center.changePlaybackPositionCommand))
+        XCTAssertFalse(center.changePlaybackPositionCommand.isEnabled)
+        coordinator.publishRemoteMedia(state(), owner: owner)
+        coordinator.setRemoteMediaTransportReady(true, owner: owner)
+        XCTAssertTrue(center.changePlaybackPositionCommand.isEnabled)
+        XCTAssertEqual(MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyPlaybackDuration] as? Double, 300)
+        XCTAssertEqual(MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double, 20)
+        XCTAssertTrue(center.skipBackwardCommand.isEnabled)
+        XCTAssertTrue(center.skipForwardCommand.isEnabled)
+        coordinator.setRemoteMediaTransportReady(false, owner: owner)
+        XCTAssertFalse(center.changePlaybackPositionCommand.isEnabled)
+        coordinator.setRemoteMediaTransportReady(true, owner: owner)
+        coordinator.publishRemoteMedia(state(revision: 2, duration: nil), owner: owner)
+        XCTAssertFalse(center.changePlaybackPositionCommand.isEnabled)
+        coordinator.publishRemoteMedia(state(revision: 3, capability: false), owner: owner)
+        XCTAssertFalse(center.changePlaybackPositionCommand.isEnabled)
+    }
+
+    func testAbsolutePositionSurvivesProductionViewModelSendBoundary() async throws {
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [], mediaTopology: .videoControlOnly))
+        let model = WorldwideSessionViewModel()
+        let current = state()
+        let sent = DispatchCapture()
+        model.debugInstallRemoteMediaCommandPathForTests(peer: peer, state: current) { sent.append($0) }
+        let dispatch = RemoteMediaCommandDispatch(command: .seekToPosition, state: current,
+            authorization: WebRTCControlAuthorization(), contextID: "youtube-video", positionSeconds: 47.125)
+        let task = try XCTUnwrap(model.debugEnqueueRemoteMediaCommandForTests(dispatch))
+        await task.value
+        XCTAssertEqual(sent.values.map(\.positionSeconds), [47.125])
+        XCTAssertNil(model.debugEnqueueRemoteMediaCommandForTests(.init(command: .seekToPosition,
+            state: current, authorization: WebRTCControlAuthorization(), positionSeconds: nil)))
+        XCTAssertNil(model.debugEnqueueRemoteMediaCommandForTests(.init(command: .pause,
+            state: current, authorization: WebRTCControlAuthorization(), positionSeconds: 20)))
+        model.disconnect()
+        _ = await peer.close()
+    }
+
+    func testAdmissionRejectsStaleContextAndMalformedPayload() {
+        let current = state().update
+        func permits(_ command: WebRTCRemoteMediaCommand = .seekToPosition,
+                     context: String = "youtube-video", revision: UInt64 = 1, position: Double? = 47.125) -> Bool {
+            RemoteMediaCommandAdmission.permits(command, contextID: context, observedRevision: revision,
+                                                currentUpdate: current, positionSeconds: position)
+        }
+        XCTAssertTrue(permits())
+        XCTAssertFalse(permits(context: "retired-video"))
+        XCTAssertFalse(permits(revision: 0))
+        XCTAssertFalse(permits(revision: 2))
+        XCTAssertFalse(permits(position: nil))
+        XCTAssertFalse(permits(position: .nan))
+        XCTAssertFalse(permits(.play))
+        XCTAssertTrue(permits(.play, position: nil))
+    }
+
+    private func state(context: String = "youtube-video", revision: UInt64 = 1,
+                       duration: Double? = 300, capability: Bool = true,
+                       elapsed: Double? = 20) -> WebRTCReceivedRemoteMediaState {
+        .init(envelope: .init(authorization: .init(), update: .init(revision: revision,
+            item: .init(contextID: context, sourceName: "YouTube", title: "Video", playbackState: .playing,
+                elapsedTime: elapsed, duration: duration, playbackRate: 1,
+                capabilities: .init(canPlay: true, canPause: true, canSkipForward: true,
+                    canSkipBackward: true, canSeekForward: true, canSeekBackward: true,
+                    canSeekToPosition: capability))), refreshID: nil))
+    }
 }

@@ -45,7 +45,10 @@ module NativeMediaCallbackIsolation
     command = one!(installation,
       /^            let gate = commandGate\n(            let target = nativeCommand\.addTarget \{ @Sendable _ in\n                gate\.dispatch\(command\) \? \.success : \.commandFailed\n            \})$/,
       'synchronous native command callback')[1]
-    { 'artwork' => artwork, 'command' => command }
+    position = one!(installation,
+      /^        let gate = commandGate\n(        let positionTarget = commandCenter\.changePlaybackPositionCommand\.addTarget \{ @Sendable event in\n            guard let event = event as\? MPChangePlaybackPositionCommandEvent else \{ return \.commandFailed \}\n            return gate\.dispatch\(\.seekToPosition\(event\.positionTime\)\) \? \.success : \.commandFailed\n        \})$/,
+      'synchronous native position callback')[1]
+    { 'artwork' => artwork, 'command' => command, 'position' => position }
   end
 
   def self.probe(fragments)
@@ -53,8 +56,17 @@ module NativeMediaCallbackIsolation
       @preconcurrency import MediaPlayer
       import UIKit
 
+      enum FixtureIntent: Sendable {
+          case seekToPosition(TimeInterval)
+      }
+
       final class FixtureGate: @unchecked Sendable {
           func dispatch(_ command: Int) -> Bool { command >= 0 }
+          func dispatch(_ intent: FixtureIntent) -> Bool {
+              switch intent {
+              case .seekToPosition(let position): return position.isFinite && position >= 0
+              }
+          }
       }
 
       @MainActor
@@ -67,12 +79,18 @@ module NativeMediaCallbackIsolation
       #{fragments.fetch('command')}
               return target
           }
+
+          func position(_ commandCenter: MPRemoteCommandCenter, gate: FixtureGate) -> Any {
+      #{fragments.fetch('position')}
+              return positionTarget
+          }
       }
     SWIFT
   end
 
   def self.closure!(sil, name)
-    signature = name == 'artwork' ? 'artwork(_:)' : 'command(_:gate:command:)'
+    signature = { 'artwork' => 'artwork(_:)', 'command' => 'command(_:gate:command:)',
+                  'position' => 'position(_:gate:)' }.fetch(name)
     marker = "// closure #1 in CallbackIsolationProbe.#{signature}\n"
     require!(sil.scan(marker).length == 1, "unexpected SIL closure shape: #{name}")
     start = sil.index(marker)
@@ -158,7 +176,7 @@ module NativeMediaCallbackIsolation
     source = File.binread(source_path)
     fragments = extract!(source)
     variants = { 'current' => fragments }
-    %w[artwork command].each do |name|
+    %w[artwork command position].each do |name|
       require!(fragments.fetch(name).scan('@Sendable ').length == 1, "ambiguous mutation: #{name}")
       variants["without_#{name}_sendable"] = fragments.merge(name => fragments.fetch(name).sub('@Sendable ', ''))
     end
@@ -181,7 +199,7 @@ module NativeMediaCallbackIsolation
                    '-module-name', 'NativeMediaCallbackIsolation', swift_path, '-o', sil_path]
         seconds = compile!(command, output: output, developer: developer, run_deadline: run_deadline)
         sil = File.binread(sil_path)
-        checks = %w[artwork command].to_h do |name|
+        checks = %w[artwork command position].to_h do |name|
           [name, check_closure!(sil, name, isolated: variant == "without_#{name}_sendable")]
         end
         evidence['variants'] << { 'mode' => mode, 'variant' => variant, 'arguments' => command, 'seconds' => seconds,
@@ -192,7 +210,7 @@ module NativeMediaCallbackIsolation
     end
     require!(File.binread(source_path) == source, 'production source changed during compiler verification')
     write_new!(File.join(output, 'evidence.json'), JSON.pretty_generate(evidence) + "\n")
-    puts 'PASS: 6 compiler variants, 12 closure checks, 2 independent annotation-removal mutants in SILGen and optimized Swift 6. No app or media command executed.'
+    puts 'PASS: 8 compiler variants, 24 closure checks, 3 independent annotation-removal mutants in SILGen and optimized Swift 6. No app or media command executed.'
   end
 end
 

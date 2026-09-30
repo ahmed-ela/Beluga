@@ -45,6 +45,7 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
                         _ = try await viewer.requestRemoteMediaCommand(dispatch.command,
                             state: dispatch.state, authorization: dispatch.authorization,
                             contextID: dispatch.contextID,
+                            positionSeconds: dispatch.positionSeconds,
                             acknowledgementHandler: dispatch.completion)
                     } catch { dispatch.completion?(.failed) }
                 }

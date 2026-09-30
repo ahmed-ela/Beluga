@@ -137,6 +137,13 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
     func send(rawCommand: Int, snapshot: MacNowPlayingRuntimeSnapshot,
               isAuthorized: @escaping @Sendable () -> Bool,
               completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        send(rawCommand: rawCommand, positionSeconds: nil, snapshot: snapshot,
+             isAuthorized: isAuthorized, completion: completion)
+    }
+
+    func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
         let admission = lock.withLock { () -> (Int, UInt64, MacNowPlayingRuntimeSnapshot)? in
             guard let (source, publication) = publications.first(where: { $0.value.token === snapshot.client }),
                   publication.snapshot.metadata.identityComponent == snapshot.metadata.identityComponent else { return nil }
@@ -145,7 +152,7 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
         guard let admission, isAuthorized() else { completion(.staleContext); return }
         let source = admission.0
         let runtime = source == 0 ? browser : music
-        runtime.send(rawCommand: rawCommand, snapshot: admission.2, isAuthorized: { [weak self] in
+        runtime.send(rawCommand: rawCommand, positionSeconds: positionSeconds, snapshot: admission.2, isAuthorized: { [weak self] in
             guard let self, isAuthorized() else { return false }
             return self.lock.withLock {
                 self.lifecycle == admission.1 && self.publications[source]?.token === snapshot.client

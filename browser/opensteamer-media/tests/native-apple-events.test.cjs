@@ -417,6 +417,45 @@ test("timeline capability rejects unbounded, absent, discontinuous and partial r
     assert.equal(h.seeks,0);
   }
 });
+test("absolute seeking clamps a fractional position and binds duplicate payload without changing playback", () => {
+  for(const [position,want] of [[0,0],[57.125,57.125],[500,120]]) {
+    const h=fixture();h.video.paused=false;
+    const before=h.read().snapshot,q={...h.request("seekToPosition",before),positionSeconds:position};
+    const result=h.call(q);assert.equal(result.status,"ok");
+    assert.equal(result.seekTarget,want);assert.equal(h.video.currentTime,want);
+    assert.equal(result.snapshot.itemID,before.itemID);assert.equal(h.video.paused,false);
+    assert.equal(h.call(q).status,"ok");assert.equal(h.result(q).status,"ok");
+    assert.equal(h.call({...q,positionSeconds:position+1}).status,"staleContext");
+    assert.equal(h.seeks,1);assert.equal(h.clicks+h.plays+h.pauses,0);
+  }
+});
+test("absolute seeking rejects missing, malformed or extra positions and unknown or expired authority", () => {
+  const h=fixture(),q=h.request("seekToPosition");
+  for(const position of [undefined,null,"12",-1,NaN,Infinity,31536001]) {
+    const bad=position===undefined?q:{...q,positionSeconds:position};
+    assert.equal(h.call(bad).status,"failed");
+  }
+  assert.equal(h.call({...h.request("pause"),positionSeconds:12}).status,"failed");
+  assert.equal(h.seeks,0);
+  const valid={...q,positionSeconds:57.125};h.advance(1001);
+  assert.equal(h.call(valid).status,"failed");assert.equal(h.seeks,0);
+});
+test("absolute seek requires readback and final seekability and rejects timestamp-binding mutants", () => {
+  const readbackOracle=code=>{const h=fixture(code);h.seekHook=()=>{};
+    assert.equal(h.call({...h.request("seekToPosition"),positionSeconds:57.125}).status,"pending");};
+  readbackOracle(source);
+  const ignored=source.replace('Math.abs(view.snapshot.elapsedTime - record.seekTarget) <= 0.25','true');
+  assert.notEqual(ignored,source);assert.throws(()=>readbackOracle(ignored));
+  const duplicateOracle=code=>{const h=fixture(code),q={...h.request("seekToPosition"),positionSeconds:57.125};
+    assert.equal(h.call(q).status,"ok");
+    assert.equal(h.call({...q,positionSeconds:70}).status,"staleContext");assert.equal(h.seeks,1);};
+  duplicateOracle(source);
+  const unbound=source.replace('existing.positionSeconds !== request.positionSeconds ||','');
+  assert.notEqual(unbound,source);assert.throws(()=>duplicateOracle(unbound));
+  const h=fixture(),q={...h.request("seekToPosition"),positionSeconds:57.125};h.hrefReads=0;
+  h.controlReadHook=count=>{if(count===3)h.video.seekable.length=0;};h.call(q);
+  assert.equal(h.seeks,0);
+});
 test("ignored and pending seeks require actual completion before expiry and never repeat", () => {
   for(const ignored of [true,false]) {
     const h=fixture();h.seekHook=(video,value)=>{ if(!ignored)video._time=value;video.seeking=true; };

@@ -23359,10 +23359,11 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
             state: makeReceivedState(item: item, revision: 4),
             transportIsReady: true
         )
-        for command in WebRTCRemoteMediaCommand.allCases {
+        let fixedCommands = WebRTCRemoteMediaCommand.allCases.filter { $0 != .seekToPosition }
+        for command in fixedCommands {
             XCTAssertTrue(gate.dispatch(command))
         }
-        XCTAssertEqual(recorder.values.map(\.command), WebRTCRemoteMediaCommand.allCases)
+        XCTAssertEqual(recorder.values.map(\.command), fixedCommands)
         XCTAssertTrue(recorder.values.allSatisfy { $0.contextID == "context-a" })
         XCTAssertTrue(recorder.values.allSatisfy { $0.revision == 4 })
 

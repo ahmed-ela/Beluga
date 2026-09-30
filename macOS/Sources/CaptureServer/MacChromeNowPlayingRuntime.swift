@@ -106,7 +106,15 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
     func send(rawCommand: Int, snapshot: MacNowPlayingRuntimeSnapshot,
               isAuthorized: @escaping @Sendable () -> Bool,
               completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        send(rawCommand: rawCommand, positionSeconds: nil, snapshot: snapshot,
+             isAuthorized: isAuthorized, completion: completion)
+    }
+
+    func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
         guard let command = MacChromeCommand(rawValue: rawCommand),
+              command.accepts(positionSeconds: positionSeconds),
               snapshot.enabledCommands.contains(rawCommand) else { completion(.unsupported); return }
         guard isAuthorized() else { completion(.staleContext); return }
         let admission = lock.withLock { () -> (MacChromePlayerSnapshot, UInt64)? in
@@ -129,7 +137,8 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
             let result: WebRTCRemoteMediaCommandResult
             if !authorized() || now() >= deadline { result = .staleContext }
             else {
-                do { result = try backend.send(command, expected: expected, deadline: deadline, isAuthorized: authorized) }
+                do { result = try backend.send(command, positionSeconds: positionSeconds,
+                                               expected: expected, deadline: deadline, isAuthorized: authorized) }
                 catch { result = error as? MacChromeBackendError == .staleItem ? .staleContext : .failed }
             }
             let confirmedSeek = command.isSeek && result == .applied && authorized()

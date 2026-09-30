@@ -2036,6 +2036,7 @@ actor WorldwideScreenService {
             } else if let prepared = remoteMediaController.prepareCommand(
                 request.command,
                 contextID: request.contextID,
+                positionSeconds: request.positionSeconds,
                 isAuthorized: { command.isValid }
             ) {
                 result = await remoteMediaController.perform(prepared)

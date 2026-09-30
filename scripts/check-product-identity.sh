@@ -473,7 +473,7 @@ if require_file "$PROJECT_YML"; then
     'MediaNotificationContent|Release|CURRENT_PROJECT_VERSION|36' \
     'MediaNotificationContent|Release|DEVELOPMENT_TEAM|MSMG8CJLB3' \
     'MediaNotificationContent|TestFlight|BELUGA_MEDIA_APP_GROUP|group.com.elamin.opensteamer.media' \
-    'MediaNotificationContent|TestFlight|CURRENT_PROJECT_VERSION|88' \
+    'MediaNotificationContent|TestFlight|CURRENT_PROJECT_VERSION|89' \
     'MediaNotificationContent|TestFlight|DEVELOPMENT_TEAM|MSMG8CJLB3' \
     | LC_ALL=C sort)
   assert_equal "project.yml notification storage/signing/install contract" \
@@ -698,7 +698,7 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     PBX_MEDIA_EXTENSION_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
       | sed -n '/^media-extension|/p' | LC_ALL=C sort)
     assert_equal "generated Xcode notification signing/install contract" \
-      $'media-extension|Debug|YES|YES|0.1.0|1|Automatic|development-unpinned\nmedia-extension|Release|YES|YES|0.1.0|36|Automatic|MSMG8CJLB3\nmedia-extension|TestFlight|YES|YES|0.1.0|88|Automatic|MSMG8CJLB3' \
+      $'media-extension|Debug|YES|YES|0.1.0|1|Automatic|development-unpinned\nmedia-extension|Release|YES|YES|0.1.0|36|Automatic|MSMG8CJLB3\nmedia-extension|TestFlight|YES|YES|0.1.0|89|Automatic|MSMG8CJLB3' \
       "$PBX_MEDIA_EXTENSION_CONTRACTS"
     assert_equal "generated Xcode notification extension framework link" \
       'media-framework|SDKROOT|wrapper.framework|System/Library/Frameworks/UserNotificationsUI.framework' \
@@ -861,7 +861,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_CONFIGURATION="TestFlight"' 1 \
   'side-by-side TestFlight configuration guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_BUILD_NUMBER="88"' 1 \
+  'EXPECTED_BUILD_NUMBER="89"' 1 \
   'side-by-side TestFlight build-number guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'PRIVATE_TEMPORARY_ROOT="/private/tmp"' 1 \

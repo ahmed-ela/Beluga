@@ -19,6 +19,15 @@ public enum WebRTCRemoteMediaCommand: String, Codable, CaseIterable, Sendable {
     case previousTrack
     case seekForward30
     case seekBackward30
+    case seekToPosition
+
+    public func accepts(positionSeconds: TimeInterval?) -> Bool {
+        if self == .seekToPosition {
+            guard let positionSeconds else { return false }
+            return positionSeconds.isFinite && (0...31_536_000).contains(positionSeconds)
+        }
+        return positionSeconds == nil
+    }
 }
 
 public enum WebRTCRemoteMediaPlaybackState: String, Codable, Sendable {
@@ -35,6 +44,7 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
     public let canSkipBackward: Bool
     public let canSeekForward: Bool
     public let canSeekBackward: Bool
+    public let canSeekToPosition: Bool
 
     public init(
         canPlay: Bool,
@@ -42,7 +52,8 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
         canSkipForward: Bool,
         canSkipBackward: Bool,
         canSeekForward: Bool = false,
-        canSeekBackward: Bool = false
+        canSeekBackward: Bool = false,
+        canSeekToPosition: Bool = false
     ) {
         self.canPlay = canPlay
         self.canPause = canPause
@@ -50,10 +61,11 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
         self.canSkipBackward = canSkipBackward
         self.canSeekForward = canSeekForward
         self.canSeekBackward = canSeekBackward
+        self.canSeekToPosition = canSeekToPosition
     }
 
     private enum CodingKeys: String, CodingKey {
-        case canPlay, canPause, canSkipForward, canSkipBackward, canSeekForward, canSeekBackward
+        case canPlay, canPause, canSkipForward, canSkipBackward, canSeekForward, canSeekBackward, canSeekToPosition
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +76,7 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
         canSkipBackward = try values.decode(Bool.self, forKey: .canSkipBackward)
         canSeekForward = try values.decodeIfPresent(Bool.self, forKey: .canSeekForward) ?? false
         canSeekBackward = try values.decodeIfPresent(Bool.self, forKey: .canSeekBackward) ?? false
+        canSeekToPosition = try values.decodeIfPresent(Bool.self, forKey: .canSeekToPosition) ?? false
     }
 
     public func permits(_ command: WebRTCRemoteMediaCommand) -> Bool {
@@ -74,6 +87,7 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
         case .previousTrack: canSkipBackward
         case .seekForward30: canSeekForward
         case .seekBackward30: canSeekBackward
+        case .seekToPosition: canSeekToPosition
         }
     }
 }
@@ -296,17 +310,20 @@ public struct WebRTCRemoteMediaCommandRequest: Codable, Equatable, Sendable {
     public let contextID: String
     public let observedRevision: UInt64
     public let command: WebRTCRemoteMediaCommand
+    public let positionSeconds: TimeInterval?
 
     public init(
         id: UInt64,
         contextID: String,
         observedRevision: UInt64,
-        command: WebRTCRemoteMediaCommand
+        command: WebRTCRemoteMediaCommand,
+        positionSeconds: TimeInterval? = nil
     ) {
         self.id = id
         self.contextID = contextID
         self.observedRevision = observedRevision
         self.command = command
+        self.positionSeconds = positionSeconds
     }
 
     public var isValid: Bool {
@@ -315,6 +332,7 @@ public struct WebRTCRemoteMediaCommandRequest: Codable, Equatable, Sendable {
             && !contextID.isEmpty
             && contextID.utf8.count <= WebRTCRemoteMediaItem.maximumContextIDBytes
             && !contextID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            && command.accepts(positionSeconds: positionSeconds)
     }
 }
 
@@ -470,6 +488,9 @@ public enum WebRTCRemoteMediaCommandAdmission {
         }
         guard item.capabilities.permits(request.command) else {
             return .unsupported
+        }
+        if request.command == .seekToPosition {
+            guard let duration = item.duration, duration.isFinite, duration > 0 else { return .unsupported }
         }
         return nil
     }

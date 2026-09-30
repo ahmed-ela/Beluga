@@ -50,15 +50,18 @@ struct RemoteMediaCommandDispatch: Sendable {
     let state: WebRTCReceivedRemoteMediaState
     let authorization: WebRTCControlAuthorization
     let contextID: String?
+    let positionSeconds: TimeInterval?
     let completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)?
 
     init(command: WebRTCRemoteMediaCommand, state: WebRTCReceivedRemoteMediaState,
          authorization: WebRTCControlAuthorization, contextID: String? = nil,
+         positionSeconds: TimeInterval? = nil,
          completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)? = nil) {
         self.command = command
         self.state = state
         self.authorization = authorization
         self.contextID = contextID
+        self.positionSeconds = positionSeconds
         self.completion = completion
     }
 }
@@ -70,11 +73,26 @@ typealias RemoteMediaCommandSender = @Sendable (RemoteMediaCommandDispatch) -> V
 enum RemoteMediaCommandIntent: Sendable {
     case explicit(WebRTCRemoteMediaCommand)
     case togglePlayPause
+    case seekToPosition(TimeInterval)
+
+    func positionSeconds(for item: WebRTCRemoteMediaItem) -> TimeInterval? {
+        guard case .seekToPosition(let position) = self,
+              position.isFinite, position >= 0, position <= 31_536_000,
+              let elapsed = item.elapsedTime, elapsed.isFinite, elapsed >= 0,
+              let duration = item.duration, duration.isFinite,
+              duration > 0, duration <= 31_536_000 else { return nil }
+        return min(position, duration)
+    }
 
     func permittedCommand(for item: WebRTCRemoteMediaItem) -> WebRTCRemoteMediaCommand? {
         let command: WebRTCRemoteMediaCommand
         switch self {
-        case .explicit(let explicit): command = explicit
+        case .explicit(let explicit):
+            guard explicit != .seekToPosition else { return nil }
+            command = explicit
+        case .seekToPosition:
+            guard positionSeconds(for: item) != nil else { return nil }
+            command = .seekToPosition
         case .togglePlayPause:
             command = switch item.playbackState {
             case .playing: .pause
@@ -187,6 +205,7 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
                 state: state,
                 authorization: authorization,
                 contextID: item.contextID,
+                positionSeconds: intent.positionSeconds(for: item),
                 completion: completion
             ))
         }
@@ -439,9 +458,14 @@ final class BackgroundPlaybackCoordinator {
         }
         commandCenter.skipForwardCommand.preferredIntervals = [30]
         commandCenter.skipBackwardCommand.preferredIntervals = [30]
+        let gate = commandGate
+        let positionTarget = commandCenter.changePlaybackPositionCommand.addTarget { @Sendable event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+            return gate.dispatch(.seekToPosition(event.positionTime)) ? .success : .commandFailed
+        }
+        commandTargets.append((commandCenter.changePlaybackPositionCommand, positionTarget))
         // These controls have no negotiated Mac-side semantic and must never appear as no-op UI.
         commandCenter.stopCommand.isEnabled = false
-        commandCenter.changePlaybackPositionCommand.isEnabled = false
         commandCenter.seekForwardCommand.isEnabled = false
         commandCenter.seekBackwardCommand.isEnabled = false
         commandCenter.changePlaybackRateCommand.isEnabled = false
@@ -486,6 +510,10 @@ final class BackgroundPlaybackCoordinator {
             ready && (capabilities?.canSkipBackward ?? false)
         commandCenter.skipForwardCommand.isEnabled = ready && (capabilities?.canSeekForward ?? false)
         commandCenter.skipBackwardCommand.isEnabled = ready && (capabilities?.canSeekBackward ?? false)
+        commandCenter.changePlaybackPositionCommand.isEnabled = ready
+            && remoteMediaUpdate?.item.flatMap {
+                RemoteMediaCommandIntent.seekToPosition(0).permittedCommand(for: $0)
+            } != nil
     }
 
     #if DEBUG

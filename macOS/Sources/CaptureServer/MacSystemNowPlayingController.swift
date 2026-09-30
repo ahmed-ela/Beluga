@@ -15,6 +15,7 @@ protocol MacRemoteMediaControlling: Sendable {
     func prepareCommand(
         _ command: WebRTCRemoteMediaCommand,
         contextID: String,
+        positionSeconds: TimeInterval?,
         isAuthorized: @escaping @Sendable () -> Bool
     ) -> MacPreparedRemoteMediaCommand?
     func perform(
@@ -29,6 +30,7 @@ struct MacPreparedRemoteMediaCommand: Sendable {
     fileprivate let authorization: MacRemoteMediaCommandGate.Authorization
     fileprivate let command: WebRTCRemoteMediaCommand
     fileprivate let contextID: String
+    fileprivate let positionSeconds: TimeInterval?
     fileprivate let isAuthorized: @Sendable () -> Bool
     fileprivate let execution = MacPreparedRemoteMediaExecution()
 }
@@ -147,9 +149,18 @@ protocol MacSystemNowPlayingRuntime: Sendable {
         isAuthorized: @escaping @Sendable () -> Bool,
         completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void
     )
+    func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void)
 }
 
 extension MacSystemNowPlayingRuntime {
+    func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        guard positionSeconds == nil else { completion(.unsupported); return }
+        send(rawCommand: rawCommand, snapshot: snapshot, isAuthorized: isAuthorized, completion: completion)
+    }
     func stop() {}
     func fetchCatalog(completion: @escaping @Sendable (MacNowPlayingRuntimeCatalogResult) -> Void) {
         fetchSnapshot { result in
@@ -734,6 +745,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         case previousTrack = 5
         case seekForward30 = 6
         case seekBackward30 = 7
+        case seekToPosition = 10_000
 
         init(_ command: WebRTCRemoteMediaCommand) {
             switch command {
@@ -743,6 +755,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             case .previousTrack: self = .previousTrack
             case .seekForward30: self = .seekForward30
             case .seekBackward30: self = .seekBackward30
+            case .seekToPosition: self = .seekToPosition
             }
         }
     }
@@ -873,11 +886,12 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     func prepareCommand(
         _ command: WebRTCRemoteMediaCommand,
         contextID: String,
+        positionSeconds: TimeInterval? = nil,
         isAuthorized: @escaping @Sendable () -> Bool
     ) -> MacPreparedRemoteMediaCommand? {
         // Capture before the caller's first suspension, not merely before our
         // dispatch queue. A revoked caller must never adopt a replacement epoch.
-        guard isAuthorized(),
+        guard command.accepts(positionSeconds: positionSeconds), isAuthorized(),
               let authorization = gate.capture(contextID: contextID) else {
             return nil
         }
@@ -886,6 +900,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             authorization: authorization,
             command: command,
             contextID: contextID,
+            positionSeconds: positionSeconds,
             isAuthorized: isAuthorized
         )
     }
@@ -932,6 +947,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 let rawCommand = CommandValue(command).rawValue
                 runtime.send(
                     rawCommand: rawCommand,
+                    positionSeconds: prepared.positionSeconds,
                     snapshot: snapshot,
                     isAuthorized: { [gate = self.gate] in
                         attempt.isActive && gate.admits(authorization) && prepared.isAuthorized()
@@ -1088,7 +1104,8 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 canSkipForward: enabled.contains(CommandValue.nextTrack.rawValue),
                 canSkipBackward: enabled.contains(CommandValue.previousTrack.rawValue),
                 canSeekForward: enabled.contains(CommandValue.seekForward30.rawValue),
-                canSeekBackward: enabled.contains(CommandValue.seekBackward30.rawValue)
+                canSeekBackward: enabled.contains(CommandValue.seekBackward30.rawValue),
+                canSeekToPosition: enabled.contains(CommandValue.seekToPosition.rawValue)
             ),
             artwork: snapshot.metadata.artwork
         )

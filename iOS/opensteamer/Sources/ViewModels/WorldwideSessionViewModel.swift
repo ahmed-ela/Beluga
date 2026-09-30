@@ -1193,14 +1193,23 @@ enum RemoteMediaCommandAdmission {
         _ command: WebRTCRemoteMediaCommand,
         contextID: String,
         observedRevision: UInt64,
-        currentUpdate: WebRTCRemoteMediaStateUpdate?
+        currentUpdate: WebRTCRemoteMediaStateUpdate?,
+        positionSeconds: TimeInterval? = nil
     ) -> Bool {
         guard observedRevision > 0,
               let currentUpdate,
               currentUpdate.revision >= observedRevision,
               let item = currentUpdate.item(contextID: contextID),
-              item.capabilities.permits(command) else {
+              item.capabilities.permits(command),
+              WebRTCRemoteMediaCommandRequest(id: 1, contextID: contextID,
+                  observedRevision: observedRevision, command: command,
+                  positionSeconds: positionSeconds).isValid else {
             return false
+        }
+        if command == .seekToPosition {
+            guard let elapsed = item.elapsedTime, elapsed.isFinite, elapsed >= 0,
+                  let duration = item.duration, duration.isFinite,
+                  duration > 0, duration <= 31_536_000 else { return false }
         }
         return true
     }
@@ -12943,7 +12952,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                 command,
                 contextID: contextID,
                 observedRevision: dispatch.state.update.revision,
-                currentUpdate: currentRemoteMediaUpdate
+                currentUpdate: currentRemoteMediaUpdate,
+                positionSeconds: dispatch.positionSeconds
               ) else {
             dispatch.completion?(.staleContext)
             reconcileRemoteMediaCommandAvailability()
@@ -12971,7 +12981,8 @@ final class WorldwideSessionViewModel: ObservableObject {
                     command,
                     contextID: contextID,
                     observedRevision: dispatch.state.update.revision,
-                    currentUpdate: self.currentRemoteMediaUpdate
+                    currentUpdate: self.currentRemoteMediaUpdate,
+                    positionSeconds: dispatch.positionSeconds
                   ) else {
                 dispatch.completion?(.staleContext)
                 return
@@ -12988,6 +12999,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                         state: dispatch.state,
                         authorization: dispatch.authorization,
                         contextID: contextID,
+                        positionSeconds: dispatch.positionSeconds,
                         acknowledgementHandler: dispatch.completion
                     )
                 }
@@ -12997,6 +13009,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                     state: dispatch.state,
                     authorization: dispatch.authorization,
                     contextID: contextID,
+                    positionSeconds: dispatch.positionSeconds,
                     acknowledgementHandler: dispatch.completion
                 )
                 #endif

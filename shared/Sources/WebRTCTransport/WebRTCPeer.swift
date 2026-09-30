@@ -6199,6 +6199,7 @@ public actor WebRTCPeer {
         state: WebRTCReceivedRemoteMediaState,
         authorization presentationAuthorization: WebRTCControlAuthorization,
         contextID: String? = nil,
+        positionSeconds: TimeInterval? = nil,
         acknowledgementHandler: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)? = nil
     ) throws -> UInt64 {
         try ensureOpen()
@@ -6211,6 +6212,7 @@ public actor WebRTCPeer {
               let item = state.update.item(contextID: targetContext),
               (remoteMediaCatalogNegotiated || item.contextID == state.update.item?.contextID),
               item.capabilities.permits(command),
+              command != .seekToPosition || (item.duration.map { $0.isFinite && $0 > 0 } ?? false),
               isTransportHealthyForMedia(),
               nextRemoteMediaCommandID < UInt64.max else {
             throw WebRTCTransportError.transportNotHealthy
@@ -6222,7 +6224,8 @@ public actor WebRTCPeer {
             id: nextRemoteMediaCommandID,
             contextID: item.contextID,
             observedRevision: state.update.revision,
-            command: command
+            command: command,
+            positionSeconds: positionSeconds
         )
         guard request.isValid else { throw WebRTCTransportError.unexpectedSignal }
         let completionToken = UUID()

@@ -49,10 +49,14 @@ enum MacChromeMediaScript {
           if (!exact(request,["schemaVersion","operation","commandID","expected"]) ||
               !uuid(request.commandID) || !expectedValid(request.expected)) return output("failed");
         } else if (operation === "command") {
-          if (!exact(request,["schemaVersion","operation","commandID","expected","command",
-                "expiresAtUnixMilliseconds","expiresAtPageMilliseconds"]) ||
+          const fields = ["schemaVersion","operation","commandID","expected","command",
+                "expiresAtUnixMilliseconds","expiresAtPageMilliseconds"];
+          if (request.command === "seekToPosition") fields.push("positionSeconds");
+          if (!exact(request,fields) ||
               !uuid(request.commandID) || !expectedValid(request.expected) ||
-              !["play","pause","next","previous","seekForward30","seekBackward30"].includes(request.command) ||
+              !["play","pause","next","previous","seekForward30","seekBackward30","seekToPosition"].includes(request.command) ||
+              (request.command === "seekToPosition" && (!Number.isFinite(request.positionSeconds) ||
+                request.positionSeconds < 0 || request.positionSeconds > 31536000)) ||
               !Number.isFinite(request.expiresAtUnixMilliseconds) ||
               !Number.isFinite(request.expiresAtPageMilliseconds)) return output("failed");
         } else return output("failed");
@@ -177,6 +181,7 @@ enum MacChromeMediaScript {
         if (existing) {
           if (!sameExpected(existing.expected,request.expected) ||
               (operation === "command" && (existing.command !== request.command ||
+                existing.positionSeconds !== request.positionSeconds ||
                 existing.expiresAtUnixMilliseconds !== request.expiresAtUnixMilliseconds ||
                 existing.expiresAtPageMilliseconds !== request.expiresAtPageMilliseconds))) return output("staleContext");
           return recordResult(existing,view);
@@ -187,11 +192,13 @@ enum MacChromeMediaScript {
             request.expiresAtUnixMilliseconds - Date.now() > 5000) return output("failed",view.snapshot);
         if (s.commands.size >= 128) return output("failed",view.snapshot);
         const relative = request.command === "next" || request.command === "previous";
-        const seek = request.command === "seekForward30" || request.command === "seekBackward30";
+        const seek = request.command === "seekForward30" || request.command === "seekBackward30" ||
+          request.command === "seekToPosition";
         const chosen = relative ? view[request.command] : null;
         if (relative && !chosen) return output("unsupported",view.snapshot);
         if (seek && !view.snapshot.canSeek) return output("unsupported",view.snapshot);
         const record = {expected:{...request.expected},command:request.command,status:"pending",
+          positionSeconds:request.positionSeconds,
           expiresAtUnixMilliseconds:request.expiresAtUnixMilliseconds,expiresAtPageMilliseconds:request.expiresAtPageMilliseconds,
           retainUntil:now + 60000,targetVideoID:chosen?.videoID};
         s.commands.set(request.commandID,record);
@@ -211,7 +218,8 @@ enum MacChromeMediaScript {
             if (!fence.snapshot.canSeek) { record.status = "failed"; return recordResult(record,fence); }
             record.seekFrom = fence.snapshot.elapsedTime;
             record.seekTarget = Math.min(fence.snapshot.duration, Math.max(0,
-              record.seekFrom + (request.command === "seekForward30" ? 30 : -30)));
+              request.command === "seekToPosition" ? request.positionSeconds :
+                record.seekFrom + (request.command === "seekForward30" ? 30 : -30)));
             s.setCurrentTime.call(fence.video,record.seekTarget);
           } else if (request.command === "pause") {
             s.pause.call(view.video);

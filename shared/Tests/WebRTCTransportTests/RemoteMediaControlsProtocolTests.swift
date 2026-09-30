@@ -151,7 +151,7 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
         .init(contextID: context, sourceName: context, title: "Track", playbackState: .playing,
               elapsedTime: 40, duration: 200, playbackRate: 1,
               capabilities: .init(canPlay: true, canPause: true, canSkipForward: true,
-                  canSkipBackward: true, canSeekForward: true, canSeekBackward: true))
+                  canSkipBackward: true, canSeekForward: true, canSeekBackward: true, canSeekToPosition: true))
     }
 
     private static func oversizedCatalog() -> WebRTCRemoteMediaStateUpdate {
@@ -161,7 +161,7 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
                   album: String(repeating: "\"", count: 256), playbackState: .playing,
                   elapsedTime: 40, duration: 200, playbackRate: 1,
                   capabilities: .init(canPlay: true, canPause: true, canSkipForward: true,
-                      canSkipBackward: true, canSeekForward: true, canSeekBackward: true),
+                      canSkipBackward: true, canSeekForward: true, canSeekBackward: true, canSeekToPosition: true),
                   artwork: .init(videoID: "dQw4w9WgXcQ"))
         }
         return .init(revision: 1, item: item("primary"), additionalItems: [item("secondary")])
@@ -225,20 +225,35 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             XCTAssertEqual(state.update.additionalItems.map(\.contextID), ["secondary"])
             XCTAssertNotEqual(state.update, oversized, "Oversized display metadata must be shortened before actual transport")
             let results = RemoteMediaCallbackResults()
-            let id = try await viewer.requestRemoteMediaCommand(.seekForward30, state: state,
-                authorization: WebRTCControlAuthorization(), contextID: "secondary", acknowledgementHandler: { results.append($0) })
+            let id = try await viewer.requestRemoteMediaCommand(.seekToPosition, state: state,
+                authorization: WebRTCControlAuthorization(), contextID: "secondary", positionSeconds: 57.125,
+                acknowledgementHandler: { results.append($0) })
             try await waitForRemoteMediaCondition { results.read() == [.applied] }
             let commands = await recorder.snapshot()
             let command = try XCTUnwrap(commands.receivedCommands.last)
             XCTAssertEqual(command.request.contextID, "secondary")
             XCTAssertEqual(command.request.id, id)
+            XCTAssertEqual(command.request.command, .seekToPosition)
+            XCTAssertEqual(command.request.positionSeconds, 57.125)
             try await host.acknowledgeRemoteMediaCommand(command, result: .applied)
             try await viewer.sendRemoteMediaCommandForTesting(command.request, state: state)
+            let conflicting = WebRTCRemoteMediaCommandRequest(id: id, contextID: "secondary",
+                observedRevision: state.update.revision, command: .seekToPosition, positionSeconds: 58.125)
+            try await viewer.sendRemoteMediaCommandForTesting(conflicting, state: state)
             try await viewer.requestRemoteMediaStateRefresh(id: UUID())
             try await waitForRemoteMediaCondition { await recorder.snapshot().refreshRequests.count == 1 }
             XCTAssertEqual(results.read(), [.applied])
             let final = await recorder.snapshot()
             XCTAssertEqual(final.commands.count, 1)
+            let relativeResults = RemoteMediaCallbackResults()
+            _ = try await viewer.requestRemoteMediaCommand(.seekForward30, state: state,
+                authorization: WebRTCControlAuthorization(), contextID: "secondary",
+                acknowledgementHandler: { relativeResults.append($0) })
+            try await waitForRemoteMediaCondition { relativeResults.read() == [.applied] }
+            let relative = await recorder.snapshot()
+            XCTAssertEqual(relative.commands.count, 2)
+            XCTAssertEqual(relative.commands.last?.command, .seekForward30)
+            XCTAssertNil(relative.commands.last?.positionSeconds)
         } catch {
             hostForwarder.cancel(); viewerForwarder.cancel()
             _ = await host.close(reason: .protocolError); _ = await viewer.close(reason: .protocolError)
@@ -360,7 +375,8 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             canSkipForward: true,
             canSkipBackward: true,
             canSeekForward: true,
-            canSeekBackward: true
+            canSeekBackward: true,
+            canSeekToPosition: true
         )
         let item = WebRTCRemoteMediaItem(
             contextID: UUID().uuidString,
@@ -466,6 +482,34 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
                 command: .pause
             ).isValid
         )
+    }
+
+    func testAbsoluteSeekParameterAndLegacyCapabilityFailClosed() throws {
+        let legacy = Data(#"{"canPlay":true,"canPause":true,"canSkipForward":true,"canSkipBackward":true}"#.utf8)
+        let capabilities = try JSONDecoder().decode(WebRTCRemoteMediaCapabilities.self, from: legacy)
+        XCTAssertFalse(capabilities.canSeekToPosition)
+        XCTAssertFalse(capabilities.permits(.seekToPosition))
+        for position in [nil, -1.0, .infinity, .nan, 31_536_001.0] as [Double?] {
+            let request = WebRTCRemoteMediaCommandRequest(id: 1, contextID: "primary", observedRevision: 1,
+                command: .seekToPosition, positionSeconds: position)
+            XCTAssertFalse(request.isValid)
+            XCTAssertEqual(WebRTCRemoteMediaCommandAdmission.rejection(for: request,
+                latestSuccessfullySent: .init(revision: 1, item: Self.catalogItem("primary"))), .failed)
+        }
+        for command in WebRTCRemoteMediaCommand.allCases where command != .seekToPosition {
+            XCTAssertFalse(WebRTCRemoteMediaCommandRequest(id: 1, contextID: "primary", observedRevision: 1,
+                command: command, positionSeconds: 25).isValid)
+        }
+        for position in [0.0, 57.125, 31_536_000.0] {
+            let request = WebRTCRemoteMediaCommandRequest(id: 1, contextID: "primary", observedRevision: 1,
+                command: .seekToPosition, positionSeconds: position)
+            XCTAssertTrue(request.isValid)
+            let bytes = try JSONEncoder().encode(request)
+            XCTAssertLessThan(bytes.count, 4096)
+            XCTAssertEqual(try JSONDecoder().decode(WebRTCRemoteMediaCommandRequest.self, from: bytes), request)
+            XCTAssertNil(WebRTCRemoteMediaCommandAdmission.rejection(for: request,
+                latestSuccessfullySent: .init(revision: 1, item: Self.catalogItem("primary"))))
+        }
     }
 
     func testCommandAdmissionAllowsOlderRevisionOnlyForCurrentContextAndCapability() {

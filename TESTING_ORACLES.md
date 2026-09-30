@@ -545,10 +545,22 @@ the main actor. Restoring the inferred MainActor artwork callback must fail this
 background test with the executor assertion, not merely a missing-image assertion.
 Run `ruby scripts/test-native-media-callback-isolation.rb EMPTY_PRIVATE_OUTPUT_DIRECTORY
 DEVELOPER_DIRECTORY` with the selected canonical Xcode developer directory. This bounded
-compiler oracle extracts both production callbacks and checks their isolation in SILGen
+compiler oracle extracts the artwork, mapped-command and absolute-position callbacks and checks their isolation in SILGen
 and optimized Swift 6, with independent annotation-removal mutants. It complements the
 signed artwork runtime test; it does not execute a native remote command or prove a
 physical iPhone crash has the same cause.
+
+Native timeline scrubbing uses the current YouTube item's advertised absolute-seek
+capability and finite timeline. Preserve the requested fractional position, exact
+context and negotiation through the native callback, actor hop and WebRTC command.
+Reject missing/nonfinite/negative/out-of-bound positions and timestamps on unrelated
+commands. Clamp only to the admitted item's duration; never invent successful metadata
+before host readback. The Chrome renderer must recheck identity, authorization and
+deadline before setting `currentTime`, bind duplicates to the same requested position,
+and require observed position readback. Cover actual native WebRTC timestamp delivery
+and production browser-script mutations. Legacy hosts must keep the scrubber disabled.
+iOS chooses the system player's visible transport layout; registered commands and
+simulator tests do not prove simultaneous buttons or physical locked-screen scrubbing.
 
 Before shipping a change to Now Playing controls, require deterministic coverage of
 negotiation with legacy peers, the 4 KiB wire bound, exact current-source command

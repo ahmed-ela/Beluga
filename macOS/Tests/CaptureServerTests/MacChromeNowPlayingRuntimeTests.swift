@@ -39,6 +39,7 @@ private final class ChromeTestBackend: MacChromeNowPlayingBackend, @unchecked Se
     var error: MacChromeBackendError?
     var commandError: MacChromeBackendError?
     var commands: [MacChromeCommand] = []
+    var positions: [TimeInterval?] = []
     var commandTargets: [MacChromeTabIdentity] = []
     var reads = 0
     var permissions = 0
@@ -50,10 +51,11 @@ private final class ChromeTestBackend: MacChromeNowPlayingBackend, @unchecked Se
         return snapshots
     }
     func requestAutomationPermission() throws { permissions += 1; onPermission?() }
-    func send(_ command: MacChromeCommand, expected: MacChromePlayerSnapshot, deadline: TimeInterval,
+    func send(_ command: MacChromeCommand, positionSeconds: TimeInterval?, expected: MacChromePlayerSnapshot, deadline: TimeInterval,
               isAuthorized: @escaping @Sendable () -> Bool) throws -> WebRTCRemoteMediaCommandResult {
         guard isAuthorized() else { return .staleContext }
         commands.append(command); commandTargets.append(expected.tab)
+        positions.append(positionSeconds)
         if let commandError { throw commandError }
         onCommand?(command)
         return .applied
@@ -133,10 +135,10 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
             var seekTarget: Double?
             if operation == "command" {
                 commandDispatches += 1
-                if ["seekForward30", "seekBackward30"].contains(request["command"] as? String ?? "") {
+                if ["seekForward30", "seekBackward30", "seekToPosition"].contains(request["command"] as? String ?? "") {
                     seekFrom = media.elapsedTime
-                    seekTarget = min(media.duration ?? 0, max(0, (seekFrom ?? 0)
-                        + (request["command"] as? String == "seekForward30" ? 30 : -30)))
+                    seekTarget = min(media.duration ?? 0, max(0, request["positionSeconds"] as? Double ??
+                        ((seekFrom ?? 0) + (request["command"] as? String == "seekForward30" ? 30 : -30))))
                 }
                 if !ignoreCommands {
                     switch request["command"] as? String {
@@ -146,7 +148,7 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
                     case "next", "previous":
                         media = chromeMedia(video: "lmnopqrstuv", item: "00000000-0000-4000-8000-000000000003", generation: 2)
                         windows[0].tabs[0].url = chromeNextURL
-                    case "seekForward30", "seekBackward30":
+                    case "seekForward30", "seekBackward30", "seekToPosition":
                         media = chromeMedia(paused: media.paused, duration: media.duration, elapsed: seekTarget)
                     default: XCTFail("Unexpected command")
                     }
@@ -262,7 +264,7 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.media.title, "Video")
         XCTAssertEqual(snapshots.first?.media.duration, 120)
         XCTAssertEqual(snapshots.first?.media.elapsedTime, 15)
-        XCTAssertEqual(snapshots.first?.media.enabledCommands, [1, 4, 5, 6, 7])
+        XCTAssertEqual(snapshots.first?.media.enabledCommands, [1, 4, 5, 6, 7, MacChromeCommand.seekToPosition.rawValue])
         XCTAssertEqual(client.requests.count, 1)
         XCTAssertEqual(client.permissionRequests, [false])
         XCTAssertTrue(client.targets.allSatisfy { $0 == 42 })
@@ -412,6 +414,74 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         }
     }
 
+    func testAbsoluteSeekCarriesFractionalPositionClampsAndRequiresNativeReadback() throws {
+        for (position, target) in [(0.0, 0.0), (51.375, 51.375), (500.0, 120.0)] {
+            let client = ChromeTestClient(); client.media = chromeMedia(paused: true)
+            let backend = makeBackend(client)
+            let expected = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+            XCTAssertTrue(expected.media.enabledCommands.contains(MacChromeCommand.seekToPosition.rawValue))
+            XCTAssertEqual(try backend.send(.seekToPosition, positionSeconds: position,
+                expected: expected, deadline: 11, isAuthorized: { true }), .applied)
+            XCTAssertEqual(client.media.elapsedTime, target)
+            XCTAssertEqual(client.media.identity, expected.media.identity)
+            XCTAssertTrue(client.media.paused)
+            XCTAssertEqual(client.requests.first { $0["operation"] as? String == "command" }?["positionSeconds"] as? Double, position)
+            XCTAssertEqual(client.commandDispatches, 1)
+        }
+        let client = ChromeTestClient(), backend = makeBackend(client)
+        let expected = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+        for position in [nil, -1.0, .nan, .infinity, 31_536_001.0] as [Double?] {
+            XCTAssertEqual(try backend.send(.seekToPosition, positionSeconds: position,
+                expected: expected, deadline: 11, isAuthorized: { true }), .failed)
+        }
+        XCTAssertEqual(try backend.send(.pause, positionSeconds: 1,
+            expected: expected, deadline: 11, isAuthorized: { true }), .failed)
+        XCTAssertEqual(client.commandDispatches, 0)
+        client.ignoreCommands = true
+        XCTAssertEqual(try backend.send(.seekToPosition, positionSeconds: 51.375,
+            expected: expected, deadline: 11, isAuthorized: { true }), .failed)
+        XCTAssertEqual(client.commandDispatches, 1)
+        XCTAssertEqual(client.media.elapsedTime, 15)
+    }
+
+    func testAbsoluteSeekFlowsThroughControllerCompositeAndChromeOnceAndRetiresWithAuthority() async throws {
+        let backend = ChromeTestBackend(), chrome = makeRuntime(backend)
+        let composite = MacSupportedNowPlayingRuntime(browser: chrome, music: ChromeRecoveryAbsentMusic())
+        let controller = MacSystemNowPlayingController(runtime: composite, operationTimeout: 5,
+                                                       now: { Date(timeIntervalSince1970: 1000) })
+        defer { controller.stop() }
+        let updates = ChromeTestBox<[WebRTCRemoteMediaStateUpdate]>([])
+        let ready = expectation(description: "exact seekable Chrome source")
+        controller.start { update in
+            updates.update { $0.append(update) }
+            if update.revision == 1 { ready.fulfill() }
+        }
+        await fulfillment(of: [ready], timeout: 2)
+        let item = try XCTUnwrap(updates.get().last?.item)
+        XCTAssertTrue(item.capabilities.canSeekToPosition)
+        XCTAssertNil(controller.prepareCommand(.seekToPosition, contextID: item.contextID, isAuthorized: { true }))
+        XCTAssertNil(controller.prepareCommand(.pause, contextID: item.contextID, positionSeconds: 57.125, isAuthorized: { true }))
+        let prepared = try XCTUnwrap(controller.prepareCommand(.seekToPosition, contextID: item.contextID,
+            positionSeconds: 57.125, isAuthorized: { true }))
+        let results = await withTaskGroup(of: WebRTCRemoteMediaCommandResult.self) { group in
+            for _ in 0..<8 { group.addTask { await controller.perform(prepared) } }
+            var values: [WebRTCRemoteMediaCommandResult] = []
+            for await result in group { values.append(result) }
+            return values
+        }
+        XCTAssertEqual(results.filter { $0 == .applied }.count, 1)
+        XCTAssertEqual(results.filter { $0 == .staleContext }.count, 7)
+        XCTAssertEqual(backend.commands, [.seekToPosition])
+        XCTAssertEqual(backend.positions, [57.125])
+        XCTAssertEqual(backend.commandTargets, [chromePlayer().tab])
+        let retired = try XCTUnwrap(controller.prepareCommand(.seekToPosition, contextID: item.contextID,
+            positionSeconds: 60, isAuthorized: { true }))
+        controller.invalidateCommands()
+        let rejected = await controller.perform(retired)
+        XCTAssertEqual(rejected, .staleContext)
+        XCTAssertEqual(backend.commands.count, 1)
+    }
+
     func testSeekCapabilityRequiresFiniteBoundedTimelineAndNewScriptSupport() throws {
         for media in [chromeMedia(canSeek: nil), chromeMedia(canSeek: false),
                       chromeMedia(duration: nil), chromeMedia(duration: 0), chromeMedia(duration: .infinity),
@@ -419,6 +489,7 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
                       chromeMedia(elapsed: -1), chromeMedia(elapsed: 121), chromeMedia(elapsed: .nan)] {
             XCTAssertFalse(media.enabledCommands.contains(6))
             XCTAssertFalse(media.enabledCommands.contains(7))
+            XCTAssertFalse(media.enabledCommands.contains(MacChromeCommand.seekToPosition.rawValue))
         }
         let client = ChromeTestClient(); client.media = chromeMedia(canSeek: nil)
         let backend = makeBackend(client)

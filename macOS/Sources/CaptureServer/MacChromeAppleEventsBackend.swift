@@ -51,7 +51,7 @@ struct MacChromeScriptSnapshot: Codable, Equatable, Sendable {
         if canSeek == true, let duration, let elapsedTime,
            duration.isFinite, duration > 0, duration <= 31_536_000,
            elapsedTime.isFinite, (0...duration).contains(elapsedTime) {
-            commands.formUnion([6, 7])
+            commands.formUnion([6, 7, MacChromeCommand.seekToPosition.rawValue])
         }
         return commands
     }
@@ -94,9 +94,14 @@ enum MacChromeDiscoveryStatus: String, Sendable {
 enum MacChromeCommand: Int, Sendable {
     case play = 0, pause = 1, next = 4, previous = 5
     case seekForward30 = 6, seekBackward30 = 7
+    case seekToPosition = 10_000
     var changesTrack: Bool { self == .next || self == .previous }
-    var isSeek: Bool { self == .seekForward30 || self == .seekBackward30 }
+    var isSeek: Bool { self == .seekForward30 || self == .seekBackward30 || self == .seekToPosition }
     var isRelative: Bool { changesTrack || isSeek }
+    func accepts(positionSeconds: TimeInterval?) -> Bool {
+        (self == .seekToPosition ? WebRTCRemoteMediaCommand.seekToPosition : .play)
+            .accepts(positionSeconds: positionSeconds)
+    }
     var scriptName: String {
         switch self {
         case .play: return "play"
@@ -105,6 +110,7 @@ enum MacChromeCommand: Int, Sendable {
         case .previous: return "previous"
         case .seekForward30: return "seekForward30"
         case .seekBackward30: return "seekBackward30"
+        case .seekToPosition: return "seekToPosition"
         }
     }
 }
@@ -112,7 +118,7 @@ enum MacChromeCommand: Int, Sendable {
 protocol MacChromeNowPlayingBackend: Sendable {
     func readSnapshots(deadline: TimeInterval) throws -> [MacChromePlayerSnapshot]
     func requestAutomationPermission() throws
-    func send(_ command: MacChromeCommand, expected: MacChromePlayerSnapshot,
+    func send(_ command: MacChromeCommand, positionSeconds: TimeInterval?, expected: MacChromePlayerSnapshot,
               deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
         -> WebRTCRemoteMediaCommandResult
 }
@@ -210,9 +216,10 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         return snapshots
     }
 
-    func send(_ command: MacChromeCommand, expected: MacChromePlayerSnapshot,
+    func send(_ command: MacChromeCommand, positionSeconds: TimeInterval? = nil, expected: MacChromePlayerSnapshot,
               deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
         -> WebRTCRemoteMediaCommandResult {
+        guard command.accepts(positionSeconds: positionSeconds) else { return .failed }
         let deadline = min(deadline, expected.receivedAtUptime + Self.maximumSnapshotAge)
         try check(owner: expected.tab.owner, deadline: deadline, isAuthorized: isAuthorized)
         let candidates = try readSnapshots(deadline: deadline)
@@ -225,6 +232,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         let request = ScriptRequest(
             operation: "command", commandID: commandID, expected: expected.media.identity,
             command: command.scriptName,
+            positionSeconds: positionSeconds,
             expiresAtUnixMilliseconds: min(wallNow() * 1000 + (deadline - now()) * 1000,
                 expected.media.observedAtUnixMilliseconds + remainingFromObservation),
             expiresAtPageMilliseconds: expected.media.observedAtPageMilliseconds + remainingFromObservation)
@@ -261,7 +269,8 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
                       let duration = media.duration, let elapsed = media.elapsedTime,
                       origin.isFinite, target.isFinite, duration > 0,
                       (0...duration).contains(origin), (0...duration).contains(target),
-                      abs(target - min(duration, max(0, origin + (command == .seekForward30 ? 30 : -30)))) < 0.001,
+                      abs(target - min(duration, max(0, positionSeconds ??
+                        (origin + (command == .seekForward30 ? 30 : -30))))) < 0.001,
                       abs(elapsed - target) <= 0.25 else { return .failed }
                 return .applied
             }
@@ -300,6 +309,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         var commandID: String? = nil
         var expected: MacChromeMediaIdentity? = nil
         var command: String? = nil
+        var positionSeconds: Double? = nil
         var expiresAtUnixMilliseconds: Double? = nil
         var expiresAtPageMilliseconds: Double? = nil
     }
