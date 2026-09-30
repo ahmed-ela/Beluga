@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 
 # Offline inputs only. This does not alter Pins or expose a production cutover endpoint.
-require_relative "opensteamer-host-v91-cutover-controller"
+# Ruby does not add an entry script to $LOADED_FEATURES; its CLI can load us directly.
+require_relative "opensteamer-host-v91-cutover-controller" unless defined?(OpenSteamerV91Cutover::CLI)
 
 module OpenSteamerHostSuccessorInputs
   Legacy = OpenSteamerV91Cutover

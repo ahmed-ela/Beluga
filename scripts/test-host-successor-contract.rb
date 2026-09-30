@@ -81,6 +81,30 @@ class HostSuccessorContractTest < Minitest::Test
     JSON.parse(output)
   end
 
+  def controller_subprocess(mode, *arguments)
+    value = contract
+    entry = File.expand_path("../macOS/scripts/opensteamer-host-v91-cutover-controller.rb", __dir__)
+    Open3.capture3({ "OPENSTEAMER_V91_LAUNCHER_ATTESTATION" => nil },
+                  "/usr/bin/ruby", "--disable-gems", entry, mode,
+                  value.profile_path, value.profile_sha, *arguments)
+  end
+
+  def test_direct_controller_prints_exact_successor_tooling_contract_without_reload_warnings
+    stdout, stderr, result = controller_subprocess("--print-successor-tooling-contract")
+    assert result.success?, stderr
+    assert_equal "fixture/source\norigin/fixture/source\n", stdout
+    assert_empty stderr
+  end
+
+  def test_direct_successor_live_modes_require_launcher_before_any_host_probe
+    %w[--verify-successor-cutover-preflight --execute-authorized-successor-cutover].each do |mode|
+      stdout, stderr, result = controller_subprocess(mode, File.join(@root, "absent-capsule"), "c" * 64, "d" * 64)
+      assert_equal 1, result.exitstatus, "#{mode}: #{stderr}"
+      assert_empty stdout
+      assert_equal "opensteamer-host-v91-cutover-controller: live V91 modes require the independently pinned launcher\n", stderr
+    end
+  end
+
   def test_contract_contains_only_release_specific_pins
     value = contract
     assert_equal Engine::Pins::RELEASE_KEYS.sort, value.pins.keys.sort
