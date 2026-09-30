@@ -2509,6 +2509,51 @@ final class MacRemoteInputControllerTests: XCTestCase {
         XCTAssertEqual(tap(controller), .accepted(.none))
     }
 
+    func testHostingGroupHitTestCanAuthorizeFocusedEditableInsideItsFrame() {
+        let system = MockMacRemoteInputSystem()
+        let hostingGroup = system.makeElement(role: "AXGroup", settable: false)
+        let textArea = system.makeElement(role: "AXTextArea", settable: true)
+        system.hitElement = hostingGroup
+        system.currentFocusedElement = textArea
+        system.setEditableFrame(CGRect(x: 0, y: 0, width: 1_920, height: 1_080), of: textArea)
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(
+            tap(controller),
+            .accepted(.editable(generation: 1, secure: false))
+        )
+        XCTAssertEqual(
+            text(controller, generation: 1, value: "WebKit focus"),
+            .accepted(.editable(generation: 1, secure: false))
+        )
+    }
+
+    func testHostingGroupFallbackDoesNotAuthorizeFocusOutsideEditableFrame() {
+        let system = MockMacRemoteInputSystem()
+        let hostingGroup = system.makeElement(role: "AXGroup", settable: false)
+        let textArea = system.makeElement(role: "AXTextArea", settable: true)
+        system.hitElement = hostingGroup
+        system.currentFocusedElement = textArea
+        system.setEditableFrame(CGRect(x: 0, y: 0, width: 100, height: 100), of: textArea)
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(tap(controller), .accepted(.none))
+        XCTAssertTrue(system.postedTexts.isEmpty)
+    }
+
+    func testNonHostingHitDoesNotUseFocusedEditableFallback() {
+        let system = MockMacRemoteInputSystem()
+        let button = system.makeElement(role: "AXButton", settable: false)
+        let textArea = system.makeElement(role: "AXTextArea", settable: true)
+        system.hitElement = button
+        system.currentFocusedElement = textArea
+        system.setEditableFrame(CGRect(x: 0, y: 0, width: 1_920, height: 1_080), of: textArea)
+        let controller = armedController(system: system)
+
+        XCTAssertEqual(tap(controller), .accepted(.none))
+        XCTAssertTrue(system.postedTexts.isEmpty)
+    }
+
     func testTextValidationEnforcesEncodingCapsAndRejectsControlAndFunctionKeyRanges() {
         XCTAssertNil(MacRemoteInputController.validatedTextByteCount(""))
         XCTAssertNil(MacRemoteInputController.validatedTextByteCount("line\nbreak"))
@@ -5274,6 +5319,7 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
     private(set) var windowPositionWrites: [CGPoint] = []
     private(set) var appliedWindowFrames: [CGRect] = []
     private var nodes: [ObjectIdentifier: Node] = [:]
+    private var frames: [ObjectIdentifier: CGRect] = [:]
 
     func makeElement(
         role: String?,
@@ -5333,6 +5379,10 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
         nodes[ObjectIdentifier(element)]?.subrole = subrole
     }
 
+    func setEditableFrame(_ frame: CGRect, of element: MacRemoteAccessibilityElement) {
+        frames[ObjectIdentifier(element)] = frame
+    }
+
     func setWindowEnabledState(
         _ state: MacRemoteWindowEnabledState,
         of window: MacRemoteAccessibilityElement
@@ -5388,6 +5438,10 @@ private final class MockMacRemoteInputSystem: @unchecked Sendable, MacRemoteInpu
 
     func isValueSettable(_ element: MacRemoteAccessibilityElement) -> Bool {
         nodes[ObjectIdentifier(element)]?.settable ?? false
+    }
+
+    func frame(of element: MacRemoteAccessibilityElement) -> CGRect? {
+        frames[ObjectIdentifier(element)]
     }
 
     func focusedElement() -> MacRemoteAccessibilityElement? {

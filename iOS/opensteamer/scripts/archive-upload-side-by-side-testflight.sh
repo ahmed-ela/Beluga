@@ -16,7 +16,9 @@ readonly EXPECTED_BUNDLE_IDENTIFIER="com.elamin.opensteamer"
 readonly PROTECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer"
 readonly EXPECTED_SCHEME="opensteamerTestFlight"
 readonly EXPECTED_CONFIGURATION="TestFlight"
-readonly EXPECTED_BUILD_NUMBER="87"
+readonly EXPECTED_BUILD_NUMBER="88"
+readonly EXPECTED_MEDIA_EXTENSION_IDENTIFIER="com.elamin.opensteamer.MediaNotificationContent"
+readonly EXPECTED_MEDIA_APP_GROUP="group.com.elamin.opensteamer.media"
 readonly EXPECTED_SHORT_VERSION="0.1.0"
 readonly EXPECTED_TEAM_ID="MSMG8CJLB3"
 readonly EXPECTED_ARCHIVE_SIGNING_IDENTITY="Apple Development: Ahmed Elamin (92LVX32M8K)"
@@ -3284,6 +3286,37 @@ function xcodebuild_pinned_environment_sha256() {
   string_vector_sha256 "${TESTFLIGHT_XCODEBUILD_PINNED_ENVIRONMENT[@]}"
 }
 
+function media_extension_settings_arguments() {
+  reply=()
+  local -i index=1 scheme_count=0 derived_count=0
+  local argument
+  while (( index <= ${#TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]} )); do
+    argument=${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[index]}
+    case "${argument}" in
+      -scheme)
+        (( index += 1 ))
+        [[ "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[index]:-}" == "${EXPECTED_SCHEME}" ]] || return 1
+        (( scheme_count += 1 ))
+        reply+=(-target MediaNotificationContent)
+        ;;
+      -derivedDataPath)
+        (( index += 1 ))
+        [[ "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[index]:-}" == "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}" ]] || return 1
+        (( derived_count += 1 ))
+        ;;
+      -target)
+        return 1
+        ;;
+      *)
+        reply+=("${argument}")
+        ;;
+    esac
+    (( index += 1 ))
+  done
+  (( scheme_count == 1 && derived_count == 1 )) || return 1
+  reply+=(archive -showBuildSettings -json)
+}
+
 function verify_xcodebuild_action_arguments() {
   local destination_contract=$1
   shift
@@ -3293,6 +3326,13 @@ function verify_xcodebuild_action_arguments() {
     [[ "${supplied_argument}" != -DVT* ]] || return 1
   done
   case "${destination_contract}" in
+    media-extension-settings)
+      local -a reply=()
+      media_extension_settings_arguments || return 1
+      (( ${#supplied_arguments[@]} == ${#reply[@]} )) \
+        && [[ "$(string_vector_sha256 "${supplied_arguments[@]}")" \
+          == "$(string_vector_sha256 "${reply[@]}")" ]]
+      ;;
     export)
       verify_xcodebuild_authentication_contract || return 1
       local -a expected_export_arguments=(
@@ -3373,6 +3413,9 @@ function run_xcodebuild_command_for_destination_contract() {
       # retaining the scrubbed environment and reviewed Xcode command.
       "$@"
       ;;
+    media-extension-settings)
+      run_with_pinned_xcode_sandbox_profile settings "$@"
+      ;;
     settings|archive)
       run_with_pinned_xcode_sandbox_profile "${destination_contract}" "$@"
       ;;
@@ -3395,7 +3438,7 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "$@" || return 1
   verify_pinned_xcodebuild_filesystem_contract || return 1
   case "${destination_contract}" in
-    resolve|settings)
+    resolve|settings|media-extension-settings)
       verify_control_directory_identity || return 1
       ;;
     archive)
@@ -3421,7 +3464,7 @@ function run_pinned_xcodebuild() {
     "${destination_contract}" "$@" || command_status=1
   verify_pinned_xcodebuild_filesystem_contract || command_status=1
   case "${destination_contract}" in
-    resolve|settings)
+    resolve|settings|media-extension-settings)
       verify_control_directory_identity || command_status=1
       ;;
     archive)
@@ -3439,6 +3482,52 @@ function resolve_pinned_package_dependencies() {
   run_pinned_xcodebuild resolve \
     -resolvePackageDependencies \
     "${TESTFLIGHT_XCODEBUILD_PINNED_ARGUMENTS[@]}"
+}
+
+function verify_media_notification_effective_settings_document() {
+  local destination=$1
+  [[ "$(plist_root_array_count "${destination}")" == 1 \
+      && "$(plist_typed_raw_value "${destination}" 0.target string)" == MediaNotificationContent ]] || return 1
+  local key expected actual
+  local -a contract=(
+    ACTION archive
+    CONFIGURATION "${EXPECTED_CONFIGURATION}"
+    PLATFORM_NAME iphoneos
+    PRODUCT_TYPE com.apple.product-type.app-extension
+    PRODUCT_NAME MediaNotificationContent
+    EXECUTABLE_NAME MediaNotificationContent
+    WRAPPER_EXTENSION appex
+    PRODUCT_BUNDLE_IDENTIFIER "${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}"
+    SKIP_INSTALL YES
+    APPLICATION_EXTENSION_API_ONLY YES
+    CODE_SIGN_STYLE Automatic
+    CODE_SIGN_ENTITLEMENTS Sources/Support/MediaNotification.entitlements
+    INFOPLIST_FILE MediaNotificationContent/Info.plist
+    BELUGA_MEDIA_APP_GROUP "${EXPECTED_MEDIA_APP_GROUP}"
+    DEVELOPMENT_TEAM "${EXPECTED_TEAM_ID}"
+    CURRENT_PROJECT_VERSION "${EXPECTED_BUILD_NUMBER}"
+    MARKETING_VERSION 0.1.0
+  )
+  local -i index
+  for (( index = 1; index <= ${#contract[@]}; index += 2 )); do
+    key=${contract[index]}
+    expected=${contract[index + 1]}
+    actual=$(plist_typed_raw_value "${destination}" "0.buildSettings.${key}" string) || return 1
+    [[ "${actual}" == "${expected}" ]] || return 1
+  done
+  actual=$(plist_typed_raw_value "${destination}" 0.buildSettings.CODE_SIGN_IDENTITY string) || return 1
+  [[ "${actual}" == 'iPhone Developer' || "${actual}" == 'Apple Development' ]]
+}
+
+function verify_effective_media_extension_build_settings() {
+  # Xcode omits dependencies from scheme settings. Target settings require omitting
+  # -derivedDataPath; this separate read never changes the application's archive roots.
+  local -a reply=()
+  media_extension_settings_arguments || return 1
+  local destination="${TESTFLIGHT_CONTROL_DIRECTORY}/media-extension-build-settings.json"
+  write_private_plist "${destination}" run_pinned_xcodebuild \
+    media-extension-settings "${reply[@]}" || return 2
+  verify_media_notification_effective_settings_document "${destination}"
 }
 
 function verify_effective_archive_build_roots() {
@@ -3546,7 +3635,8 @@ function verify_effective_archive_build_roots() {
             == "${EXPECTED_RENDEZVOUS_URL}" ]] || return 1
     fi
   done
-  (( app_target_count == 1 ))
+  (( app_target_count == 1 )) || return 1
+  verify_effective_media_extension_build_settings
 }
 
 function verify_static_contract() {
@@ -4787,20 +4877,34 @@ function app_leaf_signing_certificate_sha256() {
 
 function verify_main_signed_entitlements() {
   local app_path=$1
+  local expected_application_identifier=${2:-${EXPECTED_APPLICATION_IDENTIFIER}}
+  [[ "${expected_application_identifier}" == "${EXPECTED_APPLICATION_IDENTIFIER}" \
+      || "${expected_application_identifier}" == "${EXPECTED_TEAM_ID}.${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}" ]] || return 1
   local entitlements
   entitlements=$(/usr/bin/codesign -d --entitlements :- "${app_path}" 2>/dev/null) \
     || return 1
+  verify_media_signed_entitlement_document "${entitlements}" "${expected_application_identifier}"
+}
+
+function verify_media_signed_entitlement_document() {
+  local entitlements=$1
+  local expected_application_identifier=$2
+  [[ "${expected_application_identifier}" == "${EXPECTED_APPLICATION_IDENTIFIER}" \
+      || "${expected_application_identifier}" == "${EXPECTED_TEAM_ID}.${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}" ]] || return 1
   print -rn -- "${entitlements}" | /usr/bin/plutil -lint - >/dev/null 2>&1 \
     || return 1
   [[ "${entitlements}" != *"${PROTECTED_BUNDLE_IDENTIFIER}"* \
       && "$(plist_document_raw_value \
         "${entitlements}" application-identifier)" \
-        == "${EXPECTED_APPLICATION_IDENTIFIER}" \
+        == "${expected_application_identifier}" \
       && "$(plist_document_raw_value \
         "${entitlements}" 'com\.apple\.developer\.team-identifier')" \
         == "${EXPECTED_TEAM_ID}" \
       && "$(plist_document_raw_value "${entitlements}" get-task-allow)" \
-        == 'true' ]]
+        == 'true' \
+      && "$(plist_document_array_count "${entitlements}" 'com\.apple\.security\.application-groups')" == 1 \
+      && "$(plist_document_raw_value "${entitlements}" 'com\.apple\.security\.application-groups.0')" \
+        == "${EXPECTED_MEDIA_APP_GROUP}" ]]
 }
 
 function verify_embedded_provisioning_profile() {
@@ -4812,8 +4916,20 @@ function verify_embedded_provisioning_profile() {
     profile_paths+=("${discovered_profile}")
   done < <(/usr/bin/find "${app_path}" \
     -name embedded.mobileprovision -print0)
-  (( ${#profile_paths[@]} == 1 )) \
-    && [[ "${profile_paths[1]}" == "${profile_path}" ]] || return 1
+  local extension_path="${app_path}/PlugIns/MediaNotificationContent.appex"
+  local extension_profile="${extension_path}/embedded.mobileprovision"
+  (( ${#profile_paths[@]} == 2 \
+      && ${profile_paths[(Ie)${profile_path}]} > 0 \
+      && ${profile_paths[(Ie)${extension_profile}]} > 0 )) || return 1
+  verify_one_embedded_provisioning_profile "${app_path}" "${EXPECTED_APPLICATION_IDENTIFIER}" || return 1
+  verify_one_embedded_provisioning_profile "${extension_path}" \
+    "${EXPECTED_TEAM_ID}.${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}"
+}
+
+function verify_one_embedded_provisioning_profile() {
+  local app_path=$1
+  local expected_application_identifier=$2
+  local profile_path="${app_path}/embedded.mobileprovision"
   [[ -f "${profile_path}" && ! -L "${profile_path}" ]] || return 1
   local profile
   profile=$(/usr/bin/security cms -D -i "${profile_path}" 2>/dev/null) \
@@ -4822,39 +4938,11 @@ function verify_embedded_provisioning_profile() {
     || return 1
   [[ "${profile}" != *"${PROTECTED_BUNDLE_IDENTIFIER}"* ]] || return 1
 
-  local prefix_count
-  local team_count
-  local keychain_group_count
+  verify_media_provisioning_identity "${profile}" "${expected_application_identifier}" || return 1
   local certificate_count
-  prefix_count=$(plist_document_array_count \
-    "${profile}" ApplicationIdentifierPrefix) || return 1
-  team_count=$(plist_document_array_count "${profile}" TeamIdentifier) || return 1
-  keychain_group_count=$(plist_document_array_count \
-    "${profile}" Entitlements.keychain-access-groups) || return 1
   certificate_count=$(plist_document_array_count \
     "${profile}" DeveloperCertificates) || return 1
-  (( prefix_count == 1 \
-      && team_count == 1 \
-      && keychain_group_count == 2 \
-      && certificate_count > 0 )) || return 1
-  [[ "$(plist_document_raw_value "${profile}" ApplicationIdentifierPrefix.0)" \
-        == "${EXPECTED_TEAM_ID}" \
-      && "$(plist_document_raw_value "${profile}" TeamIdentifier.0)" \
-        == "${EXPECTED_TEAM_ID}" \
-      && "$(plist_document_raw_value \
-        "${profile}" Entitlements.application-identifier)" \
-        == "${EXPECTED_TEAM_ID}.*" \
-      && "$(plist_document_raw_value \
-        "${profile}" 'Entitlements.com\.apple\.developer\.team-identifier')" \
-        == "${EXPECTED_TEAM_ID}" \
-      && "$(plist_document_raw_value \
-        "${profile}" Entitlements.get-task-allow)" == 'true' \
-      && "$(plist_document_raw_value \
-        "${profile}" Entitlements.keychain-access-groups.0)" \
-        == "${EXPECTED_TEAM_ID}.*" \
-      && "$(plist_document_raw_value \
-        "${profile}" Entitlements.keychain-access-groups.1)" \
-        == 'com.apple.token' ]] || return 1
+  (( certificate_count > 0 )) || return 1
 
   local leaf_certificate_sha256
   leaf_certificate_sha256=$(app_leaf_signing_certificate_sha256 "${app_path}") \
@@ -4887,6 +4975,45 @@ function verify_embedded_provisioning_profile() {
   (( creation_epoch <= current_epoch && current_epoch < expiration_epoch ))
 }
 
+function verify_media_provisioning_identity() {
+  local profile=$1
+  local expected_application_identifier=$2
+  [[ "${expected_application_identifier}" == "${EXPECTED_APPLICATION_IDENTIFIER}" \
+      || "${expected_application_identifier}" == "${EXPECTED_TEAM_ID}.${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}" ]] || return 1
+  local prefix_count
+  local team_count
+  local keychain_group_count
+  prefix_count=$(plist_document_array_count \
+    "${profile}" ApplicationIdentifierPrefix) || return 1
+  team_count=$(plist_document_array_count "${profile}" TeamIdentifier) || return 1
+  keychain_group_count=$(plist_document_array_count \
+    "${profile}" Entitlements.keychain-access-groups) || return 1
+  (( prefix_count == 1 \
+      && team_count == 1 \
+      && keychain_group_count == 2 )) || return 1
+  [[ "$(plist_document_raw_value "${profile}" ApplicationIdentifierPrefix.0)" \
+        == "${EXPECTED_TEAM_ID}" \
+      && "$(plist_document_raw_value "${profile}" TeamIdentifier.0)" \
+        == "${EXPECTED_TEAM_ID}" \
+      && "$(plist_document_raw_value \
+        "${profile}" Entitlements.application-identifier)" \
+        == "${expected_application_identifier}" \
+      && "$(plist_document_array_count "${profile}" 'Entitlements.com\.apple\.security\.application-groups')" == 1 \
+      && "$(plist_document_raw_value "${profile}" 'Entitlements.com\.apple\.security\.application-groups.0')" \
+        == "${EXPECTED_MEDIA_APP_GROUP}" \
+      && "$(plist_document_raw_value \
+        "${profile}" 'Entitlements.com\.apple\.developer\.team-identifier')" \
+        == "${EXPECTED_TEAM_ID}" \
+      && "$(plist_document_raw_value \
+        "${profile}" Entitlements.get-task-allow)" == 'true' \
+      && "$(plist_document_raw_value \
+        "${profile}" Entitlements.keychain-access-groups.0)" \
+        == "${EXPECTED_TEAM_ID}.*" \
+      && "$(plist_document_raw_value \
+        "${profile}" Entitlements.keychain-access-groups.1)" \
+        == 'com.apple.token' ]] || return 1
+}
+
 function file_is_mach_o() {
   local file=$1
   [[ -f "${file}" && ! -L "${file}" ]] || return 2
@@ -4913,6 +5040,13 @@ function verify_reviewed_archive_product_manifest() {
   local framework_executable="${expected_framework}/LiveKitWebRTC"
   local app_info="${app_path}/Info.plist"
   local framework_info="${expected_framework}/Info.plist"
+  local expected_extension="${app_path}/PlugIns/MediaNotificationContent.appex"
+  local extension_executable="${expected_extension}/MediaNotificationContent"
+  local extension_info="${expected_extension}/Info.plist"
+  [[ -d "${expected_extension}" && ! -L "${expected_extension}" \
+      && -f "${extension_executable}" && ! -L "${extension_executable}" \
+      && -f "${extension_info}" && ! -L "${extension_info}" ]] || return 1
+  verify_media_notification_extension_info "${extension_info}" "${app_info}" || return 1
   [[ -d "${products_path}" \
       && ! -L "${products_path}" \
       && -d "${applications_path}" \
@@ -4964,15 +5098,56 @@ function verify_reviewed_archive_product_manifest() {
     fi
   done
 
-  (( ${#code_container_paths[@]} == 2 \
+  (( ${#code_container_paths[@]} == 3 \
       && ${code_container_paths[(Ie)${app_path}]} > 0 \
       && ${code_container_paths[(Ie)${expected_framework}]} > 0 \
-      && ${#info_plist_paths[@]} == 2 \
+      && ${code_container_paths[(Ie)${expected_extension}]} > 0 \
+      && ${#info_plist_paths[@]} == 3 \
       && ${info_plist_paths[(Ie)${app_info}]} > 0 \
       && ${info_plist_paths[(Ie)${framework_info}]} > 0 \
-      && ${#mach_o_paths[@]} == 2 \
+      && ${info_plist_paths[(Ie)${extension_info}]} > 0 \
+      && ${#mach_o_paths[@]} == 3 \
       && ${mach_o_paths[(Ie)${main_executable}]} > 0 \
-      && ${mach_o_paths[(Ie)${framework_executable}]} > 0 )) || return 1
+      && ${mach_o_paths[(Ie)${framework_executable}]} > 0 \
+      && ${mach_o_paths[(Ie)${extension_executable}]} > 0 )) || return 1
+}
+
+function verify_media_notification_extension_info() {
+  local extension_info=$1
+  local app_info=$2
+  [[ "$(plist_raw_value "${extension_info}" CFBundleIdentifier)" == "${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}" \
+      && "$(plist_raw_value "${extension_info}" CFBundleExecutable)" == MediaNotificationContent \
+      && "$(plist_raw_value "${extension_info}" CFBundlePackageType)" == 'XPC!' \
+      && "$(plist_raw_value "${extension_info}" CFBundleVersion)" == "${EXPECTED_BUILD_NUMBER}" \
+      && "$(plist_raw_value "${extension_info}" CFBundleShortVersionString)" == "${EXPECTED_SHORT_VERSION}" \
+      && "$(plist_raw_value "${app_info}" CFBundleVersion)" == "${EXPECTED_BUILD_NUMBER}" \
+      && "$(plist_raw_value "${app_info}" CFBundleShortVersionString)" == "${EXPECTED_SHORT_VERSION}" \
+      && "$(plist_raw_value "${app_info}" BelugaMediaAppGroup)" == "${EXPECTED_MEDIA_APP_GROUP}" \
+      && "$(plist_raw_value "${extension_info}" BelugaMediaAppGroup)" == "${EXPECTED_MEDIA_APP_GROUP}" \
+      && "$(plist_raw_value "${extension_info}" NSExtension.NSExtensionPointIdentifier)" == com.apple.usernotifications.content-extension \
+      && "$(plist_raw_value "${extension_info}" NSExtension.NSExtensionPrincipalClass)" == MediaNotificationContent.NotificationViewController \
+      && "$(plist_raw_value "${extension_info}" NSExtension.NSExtensionAttributes.UNNotificationExtensionCategory)" == BelugaMediaControls \
+      && "$(plist_raw_value "${extension_info}" NSExtension.NSExtensionAttributes.UNNotificationExtensionUserInteractionEnabled)" == true \
+      && "$(plist_raw_value "${extension_info}" NSExtension.NSExtensionAttributes.UNNotificationExtensionDefaultContentHidden)" == true ]]
+}
+
+function verify_media_notification_framework_load_commands() {
+  print -r -- "$1" | /usr/bin/awk '
+    $1 == "cmd" { command = $2 }
+    $1 == "name" && $2 == "/System/Library/Frameworks/UserNotificationsUI.framework/UserNotificationsUI" {
+      references += 1
+      if (command == "LC_LOAD_DYLIB" && NF == 4 && $3 == "(offset" && $4 ~ /^[0-9]+\)$/) strong += 1
+    }
+    END { exit !(references == 1 && strong == 1) }
+  '
+}
+
+function verify_media_notification_framework_link() {
+  local executable=$1
+  local load_commands
+  load_commands=$(DEVELOPER_DIR="${EXPECTED_XCODE_REAL_DEVELOPER_PATH}" \
+    /usr/bin/otool -arch arm64 -l "${executable}") || return 1
+  verify_media_notification_framework_load_commands "${load_commands}"
 }
 
 function verify_reviewed_nested_code() {
@@ -5005,6 +5180,13 @@ function verify_reviewed_nested_code() {
       "${signed_path}" 2>/dev/null) || return 1
     [[ -z "${entitlements}" ]] || return 1
   done
+  local extension_path="${app_path}/PlugIns/MediaNotificationContent.appex"
+  verify_media_notification_framework_link "${extension_path}/MediaNotificationContent" || return 1
+  /usr/bin/codesign --verify --strict --verbose=4 "${extension_path}" >/dev/null 2>&1 || return 1
+  metadata=$(/usr/bin/codesign -dv --verbose=4 "${extension_path}" 2>&1) || return 1
+  [[ "$(codesign_metadata_value "${metadata}" Identifier)" == "${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}" \
+      && "$(codesign_metadata_value "${metadata}" TeamIdentifier)" == "${EXPECTED_TEAM_ID}" ]] || return 1
+  verify_main_signed_entitlements "${extension_path}" "${EXPECTED_TEAM_ID}.${EXPECTED_MEDIA_EXTENSION_IDENTIFIER}" || return 1
 }
 
 function verify_archive_contents_at_path() {

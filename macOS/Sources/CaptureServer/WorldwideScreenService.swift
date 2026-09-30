@@ -28,6 +28,7 @@ struct WorldwideRemoteMediaPublicationMachine: Sendable, Equatable {
     private(set) var nextAttemptOrdinal: UInt64 = 0
     private(set) var desiredControllerRevision: UInt64?
     private(set) var desiredItem: WebRTCRemoteMediaItem?
+    private(set) var desiredAdditionalItems: [WebRTCRemoteMediaItem] = []
     private(set) var desiredVersion: UInt64 = 0
     private(set) var publishedVersion: UInt64 = 0
     private(set) var lastSuccessfullySent: WebRTCRemoteMediaStateUpdate?
@@ -43,6 +44,7 @@ struct WorldwideRemoteMediaPublicationMachine: Sendable, Equatable {
               update.revision > (desiredControllerRevision ?? 0) else { return }
         desiredControllerRevision = update.revision
         desiredItem = update.item
+        desiredAdditionalItems = update.additionalItems
         advanceDesiredVersion()
     }
 
@@ -85,7 +87,8 @@ struct WorldwideRemoteMediaPublicationMachine: Sendable, Equatable {
             desiredVersion: desiredVersion,
             update: WebRTCRemoteMediaStateUpdate(
                 revision: wireRevision,
-                item: desiredItem
+                item: desiredItem,
+                additionalItems: desiredAdditionalItems
             )
         )
         inFlight = attempt
@@ -128,6 +131,7 @@ struct WorldwideRemoteMediaPublicationMachine: Sendable, Equatable {
         startNewPeer()
         desiredControllerRevision = nil
         desiredItem = nil
+        desiredAdditionalItems = []
         desiredVersion = 0
         publishedVersion = 0
     }
@@ -924,6 +928,7 @@ actor WorldwideScreenService {
     private var controlChannelIsOpen = false
     private var latestRemoteMediaControllerRevision: UInt64 = 0
     private var latestRemoteMediaItem: WebRTCRemoteMediaItem?
+    private var latestRemoteMediaAdditionalItems: [WebRTCRemoteMediaItem] = []
     private var remoteMediaPublication =
         WorldwideRemoteMediaPublicationMachine()
     private var remoteMediaPublicationRetryGate =
@@ -1402,6 +1407,7 @@ actor WorldwideScreenService {
         }
         latestRemoteMediaControllerRevision = 0
         latestRemoteMediaItem = nil
+        latestRemoteMediaAdditionalItems = []
         let coordinator = recoveryCoordinator
         recoveryCoordinator = nil
         peerGeneration &+= 1
@@ -1864,6 +1870,7 @@ actor WorldwideScreenService {
         }
         latestRemoteMediaControllerRevision = update.revision
         latestRemoteMediaItem = update.item
+        latestRemoteMediaAdditionalItems = update.additionalItems
         remoteMediaPublication.applyControllerUpdate(update)
         await publishCurrentRemoteMediaStateIfPossible()
     }
@@ -2020,7 +2027,8 @@ actor WorldwideScreenService {
             latestSuccessfullySent: remoteMediaPublication.lastSuccessfullySent
         ) {
             result = rejection
-        } else if let item = latestRemoteMediaItem {
+        } else if let item = ([latestRemoteMediaItem].compactMap { $0 } + latestRemoteMediaAdditionalItems)
+            .first(where: { $0.contextID == request.contextID }) {
             if item.contextID != request.contextID {
                 result = .staleContext
             } else if !item.capabilities.permits(request.command) {
@@ -2103,7 +2111,8 @@ actor WorldwideScreenService {
             peerGeneration: sourcePeerGeneration,
             request: command.request,
             publishedRevision: remoteMediaPublication.lastSuccessfullySent?.revision,
-            contextMatches: latestRemoteMediaItem?.contextID == command.request.contextID,
+            contextMatches: ([latestRemoteMediaItem].compactMap { $0 } + latestRemoteMediaAdditionalItems)
+                .contains(where: { $0.contextID == command.request.contextID }),
             authorized: command.isValid,
             transportReady: !isStopped && peerGeneration == sourcePeerGeneration && transportAllowsCapture,
             result: result,

@@ -22,11 +22,14 @@ targets:
     platform: iOS
     sources:
       - Sources
+      - MediaNotificationShared
       - path: ../../THIRD_PARTY_NOTICES.md
         name: THIRD_PARTY_NOTICES.md
         group: opensteamer
         buildPhase: resources
     dependencies:
+      - target: MediaNotificationContent
+        embed: true
       - package: opensteamer
         product: ClientCore
       - package: opensteamer
@@ -42,6 +45,8 @@ targets:
         PRODUCT_NAME: Beluga
         PRODUCT_MODULE_NAME: opensteamer
         INFOPLIST_FILE: Sources/Support/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/MediaNotification.entitlements
+        BELUGA_MEDIA_APP_GROUP: group.org.example.AudioStreamer.dev.media
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
         TARGETED_DEVICE_FAMILY: 1
@@ -68,13 +73,47 @@ targets:
           # This identity must remain distinct from the protected production app so installing a
           # TestFlight build cannot replace its app container or binary.
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
+          BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
           DEVELOPMENT_TEAM: MSMG8CJLB3
-          CURRENT_PROJECT_VERSION: 87
+          CURRENT_PROJECT_VERSION: 88
           CODE_SIGN_STYLE: Automatic
           OPENSTEAMER_RENDEZVOUS_URL: "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev"
     scheme:
       testTargets:
         - opensteamerTests
+  MediaNotificationContent:
+    type: app-extension
+    platform: iOS
+    sources:
+      - MediaNotificationContent
+      - MediaNotificationShared
+    dependencies:
+      - sdk: UserNotificationsUI.framework
+    settings:
+      base:
+        PRODUCT_NAME: MediaNotificationContent
+        PRODUCT_MODULE_NAME: MediaNotificationContent
+        INFOPLIST_FILE: MediaNotificationContent/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/MediaNotification.entitlements
+        BELUGA_MEDIA_APP_GROUP: group.org.example.AudioStreamer.dev.media
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev.MediaNotificationContent
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        TARGETED_DEVICE_FAMILY: 1
+        SWIFT_VERSION: 6.0
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer.MediaNotificationContent
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 36
+        TestFlight:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer.MediaNotificationContent
+          BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 88
   opensteamerTests:
     type: bundle.unit-test
     platform: iOS

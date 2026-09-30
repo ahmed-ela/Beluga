@@ -19,10 +19,10 @@ enum RemoteMediaControlsSDP {
         in sessionDescription: String,
         authorization: WebRTCRemoteMediaAuthorization
     ) -> String {
-        insertingCapabilityIfNeeded(
+        RemoteMediaCatalogSDP.advertising(in: insertingCapabilityIfNeeded(
             in: sessionDescription,
             authorization: authorization
-        )
+        ), authorization: authorization)
     }
 
     static func advertisingViewerSupport(
@@ -32,10 +32,12 @@ enum RemoteMediaControlsSDP {
         guard let authorization = advertisedAuthorization(in: remoteOfferSDP) else {
             return sessionDescription
         }
-        return insertingCapabilityIfNeeded(
+        let answer = insertingCapabilityIfNeeded(
             in: sessionDescription,
             authorization: authorization
         )
+        return RemoteMediaCatalogSDP.advertisedAuthorization(in: remoteOfferSDP) == authorization
+            ? RemoteMediaCatalogSDP.advertising(in: answer, authorization: authorization) : answer
     }
 
     static func negotiatedAuthorization(

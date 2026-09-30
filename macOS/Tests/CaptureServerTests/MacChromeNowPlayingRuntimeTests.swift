@@ -20,12 +20,13 @@ private let chromeNextURL = "https://www.youtube.com/watch?v=lmnopqrstuv"
 private func chromeMedia(video: String = "abcdefghijk", paused: Bool = false,
                          item: String = "00000000-0000-4000-8000-000000000001", generation: Int64 = 1,
                          title: String = "Video", pageTime: Double = 50_000,
-                         document: String = "00000000-0000-4000-8000-000000000002") -> MacChromeScriptSnapshot {
+                         document: String = "00000000-0000-4000-8000-000000000002",
+                         duration: Double? = 120, elapsed: Double? = 15, canSeek: Bool? = true) -> MacChromeScriptSnapshot {
     .init(documentID: document, itemID: item, itemGeneration: generation,
-          videoID: video, title: title, artist: "Channel", duration: 120, elapsedTime: 15,
+          videoID: video, title: title, artist: "Channel", duration: duration, elapsedTime: elapsed,
           playbackRate: 1, paused: paused, observedAtUnixMilliseconds: 1_000_000,
           observedAtPageMilliseconds: pageTime, canPlay: paused, canPause: !paused,
-          canNext: true, canPrevious: true)
+          canNext: true, canPrevious: true, canSeek: canSeek)
 }
 
 private func chromePlayer(tab: String = "2", media: MacChromeScriptSnapshot = chromeMedia(),
@@ -128,8 +129,15 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
             if oversizedResult { return answer(.init(string: String(repeating: "x", count: 262_145))) }
             let operation = request["operation"] as? String
             var status = "ok"
+            var seekFrom: Double?
+            var seekTarget: Double?
             if operation == "command" {
                 commandDispatches += 1
+                if ["seekForward30", "seekBackward30"].contains(request["command"] as? String ?? "") {
+                    seekFrom = media.elapsedTime
+                    seekTarget = min(media.duration ?? 0, max(0, (seekFrom ?? 0)
+                        + (request["command"] as? String == "seekForward30" ? 30 : -30)))
+                }
                 if !ignoreCommands {
                     switch request["command"] as? String {
                     case "pause": media = chromeMedia(paused: true)
@@ -138,6 +146,8 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
                     case "next", "previous":
                         media = chromeMedia(video: "lmnopqrstuv", item: "00000000-0000-4000-8000-000000000003", generation: 2)
                         windows[0].tabs[0].url = chromeNextURL
+                    case "seekForward30", "seekBackward30":
+                        media = chromeMedia(paused: media.paused, duration: media.duration, elapsed: seekTarget)
                     default: XCTFail("Unexpected command")
                     }
                 }
@@ -147,8 +157,9 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
                 if resultPolls < 2 { status = "pending" }
                 else { media = chromeMedia(paused: false) }
             } else { XCTAssertEqual(operation, "read") }
-            let object: [String: Any] = ["schemaVersion": 1, "status": status,
+            var object: [String: Any] = ["schemaVersion": 1, "status": status,
                                         "snapshot": try JSONSerialization.jsonObject(with: JSONEncoder().encode(media))]
+            if let seekFrom, let seekTarget { object["seekFrom"] = seekFrom; object["seekTarget"] = seekTarget }
             result = .init(string: String(decoding: try JSONSerialization.data(withJSONObject: object), as: UTF8.self))
         } else {
             XCTAssertEqual(event.eventClass, kAECoreSuite)
@@ -251,7 +262,7 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(snapshots.first?.media.title, "Video")
         XCTAssertEqual(snapshots.first?.media.duration, 120)
         XCTAssertEqual(snapshots.first?.media.elapsedTime, 15)
-        XCTAssertEqual(snapshots.first?.media.enabledCommands, [1, 4, 5])
+        XCTAssertEqual(snapshots.first?.media.enabledCommands, [1, 4, 5, 6, 7])
         XCTAssertEqual(client.requests.count, 1)
         XCTAssertEqual(client.permissionRequests, [false])
         XCTAssertTrue(client.targets.allSatisfy { $0 == 42 })
@@ -384,7 +395,73 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(client.media.videoID, "lmnopqrstuv")
     }
 
-    func testUniquePlayingWinsStickyPauseAndAmbiguityRevokesInsteadOfPickingFirst() async throws {
+    func testSeekReadbackClampsWithoutChangingTrackOrPlayback() throws {
+        for (command, origin, target) in [(MacChromeCommand.seekForward30, 15.0, 45.0),
+                                          (.seekBackward30, 60, 30), (.seekForward30, 115, 120),
+                                          (.seekBackward30, 5, 0)] {
+            let client = ChromeTestClient(); client.media = chromeMedia(paused: true, elapsed: origin)
+            let backend = makeBackend(client)
+            let expected = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+            XCTAssertEqual(try backend.send(command, expected: expected, deadline: 11, isAuthorized: { true }), .applied)
+            XCTAssertEqual(client.media.elapsedTime, target)
+            XCTAssertEqual(client.media.identity, expected.media.identity)
+            XCTAssertTrue(client.media.paused)
+            XCTAssertEqual(client.commandDispatches, 1)
+            XCTAssertFalse(command.changesTrack)
+            XCTAssertTrue(command.isRelative)
+        }
+    }
+
+    func testSeekCapabilityRequiresFiniteBoundedTimelineAndNewScriptSupport() throws {
+        for media in [chromeMedia(canSeek: nil), chromeMedia(canSeek: false),
+                      chromeMedia(duration: nil), chromeMedia(duration: 0), chromeMedia(duration: .infinity),
+                      chromeMedia(duration: 31_536_001), chromeMedia(elapsed: nil),
+                      chromeMedia(elapsed: -1), chromeMedia(elapsed: 121), chromeMedia(elapsed: .nan)] {
+            XCTAssertFalse(media.enabledCommands.contains(6))
+            XCTAssertFalse(media.enabledCommands.contains(7))
+        }
+        let client = ChromeTestClient(); client.media = chromeMedia(canSeek: nil)
+        let backend = makeBackend(client)
+        let expected = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+        XCTAssertEqual(try backend.send(.seekForward30, expected: expected, deadline: 11, isAuthorized: { true }), .unsupported)
+        XCTAssertEqual(client.commandDispatches, 0)
+    }
+
+    func testIgnoredSeekAndSeekTimeoutCannotClaimReadbackOrResend() throws {
+        let client = ChromeTestClient(), backend = makeBackend(client)
+        let expected = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+        client.ignoreCommands = true
+        XCTAssertEqual(try backend.send(.seekForward30, expected: expected, deadline: 11, isAuthorized: { true }), .failed)
+        XCTAssertEqual(client.media.elapsedTime, 15)
+        client.ignoreCommands = false; client.commandError = OSStatus(errAETimeout)
+        XCTAssertThrowsError(try backend.send(.seekForward30, expected: expected, deadline: 11, isAuthorized: { true }))
+        XCTAssertEqual(client.media.elapsedTime, 45)
+        XCTAssertEqual(client.commandDispatches, 2)
+        XCTAssertEqual(client.resultPolls, 0)
+    }
+
+    func testSeekTimeoutConsumesOldRuntimeAuthorityUntilFreshSnapshot() async throws {
+        for command in [6, 7] {
+            let backend = ChromeTestBackend(); backend.commandError = .timedOut
+            let runtime = makeRuntime(backend), old = try await snapshot(runtime)
+            await assertSend(runtime, command: command, snapshot: old, equals: .failed)
+            await assertSend(runtime, command: command, snapshot: old, equals: .staleContext)
+            let fresh = try await snapshot(runtime)
+            XCTAssertFalse(old.client === fresh.client)
+            await assertSend(runtime, command: command, snapshot: old, equals: .staleContext)
+            backend.commandError = nil
+            await assertSend(runtime, command: command, snapshot: fresh, equals: .applied)
+            XCTAssertEqual(backend.commands.count, 2)
+        }
+    }
+
+    func testInitialMultiplePlayingSelectionIsDeterministic() throws {
+        let first = chromePlayer(tab: "7"), second = chromePlayer(tab: "3")
+        XCTAssertEqual(try MacChromeAppleEventsBackend.select([first, second], preferred: nil)?.tab.tabID, "7")
+        XCTAssertEqual(try MacChromeAppleEventsBackend.select([second, first], preferred: first)?.tab.tabID, "7")
+    }
+
+    func testFirstPlayingStaysSelectedUntilPausedThenPromotesRemainingPlayingTab() async throws {
         let backend = ChromeTestBackend()
         let runtime = makeRuntime(backend)
         let first = try await snapshot(runtime)
@@ -396,9 +473,17 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         let other = try await snapshot(runtime)
         XCTAssertFalse(first.client === other.client)
         backend.snapshots = [chromePlayer(), chromePlayer(tab: "3")]
-        guard case .retry = await fetch(runtime) else { return XCTFail("Ambiguous players selected") }
-        XCTAssertEqual(runtime.lastDiscoveryStatus, .ambiguousPlayers)
-        await assertSend(runtime, command: 1, snapshot: other, equals: .staleContext)
+        let retained = try await snapshot(runtime)
+        XCTAssertTrue(retained.client === other.client)
+        backend.snapshots = [chromePlayer(), chromePlayer(tab: "3"), chromePlayer(tab: "4")]
+        let three = try await snapshot(runtime)
+        XCTAssertTrue(three.client === retained.client)
+        backend.snapshots = [chromePlayer(media: chromeMedia(paused: true)),
+                             chromePlayer(tab: "3", media: chromeMedia(paused: true)), chromePlayer(tab: "4")]
+        let promoted = try await snapshot(runtime)
+        XCTAssertFalse(promoted.client === three.client)
+        await assertSend(runtime, command: 1, snapshot: promoted, equals: .applied)
+        XCTAssertEqual(backend.commandTargets.last?.tabID, "4")
         backend.snapshots = [chromePlayer()]
         let returned = try await snapshot(runtime)
         XCTAssertFalse(first.client === returned.client)
@@ -509,16 +594,18 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         await assertSend(runtime, command: 0, snapshot: selected, equals: .applied)
     }
 
-    func testActualAmbiguityAfterTimeoutRetiresSelectionHint() async throws {
+    func testMultiplePlayingAfterTimeoutPreserveSelectionButNeverReviveOldAuthority() async throws {
         let backend = ChromeTestBackend(), runtime = makeRuntime(backend)
         let old = try await snapshot(runtime)
         backend.error = .timedOut
         guard case .retry = await fetch(runtime) else { return XCTFail("Timeout published") }
         backend.error = nil
         backend.snapshots = [chromePlayer(), chromePlayer(tab: "3")]
-        guard case .retry = await fetch(runtime) else { return XCTFail("Ambiguous playing owner selected") }
+        let recovered = try await snapshot(runtime)
+        XCTAssertFalse(recovered.client === old.client)
         backend.snapshots = [chromePlayer(media: chromeMedia(paused: true)), chromePlayer(tab: "3", media: chromeMedia(paused: true))]
-        guard case .retry = await fetch(runtime) else { return XCTFail("Ambiguity preserved old preference") }
+        let paused = try await snapshot(runtime)
+        XCTAssertTrue(paused.client === recovered.client)
         await assertSend(runtime, command: 1, snapshot: old, equals: .staleContext)
     }
 
@@ -710,6 +797,30 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         await assertSend(runtime, command: 4, snapshot: first, equals: .staleContext)
         await assertSend(runtime, command: 4, snapshot: fresh, equals: .failed)
         XCTAssertEqual(backend.commands, [.next, .next])
+    }
+
+    func testConfirmedSeekPreservesSelectionAfterFreshReadButUnknownResultRotates() async throws {
+        for command in [6, 7] {
+            let backend = ChromeTestBackend()
+            let runtime = makeRuntime(backend)
+            let first = try await snapshot(runtime)
+            await assertSend(runtime, command: command, snapshot: first, equals: .applied)
+            await assertSend(runtime, command: command, snapshot: first, equals: .staleContext)
+            let refreshed = try await snapshot(runtime)
+            XCTAssertTrue(refreshed.client === first.client)
+            backend.commandError = .timedOut
+            await assertSend(runtime, command: command, snapshot: refreshed, equals: .failed)
+            let recovered = try await snapshot(runtime)
+            XCTAssertFalse(recovered.client === refreshed.client)
+            await assertSend(runtime, command: command, snapshot: refreshed, equals: .staleContext)
+            backend.commandError = nil
+            await assertSend(runtime, command: command, snapshot: recovered, equals: .applied)
+            backend.snapshots = [chromePlayer(media: chromeMedia(item: UUID().uuidString))]
+            let replacement = try await snapshot(runtime)
+            XCTAssertFalse(replacement.client === recovered.client)
+            await assertSend(runtime, command: command, snapshot: recovered, equals: .staleContext)
+            XCTAssertEqual(backend.commands.count, 3)
+        }
     }
 
     func testRoutineFetchAheadOfQueuedRelativeCommandDoesNotCancelItsOwnAuthority() async throws {

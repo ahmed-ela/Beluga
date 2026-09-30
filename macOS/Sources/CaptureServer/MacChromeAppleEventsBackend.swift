@@ -36,6 +36,7 @@ struct MacChromeScriptSnapshot: Codable, Equatable, Sendable {
     let canPause: Bool
     let canNext: Bool
     let canPrevious: Bool
+    var canSeek: Bool? = nil
 
     var identity: MacChromeMediaIdentity {
         .init(documentID: documentID, itemID: itemID, itemGeneration: itemGeneration)
@@ -47,6 +48,11 @@ struct MacChromeScriptSnapshot: Codable, Equatable, Sendable {
         if canPause && !paused { commands.insert(1) }
         if canNext { commands.insert(4) }
         if canPrevious { commands.insert(5) }
+        if canSeek == true, let duration, let elapsedTime,
+           duration.isFinite, duration > 0, duration <= 31_536_000,
+           elapsedTime.isFinite, (0...duration).contains(elapsedTime) {
+            commands.formUnion([6, 7])
+        }
         return commands
     }
 }
@@ -87,13 +93,18 @@ enum MacChromeDiscoveryStatus: String, Sendable {
 
 enum MacChromeCommand: Int, Sendable {
     case play = 0, pause = 1, next = 4, previous = 5
-    var isRelative: Bool { self == .next || self == .previous }
+    case seekForward30 = 6, seekBackward30 = 7
+    var changesTrack: Bool { self == .next || self == .previous }
+    var isSeek: Bool { self == .seekForward30 || self == .seekBackward30 }
+    var isRelative: Bool { changesTrack || isSeek }
     var scriptName: String {
         switch self {
         case .play: return "play"
         case .pause: return "pause"
         case .next: return "next"
         case .previous: return "previous"
+        case .seekForward30: return "seekForward30"
+        case .seekBackward30: return "seekBackward30"
         }
     }
 }
@@ -221,7 +232,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         guard Self.videoID(from: url) == expected.media.videoID else { return .staleContext }
         var response = try execute(request, tab: expected.tab, expectedURL: url,
                                    deadline: deadline, isAuthorized: isAuthorized,
-                                   allowSuccessor: command.isRelative)
+                                   allowSuccessor: command.changesTrack)
         // Only result lookups repeat. A command Apple Event is never resent after timeout.
         var polls = 0
         while response.status == "pending", polls < 24 {
@@ -231,7 +242,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             response = try execute(.init(operation: "result", commandID: commandID,
                                         expected: expected.media.identity),
                                    tab: expected.tab, expectedURL: nil, deadline: deadline,
-                                   isAuthorized: isAuthorized, allowSuccessor: command.isRelative)
+                                   isAuthorized: isAuthorized, allowSuccessor: command.changesTrack)
         }
         try check(owner: expected.tab.owner, deadline: deadline, isAuthorized: isAuthorized)
         switch response.status {
@@ -240,11 +251,20 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             let finalURL = try currentURL(expected.tab, deadline: deadline, isAuthorized: isAuthorized)
             try validate(media, url: finalURL)
             guard media.documentID == expected.media.documentID else { return .staleContext }
-            if command.isRelative {
+            if command.changesTrack {
                 return media.videoID != expected.media.videoID && media.identity != expected.media.identity
                     ? .applied : .failed
             }
             guard media.identity == expected.media.identity else { return .staleContext }
+            if command.isSeek {
+                guard let origin = response.seekFrom, let target = response.seekTarget,
+                      let duration = media.duration, let elapsed = media.elapsedTime,
+                      origin.isFinite, target.isFinite, duration > 0,
+                      (0...duration).contains(origin), (0...duration).contains(target),
+                      abs(target - min(duration, max(0, origin + (command == .seekForward30 ? 30 : -30)))) < 0.001,
+                      abs(elapsed - target) <= 0.25 else { return .failed }
+                return .applied
+            }
             return (command == .play && !media.paused) || (command == .pause && media.paused) ? .applied : .failed
         case "staleContext": return .staleContext
         case "unsupported": return .unsupported
@@ -256,7 +276,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
     static func select(_ snapshots: [MacChromePlayerSnapshot], preferred: MacChromePlayerSnapshot?) throws
         -> MacChromePlayerSnapshot? {
         let playing = snapshots.filter { !$0.media.paused && $0.media.playbackRate > 0 }
-        guard playing.count <= 1 else { throw MacChromeBackendError.ambiguousPlayers }
+        if let preferred, let retained = playing.first(where: { $0.hasSameItem(as: preferred) }) { return retained }
         if let unique = playing.first { return unique }
         if let preferred, let sticky = snapshots.first(where: { $0.hasSameItem(as: preferred) }) { return sticky }
         guard snapshots.count <= 1 else { throw MacChromeBackendError.ambiguousPlayers }
@@ -288,6 +308,8 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         let schemaVersion: Int
         let status: String
         let snapshot: MacChromeScriptSnapshot?
+        let seekFrom: Double?
+        let seekTarget: Double?
     }
 
     private func execute(_ request: ScriptRequest, tab: MacChromeTabIdentity, expectedURL: String?,

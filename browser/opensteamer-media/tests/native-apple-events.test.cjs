@@ -10,7 +10,7 @@ const source = swift.match(/static let source = #"""\n([\s\S]*?)\n    """#/)[1];
 const A = "AAAAAAAAAAA", B = "BBBBBBBBBBB", C = "CCCCCCCCCCC";
 const base = 1788800000000;
 function fixture(code = source) {
-  const h = {time:100,wall:base,clicks:0,pauses:0,plays:0,playTargets:[],pauseTargets:[],hrefReads:0,controlReadHook:null,playHook:null,pending:null};
+  const h = {time:100,wall:base,clicks:0,pauses:0,plays:0,seeks:0,seekTargets:[],playTargets:[],pauseTargets:[],hrefReads:0,controlReadHook:null,playHook:null,pending:null};
   class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(name,callback,options = {}) {
@@ -30,7 +30,10 @@ function fixture(code = source) {
     click() { h.clicks++; if (h.clickHook) h.clickHook(this); }
   }
   class Media extends Element {
-    constructor() { super(); this.paused = true; this.ended = false; this.readyState = 4; this.currentSrc = "blob:source-A"; this.currentTime = 10; this.duration = 120; this.playbackRate = 1; }
+    constructor() { super(); this.paused = true; this.ended = false; this.readyState = 4; this.currentSrc = "blob:source-A"; this._time = 10; this.duration = 120; this.playbackRate = 1; this.seeking = false;
+      this.seekable = {length:1,start:()=>0,end:()=>this.duration}; }
+    get currentTime() { return this._time; }
+    set currentTime(value) { h.seeks++; h.seekTargets.push(this); if (h.seekHook) h.seekHook(this,value); else this._time=value; }
     play() { h.plays++; h.playTargets.push(this); this.paused = false; if (h.playHook) return h.playHook(this); return Promise.resolve(); }
     pause() { h.pauses++; h.pauseTargets.push(this); this.paused = true; }
   }
@@ -381,4 +384,79 @@ test("behavioral mutant removing final relative-target fencing is rejected", () 
   oracle(source);
   const mutant=source.replace('(relative && (!controlFence || controlFence.node !== chosen.node || controlFence.href !== chosen.href))','false');
   assert.notEqual(mutant,source);assert.throws(()=>oracle(mutant),/changed relative target was clicked/);
+});
+
+test("timeline seeks clamp, mutate only currentTime and execute once with exact readback", () => {
+  for(const [command,start,want] of [["seekForward30",10,40],["seekBackward30",70,40],
+    ["seekForward30",115,120],["seekBackward30",5,0]]) {
+    const h=fixture();h.video._time=start;h.video.paused=false;
+    const before=h.read().snapshot,q=h.request(command,before);
+    assert.equal(before.canSeek,true);
+    const result=h.call(q);assert.equal(result.status,"ok");
+    assert.equal(result.seekFrom,start);assert.equal(result.seekTarget,want);
+    assert.equal(result.snapshot.elapsedTime,want);assert.equal(h.video.currentTime,want);
+    assert.equal(result.snapshot.itemID,before.itemID);assert.equal(h.video.paused,false);
+    assert.equal(h.call(q).status,"ok");assert.equal(h.result(q).status,"ok");
+    assert.equal(h.seeks,1);assert.deepEqual(h.seekTargets,[h.video]);
+    assert.equal(h.clicks+h.plays+h.pauses,0);
+  }
+});
+test("timeline capability rejects unbounded, absent, discontinuous and partial ranges", () => {
+  for(const mutation of ["infinite","zero","tooLong","missing","empty","split","partial","positionBeyondEnd"]) {
+    const h=fixture();
+    if(mutation==="infinite")h.video.duration=Infinity;
+    if(mutation==="zero")h.video.duration=0;
+    if(mutation==="tooLong")h.video.duration=31536001;
+    if(mutation==="missing")h.video.seekable=undefined;
+    if(mutation==="empty")h.video.seekable.length=0;
+    if(mutation==="split")h.video.seekable.length=2;
+    if(mutation==="partial")h.video.seekable.start=()=>20;
+    if(mutation==="positionBeyondEnd")h.video._time=130;
+    assert.equal(h.read().snapshot.canSeek,false,mutation);
+    assert.equal(h.call(h.request("seekForward30")).status,"unsupported");
+    assert.equal(h.seeks,0);
+  }
+});
+test("ignored and pending seeks require actual completion before expiry and never repeat", () => {
+  for(const ignored of [true,false]) {
+    const h=fixture();h.seekHook=(video,value)=>{ if(!ignored)video._time=value;video.seeking=true; };
+    const q=h.request("seekForward30");
+    assert.equal(h.call(q).status,"pending");assert.equal(h.result(q).status,"pending");
+    h.advance(1001);assert.equal(h.result(q).status,"failed");
+    h.video._time=40;h.video.seeking=false;
+    assert.equal(h.result(q).status,"failed");assert.equal(h.call(q).status,"failed");
+    assert.equal(h.seeks,1);
+  }
+});
+test("pending seek cannot report success for a replacement video or navigation", () => {
+  for(const change of [h=>h.replaceVideo(),h=>h.navigate(B),h=>h.window.fire("pageshow")]) {
+    const h=fixture();h.seekHook=(video,value)=>{video._time=value;video.seeking=true;};
+    const q=h.request("seekForward30");assert.equal(h.call(q).status,"pending");
+    change(h);h.video._time=40;h.video.seeking=false;
+    assert.equal(h.result(q).status,"staleContext");assert.equal(h.seeks,1);
+  }
+});
+function seekFinalOracle(code,change) {
+  const h=fixture(code),q=h.request("seekForward30");h.hrefReads=0;
+  h.controlReadHook=count=>{if(count===3)change(h);};h.call(q);
+  assert.equal(h.seeks,0,"late invalid seek mutated currentTime");
+}
+test("seek final identity, deadline and timeline changes are fenced", () => {
+  for(const change of [h=>h.advance(1001),h=>{h.video.currentSrc="blob:changed";},h=>{h.video.seekable.length=0;}])
+    seekFinalOracle(source,change);
+});
+test("seek duplicate, final identity, final deadline, and readback mutants fail behaviorally", () => {
+  const duplicateOracle=code=>{const h=fixture(code),q=h.request("seekForward30");h.call(q);h.call(q);
+    assert.equal(h.seeks,1,"seek duplicate executed");assert.equal(h.video.currentTime,40);};
+  const duplicate=source.replace("if (existing) {","if (false && existing) {");
+  duplicateOracle(source);assert.notEqual(duplicate,source);assert.throws(()=>duplicateOracle(duplicate),/seek duplicate executed/);
+  const deadline=source.replace('if (expired(request)) { record.status = "failed"; return output(record.status,fence.snapshot); }','if (false) {}');
+  assert.notEqual(deadline,source);assert.throws(()=>seekFinalOracle(deadline,h=>h.advance(1001)),/late invalid seek/);
+  const identity=source.replace(/if \(!fence \|\| !sameExpected\(fence.snapshot,request.expected\)[\s\S]*?return output\(record.status,fence\?\.snapshot\);\n        }/,"if (false) {}");
+  assert.notEqual(identity,source);assert.throws(()=>seekFinalOracle(identity,h=>h.video.fire("emptied")),/late invalid seek/);
+  const readbackOracle=code=>{const h=fixture(code);h.seekHook=()=>{};
+    assert.equal(h.call(h.request("seekForward30")).status,"pending","ignored seek was accepted");};
+  readbackOracle(source);
+  const readback=source.replace('Math.abs(view.snapshot.elapsedTime - record.seekTarget) <= 0.25','true');
+  assert.notEqual(readback,source);assert.throws(()=>readbackOracle(readback),/ignored seek was accepted/);
 });

@@ -19,6 +19,7 @@ private final class MusicTestBackend: MacMusicNowPlayingBackend, @unchecked Send
     var commands: [MacMusicCommand] = []
     var permissions = 0
     var reads = 0
+    var onCommand: ((MacMusicCommand) -> Void)?
 
     func requestAutomationPermission() throws { permissions += 1; if let error { throw error } }
     func readSnapshot(deadline: TimeInterval) throws -> MacMusicPlayerSnapshot? {
@@ -33,7 +34,25 @@ private final class MusicTestBackend: MacMusicNowPlayingBackend, @unchecked Send
         guard isAuthorized(), snapshot?.hasSameItem(as: expected) == true else { return .staleContext }
         commands.append(command)
         if let commandError { throw commandError }
+        onCommand?(command)
         return .applied
+    }
+}
+
+private final class MusicSelectionTestBrowser: MacSystemNowPlayingRuntime, @unchecked Sendable {
+    let isAvailable = true
+    private let token = MacNowPlayingClientToken(object: NSObject(), clientIdentity: "fixed-browser")
+    func fetchSnapshot(completion: @escaping @Sendable (MacNowPlayingRuntimeSnapshotResult) -> Void) {
+        completion(.snapshot(.init(client: token, sourceName: "YouTube",
+            metadata: .init(title: "Browser track", artist: nil, album: nil, duration: 120,
+                elapsedTime: 10, playbackRate: 1, timestamp: Date(timeIntervalSince1970: 200),
+                contentIdentifier: "browser-item", uniqueIdentifier: nil), enabledCommands: [1, 6, 7])))
+    }
+    func send(rawCommand: Int, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        XCTFail("The secondary Music selection must not route a command to the browser")
+        completion(.failed)
     }
 }
 
@@ -57,6 +76,8 @@ private final class MusicTestAppleEventsClient: MacMusicAppleEventsClient, @unch
     var index: Int32 = 2
     var indexHint: Int32?
     var state: OSType = 0x6B505350
+    var duration = 120.0
+    var position = 15.0
     var shuffle = false
     var repeatCode: OSType = 0x6B52704F
     var disabled: Set<Int32> = []
@@ -64,6 +85,9 @@ private final class MusicTestAppleEventsClient: MacMusicAppleEventsClient, @unch
     var eventError: OSStatus?
     var permissionRequests = 0
     var commandEvents: [AEEventID] = []
+    var positionWrites: [Double] = []
+    var setError: OSStatus?
+    var onSet: (() -> Void)?
     var options: [NSAppleEventDescriptor.SendOptions] = []
     var timeouts: [TimeInterval] = []
     var targets: [Int32] = []
@@ -100,6 +124,19 @@ private final class MusicTestAppleEventsClient: MacMusicAppleEventsClient, @unch
                 }
             }
             result = .null()
+        } else if event.eventID == kAESetData {
+            XCTAssertEqual(event.eventClass, kAECoreSuite)
+            let object = try XCTUnwrap(event.paramDescriptor(forKeyword: keyDirectObject))
+            XCTAssertEqual(object.forKeyword(AEKeyword(keyAEDesiredClass))?.typeCodeValue, typeProperty)
+            XCTAssertEqual(object.forKeyword(AEKeyword(keyAEKeyData))?.typeCodeValue, 0x70506F73)
+            XCTAssertEqual(object.forKeyword(AEKeyword(keyAEContainer))?.descriptorType, typeNull)
+            let target = try XCTUnwrap(event.paramDescriptor(forKeyword: keyAEData))
+            XCTAssertEqual(target.descriptorType, typeIEEE64BitFloatingPoint)
+            positionWrites.append(target.doubleValue)
+            if !ignoreCommands { position = target.doubleValue }
+            onSet?()
+            if let setError { throw NSError(domain: NSOSStatusErrorDomain, code: Int(setError)) }
+            result = .null()
         } else if event.eventID == kAECountElements {
             XCTAssertEqual(event.paramDescriptor(forKeyword: keyAEObjectClass)?.typeCodeValue, 0x6354726B)
             result = .init(int32: 3)
@@ -129,8 +166,8 @@ private final class MusicTestAppleEventsClient: MacMusicAppleEventsClient, @unch
             case 0x706E616D: result = .init(string: "Track \(trackIndex)")
             case 0x70417274: result = .init(string: "Artist")
             case 0x70416C62: result = .init(string: "Album")
-            case 0x70447572: result = .init(double: 120)
-            case 0x70506F73: result = .init(double: 15)
+            case 0x70447572: result = .init(double: duration)
+            case 0x70506F73: result = .init(double: position)
             case 0x70536845: result = .init(boolean: shuffle)
             case 0x70527074: result = .init(enumCode: repeatCode)
             case 0x70696478: result = .init(int32: indexHint ?? trackIndex)
@@ -196,7 +233,7 @@ final class MacMusicNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(snapshot.duration, 120)
         XCTAssertEqual(snapshot.position, 15)
         XCTAssertEqual(snapshot.state, .playing)
-        XCTAssertEqual(snapshot.enabledCommands, [1, 4, 5])
+        XCTAssertEqual(snapshot.enabledCommands, [1, 4, 5, 6, 7])
         XCTAssertTrue(client.timeouts.allSatisfy { $0 > 0 && $0 <= 0.25 })
         XCTAssertTrue(client.targets.allSatisfy { $0 == 42 })
         XCTAssertEqual(client.permissionRequests, 0)
@@ -207,19 +244,19 @@ final class MacMusicNowPlayingRuntimeTests: XCTestCase {
         let backend = MacMusicAppleEventsBackend(client: client)
         client.index = 1
         client.state = 0x6B505370
-        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 4])
+        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 4, 6, 7])
         client.index = 3
-        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 5])
+        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 5, 6, 7])
         client.repeatCode = 0x6B416C6C
-        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 4, 5])
+        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 4, 5, 6, 7])
         client.shuffle = true
-        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0])
+        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 6, 7])
         client.shuffle = false
         client.index = 2
         client.disabled = [1, 3]
-        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0])
+        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 6, 7])
         client.hasPlaylist = false
-        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0])
+        XCTAssertEqual(try backend.readSnapshot(deadline: deadline())?.enabledCommands, [0, 6, 7])
     }
 
     func testTrackReplacementDuringMetadataReadRejectsMixedSnapshot() {
@@ -235,7 +272,7 @@ final class MacMusicNowPlayingRuntimeTests: XCTestCase {
         client.indexHint = 10_000
         let snapshot = try XCTUnwrap(MacMusicAppleEventsBackend(client: client).readSnapshot(deadline: deadline()))
         XCTAssertEqual(snapshot.navigation?.index, 2)
-        XCTAssertEqual(snapshot.enabledCommands, [1, 4, 5])
+        XCTAssertEqual(snapshot.enabledCommands, [1, 4, 5, 6, 7])
     }
 
     func testRevocationAtFinalIdentityReadPreventsAppleEventDispatch() throws {
@@ -286,6 +323,171 @@ final class MacMusicNowPlayingRuntimeTests: XCTestCase {
         let snapshot = try XCTUnwrap(backend.readSnapshot(deadline: deadline()))
         XCTAssertEqual(try backend.send(.pause, expected: snapshot, deadline: deadline(), isAuthorized: { true }), .failed)
         XCTAssertEqual(try backend.send(.next, expected: snapshot, deadline: deadline(), isAuthorized: { true }), .failed)
+    }
+
+    func testSeekSetsExactPositionOnceClampsAndPreservesTrackAndPlayback() throws {
+        for (command, origin, target) in [(MacMusicCommand.seekForward30, 15.0, 45.0),
+                                          (.seekBackward30, 70, 40), (.seekForward30, 115, 120),
+                                          (.seekBackward30, 5, 0)] {
+            let client = MusicTestAppleEventsClient(); client.position = origin
+            let backend = MacMusicAppleEventsBackend(client: client)
+            let snapshot = try XCTUnwrap(backend.readSnapshot(deadline: deadline()))
+            XCTAssertEqual(try backend.send(command, expected: snapshot, deadline: deadline(), isAuthorized: { true }), .applied)
+            XCTAssertEqual(client.positionWrites, [target])
+            XCTAssertEqual(client.position, target)
+            XCTAssertEqual(client.index, 2)
+            XCTAssertEqual(client.state, 0x6B505350)
+            XCTAssertTrue(client.commandEvents.isEmpty)
+            XCTAssertTrue(command.isRelative)
+            XCTAssertFalse(command.changesTrack)
+        }
+    }
+
+    func testSeekCapabilityRejectsMissingOrInvalidTimelineAndStoppedPlayer() {
+        for snapshot in [musicTestSnapshot(duration: nil), musicTestSnapshot(duration: 0),
+                         musicTestSnapshot(duration: .infinity), musicTestSnapshot(duration: 31_536_001),
+                         musicTestSnapshot(position: nil), musicTestSnapshot(position: -1),
+                         musicTestSnapshot(position: 121), musicTestSnapshot(position: .nan),
+                         musicTestSnapshot(state: .stopped)] {
+            XCTAssertFalse(snapshot.enabledCommands.contains(6))
+            XCTAssertFalse(snapshot.enabledCommands.contains(7))
+        }
+        XCTAssertEqual(musicTestSnapshot(state: .paused).enabledCommands, [0, 4, 5, 6, 7])
+    }
+
+    func testSeekRequiresActualPositionReadbackAndNeverResendsTimeout() throws {
+        let client = MusicTestAppleEventsClient(), backend = MacMusicAppleEventsBackend(client: client)
+        let snapshot = try XCTUnwrap(backend.readSnapshot(deadline: deadline()))
+        client.ignoreCommands = true
+        XCTAssertEqual(try backend.send(.seekForward30, expected: snapshot, deadline: deadline(), isAuthorized: { true }), .failed)
+        XCTAssertEqual(client.position, 15)
+        client.ignoreCommands = false; client.setError = OSStatus(errAETimeout)
+        XCTAssertThrowsError(try backend.send(.seekForward30, expected: snapshot, deadline: deadline(), isAuthorized: { true })) {
+            XCTAssertEqual($0 as? MacMusicBackendError, .timedOut)
+        }
+        XCTAssertEqual(client.position, 45)
+        XCTAssertEqual(client.positionWrites, [45, 45])
+    }
+
+    func testSeekFinalIdentityAuthorizationAndDeadlineFencesPreventMutation() throws {
+        for mutation in ["track", "owner", "authorization", "deadline"] {
+            let clock = MusicTestBox<TimeInterval>(10)
+            let client = MusicTestAppleEventsClient(); client.hasPlaylist = false
+            let backend = MacMusicAppleEventsBackend(client: client, now: { clock.read() })
+            let snapshot = try XCTUnwrap(backend.readSnapshot(deadline: 11))
+            let authorization = WebRTCControlAuthorization()
+            var positions = 0
+            client.onProperty = { property in
+                if property == 0x70506F73 {
+                    positions += 1
+                    if positions == 2 {
+                        switch mutation {
+                        case "track": client.index = 3
+                        case "owner": client.owner = .init(processID: 43, launchDate: snapshot.owner.launchDate)
+                        case "authorization": authorization.revoke()
+                        default: clock.set(12)
+                        }
+                    }
+                }
+            }
+            do {
+                let result = try backend.send(.seekForward30, expected: snapshot, deadline: 11,
+                                              isAuthorized: { authorization.isValid })
+                XCTAssertEqual(result, .staleContext)
+            } catch {
+                XCTAssertTrue([MacMusicBackendError.staleItem, .timedOut].contains(error as? MacMusicBackendError ?? .invalidData))
+            }
+            XCTAssertEqual(positions, 2)
+            XCTAssertTrue(client.positionWrites.isEmpty, mutation)
+        }
+    }
+
+    func testSeekReadbackRejectsTargetReplacementAfterDispatch() throws {
+        let client = MusicTestAppleEventsClient(), backend = MacMusicAppleEventsBackend(client: client)
+        let snapshot = try XCTUnwrap(backend.readSnapshot(deadline: deadline()))
+        client.onSet = { client.index = 3 }
+        XCTAssertEqual(try backend.send(.seekForward30, expected: snapshot, deadline: deadline(), isAuthorized: { true }), .staleContext)
+        XCTAssertEqual(client.positionWrites, [45])
+    }
+
+    func testSeekTimeoutConsumesRuntimeAuthorityAndFreshSnapshotAllowsNewIntent() async throws {
+        for command in [6, 7] {
+            let backend = MusicTestBackend(); backend.commandError = .timedOut
+            let runtime = MacMusicNowPlayingRuntime(backend: backend)
+            let old = try await snapshot(runtime)
+            let initial = await send(runtime, command: command, snapshot: old)
+            let replay = await send(runtime, command: command, snapshot: old)
+            XCTAssertEqual(initial, .failed); XCTAssertEqual(replay, .staleContext)
+            let fresh = try await snapshot(runtime)
+            XCTAssertFalse(old.client === fresh.client)
+            let stale = await send(runtime, command: command, snapshot: old)
+            XCTAssertEqual(stale, .staleContext)
+            backend.commandError = nil
+            let renewed = await send(runtime, command: command, snapshot: fresh)
+            XCTAssertEqual(renewed, .applied)
+            XCTAssertEqual(backend.commands.count, 2)
+        }
+    }
+
+    func testConfirmedSeekPreservesItemTokenOnlyAfterFreshSameItemRead() async throws {
+        for command in [6, 7] {
+            let backend = MusicTestBackend()
+            let runtime = MacMusicNowPlayingRuntime(backend: backend)
+            let old = try await snapshot(runtime)
+            let initial = await send(runtime, command: command, snapshot: old)
+            let beforeRead = await send(runtime, command: command, snapshot: old)
+            XCTAssertEqual(initial, .applied)
+            XCTAssertEqual(beforeRead, .staleContext)
+            let fresh = try await snapshot(runtime)
+            XCTAssertTrue(old.client === fresh.client, "Confirmed seek is not a new source or item")
+            let nextIntent = await send(runtime, command: command, snapshot: fresh)
+            XCTAssertEqual(nextIntent, .applied)
+            XCTAssertEqual(backend.commands.count, 2)
+            backend.snapshot = musicTestSnapshot(trackID: "0000000000000003")
+            let replacement = try await snapshot(runtime)
+            XCTAssertFalse(replacement.client === fresh.client)
+            let stale = await send(runtime, command: command, snapshot: fresh)
+            XCTAssertEqual(stale, .staleContext)
+            XCTAssertEqual(backend.commands.count, 2)
+        }
+    }
+
+    func testSecondaryMusicSeekKeepsPublishedContextAndPreparedCommandCannotReplay() async throws {
+        let backend = MusicTestBackend()
+        backend.onCommand = { command in
+            if command == .seekForward30 { backend.snapshot = musicTestSnapshot(position: 45) }
+            if command == .pause { backend.snapshot = musicTestSnapshot(state: .paused, position: 45) }
+        }
+        let runtime = MacSupportedNowPlayingRuntime(browser: MusicSelectionTestBrowser(),
+            music: MacMusicNowPlayingRuntime(backend: backend))
+        let controller = MacSystemNowPlayingController(runtime: runtime, now: { Date(timeIntervalSince1970: 200) })
+        defer { controller.stop() }
+        let latest = MusicTestBox<WebRTCRemoteMediaStateUpdate?>(nil)
+        let initial = expectation(description: "Initial two-source catalog")
+        let seeked = expectation(description: "Music seek readback")
+        controller.start { state in
+            latest.set(state)
+            if state.additionalItems.first?.elapsedTime == 15 { initial.fulfill() }
+            if state.additionalItems.first?.elapsedTime == 45,
+               state.additionalItems.first?.playbackState == .playing { seeked.fulfill() }
+        }
+        await fulfillment(of: [initial], timeout: 2)
+        let initialState = try XCTUnwrap(latest.read())
+        XCTAssertEqual(initialState.item?.sourceName, "YouTube")
+        let music = try XCTUnwrap(initialState.additionalItems.first)
+        let prepared = try XCTUnwrap(controller.prepareCommand(.seekForward30, contextID: music.contextID,
+                                                               isAuthorized: { true }))
+        let result = await controller.perform(prepared)
+        XCTAssertEqual(result, .applied)
+        await fulfillment(of: [seeked], timeout: 2)
+        XCTAssertEqual(latest.read()?.additionalItems.first?.contextID, music.contextID)
+        let replay = await controller.perform(prepared)
+        XCTAssertEqual(replay, .staleContext)
+        let pause = try XCTUnwrap(controller.prepareCommand(.pause, contextID: music.contextID,
+                                                            isAuthorized: { true }))
+        let paused = await controller.perform(pause)
+        XCTAssertEqual(paused, .applied)
+        XCTAssertEqual(backend.commands, [.seekForward30, .pause])
     }
 
     func testQueuedRevocationPreventsBackendCommand() async throws {

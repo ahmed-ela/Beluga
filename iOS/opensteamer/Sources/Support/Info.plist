@@ -26,6 +26,8 @@
 	<false/>
 	<key>OpensteamerRendezvousURL</key>
 	<string>$(OPENSTEAMER_RENDEZVOUS_URL)</string>
+	<key>BelugaMediaAppGroup</key>
+	<string>$(BELUGA_MEDIA_APP_GROUP)</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_mcap._tcp</string>

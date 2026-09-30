@@ -106,6 +106,31 @@ private final class FakeMacSystemNowPlayingRuntime: MacSystemNowPlayingRuntime,
 }
 
 final class MacSystemNowPlayingControllerTests: XCTestCase {
+    func testCopiedPreparedSeekIsSingleUseAcrossConcurrentPerformCalls() async throws {
+        let runtime = FakeMacSystemNowPlayingRuntime()
+        runtime.enqueue(.snapshot(Self.snapshot(enabledCommands: [0, 1, 6, 7])))
+        let controller = MacSystemNowPlayingController(runtime: runtime)
+        defer { controller.stop() }
+        let context = NowPlayingLockedBox<String?>(nil)
+        let published = expectation(description: "Seek source ready")
+        controller.start { update in
+            context.update { $0 = update.item?.contextID }
+            published.fulfill()
+        }
+        await fulfillment(of: [published], timeout: 1)
+        let prepared = try XCTUnwrap(controller.prepareCommand(.seekForward30,
+            contextID: try XCTUnwrap(context.read()), isAuthorized: { true }))
+        let results = await withTaskGroup(of: WebRTCRemoteMediaCommandResult.self) { group in
+            for _ in 0..<8 { group.addTask { await controller.perform(prepared) } }
+            var values: [WebRTCRemoteMediaCommandResult] = []
+            for await result in group { values.append(result) }
+            return values
+        }
+        XCTAssertEqual(results.filter { $0 == .applied }.count, 1)
+        XCTAssertEqual(results.filter { $0 == .staleContext }.count, 7)
+        XCTAssertEqual(runtime.commands, [6])
+    }
+
     func testArtworkPublishesAndClearsWithoutRotatingSameItemContext() async throws {
         let reference = try XCTUnwrap(WebRTCRemoteMediaArtworkReference(videoID: "abcdefghijk"))
         let runtime = FakeMacSystemNowPlayingRuntime()

@@ -23322,7 +23322,7 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
         XCTAssertTrue(MPRemoteCommandCenter.shared().togglePlayPauseCommand.isEnabled)
     }
 
-    func testAllFourCommandsRequireExactReadyPublishedContext() {
+    func testAllSixCommandsRequireExactReadyPublishedContext() {
         let gate = RemoteMediaCommandDispatchGate()
         let owner = RemoteMediaCommandOwnerToken()
         let recorder = LockedRemoteMediaCommandRecorder()
@@ -23336,7 +23336,9 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
                 canPlay: true,
                 canPause: true,
                 canSkipForward: true,
-                canSkipBackward: true
+                canSkipBackward: true,
+                canSeekForward: true,
+                canSeekBackward: true
             )
         )
         let sender: RemoteMediaCommandSender = { dispatch in
@@ -23370,7 +23372,7 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
             transportIsReady: true
         )
         XCTAssertFalse(gate.dispatch(.pause))
-        XCTAssertEqual(recorder.values.count, 4)
+        XCTAssertEqual(recorder.values.count, 6)
     }
 
     func testReplacementContextCannotReuseOldCapabilities() {
@@ -23602,8 +23604,6 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
             commandCenter.changePlaybackRateCommand,
             commandCenter.changeRepeatModeCommand,
             commandCenter.changeShuffleModeCommand,
-            commandCenter.skipForwardCommand,
-            commandCenter.skipBackwardCommand,
             commandCenter.seekForwardCommand,
             commandCenter.seekBackwardCommand,
             commandCenter.changePlaybackPositionCommand,
@@ -23906,7 +23906,9 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
                 canPlay: canPlay,
                 canPause: canPause,
                 canSkipForward: canSkipForward,
-                canSkipBackward: true
+                canSkipBackward: true,
+                canSeekForward: true,
+                canSeekBackward: true
             )
         )
     }

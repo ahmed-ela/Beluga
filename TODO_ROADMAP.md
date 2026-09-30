@@ -42,6 +42,26 @@ passed the corresponding physical release gate.
 - [x] Keep full-band, clipping, silence, half-stereo, gain-pumping, and phase-reset mutations in
   the automated waveform suite.
 
+## Notification controls
+
+- [x] Integrate the bounded browser/Music catalog, shared source-specific Play/Pause
+  and ±30-second commands, and the App Group notification extension in source.
+  See [notification media controls](docs/notification-media-controls.md) for authority,
+  packaging and evidence boundaries; this is not an installed-release claim.
+- [ ] Validate the integrated release on a physical locked iPhone against real Mac
+  sources, including recovery and repeated reopening of the same delivered card.
+- [ ] Investigate simulator notification reopening: fresh foreground-banner expansion and
+  controls work, but after dismissal, pressing and holding the same delivered notification
+  in Notification Center does not expand its controls panel. Determine whether the cause is
+  simulator behavior, test input, or product code; current evidence does not establish which.
+  Then verify reopened labels before any interaction and correct first-tap behavior across
+  repeated reopen cycles, without rescheduling the notification or skipping assertions.
+
+The isolated physical-iPhone test already demonstrated source switching, play/pause, and
+±30-second embedded actions while genuinely locked on a cached notification. This simulator
+failure does not invalidate that result; fresh combined-build and reopen validation remain
+separate unfinished checks, not a claim of production integration.
+
 ## Screen and input
 
 - [ ] Cryptographically bind physical screen challenges to their source session.

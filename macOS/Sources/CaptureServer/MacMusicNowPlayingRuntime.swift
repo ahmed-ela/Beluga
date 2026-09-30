@@ -35,6 +35,10 @@ struct MacMusicPlayerSnapshot: Sendable {
         var commands: Set<Int> = state == .playing ? [1] : [0]
         if navigation?.nextTrackID != nil { commands.insert(4) }
         if navigation?.previousTrackID != nil { commands.insert(5) }
+        if let duration, let position, duration.isFinite, duration > 0, duration <= 31_536_000,
+           position.isFinite, (0...duration).contains(position), state != .stopped {
+            commands.formUnion([6, 7])
+        }
         return commands
     }
 
@@ -65,8 +69,11 @@ enum MacMusicDiscoveryStatus: String, Sendable {
 
 enum MacMusicCommand: Int, Sendable {
     case play = 0, pause = 1, next = 4, previous = 5
+    case seekForward30 = 6, seekBackward30 = 7
 
-    var isRelative: Bool { self == .next || self == .previous }
+    var changesTrack: Bool { self == .next || self == .previous }
+    var isSeek: Bool { self == .seekForward30 || self == .seekBackward30 }
+    var isRelative: Bool { changesTrack || isSeek }
 
     var eventID: AEEventID {
         switch self {
@@ -74,6 +81,7 @@ enum MacMusicCommand: Int, Sendable {
         case .pause: return 0x50617573 // Paus
         case .next: return 0x4E657874 // Next
         case .previous: return 0x50726576 // Prev
+        case .seekForward30, .seekBackward30: return kAESetData
         }
     }
 }
@@ -133,9 +141,12 @@ final class MacMusicAppleEventsBackend: MacMusicNowPlayingBackend, @unchecked Se
     private static let currentTrack: AEKeyword = 0x7054726B // pTrk
     private static let persistentID: AEKeyword = 0x70504953 // pPIS
     private let client: any MacMusicAppleEventsClient
+    private let now: @Sendable () -> TimeInterval
 
-    init(client: any MacMusicAppleEventsClient = MacMusicSystemAppleEventsClient()) {
+    init(client: any MacMusicAppleEventsClient = MacMusicSystemAppleEventsClient(),
+         now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.client = client
+        self.now = now
     }
 
     /// Call only from explicit user-initiated onboarding, never from a poll or retry.
@@ -169,7 +180,7 @@ final class MacMusicAppleEventsBackend: MacMusicNowPlayingBackend, @unchecked Se
         let observedAt = Date()
         // Optional playlist discovery must not consume the final identity-read
         // budget and make otherwise usable Play/Pause metadata disappear.
-        let navigationDeadline = min(deadline - 0.25, ProcessInfo.processInfo.systemUptime + 0.35)
+        let navigationDeadline = min(deadline - 0.25, now() + 0.35)
         let navigation = try? readNavigation(owner: owner, trackID: trackID, deadline: navigationDeadline)
         guard client.runningOwner() == owner,
               try currentTrackID(owner: owner, deadline: deadline) == trackID else {
@@ -194,43 +205,71 @@ final class MacMusicAppleEventsBackend: MacMusicNowPlayingBackend, @unchecked Se
         if command == .play && current.state == .playing { return .applied }
         if command == .pause && current.state == .paused { return .applied }
         guard current.enabledCommands.contains(command.rawValue) else { return .unsupported }
-        if command.isRelative && current.navigation != expected.navigation { return .staleContext }
-        let event = Self.commandEvent(command, owner: current.owner)
+        if command.changesTrack && current.navigation != expected.navigation { return .staleContext }
         // Music has no atomic expected-track command. This final read narrows, but cannot
         // eliminate, the cross-process item-change race before Apple Events dispatch.
         guard try currentTrackID(owner: current.owner, deadline: deadline) == expected.trackID else {
             return .staleContext
         }
-        if command.isRelative {
+        if command.changesTrack {
             guard try readNavigation(owner: current.owner, trackID: expected.trackID, deadline: deadline)
                     == expected.navigation,
                   try currentTrackID(owner: current.owner, deadline: deadline) == expected.trackID else {
                 return .staleContext
             }
         }
+        var seekTarget: Double?
+        if command.isSeek {
+            guard let duration = current.duration, duration.isFinite, duration > 0, duration <= 31_536_000 else {
+                return .unsupported
+            }
+            let position = try number(get(0x70506F73, owner: current.owner, deadline: deadline))
+            guard (0...duration).contains(position) else { return .unsupported }
+            seekTarget = min(duration, max(0, position + (command == .seekForward30 ? 30 : -30)))
+            guard try currentTrackID(owner: current.owner, deadline: deadline) == expected.trackID else {
+                return .staleContext
+            }
+        }
+        let event = try Self.commandEvent(command, owner: current.owner, seekTarget: seekTarget)
+        let dispatchedAt = now()
+        // Never resend a set-position event after an ambiguous timeout.
         _ = try sendEvent(event, owner: current.owner, deadline: deadline, isAuthorized: isAuthorized)
         guard isAuthorized() else { return .staleContext }
         guard let after = try readSnapshot(deadline: deadline) else { return .failed }
         guard after.owner == expected.owner, isAuthorized() else { return .staleContext }
-        if command.isRelative {
+        if command.changesTrack {
             let targetID = command == .next
                 ? current.navigation?.nextTrackID : current.navigation?.previousTrackID
             return after.trackID == targetID
                 && after.navigation?.playlistID == current.navigation?.playlistID ? .applied : .failed
         }
         guard after.trackID == expected.trackID else { return .staleContext }
+        if let seekTarget {
+            guard let position = after.position, position.isFinite, let duration = after.duration,
+                  duration == current.duration, (0...duration).contains(position) else { return .failed }
+            let advancement = current.state == .playing ? max(0, now() - dispatchedAt) : 0
+            return position >= seekTarget - 0.25 && position <= seekTarget + advancement + 0.25 ? .applied : .failed
+        }
         return (command == .play && after.state == .playing)
             || (command == .pause && after.state == .paused) ? .applied : .failed
     }
 
     static func commandEvent(
-        _ command: MacMusicCommand, owner: MacMusicPlayerIdentity
-    ) -> NSAppleEventDescriptor {
-        NSAppleEventDescriptor(
-            eventClass: 0x686F6F6B, eventID: command.eventID, // hook
+        _ command: MacMusicCommand, owner: MacMusicPlayerIdentity, seekTarget: Double? = nil
+    ) throws -> NSAppleEventDescriptor {
+        let event = NSAppleEventDescriptor(
+            eventClass: command.isSeek ? kAECoreSuite : 0x686F6F6B, eventID: command.eventID, // hook
             targetDescriptor: NSAppleEventDescriptor(processIdentifier: owner.processID),
             returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID)
         )
+        if command.isSeek {
+            guard let seekTarget, seekTarget.isFinite, (0...31_536_000).contains(seekTarget) else {
+                throw MacMusicBackendError.invalidData
+            }
+            event.setParam(try propertyObject(0x70506F73), forKeyword: keyDirectObject) // pPos
+            event.setParam(.init(double: seekTarget), forKeyword: keyAEData)
+        }
+        return event
     }
 
     private func readNavigation(
@@ -357,14 +396,7 @@ final class MacMusicAppleEventsBackend: MacMusicNowPlayingBackend, @unchecked Se
         _ property: AEKeyword, of container: NSAppleEventDescriptor = .null(),
         owner: MacMusicPlayerIdentity, deadline: TimeInterval
     ) throws -> NSAppleEventDescriptor {
-        let specifier = NSAppleEventDescriptor.record()
-        specifier.setDescriptor(.init(typeCode: typeProperty), forKeyword: AEKeyword(keyAEDesiredClass))
-        specifier.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
-        specifier.setDescriptor(.init(enumCode: OSType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
-        specifier.setDescriptor(.init(typeCode: property), forKeyword: AEKeyword(keyAEKeyData))
-        guard let object = specifier.coerce(toDescriptorType: typeObjectSpecifier) else {
-            throw MacMusicBackendError.invalidData
-        }
+        let object = try Self.propertyObject(property, of: container)
         let event = NSAppleEventDescriptor(
             eventClass: kAECoreSuite, eventID: kAEGetData,
             targetDescriptor: .init(processIdentifier: owner.processID),
@@ -377,16 +409,31 @@ final class MacMusicAppleEventsBackend: MacMusicNowPlayingBackend, @unchecked Se
         return result
     }
 
+    private static func propertyObject(_ property: AEKeyword, of container: NSAppleEventDescriptor = .null()) throws
+        -> NSAppleEventDescriptor {
+        let specifier = NSAppleEventDescriptor.record()
+        specifier.setDescriptor(.init(typeCode: typeProperty), forKeyword: AEKeyword(keyAEDesiredClass))
+        specifier.setDescriptor(container, forKeyword: AEKeyword(keyAEContainer))
+        specifier.setDescriptor(.init(enumCode: OSType(formPropertyID)), forKeyword: AEKeyword(keyAEKeyForm))
+        specifier.setDescriptor(.init(typeCode: property), forKeyword: AEKeyword(keyAEKeyData))
+        guard let object = specifier.coerce(toDescriptorType: typeObjectSpecifier) else {
+            throw MacMusicBackendError.invalidData
+        }
+        return object
+    }
+
     private func sendEvent(
         _ event: NSAppleEventDescriptor, owner: MacMusicPlayerIdentity,
         deadline: TimeInterval, isAuthorized: () -> Bool = { true }
     ) throws -> NSAppleEventDescriptor {
         guard client.runningOwner() == owner else { throw MacMusicBackendError.staleItem }
-        let remaining = deadline - ProcessInfo.processInfo.systemUptime
-        guard remaining > 0 else { throw MacMusicBackendError.timedOut }
+        let remaining = deadline - now()
+        guard deadline.isFinite, remaining > 0 else { throw MacMusicBackendError.timedOut }
         guard isAuthorized() else { throw MacMusicBackendError.staleItem }
         do {
             let reply = try client.sendEvent(event, options: Self.sendOptions, timeout: min(remaining, 0.25))
+            guard client.runningOwner() == owner, isAuthorized() else { throw MacMusicBackendError.staleItem }
+            guard now() < deadline else { throw MacMusicBackendError.timedOut }
             if let error = reply.paramDescriptor(forKeyword: keyErrorNumber) {
                 try Self.checkStatus(error.int32Value)
             }
@@ -431,6 +478,7 @@ final class MacMusicNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Se
     private let permissionQueue = DispatchQueue(label: "com.elamin.opensteamer.music-permission", qos: .userInitiated)
     private var current: (snapshot: MacMusicPlayerSnapshot, token: MacNowPlayingClientToken)?
     private var relativeConsumed = false
+    private var confirmedSameItemSeek = false
     var isAvailable: Bool { true }
     var lastDiscoveryStatus: MacMusicDiscoveryStatus { admission.withLock { discoveryStatus } }
 
@@ -460,7 +508,8 @@ final class MacMusicNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Se
                     guard let metadata = Self.metadata(snapshot) else { throw MacMusicBackendError.invalidData }
                     guard now() < deadline else { throw MacMusicBackendError.timedOut }
                     let token: MacNowPlayingClientToken
-                    if let previous = current, previous.snapshot.hasSameItem(as: snapshot), !relativeConsumed {
+                    if let previous = current, previous.snapshot.hasSameItem(as: snapshot),
+                       !relativeConsumed || confirmedSameItemSeek {
                         token = previous.token
                     } else {
                         token = MacNowPlayingClientToken(
@@ -470,6 +519,7 @@ final class MacMusicNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Se
                     }
                     current = (snapshot, token)
                     relativeConsumed = false
+                    confirmedSameItemSeek = false
                     result = .snapshot(MacNowPlayingRuntimeSnapshot(
                         client: token, sourceName: "Music", metadata: metadata,
                         enabledCommands: snapshot.enabledCommands
@@ -477,11 +527,13 @@ final class MacMusicNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Se
                     status = .available
                 } else {
                     current = nil
+                    confirmedSameItemSeek = false
                     result = .noActiveMedia
                     status = .noPlayer
                 }
             } catch {
                 current = nil
+                confirmedSameItemSeek = false
                 result = error as? MacMusicBackendError == .staleItem ? .retry : .noActiveMedia
                 status = MacMusicDiscoveryStatus(error: error)
             }
@@ -529,7 +581,7 @@ final class MacMusicNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Se
                       !relativeConsumed {
                 // A relative operation is consumed before dispatch, including ambiguous timeout.
                 // A new snapshot is required before a distinct subsequent relative operation.
-                if command.isRelative { relativeConsumed = true }
+                if command.isRelative { relativeConsumed = true; confirmedSameItemSeek = false }
                 do {
                     result = try backend.send(
                         command, expected: current.snapshot, deadline: deadline, isAuthorized: isAuthorized
@@ -537,6 +589,7 @@ final class MacMusicNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Se
                 } catch {
                     result = error as? MacMusicBackendError == .staleItem ? .staleContext : .failed
                 }
+                confirmedSameItemSeek = command.isSeek && result == .applied && isAuthorized()
             } else { result = .staleContext }
             admission.withLock { commandPending = false }
             completion(result)

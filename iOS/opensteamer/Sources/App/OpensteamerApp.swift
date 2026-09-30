@@ -45,6 +45,10 @@ struct OpensteamerApp: App {
             switch debugLaunchRoot {
             case .inert:
                 EmptyView()
+            #if targetEnvironment(simulator)
+            case .notificationLoopback:
+                MediaNotificationSimulatorFixtureView()
+            #endif
             case .runtime(let developmentSecondaryInvitation):
                 OpensteamerRuntimeRoot(
                     developmentSecondaryInvitation: developmentSecondaryInvitation
@@ -65,6 +69,14 @@ struct OpensteamerApp: App {
         bundleIdentifier: String?,
         fileManager: FileManager
     ) -> DebugLaunchRoot {
+        #if targetEnvironment(simulator)
+        if arguments.contains("--beluga-notification-loopback") {
+            guard bundleIdentifier == "org.example.AudioStreamer.dev",
+                  arguments.filter({ $0 == "--beluga-notification-loopback" }).count == 1
+            else { return .inert }
+            return .notificationLoopback
+        }
+        #endif
         let request = IPhone15DevelopmentSecondarySecretBoundary.launchRequest(
             arguments: arguments,
             bundleIdentifier: bundleIdentifier
@@ -106,6 +118,9 @@ struct OpensteamerApp: App {
 
     private enum DebugLaunchRoot {
         case inert
+        #if targetEnvironment(simulator)
+        case notificationLoopback
+        #endif
         case runtime(developmentSecondaryInvitation: String?)
     }
     #endif

@@ -15,9 +15,12 @@ enum MacChromeMediaScript {
       const sameExpected = (a,b) => a && b && a.documentID === b.documentID &&
         a.itemID === b.itemID && a.itemGeneration === b.itemGeneration;
       const bounded = o => { try { return encoder.encode(JSON.stringify(o)).length <= 4096; } catch { return false; } };
-      const output = (status, snapshot) => {
+      const output = (status, snapshot, record) => {
         const result = {schemaVersion:1,status};
         if (snapshot) result.snapshot = snapshot;
+        if (record?.seekTarget !== undefined) {
+          result.seekFrom = record.seekFrom; result.seekTarget = record.seekTarget;
+        }
         return JSON.stringify(bounded(result) ? result : {schemaVersion:1,status:"failed"});
       };
       const text = (value, max) => {
@@ -49,7 +52,7 @@ enum MacChromeMediaScript {
           if (!exact(request,["schemaVersion","operation","commandID","expected","command",
                 "expiresAtUnixMilliseconds","expiresAtPageMilliseconds"]) ||
               !uuid(request.commandID) || !expectedValid(request.expected) ||
-              !["play","pause","next","previous"].includes(request.command) ||
+              !["play","pause","next","previous","seekForward30","seekBackward30"].includes(request.command) ||
               !Number.isFinite(request.expiresAtUnixMilliseconds) ||
               !Number.isFinite(request.expiresAtPageMilliseconds)) return output("failed");
         } else return output("failed");
@@ -75,6 +78,8 @@ enum MacChromeMediaScript {
           document.addEventListener("yt-navigate-start",() => { s.navigating = true; s.invalidate(); },options);
           document.addEventListener("yt-navigate-finish",() => { s.navigating = false; s.invalidate(); },options);
         }
+        // Existing pages can hold the earlier version of this same bounded ledger.
+        s.setCurrentTime ||= Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,"currentTime")?.set;
         const unavailable = () => {
           if (!s.unavailable || s.itemID) s.invalidate();
           return null;
@@ -128,10 +133,15 @@ enum MacChromeMediaScript {
           if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 31536000 ||
               !Number.isFinite(rate) || rate <= 0 || rate > 16) return unavailable();
           const paused = video.paused || video.ended;
+          const ranges = video.seekable;
+          const canSeek = typeof s.setCurrentTime === "function" && Number.isFinite(duration) &&
+            duration > 0 && duration <= 31536000 && elapsed <= duration && ranges?.length === 1 &&
+            Number.isFinite(ranges.start(0)) && ranges.start(0) <= 0.01 &&
+            Number.isFinite(ranges.end(0)) && ranges.end(0) >= duration - 0.01;
           const snapshot = {documentID:s.documentID,itemID:s.itemID,itemGeneration:s.itemGeneration,
             videoID:page.videoID,title,paused,playbackRate:paused ? 0 : rate,
             elapsedTime:elapsed,observedAtUnixMilliseconds:Date.now(),observedAtPageMilliseconds:performance.now(),
-            canPlay:paused,canPause:!paused,canNext:!!next,canPrevious:!!previous};
+            canPlay:paused,canPause:!paused,canNext:!!next,canPrevious:!!previous,canSeek};
           if (artist) snapshot.artist = artist;
           if (Number.isFinite(duration) && duration >= 0 && duration <= 31536000) snapshot.duration = duration;
           // Recheck after all metadata/control getters; a read cannot create mixed authority.
@@ -148,11 +158,16 @@ enum MacChromeMediaScript {
           if (record.expected.documentID !== s.documentID || s.retired) return output("staleContext",view?.snapshot);
           if (record.status === "pending") {
             if (expired(record)) record.status = "failed";
+            else if (record.seekTarget !== undefined) {
+              if (!view || !sameExpected(view.snapshot,record.expected)) record.status = "staleContext";
+              else if (!view.video.seeking && Math.abs(view.snapshot.elapsedTime - record.seekTarget) <= 0.25)
+                record.status = "ok";
+            }
             else if (record.targetVideoID && view && view.snapshot.itemID !== record.expected.itemID) {
               record.status = view.snapshot.videoID === record.targetVideoID ? "ok" : "staleContext";
             }
           }
-          return output(record.status,view?.snapshot);
+          return output(record.status,view?.snapshot,record);
         };
         const view = observe();
         const now = performance.now();
@@ -172,8 +187,10 @@ enum MacChromeMediaScript {
             request.expiresAtUnixMilliseconds - Date.now() > 5000) return output("failed",view.snapshot);
         if (s.commands.size >= 128) return output("failed",view.snapshot);
         const relative = request.command === "next" || request.command === "previous";
+        const seek = request.command === "seekForward30" || request.command === "seekBackward30";
         const chosen = relative ? view[request.command] : null;
         if (relative && !chosen) return output("unsupported",view.snapshot);
+        if (seek && !view.snapshot.canSeek) return output("unsupported",view.snapshot);
         const record = {expected:{...request.expected},command:request.command,status:"pending",
           expiresAtUnixMilliseconds:request.expiresAtUnixMilliseconds,expiresAtPageMilliseconds:request.expiresAtPageMilliseconds,
           retainUntil:now + 60000,targetVideoID:chosen?.videoID};
@@ -190,6 +207,12 @@ enum MacChromeMediaScript {
         try {
           if (relative) {
             s.click.call(chosen.node);
+          } else if (seek) {
+            if (!fence.snapshot.canSeek) { record.status = "failed"; return recordResult(record,fence); }
+            record.seekFrom = fence.snapshot.elapsedTime;
+            record.seekTarget = Math.min(fence.snapshot.duration, Math.max(0,
+              record.seekFrom + (request.command === "seekForward30" ? 30 : -30)));
+            s.setCurrentTime.call(fence.video,record.seekTarget);
           } else if (request.command === "pause") {
             s.pause.call(view.video);
             const after = observe();

@@ -1198,8 +1198,7 @@ enum RemoteMediaCommandAdmission {
         guard observedRevision > 0,
               let currentUpdate,
               currentUpdate.revision >= observedRevision,
-              let item = currentUpdate.item,
-              item.contextID == contextID,
+              let item = currentUpdate.item(contextID: contextID),
               item.capabilities.permits(command) else {
             return false
         }
@@ -12929,7 +12928,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     ) -> Task<Void, Never>? {
         let command = dispatch.command
         guard dispatch.authorization.isValid,
-              let contextID = dispatch.state.update.item?.contextID,
+              let contextID = dispatch.contextID ?? dispatch.state.update.item?.contextID,
               let currentRemoteMediaState,
               currentRemoteMediaState.isSameNegotiation(as: dispatch.state),
               remoteMediaControlsNegotiated,
@@ -12946,6 +12945,7 @@ final class WorldwideSessionViewModel: ObservableObject {
                 observedRevision: dispatch.state.update.revision,
                 currentUpdate: currentRemoteMediaUpdate
               ) else {
+            dispatch.completion?(.staleContext)
             reconcileRemoteMediaCommandAvailability()
             return nil
         }
@@ -12973,27 +12973,35 @@ final class WorldwideSessionViewModel: ObservableObject {
                     observedRevision: dispatch.state.update.revision,
                     currentUpdate: self.currentRemoteMediaUpdate
                   ) else {
+                dispatch.completion?(.staleContext)
                 return
             }
             do {
                 #if DEBUG
                 if let sender = self.debugRemoteMediaCommandSender {
                     try await sender(dispatch)
+                    // Test send hooks do not establish a host acknowledgement.
+                    dispatch.completion?(.failed)
                 } else {
                     try await sourcePeer.requestRemoteMediaCommand(
                         command,
                         state: dispatch.state,
-                        authorization: dispatch.authorization
+                        authorization: dispatch.authorization,
+                        contextID: contextID,
+                        acknowledgementHandler: dispatch.completion
                     )
                 }
                 #else
                 try await sourcePeer.requestRemoteMediaCommand(
                     command,
                     state: dispatch.state,
-                    authorization: dispatch.authorization
+                    authorization: dispatch.authorization,
+                    contextID: contextID,
+                    acknowledgementHandler: dispatch.completion
                 )
                 #endif
             } catch {
+                dispatch.completion?(.failed)
                 guard self.peer === sourcePeer,
                       self.sessionGeneration == sourceGeneration,
                       self.transportAuthorizationGeneration == sourceTransportGeneration,

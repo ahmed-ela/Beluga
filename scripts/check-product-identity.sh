@@ -12,7 +12,7 @@ fi
 
 ROOT="$(cd "$REPOSITORY" && pwd -P)"
 FAILURES=0
-EXPECTED_IOS_TARGETS=$'opensteamer\nopensteamerTests\nopensteamerUITests'
+EXPECTED_IOS_TARGETS=$'MediaNotificationContent\nopensteamer\nopensteamerTests\nopensteamerUITests'
 EXPECTED_SCHEME_FILES=$'opensteamer.xcscheme\nopensteamerTestFlight.xcscheme\nopensteamerUITests.xcscheme'
 
 fail() {
@@ -328,7 +328,9 @@ if require_file "$PROJECT_YML"; then
     'project.yml archive-only TestFlight scheme restoration hook'
   # The app product is Beluga; target and module names remain stable for source and test imports.
   assert_literal_count \
-    "$PROJECT_YML" 'PRODUCT_NAME:' 1 'project.yml product-name override count'
+    "$PROJECT_YML" 'PRODUCT_NAME:' 2 'project.yml product-name override count'
+  assert_literal_count "$PROJECT_YML" '        PRODUCT_NAME: MediaNotificationContent' 1 \
+    'project.yml notification extension product name'
   assert_literal_count "$PROJECT_YML" '    productName: Beluga' 1 \
     'project.yml app product name'
   assert_literal_count "$PROJECT_YML" '        PRODUCT_NAME: Beluga' 1 \
@@ -390,6 +392,7 @@ if require_file "$PROJECT_YML"; then
     }
   ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
   EXPECTED_XCODEGEN_TARGET_TYPES=$(printf '%s\n' \
+    'MediaNotificationContent|app-extension' \
     'opensteamer|application' \
     'opensteamerTests|bundle.unit-test' \
     'opensteamerUITests|bundle.ui-testing' \
@@ -421,6 +424,9 @@ if require_file "$PROJECT_YML"; then
     }
   ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
   EXPECTED_XCODEGEN_BUNDLE_ID_MAPPINGS=$(printf '%s\n' \
+    'MediaNotificationContent|base|org.example.AudioStreamer.dev.MediaNotificationContent' \
+    'MediaNotificationContent|Release|com.elamin.AudioStreamer.MediaNotificationContent' \
+    'MediaNotificationContent|TestFlight|com.elamin.opensteamer.MediaNotificationContent' \
     'opensteamer|Debug|org.example.AudioStreamer.dev' \
     'opensteamer|Release|com.elamin.AudioStreamer' \
     'opensteamer|TestFlight|com.elamin.opensteamer' \
@@ -431,6 +437,58 @@ if require_file "$PROJECT_YML"; then
     "project.yml target/configuration bundle-ID mapping" \
     "$EXPECTED_XCODEGEN_BUNDLE_ID_MAPPINGS" \
     "$XCODEGEN_BUNDLE_ID_MAPPINGS"
+
+  XCODEGEN_MEDIA_SETTINGS=$(awk '
+    /^targets:[[:space:]]*$/ { in_targets = 1; next }
+    in_targets && /^[^[:space:]]/ { in_targets = 0 }
+    in_targets && /^  [^[:space:]][^:]*:[[:space:]]*$/ {
+      target = $0; sub(/^  /, "", target); sub(/:[[:space:]]*$/, "", target)
+      scope = ""; next
+    }
+    in_targets && /^      base:[[:space:]]*$/ { scope = "base"; next }
+    in_targets && /^      configs:[[:space:]]*$/ { scope = ""; next }
+    in_targets && /^        (Debug|Release|TestFlight):[[:space:]]*$/ {
+      scope = $0; sub(/^        /, "", scope); sub(/:[[:space:]]*$/, "", scope); next
+    }
+    in_targets && (target == "opensteamer" || target == "MediaNotificationContent") {
+      key = $0; sub(/^[[:space:]]*/, "", key); sub(/:.*/, "", key)
+      if (key == "CODE_SIGN_ENTITLEMENTS" || key == "BELUGA_MEDIA_APP_GROUP" ||
+          (target == "MediaNotificationContent" && key ~ /^(SKIP_INSTALL|APPLICATION_EXTENSION_API_ONLY|MARKETING_VERSION|CURRENT_PROJECT_VERSION|DEVELOPMENT_TEAM|CODE_SIGN_STYLE)$/)) {
+        value = $0; sub(/^[^:]*:[[:space:]]*/, "", value)
+        print target "|" scope "|" key "|" value
+      }
+    }
+  ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
+  EXPECTED_XCODEGEN_MEDIA_SETTINGS=$(printf '%s\n' \
+    'opensteamer|base|CODE_SIGN_ENTITLEMENTS|Sources/Support/MediaNotification.entitlements' \
+    'opensteamer|base|BELUGA_MEDIA_APP_GROUP|group.org.example.AudioStreamer.dev.media' \
+    'opensteamer|TestFlight|BELUGA_MEDIA_APP_GROUP|group.com.elamin.opensteamer.media' \
+    'MediaNotificationContent|base|CODE_SIGN_ENTITLEMENTS|Sources/Support/MediaNotification.entitlements' \
+    'MediaNotificationContent|base|BELUGA_MEDIA_APP_GROUP|group.org.example.AudioStreamer.dev.media' \
+    'MediaNotificationContent|base|SKIP_INSTALL|YES' \
+    'MediaNotificationContent|base|APPLICATION_EXTENSION_API_ONLY|YES' \
+    'MediaNotificationContent|base|MARKETING_VERSION|0.1.0' \
+    'MediaNotificationContent|base|CURRENT_PROJECT_VERSION|1' \
+    'MediaNotificationContent|base|CODE_SIGN_STYLE|Automatic' \
+    'MediaNotificationContent|Release|CURRENT_PROJECT_VERSION|36' \
+    'MediaNotificationContent|Release|DEVELOPMENT_TEAM|MSMG8CJLB3' \
+    'MediaNotificationContent|TestFlight|BELUGA_MEDIA_APP_GROUP|group.com.elamin.opensteamer.media' \
+    'MediaNotificationContent|TestFlight|CURRENT_PROJECT_VERSION|88' \
+    'MediaNotificationContent|TestFlight|DEVELOPMENT_TEAM|MSMG8CJLB3' \
+    | LC_ALL=C sort)
+  assert_equal "project.yml notification storage/signing/install contract" \
+    "$EXPECTED_XCODEGEN_MEDIA_SETTINGS" "$XCODEGEN_MEDIA_SETTINGS"
+  XCODEGEN_MEDIA_SDK=$(awk '
+    /^  MediaNotificationContent:[[:space:]]*$/ { in_extension = 1; next }
+    in_extension && /^  [^[:space:]]/ { in_extension = 0 }
+    in_extension && /^    dependencies:[[:space:]]*$/ { in_dependencies = 1; next }
+    in_extension && /^    [^[:space:]]/ { in_dependencies = 0 }
+    in_extension && in_dependencies && /^[[:space:]]*-/ {
+      value = $0; sub(/^[[:space:]]*/, "", value); print value
+    }
+  ' "$ROOT/$PROJECT_YML")
+  assert_equal "project.yml notification extension framework link" \
+    '- sdk: UserNotificationsUI.framework' "$XCODEGEN_MEDIA_SDK"
 fi
 
 PBX_PROJECT='iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj'
@@ -510,6 +568,13 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     const fileReferences = objects("PBXFileReference");
     const buildConfigurations = objects("XCBuildConfiguration");
     const configurationLists = objects("XCConfigurationList");
+    const frameworkPhases = objects("PBXFrameworksBuildPhase");
+    const buildFiles = objects("PBXBuildFile");
+    function referenceList(body, key) {
+      const match = body.match(new RegExp(`\\b${key} = \\(([\\s\\S]*?)\\);`));
+      if (!match) throw new Error(`missing ${key} list`);
+      return [...match[1].matchAll(/^\s*([A-F0-9]+)\b/gm)].map(entry => entry[1]);
+    }
     const lines = [];
     for (const [targetID, target] of targets.entries()) {
       const name = setting(target.body, "name");
@@ -523,6 +588,17 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
       const configurationListID = referenceID(target.body, "buildConfigurationList");
       lines.push(`target|${name}|${productName}|${productPath}|${productFileType}|${productType}`);
       lines.push(`target-id|${name}|${targetID}`);
+      if (name === "MediaNotificationContent") {
+        const phases = referenceList(target.body, "buildPhases").filter(id => frameworkPhases.has(id));
+        if (phases.length !== 1) throw new Error("notification extension needs one framework phase");
+        const links = referenceList(frameworkPhases.get(phases[0]).body, "files");
+        if (links.length !== 1) throw new Error("notification extension framework set differs");
+        const link = buildFiles.get(links[0]);
+        if (!link || /\bATTRIBUTES\s*=/.test(link.body)) throw new Error("notification framework must be a normal strong link");
+        const reference = fileReferences.get(referenceID(link.body, "fileRef"));
+        if (!reference) throw new Error("missing notification framework reference");
+        lines.push(`media-framework|${setting(reference.body, "sourceTree")}|${setting(reference.body, "lastKnownFileType")}|${setting(reference.body, "path")}`);
+      }
       const configurationList = configurationLists.get(configurationListID);
       if (!configurationList) throw new Error(`missing configuration list for ${name}`);
       const entries = configurationList.body.match(
@@ -550,6 +626,14 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
         if (name === "opensteamer") {
           lines.push(`app-product|${configurationName}|${setting(configuration.body, "PRODUCT_NAME")}|${setting(configuration.body, "PRODUCT_MODULE_NAME")}|${setting(configuration.body, "ASSETCATALOG_COMPILER_APPICON_NAME")}`);
         }
+        if (["opensteamer", "MediaNotificationContent"].includes(name)) {
+          lines.push(`media-storage|${name}|${configurationName}|${setting(configuration.body, "BELUGA_MEDIA_APP_GROUP")}|${setting(configuration.body, "CODE_SIGN_ENTITLEMENTS")}`);
+        }
+        if (name === "MediaNotificationContent") {
+          const keys = ["SKIP_INSTALL", "APPLICATION_EXTENSION_API_ONLY", "MARKETING_VERSION", "CURRENT_PROJECT_VERSION", "CODE_SIGN_STYLE"];
+          const team = configurationName === "Debug" ? "development-unpinned" : setting(configuration.body, "DEVELOPMENT_TEAM");
+          lines.push(`media-extension|${configurationName}|${keys.map(key => setting(configuration.body, key)).join("|")}|${team}`);
+        }
       }
       if (entryIDs.length !== 3 || configurationNames.size !== 3) {
         throw new Error(`wrong configuration set for ${name}`);
@@ -562,6 +646,7 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     PBX_TARGET_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
       | sed -n '/^target|/p' | LC_ALL=C sort)
     EXPECTED_PBX_TARGET_CONTRACTS=$(printf '%s\n' \
+      'target|MediaNotificationContent|MediaNotificationContent|MediaNotificationContent.appex|wrapper.app-extension|com.apple.product-type.app-extension' \
       'target|opensteamer|opensteamer|Beluga.app|wrapper.application|com.apple.product-type.application' \
       'target|opensteamerTests|opensteamerTests|opensteamerTests.xctest|wrapper.cfbundle|com.apple.product-type.bundle.unit-test' \
       'target|opensteamerUITests|opensteamerUITests|opensteamerUITests.xctest|wrapper.cfbundle|com.apple.product-type.bundle.ui-testing' \
@@ -574,6 +659,9 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     PBX_BUILD_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
       | sed -n '/^build|/p' | LC_ALL=C sort)
     EXPECTED_PBX_BUILD_CONTRACTS=$(printf '%s\n' \
+      'build|MediaNotificationContent|Debug|org.example.AudioStreamer.dev.MediaNotificationContent' \
+      'build|MediaNotificationContent|Release|com.elamin.AudioStreamer.MediaNotificationContent' \
+      'build|MediaNotificationContent|TestFlight|com.elamin.opensteamer.MediaNotificationContent' \
       'build|opensteamer|Debug|org.example.AudioStreamer.dev' \
       'build|opensteamer|Release|com.elamin.AudioStreamer' \
       'build|opensteamer|TestFlight|com.elamin.opensteamer' \
@@ -595,6 +683,27 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
       $'app-product|Debug|Beluga|opensteamer|AppIcon\napp-product|Release|Beluga|opensteamer|AppIcon\napp-product|TestFlight|Beluga|opensteamer|AppIcon' \
       "$PBX_APP_PRODUCT_CONTRACTS"
 
+    PBX_MEDIA_STORAGE_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
+      | sed -n '/^media-storage|/p' | LC_ALL=C sort)
+    EXPECTED_PBX_MEDIA_STORAGE_CONTRACTS=$(printf '%s\n' \
+      'media-storage|MediaNotificationContent|Debug|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|MediaNotificationContent|Release|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|MediaNotificationContent|TestFlight|group.com.elamin.opensteamer.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|opensteamer|Debug|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|opensteamer|Release|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|opensteamer|TestFlight|group.com.elamin.opensteamer.media|Sources/Support/MediaNotification.entitlements' \
+      | LC_ALL=C sort)
+    assert_equal "generated Xcode notification storage isolation" \
+      "$EXPECTED_PBX_MEDIA_STORAGE_CONTRACTS" "$PBX_MEDIA_STORAGE_CONTRACTS"
+    PBX_MEDIA_EXTENSION_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
+      | sed -n '/^media-extension|/p' | LC_ALL=C sort)
+    assert_equal "generated Xcode notification signing/install contract" \
+      $'media-extension|Debug|YES|YES|0.1.0|1|Automatic|development-unpinned\nmedia-extension|Release|YES|YES|0.1.0|36|Automatic|MSMG8CJLB3\nmedia-extension|TestFlight|YES|YES|0.1.0|88|Automatic|MSMG8CJLB3' \
+      "$PBX_MEDIA_EXTENSION_CONTRACTS"
+    assert_equal "generated Xcode notification extension framework link" \
+      'media-framework|SDKROOT|wrapper.framework|System/Library/Frameworks/UserNotificationsUI.framework' \
+      "$(print -r -- "$PBX_CONTRACTS" | sed -n '/^media-framework|/p')"
+
     APP_TARGET_ID=$(print -r -- "$PBX_CONTRACTS" | awk -F'|' \
       '$1 == "target-id" && $2 == "opensteamer" { print $3 }')
     UNIT_TEST_TARGET_ID=$(print -r -- "$PBX_CONTRACTS" | awk -F'|' \
@@ -611,7 +720,9 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
 
   # Keep the inherited test-product defaults and require the app override in every configuration.
   assert_literal_count \
-    "$PBX_PROJECT" 'PRODUCT_NAME = ' 6 'generated Xcode product-name setting count'
+    "$PBX_PROJECT" 'PRODUCT_NAME = ' 9 'generated Xcode product-name setting count'
+  assert_literal_count "$PBX_PROJECT" 'PRODUCT_NAME = MediaNotificationContent;' 3 \
+    'generated Xcode notification extension product names'
   assert_literal_count \
     "$PBX_PROJECT" 'PRODUCT_NAME = "$(TARGET_NAME)";' 3 \
     'generated Xcode inherited product-name defaults'
@@ -750,7 +861,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_CONFIGURATION="TestFlight"' 1 \
   'side-by-side TestFlight configuration guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_BUILD_NUMBER="87"' 1 \
+  'EXPECTED_BUILD_NUMBER="88"' 1 \
   'side-by-side TestFlight build-number guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'PRIVATE_TEMPORARY_ROOT="/private/tmp"' 1 \
@@ -831,7 +942,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-type SPARSE' 1 \
   'side-by-side TestFlight sparse-image creation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'archive -showBuildSettings -json' 1 \
+  'archive -showBuildSettings -json' 2 \
   'side-by-side TestFlight archive-action settings proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-fs APFS' 1 \
@@ -1590,6 +1701,24 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'verify_main_signed_entitlements "${app_path}"' 1 \
   'side-by-side TestFlight signed entitlement verifier call'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_media_notification_framework_load_commands() {' 1 \
+  'side-by-side TestFlight notification strong-load parser'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_media_notification_framework_link "${extension_path}/MediaNotificationContent" || return 1' 1 \
+  'side-by-side TestFlight notification binary framework validation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/usr/bin/otool -arch arm64 -l "${executable}"' 1 \
+  'side-by-side TestFlight actual notification Mach-O load commands'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  (( app_target_count == 1 )) || return 1\n  verify_effective_media_extension_build_settings' 1 \
+  'side-by-side TestFlight independent effective notification settings gate'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    media-extension-settings)\n      run_with_pinned_xcode_sandbox_profile settings "$@"' 1 \
+  'side-by-side TestFlight sandboxed read-only notification settings'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_media_notification_effective_settings_document "${destination}"' 1 \
+  'side-by-side TestFlight exact effective notification settings document'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_embedded_provisioning_profile() {' 1 \
   'side-by-side TestFlight provisioning-profile verification'

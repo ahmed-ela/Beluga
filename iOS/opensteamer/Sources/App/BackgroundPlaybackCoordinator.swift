@@ -49,6 +49,18 @@ struct RemoteMediaCommandDispatch: Sendable {
     let command: WebRTCRemoteMediaCommand
     let state: WebRTCReceivedRemoteMediaState
     let authorization: WebRTCControlAuthorization
+    let contextID: String?
+    let completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)?
+
+    init(command: WebRTCRemoteMediaCommand, state: WebRTCReceivedRemoteMediaState,
+         authorization: WebRTCControlAuthorization, contextID: String? = nil,
+         completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)? = nil) {
+        self.command = command
+        self.state = state
+        self.authorization = authorization
+        self.contextID = contextID
+        self.completion = completion
+    }
 }
 
 typealias RemoteMediaCommandSender = @Sendable (RemoteMediaCommandDispatch) -> Void
@@ -132,8 +144,8 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
             let samePresentation = self.state.map { previous in
                 state.map {
                     previous.isSameNegotiation(as: $0)
-                        && previous.update.item?.contextID == $0.update.item?.contextID
-                        && previous.update.item?.capabilities == $0.update.item?.capabilities
+                        && previous.update.allItems.map(\.contextID) == $0.update.allItems.map(\.contextID)
+                        && previous.update.allItems.map(\.capabilities) == $0.update.allItems.map(\.capabilities)
                 } ?? false
             } ?? false
             if !transportIsReady || !samePresentation || state?.update.item == nil {
@@ -154,10 +166,17 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
     }
 
     func dispatch(_ intent: RemoteMediaCommandIntent) -> Bool {
+        dispatch(intent, contextID: nil, observedRevision: nil, completion: nil)
+    }
+
+    func dispatch(_ intent: RemoteMediaCommandIntent, contextID: String?,
+                  observedRevision: UInt64?,
+                  completion: (@Sendable (WebRTCRemoteMediaCommandResult) -> Void)?) -> Bool {
         let admitted: (RemoteMediaCommandSender, RemoteMediaCommandDispatch)? = lock.withLock {
             guard transportIsReady,
                   let state,
-                  let item = state.update.item,
+                  observedRevision.map({ $0 > 0 && $0 <= state.update.revision }) ?? true,
+                  let item = contextID.map({ state.update.item(contextID: $0) }) ?? state.update.item,
                   let command = intent.permittedCommand(for: item),
                   state.update.revision > 0,
                   let authorization,
@@ -166,7 +185,9 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
             return (sender, RemoteMediaCommandDispatch(
                 command: command,
                 state: state,
-                authorization: authorization
+                authorization: authorization,
+                contextID: item.contextID,
+                completion: completion
             ))
         }
         guard let admitted else { return false }
@@ -180,7 +201,7 @@ final class RemoteMediaCommandDispatchGate: @unchecked Sendable {
 /// audio playout rather than this object.
 @MainActor
 final class BackgroundPlaybackCoordinator {
-    static let shared = BackgroundPlaybackCoordinator()
+    static let shared = BackgroundPlaybackCoordinator(enableMediaNotifications: true)
 
     private let transitionTask = AppTransitionBackgroundTaskCoordinator(
         name: "opensteamerBackgroundPlayback"
@@ -196,13 +217,16 @@ final class BackgroundPlaybackCoordinator {
     private var genericPlayback: (serverName: String?, isPlaying: Bool)?
     private let artwork: RemoteMediaArtworkPresentation
     private var metadataPublishedAt: TimeInterval = 0
+    private let mediaNotifications: MediaNotificationCoordinator?
     var pendingArtworkLoadTask: Task<Void, Never>? { artwork.pendingLoadTask }
 
     init(
         artworkLoader: any RemoteMediaArtworkLoading = RemoteMediaArtworkLoader(),
-        installNativeCommandTargets: Bool = true
+        installNativeCommandTargets: Bool = true,
+        enableMediaNotifications: Bool = false
     ) {
         artwork = RemoteMediaArtworkPresentation(loader: artworkLoader)
+        mediaNotifications = enableMediaNotifications ? MediaNotificationCoordinator() : nil
         if installNativeCommandTargets { installCommandTargetsIfNeeded() }
         updateNativeCommandAvailability()
     }
@@ -231,6 +255,7 @@ final class BackgroundPlaybackCoordinator {
         remoteMediaTransportIsReady = false
         remoteMediaCommandSender = sender
         commandGate.claim(owner: owner, sender: sender)
+        mediaNotifications?.invalidate()
         updateNativeCommandAvailability()
         if let genericPlayback {
             publishGenericPlayback(
@@ -252,6 +277,7 @@ final class BackgroundPlaybackCoordinator {
         remoteMediaTransportIsReady = false
         remoteMediaCommandSender = nil
         _ = commandGate.release(owner: owner)
+        mediaNotifications?.invalidate()
         updateNativeCommandAvailability()
         if let genericPlayback {
             publishGenericPlayback(
@@ -287,6 +313,9 @@ final class BackgroundPlaybackCoordinator {
               update.isValid,
               update.revision > (remoteMediaUpdate?.revision ?? 0) else {
             return
+        }
+        if let previous = remoteMediaState, !previous.isSameNegotiation(as: state) {
+            mediaNotifications?.invalidate()
         }
         remoteMediaState = state
         metadataPublishedAt = ProcessInfo.processInfo.systemUptime
@@ -397,7 +426,9 @@ final class BackgroundPlaybackCoordinator {
             (commandCenter.pauseCommand, .explicit(.pause)),
             (commandCenter.togglePlayPauseCommand, .togglePlayPause),
             (commandCenter.nextTrackCommand, .explicit(.nextTrack)),
-            (commandCenter.previousTrackCommand, .explicit(.previousTrack))
+            (commandCenter.previousTrackCommand, .explicit(.previousTrack)),
+            (commandCenter.skipForwardCommand, .explicit(.seekForward30)),
+            (commandCenter.skipBackwardCommand, .explicit(.seekBackward30))
         ]
         for (nativeCommand, command) in mappings {
             let gate = commandGate
@@ -406,11 +437,11 @@ final class BackgroundPlaybackCoordinator {
             }
             commandTargets.append((nativeCommand, target))
         }
+        commandCenter.skipForwardCommand.preferredIntervals = [30]
+        commandCenter.skipBackwardCommand.preferredIntervals = [30]
         // These controls have no negotiated Mac-side semantic and must never appear as no-op UI.
         commandCenter.stopCommand.isEnabled = false
         commandCenter.changePlaybackPositionCommand.isEnabled = false
-        commandCenter.skipForwardCommand.isEnabled = false
-        commandCenter.skipBackwardCommand.isEnabled = false
         commandCenter.seekForwardCommand.isEnabled = false
         commandCenter.seekBackwardCommand.isEnabled = false
         commandCenter.changePlaybackRateCommand.isEnabled = false
@@ -431,6 +462,13 @@ final class BackgroundPlaybackCoordinator {
             state: remoteMediaState,
             transportIsReady: remoteMediaTransportIsReady
         )
+        let gate = commandGate
+        mediaNotifications?.update(state: remoteMediaState, ready: remoteMediaTransportIsReady) {
+            request, completion in
+            guard let command = WebRTCRemoteMediaCommand(rawValue: request.action.rawValue) else { return false }
+            return gate.dispatch(.explicit(command), contextID: request.contextID,
+                                 observedRevision: request.revision, completion: completion)
+        }
     }
 
     private func updateNativeCommandAvailability() {
@@ -446,6 +484,8 @@ final class BackgroundPlaybackCoordinator {
             ready && (capabilities?.canSkipForward ?? false)
         commandCenter.previousTrackCommand.isEnabled =
             ready && (capabilities?.canSkipBackward ?? false)
+        commandCenter.skipForwardCommand.isEnabled = ready && (capabilities?.canSeekForward ?? false)
+        commandCenter.skipBackwardCommand.isEnabled = ready && (capabilities?.canSeekBackward ?? false)
     }
 
     #if DEBUG

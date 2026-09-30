@@ -13,6 +13,7 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
     private var commandPending = false
     private var permissionPending = false
     private var relativeConsumed = false
+    private var confirmedSameItemSeek = false
     private var current: (player: MacChromePlayerSnapshot, token: MacNowPlayingClientToken)?
     // Selection only: an uncertain read always retires current command authority.
     private var selectionHint: MacChromePlayerSnapshot?
@@ -50,25 +51,29 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
                 fetchPending = false
                 guard epoch == admitted else { return .retry }
                 if let failure {
-                    epoch &+= 1; current = nil; relativeConsumed = false
+                    epoch &+= 1; current = nil; relativeConsumed = false; confirmedSameItemSeek = false
                     if failure as? MacChromeBackendError != .timedOut { selectionHint = nil }
                     discoveryStatus = MacChromeDiscoveryStatus(error: failure)
                     // Unknown browser state must revoke its commands without choosing another tab.
                     return .retry
                 }
                 guard let selected, let metadata = Self.metadata(selected) else {
-                    epoch &+= 1; current = nil; selectionHint = nil; relativeConsumed = false
+                    epoch &+= 1; current = nil; selectionHint = nil; relativeConsumed = false; confirmedSameItemSeek = false
                     discoveryStatus = selected == nil ? .noPlayer : .invalidData
                     return .noActiveMedia
                 }
                 let token: MacNowPlayingClientToken
-                if let current, current.player.hasSameItem(as: selected), !relativeConsumed || commandPending {
+                if let current, current.player.hasSameItem(as: selected),
+                   !relativeConsumed || commandPending || confirmedSameItemSeek {
                     token = current.token
                 } else {
                     epoch &+= 1
                     token = MacNowPlayingClientToken(object: NSObject(), clientIdentity: "chrome:" + UUID().uuidString)
                 }
-                if !commandPending || current?.player.hasSameItem(as: selected) != true { relativeConsumed = false }
+                if !commandPending || current?.player.hasSameItem(as: selected) != true {
+                    relativeConsumed = false
+                    confirmedSameItemSeek = false
+                }
                 current = (selected, token); selectionHint = selected; discoveryStatus = .available
                 return .snapshot(.init(client: token, sourceName: "YouTube", metadata: metadata,
                                        enabledCommands: selected.media.enabledCommands))
@@ -108,7 +113,7 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
             guard !commandPending, !relativeConsumed, let current, current.token === snapshot.client,
                   Self.metadata(current.player)?.identityComponent == snapshot.metadata.identityComponent else { return nil }
             commandPending = true
-            if command.isRelative { relativeConsumed = true }
+            if command.isRelative { relativeConsumed = true; confirmedSameItemSeek = false }
             return (current.player, epoch)
         }
         guard let (expected, admitted) = admission else { completion(.staleContext); return }
@@ -127,14 +132,23 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
                 do { result = try backend.send(command, expected: expected, deadline: deadline, isAuthorized: authorized) }
                 catch { result = error as? MacChromeBackendError == .staleItem ? .staleContext : .failed }
             }
-            lock.withLock { commandPending = false }
+            let confirmedSeek = command.isSeek && result == .applied && authorized()
+            lock.withLock {
+                if epoch == admitted, current?.token === snapshot.client {
+                    // Fresh same-item readback may preserve selection after a confirmed seek.
+                    // Ambiguous relative results still consume and rotate the old authority.
+                    confirmedSameItemSeek = confirmedSeek
+                }
+                commandPending = false
+            }
             completion(result)
         }
     }
 
     func stop() {
         lock.withLock {
-            epoch &+= 1; lifecycle &+= 1; current = nil; selectionHint = nil; relativeConsumed = false; discoveryStatus = .idle
+            epoch &+= 1; lifecycle &+= 1; current = nil; selectionHint = nil; relativeConsumed = false
+            confirmedSameItemSeek = false; discoveryStatus = .idle
         }
     }
 

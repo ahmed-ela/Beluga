@@ -136,6 +136,8 @@ targets:
         PRODUCT_NAME: Beluga
         PRODUCT_MODULE_NAME: opensteamer
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/MediaNotification.entitlements
+        BELUGA_MEDIA_APP_GROUP: group.org.example.AudioStreamer.dev.media
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
@@ -143,6 +145,32 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
         TestFlight:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
+          BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
+  MediaNotificationContent:
+    type: app-extension
+    dependencies:
+      - sdk: UserNotificationsUI.framework
+    settings:
+      base:
+        PRODUCT_NAME: MediaNotificationContent
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev.MediaNotificationContent
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/MediaNotification.entitlements
+        BELUGA_MEDIA_APP_GROUP: group.org.example.AudioStreamer.dev.media
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer.MediaNotificationContent
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 36
+        TestFlight:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer.MediaNotificationContent
+          BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 88
   opensteamerTests:
     type: bundle.unit-test
     settings:
@@ -161,11 +189,24 @@ print -r -- '// !$*UTF8*$!
   classes = {};
   objectVersion = 56;
   objects = {
+/* Begin PBXBuildFile section */
+    EA /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E5 /* UserNotificationsUI.framework */; };
+/* End PBXBuildFile section */
 /* Begin PBXFileReference section */
     E1 /* Beluga.app */ = {isa = PBXFileReference; lastKnownFileType = wrapper.application; path = Beluga.app; sourceTree = BUILT_PRODUCTS_DIR; };
     E2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
     E3 /* opensteamerUITests.xctest */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = opensteamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+    E4 /* MediaNotificationContent.appex */ = {isa = PBXFileReference; lastKnownFileType = wrapper.app-extension; path = MediaNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+    E5 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+/* Begin PBXFrameworksBuildPhase section */
+    EB /* Frameworks */ = {
+      isa = PBXFrameworksBuildPhase;
+      files = (
+        EA /* UserNotificationsUI.framework in Frameworks */,
+      );
+    };
+/* End PBXFrameworksBuildPhase section */
 /* Begin PBXNativeTarget section */
     A1 /* opensteamer */ = {
       isa = PBXNativeTarget;
@@ -191,6 +232,17 @@ print -r -- '// !$*UTF8*$!
       productReference = E3 /* opensteamerUITests.xctest */;
       productType = "com.apple.product-type.bundle.ui-testing";
     };
+    A4 /* MediaNotificationContent */ = {
+      isa = PBXNativeTarget;
+      buildPhases = (
+        EB /* Frameworks */,
+      );
+      buildConfigurationList = D4 /* Build configuration list for MediaNotificationContent */;
+      name = MediaNotificationContent;
+      productName = MediaNotificationContent;
+      productReference = E4 /* MediaNotificationContent.appex */;
+      productType = "com.apple.product-type.app-extension";
+    };
 /* End PBXNativeTarget section */
 /* Begin XCBuildConfiguration section */
     B1 /* Debug */ = {
@@ -200,6 +252,8 @@ print -r -- '// !$*UTF8*$!
         PRODUCT_MODULE_NAME = opensteamer;
         ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
         PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
       };
       name = Debug;
     };
@@ -210,6 +264,8 @@ print -r -- '// !$*UTF8*$!
         PRODUCT_MODULE_NAME = opensteamer;
         ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
         PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
       };
       name = Release;
     };
@@ -248,6 +304,8 @@ print -r -- '// !$*UTF8*$!
         PRODUCT_MODULE_NAME = opensteamer;
         ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
         PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
       };
       name = TestFlight;
     };
@@ -286,6 +344,53 @@ print -r -- '// !$*UTF8*$!
       };
       name = TestFlight;
     };
+    C1 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = MediaNotificationContent;
+        PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev.MediaNotificationContent;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
+        SKIP_INSTALL = YES;
+        APPLICATION_EXTENSION_API_ONLY = YES;
+        MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 1;
+        CODE_SIGN_STYLE = Automatic;
+      };
+      name = Debug;
+    };
+    C2 /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = MediaNotificationContent;
+        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer.MediaNotificationContent;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
+        SKIP_INSTALL = YES;
+        APPLICATION_EXTENSION_API_ONLY = YES;
+        MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 36;
+        DEVELOPMENT_TEAM = MSMG8CJLB3;
+        CODE_SIGN_STYLE = Automatic;
+      };
+      name = Release;
+    };
+    C3 /* TestFlight */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = MediaNotificationContent;
+        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer.MediaNotificationContent;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
+        SKIP_INSTALL = YES;
+        APPLICATION_EXTENSION_API_ONLY = YES;
+        MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 88;
+        DEVELOPMENT_TEAM = MSMG8CJLB3;
+        CODE_SIGN_STYLE = Automatic;
+      };
+      name = TestFlight;
+    };
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
     D1 /* Build configuration list for PBXNativeTarget "opensteamer" */ = {
@@ -310,6 +415,14 @@ print -r -- '// !$*UTF8*$!
         B5 /* Debug */,
         B6 /* Release */,
         B9 /* TestFlight */,
+      );
+    };
+    D4 /* MediaNotificationContent */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        C1 /* Debug */,
+        C2 /* Release */,
+        C3 /* TestFlight */,
       );
     };
 /* End XCConfigurationList section */
@@ -557,6 +670,57 @@ require_rejection() {
 }
 
 if [[ "${OPENSTEAMER_IDENTITY_BEHAVIOR_ONLY:-0}" != 1 ]]; then
+
+for notification_setting in SKIP_INSTALL APPLICATION_EXTENSION_API_ONLY; do
+  CASE=$(new_case "notification-yml-${notification_setting:l}")
+  replace_once "$CASE/iOS/opensteamer/project.yml" \
+    "${notification_setting}: YES" "${notification_setting}: NO"
+  require_rejection "$CASE" 'project.yml notification storage/signing/install contract'
+done
+
+CASE=$(new_case notification-yml-team)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  $'          DEVELOPMENT_TEAM: MSMG8CJLB3\n          CURRENT_PROJECT_VERSION: 88' \
+  $'          DEVELOPMENT_TEAM: OTHER\n          CURRENT_PROJECT_VERSION: 88'
+require_rejection "$CASE" 'project.yml notification storage/signing/install contract'
+
+CASE=$(new_case notification-yml-sdk)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  '- sdk: UserNotificationsUI.framework' '- sdk: UserNotifications.framework'
+require_rejection "$CASE" 'project.yml notification extension framework link'
+
+CASE=$(new_case notification-pbx-group)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  $'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer.MediaNotificationContent;\n        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;\n        BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;' \
+  $'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer.MediaNotificationContent;\n        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;\n        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;'
+require_rejection "$CASE" 'generated Xcode notification storage isolation'
+
+CASE=$(new_case notification-pbx-version)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'CURRENT_PROJECT_VERSION = 88;' 'CURRENT_PROJECT_VERSION = 87;'
+require_rejection "$CASE" 'generated Xcode notification signing/install contract'
+
+CASE=$(new_case notification-pbx-framework-target)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  '        EB /* Frameworks */,' '        EC /* Unrelated */,'
+require_rejection "$CASE" 'could not parse generated Xcode target/product/configuration mappings'
+
+CASE=$(new_case notification-pbx-weak-framework)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'fileRef = E5 /* UserNotificationsUI.framework */;' \
+  'fileRef = E5 /* UserNotificationsUI.framework */; settings = { ATTRIBUTES = (Weak,); };'
+require_rejection "$CASE" 'could not parse generated Xcode target/product/configuration mappings'
+
+CASE=$(new_case notification-binary-framework-call)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'verify_media_notification_framework_link "${extension_path}/MediaNotificationContent" || return 1' \
+  'true # notification dynamic-loader proof omitted'
+require_rejection "$CASE" 'side-by-side TestFlight notification binary framework validation'
+
+if [[ "${OPENSTEAMER_IDENTITY_NOTIFICATION_ONLY:-0}" == 1 ]]; then
+  print -r -- 'PASS: notification identity baseline and 9 focused mutations'
+  exit 0
+fi
 
 CASE=$(new_case beluga-root-package)
 replace_once "$CASE/Package.swift" 'name: "Beluga"' 'name: "opensteamer"'
@@ -1489,8 +1653,8 @@ require_rejection "$CASE" 'side-by-side TestFlight sparse-image creation'
 
 CASE=$(new_case testflight-archive-action-settings-proof)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'archive -showBuildSettings -json' \
-  'build -showBuildSettings -json'
+  '    archive -showBuildSettings -json || return 2' \
+  '    build -showBuildSettings -json || return 2'
 require_rejection "$CASE" 'side-by-side TestFlight archive-action settings proof'
 
 CASE=$(new_case testflight-build-image-size)
@@ -3353,14 +3517,39 @@ T7TEST
 MANIFEST_ARCHIVE="$BEHAVIOR_ROOT/manifest.xcarchive"
 MANIFEST_APP="$MANIFEST_ARCHIVE/Products/Applications/Beluga.app"
 MANIFEST_FRAMEWORK="$MANIFEST_APP/Frameworks/LiveKitWebRTC.framework"
-mkdir -p "$MANIFEST_FRAMEWORK"
+MANIFEST_EXTENSION="$MANIFEST_APP/PlugIns/MediaNotificationContent.appex"
+mkdir -p "$MANIFEST_FRAMEWORK" "$MANIFEST_EXTENSION"
 /bin/cp -- /usr/bin/true "$MANIFEST_APP/Beluga"
 /bin/cp -- /usr/bin/true "$MANIFEST_FRAMEWORK/LiveKitWebRTC"
+/bin/cp -- /usr/bin/true "$MANIFEST_EXTENSION/MediaNotificationContent"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.elamin.opensteamer</string>
 <key>CFBundleExecutable</key><string>Beluga</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>BelugaMediaAppGroup</key><string>group.com.elamin.opensteamer.media</string>
 </dict></plist>' >"$MANIFEST_APP/Info.plist"
+MANIFEST_BUILD_NUMBER=$(/usr/bin/sed -n \
+  's/^readonly EXPECTED_BUILD_NUMBER="\([1-9][0-9]*\)"$/\1/p' "$BEHAVIOR_WRAPPER")
+[[ "$MANIFEST_BUILD_NUMBER" == <-> && "$MANIFEST_BUILD_NUMBER" != *$'\n'* ]]
+/usr/bin/plutil -insert CFBundleVersion -string "$MANIFEST_BUILD_NUMBER" "$MANIFEST_APP/Info.plist"
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.elamin.opensteamer.MediaNotificationContent</string>
+<key>CFBundleExecutable</key><string>MediaNotificationContent</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>BelugaMediaAppGroup</key><string>group.com.elamin.opensteamer.media</string>
+<key>NSExtension</key><dict>
+<key>NSExtensionPointIdentifier</key><string>com.apple.usernotifications.content-extension</string>
+<key>NSExtensionPrincipalClass</key><string>MediaNotificationContent.NotificationViewController</string>
+<key>NSExtensionAttributes</key><dict>
+<key>UNNotificationExtensionCategory</key><string>BelugaMediaControls</string>
+<key>UNNotificationExtensionUserInteractionEnabled</key><true/>
+<key>UNNotificationExtensionDefaultContentHidden</key><true/>
+</dict></dict>
+</dict></plist>' >"$MANIFEST_EXTENSION/Info.plist"
+/usr/bin/plutil -insert CFBundleVersion -string "$MANIFEST_BUILD_NUMBER" "$MANIFEST_EXTENSION/Info.plist"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>io.livekit.LiveKitWebRTC</string>
@@ -3819,6 +4008,7 @@ typeset ROOTS_OBJROOT=$ROOTS_ARCHIVE_INTERMEDIATES/IntermediateBuildFilesPath
 typeset WRONG_ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}/DSTRoot"
 
 function write_private_plist() { return 0 }
+function verify_effective_media_extension_build_settings() { return 0 }
 function plist_root_array_count() { print -r -- 1 }
 function plist_typed_raw_value() {
   [[ "$2" == 0.target && "$3" == string ]] || return 1
