@@ -2,8 +2,9 @@
 
 The iPhone app owns the existing authenticated WebRTC session. Its notification
 content extension presents at most two sources (browser and Music), with shared
-Play/Pause and backward/forward 30-second buttons. Selecting a source affects these
-buttons only; it does not redirect native Now Playing or interrupt either player.
+Previous/Next, Play/Pause and backward/forward 30-second buttons. A finite seekable
+timeline also enables a draggable progress slider. Selecting a source affects these
+controls only; it does not redirect native Now Playing or interrupt either player.
 The first playing browser tab remains selected until it stops playing, then another
 playing tab may take over. Starting another tab does not steal the current selection.
 
@@ -52,5 +53,54 @@ host nor operates a physical phone.
 Source, mailbox, native backend, simulator UI, signed archive, upload, installed
 host and physical Lock Screen results are separate evidence. A simulator pass is
 not proof of physical locked behavior or actual Mac Chrome/Music effects. Reopening
-the same delivered notification after dismissal remains an explicit, non-skipped
-test and roadmap item until the integrated build demonstrates it.
+the same delivered notification after dismissal is an explicit, non-skipped
+simulator test; the physical locked release validation remains a roadmap item.
+
+### Notification Center follow-up, 2026-09-30
+
+The build-90 simulator tests passed fresh-banner controls, a real timeline-thumb
+drag, and exact receiver acknowledgements. The follow-up same-delivered-notification
+test now passes through the system's actual swipe-left → View action on the
+dedicated iPhone 15 simulator (iOS 26.5). No production app or extension behavior
+change was needed for this test-path correction.
+
+Bounded diagnostic controls also failed to expand (1) a Beluga notification opened
+for the first time directly from Notification Center, without opening its banner,
+and (2) a plain system notification with one inert standard action and no content
+extension. A subsequent positive-control check showed that plain notification's
+standard action successfully in its fresh expanded banner, then failed to show
+the action after opening the same card from Notification Center. The plain control
+and original reopening test also failed after one restart of only the dedicated
+simulator. Alternate title presses, unstacking,
+backdrop dismissal and exposed simulator accessibility actions did not establish
+expansion. Receiver logging subsequently showed SpringBoard recognizing a tap on
+the intended card but hinting a side swipe instead of executing its default
+action. Swiping left and tapping the visible system View button expanded the
+plain notification and displayed its standard action. That diagnostic's cleanup
+failed, so it is presentation evidence, not a whole-test pass. These observations
+do not identify the cause of the long-press behavior or establish physical behavior.
+
+The integrated reopening test uses that observed View path for three cycles. Before
+source selection it requires current source labels, the shared controls and timeline.
+After explicit selection it requires the current timeline and correct Play/Pause
+state, then sends exactly one command: +30 seconds, Play and Pause respectively.
+The native WebRTC loopback host must return the exact cumulative eight-command
+ledger with revision 9, Browser paused at 90 seconds and Music paused at 300 seconds.
+Fresh read-only inspections of the OS-delivered card must retain the same identifier,
+delivery timestamp, epoch and category across all cycles. The test ends by proving
+the isolated peers stopped. The focused run passed 1/1 in 145.714 seconds. After
+removing temporary diagnostic-card cleanup, the final three-test suite passed
+3/3 in 225.047 seconds: fresh controls (45.902 s), same-card reopening (147.497 s),
+and real timeline drag plus track buttons (31.648 s), with zero skips or failures.
+
+Evidence is retained under
+`/Volumes/t7/beluga-notification-integration.WdpLEu/notification-controls90-reopen-view1.{log,xcresult}`,
+with exported screenshots and accessibility snapshots beside it. The cleanup-free
+suite is `notification-controls90-reopen-final.{log,xcresult}` in the same directory.
+Earlier failed
+diagnostics and their temporary patches remain in that private evidence directory;
+temporary probes were removed from source. Only the simulator fixture's read-only
+delivery inspector and the strengthened XCTest remain. No assertion was skipped,
+no notification was replaced to manufacture reopening, and no new TestFlight build
+was uploaded for these test-only changes. Physical locked-device validation and
+real browser/Music effects remain separate requirements.

@@ -50,17 +50,18 @@ passed the corresponding physical release gate.
   packaging and evidence boundaries; this is not an installed-release claim.
 - [ ] Validate the integrated release on a physical locked iPhone against real Mac
   sources, including recovery and repeated reopening of the same delivered card.
-- [ ] Investigate simulator notification reopening: fresh foreground-banner expansion and
-  controls work, but after dismissal, pressing and holding the same delivered notification
-  in Notification Center does not expand its controls panel. Determine whether the cause is
-  simulator behavior, test input, or product code; current evidence does not establish which.
-  Then verify reopened labels before any interaction and correct first-tap behavior across
-  repeated reopen cycles, without rescheduling the notification or skipping assertions.
+- [x] Verify simulator same-card reopening through Notification Center's actual
+  swipe-left → View action. Three cycles pass with fresh labels before source selection,
+  exact first-command receipts, and unchanged OS-delivered identifier/date/session/category;
+  no notification rescheduling or skipped assertions. The earlier long-press path still
+  fails in this simulator, including for a plain system notification; its cause and
+  physical locked behavior are not established. See the
+  [dated evidence](docs/notification-media-controls.md#notification-center-follow-up-2026-09-30).
 
 The isolated physical-iPhone test already demonstrated source switching, play/pause, and
-±30-second embedded actions while genuinely locked on a cached notification. This simulator
-failure does not invalidate that result; fresh combined-build and reopen validation remain
-separate unfinished checks, not a claim of production integration.
+±30-second embedded actions while genuinely locked on a cached notification. The simulator
+results do not replace that physical evidence; fresh combined-build locked-device and
+reopen validation remain separate unfinished checks, not a claim of production integration.
 
 ## Screen and input
 

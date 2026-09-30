@@ -85,9 +85,102 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
     func testSameDeliveredNotificationReopensWithoutRescheduling() throws {
         try openFreshNotification()
         try exerciseControls()
+        dismissWithHomeTwiceThenActivate()
+        assertHostEvidence()
+        var delivered = try inspectDeliveredNotification()
+        var receipts = ["B:seekForward30", "B:play", "A:pause", "A:seekBackward30", "B:pause"]
+        let cycles: [(command: String, receipt: String, beforePlaying: Bool, afterPlaying: Bool,
+                      beforePosition: String, afterPosition: Int)] = [
+            ("Forward 30 seconds", "B:seekForward30", false, false, "4:30 of 15:00", 300),
+            ("Play", "B:play", false, true, "5:00 of 15:00", 300),
+            ("Pause", "B:pause", true, false, "5:00 of 15:00", 300)
+        ]
+        for (index, cycle) in cycles.enumerated() {
+            let number = index + 1
+            openDeliveredNotificationUsingView(cycle: number)
+            let browser = source("Browser", playing: false)
+            let music = source("Music", playing: cycle.beforePlaying)
+            XCTAssertTrue(browser.waitForExistence(timeout: 5), springboard.debugDescription)
+            XCTAssertTrue(music.waitForExistence(timeout: 5), springboard.debugDescription)
+            XCTAssertFalse(source("Browser", playing: true).exists, "Reopened Browser label is stale")
+            XCTAssertFalse(source("Music", playing: !cycle.beforePlaying).exists, "Reopened Music label is stale")
+            for label in ["Previous track", "Backward 30 seconds", "Forward 30 seconds", "Next track"] {
+                XCTAssertTrue(springboard.buttons[label].exists, "Missing reopened control: \(label)")
+            }
+            XCTAssertNotEqual(springboard.buttons["Play"].exists, springboard.buttons["Pause"].exists,
+                              "Exactly one playback toggle must be present before source selection")
+            let slider = springboard.sliders["mediaPlaybackPosition"]
+            XCTAssertTrue(slider.exists, "The reopened timeline must exist before source selection")
+            capture("same-request-reopen-\(number)-before-selection")
+
+            // Reopening need not choose a particular default source. Explicitly choose B,
+            // then require its current timeline and command state before the first command.
+            wait(NSPredicate(format: "hittable == true AND enabled == true"), on: music)
+            music.tap()
+            wait(NSPredicate(format: "value == %@ AND hittable == true AND enabled == true",
+                             cycle.beforePosition), on: slider)
+            let toggle = cycle.beforePlaying ? "Pause" : "Play"
+            wait(NSPredicate(format: "hittable == true AND enabled == true"), on: springboard.buttons[toggle])
+            XCTAssertFalse(springboard.buttons[cycle.beforePlaying ? "Play" : "Pause"].exists)
+            try command(cycle.command)
+            XCTAssertTrue(source("Music", playing: cycle.afterPlaying).waitForExistence(timeout: 5))
+            capture("same-request-reopen-\(number)-after-first-command")
+
+            dismissWithHomeTwiceThenActivate()
+            receipts.append(cycle.receipt)
+            let expected = "revision=\(6 + number);commands=\(5 + number);A=paused:90;"
+                + "B=\(cycle.afterPlaying ? "playing" : "paused"):\(cycle.afterPosition);"
+                + "received=\(receipts.joined(separator: ","))"
+            wait(NSPredicate(format: "label == %@", expected), on: app.staticTexts["notificationFixtureEvidence"])
+            delivered = try inspectDeliveredNotification(previous: delivered)
+            capture("same-request-reopen-\(number)-exact-host-and-delivery-evidence")
+        }
+        app.buttons["Stop local peers"].tap()
+        wait(NSPredicate(format: "label == %@", "Stopped"), on: app.staticTexts["notificationFixtureStatus"])
+    }
+
+    private func dismissWithHomeTwiceThenActivate() {
+        // One Home can dismiss the expanded card without leaving Notification Center.
+        // Confirm the fixture is actually reachable before tapping any fixture control.
+        XCUIDevice.shared.press(.home)
         XCUIDevice.shared.press(.home)
         app.activate()
-        assertHostEvidence()
+        wait(NSPredicate(format: "label == %@", "Local WebRTC ready"),
+             on: app.staticTexts["notificationFixtureStatus"])
+        wait(NSPredicate(format: "hittable == true AND enabled == true"), on: app.buttons["Stop local peers"])
+        wait(NSPredicate(format: "hittable == true AND enabled == true"),
+             on: app.buttons["Inspect delivered notification"])
+        XCTAssertFalse(springboard.staticTexts["Beluga · Mac playback"].exists)
+    }
+
+    private func inspectDeliveredNotification(previous: (counter: UInt64, fingerprint: String)? = nil) throws
+        -> (counter: UInt64, fingerprint: String) {
+        let identity = app.staticTexts["notificationDeliveredIdentity"]
+        XCTAssertTrue(identity.exists, app.debugDescription)
+        let oldSample = identity.label
+        app.buttons["Inspect delivered notification"].tap()
+        wait(NSPredicate(format: "label != %@", oldSample), on: identity)
+        let parts = identity.label.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        XCTAssertEqual(parts.count, 2, identity.label)
+        let counter = try XCTUnwrap(UInt64(parts[0]), identity.label)
+        let fingerprint = String(parts[1])
+        let fields = fingerprint.components(separatedBy: ";")
+        XCTAssertEqual(fields.count, 5, identity.label)
+        XCTAssertEqual(fields[0], "count=1")
+        XCTAssertEqual(fields[1], "id=beluga.media.controls")
+        XCTAssertTrue(fields[2].hasPrefix("date="), identity.label)
+        _ = try XCTUnwrap(UInt64(fields[2].dropFirst("date=".count), radix: 16), identity.label)
+        XCTAssertTrue(fields[3].hasPrefix("epoch="), identity.label)
+        _ = try XCTUnwrap(UUID(uuidString: String(fields[3].dropFirst("epoch=".count))), identity.label)
+        XCTAssertEqual(fields[4], "category=BelugaMediaControls")
+        if let previous {
+            XCTAssertGreaterThan(counter, previous.counter, "Delivery identity must come from a new explicit inspection")
+            XCTAssertEqual(fingerprint, previous.fingerprint, "The delivered notification must not be replaced or rescheduled")
+        }
+        return (counter, fingerprint)
+    }
+
+    private func openDeliveredNotificationUsingView(cycle: Int) {
         let top = springboard.coordinate(withNormalizedOffset: .init(dx: 0.5, dy: 0.01))
         let bottom = springboard.coordinate(withNormalizedOffset: .init(dx: 0.5, dy: 0.8))
         top.press(forDuration: 0.1, thenDragTo: bottom)
@@ -95,17 +188,19 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
             format: "identifier == %@ AND label CONTAINS %@", "ListCell", "Beluga media controls")).firstMatch
         XCTAssertTrue(card.waitForExistence(timeout: 10), springboard.debugDescription)
         wait(NSPredicate(format: "hittable == true"), on: card)
-        capture("same-request-before-reopen")
-        card.press(forDuration: 2)
-        XCTAssertTrue(source("Music", playing: false).waitForExistence(timeout: 5), springboard.debugDescription)
-        capture("same-request-reopened")
-        source("Music", playing: false).tap()
-        try command("Forward 30 seconds")
-        XCUIDevice.shared.press(.home)
-        app.activate()
-        wait(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@",
-                         "commands=6;", "B=paused:300;"), on: app.staticTexts["notificationFixtureEvidence"])
-        app.buttons["Stop local peers"].tap()
+        capture("same-request-reopen-\(cycle)-collapsed-card")
+        let start = card.coordinate(withNormalizedOffset: .init(dx: 0.8, dy: 0.5))
+        let end = card.coordinate(withNormalizedOffset: .init(dx: 0.35, dy: 0.5))
+        start.press(forDuration: 0.1, thenDragTo: end)
+        let view = springboard.buttons["View"]
+        XCTAssertTrue(view.waitForExistence(timeout: 5), springboard.debugDescription)
+        XCTAssertTrue(springboard.buttons["Options"].exists)
+        XCTAssertTrue(springboard.buttons["Clear"].exists)
+        wait(NSPredicate(format: "hittable == true AND enabled == true"), on: view)
+        capture("same-request-reopen-\(cycle)-system-view-action")
+        view.tap()
+        XCTAssertTrue(springboard.staticTexts["Beluga · Mac playback"].waitForExistence(timeout: 5),
+                      springboard.debugDescription)
     }
 
     private func openFreshNotification() throws {

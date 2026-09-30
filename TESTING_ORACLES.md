@@ -577,9 +577,14 @@ slider or playback state.
 Run the real simulator notification extension and native WebRTC loopback oracle for
 the five-button layout and a real thumb drag. Require one position-bearing host
 receipt, returned timeline agreement, exact next/previous receipts and explicit
-source reselection after each context retirement. Keep the existing five-command
-source-switch test and failed same-notification reopening evidence separate. This
-isolated test does not prove a real YouTube effect or physical locked-screen behavior.
+source reselection after each context retirement. Keep the five-command source-switch
+test and the same-delivered-notification reopening test separate. Reopen the same
+card three times through the visible system View action without posting a replacement;
+require fresh labels before source selection, the selected timeline and toggle state,
+exact first-command receipts, and unchanged OS-delivered identifier/date/epoch/category
+from a fresh read-only inspection after each cycle. Retain the earlier failed
+long-press evidence rather than treating the alternate path as its root-cause fix.
+These isolated tests do not prove a real YouTube effect or physical locked-screen behavior.
 
 Exercise a pending command on the same poll that refreshes the mailbox heartbeat.
 Claim-time freshness must use a timestamp sampled after publication, not the earlier

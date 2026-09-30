@@ -1,6 +1,7 @@
 #if DEBUG && targetEnvironment(simulator)
 import Foundation
 import SwiftUI
+@preconcurrency import UserNotifications
 import WebRTCTransport
 
 /// Isolated native-transport oracle. This route is removed from device and distribution builds.
@@ -10,6 +11,8 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     @Published private(set) var status = "Starting local peers"
     @Published private(set) var evidence = "No host commands"
     @Published private(set) var ready = false
+    @Published private(set) var deliveredIdentity = "0|uninspected"
+    private var identityInspections: UInt64 = 0
     private let gate = RemoteMediaCommandDispatchGate()
     private let owner = RemoteMediaCommandOwnerToken()
     private let notifications = MediaNotificationCoordinator()
@@ -99,6 +102,21 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     func showNotification() {
         armed = true
         updateNotification()
+    }
+
+    func inspectDeliveredNotification() async {
+        let cards = await UNUserNotificationCenter.current().deliveredNotifications().filter {
+            $0.request.identifier == MediaNotificationCoordinator.notificationIdentifier
+        }
+        identityInspections += 1
+        guard cards.count == 1, let card = cards.first,
+              let epoch = card.request.content.userInfo[MediaNotificationConfiguration.epochKey] as? String,
+              UUID(uuidString: epoch) != nil else {
+            deliveredIdentity = "\(identityInspections)|invalid-count-or-epoch=\(cards.count)"
+            return
+        }
+        let date = String(card.date.timeIntervalSince1970.bitPattern, radix: 16)
+        deliveredIdentity = "\(identityInspections)|count=1;id=\(card.request.identifier);date=\(date);epoch=\(epoch);category=\(card.request.content.categoryIdentifier)"
     }
 
     func stop() async {
@@ -209,6 +227,11 @@ struct MediaNotificationSimulatorFixtureView: View {
             Text("Isolated notification transport test").font(.headline)
             Text(fixture.status).accessibilityIdentifier("notificationFixtureStatus")
             Text(fixture.evidence).accessibilityIdentifier("notificationFixtureEvidence")
+            Text(fixture.deliveredIdentity).font(.caption).lineLimit(4).minimumScaleFactor(0.5)
+                .accessibilityIdentifier("notificationDeliveredIdentity")
+            Button("Inspect delivered notification") {
+                Task { await fixture.inspectDeliveredNotification() }
+            }
             Button("Show media notification") { fixture.showNotification() }.disabled(!fixture.ready)
             Button("Stop local peers") { Task { await fixture.stop() } }
         }
