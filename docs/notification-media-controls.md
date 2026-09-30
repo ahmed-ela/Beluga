@@ -104,3 +104,70 @@ delivery inspector and the strengthened XCTest remain. No assertion was skipped,
 no notification was replaced to manufacture reopening, and no new TestFlight build
 was uploaded for these test-only changes. Physical locked-device validation and
 real browser/Music effects remain separate requirements.
+
+### External-pause follow-up, 2026-09-30
+
+The user identified the stale state as the custom expanded notification with the
+±30-second buttons, not the native Now Playing player. No deployed fix is claimed.
+
+The isolated fixture now supports one bounded, cancellable, unsolicited host-side
+pause of the exact Browser context. This uses the existing native WebRTC state lane,
+real app coordinator/mailbox, and content extension; it does not send a notification
+command or contact the live Mac. The task is fenced to its original host, viewer,
+operation and context, and is canceled by fixture teardown. A 30-second delay allows
+bounded system expansion and initial Playing/Pause evidence before the state change.
+
+`testExternalHostPauseUpdatesExpandedCardBeforeNextPlayCommand` passed 1/1, with
+zero failures or skips, in 66.003 seconds on the dedicated iOS 26.5 simulator.
+While the same delivered card remained expanded, Browser changed from Playing/Pause
+to Paused/Play without any notification control press. One subsequent Play press
+restored Playing/Pause. Exact host evidence was revision 3, one command `A:play`,
+and one separate external change at revision 2. The source context, timeline and
+OS-delivered identifier/date/epoch/category remained unchanged. Screenshot pixels
+and accessibility snapshots were inspected for all three states.
+
+Evidence: `/Volumes/t7/beluga-notification-external-pause.zVpHUK/external-pause-1.{log,xcresult}`,
+with exported attachments in the same private directory. Only simulator test code
+and documentation changed; no production app/extension/host change or deployment
+occurred. This does not exercise the real Mac player adapter, the production viewer
+view model, physical background eligibility, or the user's iOS 27 notification
+lifecycle. The missing diagnostic is a correlated production host revision, viewer
+admission, App Group snapshot and expanded-card read/render. Reopening the same card
+after an external pause is a useful discriminator between stale extension display
+and upstream state, not a substitute for that evidence.
+
+#### Mac observer starvation follow-up
+
+The user confirmed the notification title matches the exact video being paused.
+The bidirectional path exists: Mac player observation → controller state revision
+→ WebRTC publication → viewer admission → App Group snapshot → extension UI.
+The isolated simulator proof starts after Mac player observation; it did not test
+that upstream boundary.
+
+A new deterministic test using the production `MacChromeAppleEventsBackend` with
+a fake native client reproduced an upstream defect before product edits: the exact
+selected player freshly reads paused, then unrelated window inventory exhausts the
+1.5-second caller deadline and discards that pause as `timedOut`. The failing
+baseline was 1 test / 1 expected assertion failure. Live host logs also repeatedly
+report `chrome=timedOut`, but lack the correlation needed to prove this is the
+exclusive cause of the user's physical notification symptom.
+
+The source patch reserves 350 ms of the existing caller budget for publication
+after a fresh exact paused-owner read, bounding speculative census and successor
+scanning without extending the overall deadline. Only speculative census timeout
+may fall back to that fresh read; selected-read failure cannot borrow a cached
+hint. Final owner, permission and overall-deadline checks remain, as does the
+selected-owner reread before handing off to another playing source.
+
+121 focused Mac Chrome/composite/controller/protocol tests passed with zero
+failures. Added coverage includes permission/owner changes during census, outer
+deadline overrun, healthy successor handoff, resumed-owner retention, and an
+external pause through the actual backend → runtime → composite → controller
+pipeline. That pipeline publishes paused revision 2 with the same context and
+`canPlay`, with zero playback commands. Independent read-only review found no
+blocking issue in the focused patch.
+
+Evidence: `/Volumes/t7/beluga-mac-pause-observer.TXQmV9/RESULTS.md`,
+`paused-observation-red.log`, and `focused-green.log`. The live host, browser,
+phones and audio routes were untouched. This is not deployed-host or physical
+iPhone proof; the production notification issue remains open pending that check.

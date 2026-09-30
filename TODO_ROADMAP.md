@@ -50,6 +50,12 @@ passed the corresponding physical release gate.
   packaging and evidence boundaries; this is not an installed-release claim.
 - [ ] Validate the integrated release on a physical locked iPhone against real Mac
   sources, including recovery and repeated reopening of the same delivered card.
+- [ ] Diagnose the reported stale Play/Pause state in the expanded ±30-second
+  notification after pausing directly on the Mac. The isolated unsolicited-host-pause
+  simulator regression passes. A Mac observer deadline-starvation defect is now
+  reproduced and source-patched with 121 focused tests passing, but the repaired
+  host is not deployed and the user's physical failure remains unverified.
+  See [external-pause evidence](docs/notification-media-controls.md#external-pause-follow-up-2026-09-30).
 - [x] Verify simulator same-card reopening through Notification Center's actual
   swipe-left → View action. Three cycles pass with fresh labels before source selection,
   exact first-command receipts, and unchanged OS-delivered identifier/date/session/category;

@@ -284,7 +284,19 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
                     holding = nil
                 }
             }
-            let census = try candidates ?? inventory(owner: owner, deadline: deadline)
+            // A fresh paused owner is already observable. Bound speculative census and
+            // successor work together, reserving time for the final publication fence.
+            let discoveryDeadline = holding == nil ? deadline : deadline - 0.35
+            let census: [(MacChromeTabIdentity, String)]
+            do {
+                census = try candidates ?? inventory(owner: owner, deadline: discoveryDeadline)
+            } catch MacChromeBackendError.timedOut {
+                guard let held = holding else { throw MacChromeBackendError.timedOut }
+                try check(owner: owner, deadline: deadline)
+                try Self.checkStatus(client.automationPermission(owner: owner, askUser: false))
+                try check(owner: owner, deadline: deadline)
+                return .selected(held)
+            }
             if let held = holding, !census.contains(where: { $0.0 == held.tab && Self.videoID(from: $0.1) == held.media.videoID }) {
                 holding = nil
             }
@@ -294,7 +306,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             var firstFailure: MacChromeBackendError?
             // Preserve command/readback and paused-owner promotion headroom. This is a
             // work slice within (never an extension of) the caller's absolute deadline.
-            let scanDeadline = min(deadline, now() + 0.75)
+            let scanDeadline = min(discoveryDeadline, now() + 0.75)
             for offset in census.indices {
                 guard now() < scanDeadline else { complete = false; firstFailure = firstFailure ?? .timedOut; break }
                 let index = (start + offset) % census.count
@@ -337,6 +349,8 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             if let held = holding {
                 // Freshly verified paused owners remain explicitly controllable during
                 // an incomplete successor search; this does not assert that all tabs paused.
+                try Self.checkStatus(client.automationPermission(owner: owner, askUser: false))
+                try check(owner: owner, deadline: deadline)
                 return .selected(held)
             }
             guard complete else { return .incomplete(firstFailure ?? .timedOut, holding: nil) }

@@ -31,6 +31,55 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
         wait(NSPredicate(format: "label == %@", "Stopped"), on: app.staticTexts["notificationFixtureStatus"])
     }
 
+    func testExternalHostPauseUpdatesExpandedCardBeforeNextPlayCommand() throws {
+        var originalDelivery: (counter: UInt64, fingerprint: String)?
+        try openFreshNotification(beforeExpansion: {
+            originalDelivery = try self.inspectDeliveredNotification()
+            self.wait(NSPredicate(format: "label == %@",
+                "revision=1;commands=0;A=playing:120;B=paused:240;received="),
+                on: self.app.staticTexts["notificationFixtureEvidence"])
+            let schedule = self.app.buttons["Schedule external browser pause"]
+            self.wait(NSPredicate(format: "hittable == true AND enabled == true"), on: schedule)
+            schedule.tap()
+            self.wait(NSPredicate(format: "label == %@", "changes=0;phase=scheduled;context=A"),
+                      on: self.app.staticTexts["notificationExternalChangeEvidence"])
+        })
+        let original = try XCTUnwrap(originalDelivery)
+        let slider = springboard.sliders["mediaPlaybackPosition"]
+        wait(NSPredicate(format: "hittable == true AND enabled == true"), on: springboard.buttons["Pause"])
+        XCTAssertFalse(springboard.buttons["Play"].exists)
+        wait(NSPredicate(format: "value == %@", "2:00 of 15:00"), on: slider)
+        capture("external-host-pause-initial-playing")
+
+        // Do not press a notification control: only the fixture host changes playback.
+        XCTAssertTrue(source("Browser", playing: false).waitForExistence(timeout: 35),
+                      springboard.debugDescription)
+        XCTAssertFalse(source("Browser", playing: true).exists, "External pause left a stale Playing source label")
+        XCTAssertTrue(source("Music", playing: false).exists, "An external pause must not retarget the source")
+        wait(NSPredicate(format: "hittable == true AND enabled == true"), on: springboard.buttons["Play"])
+        XCTAssertFalse(springboard.buttons["Pause"].exists, "External pause left a stale Pause action")
+        wait(NSPredicate(format: "value == %@", "2:00 of 15:00"), on: slider)
+        capture("external-host-pause-observed-without-command")
+
+        try command("Play")
+        XCTAssertTrue(source("Browser", playing: true).waitForExistence(timeout: 5), springboard.debugDescription)
+        XCTAssertFalse(source("Browser", playing: false).exists)
+        wait(NSPredicate(format: "hittable == true AND enabled == true"), on: springboard.buttons["Pause"])
+        XCTAssertFalse(springboard.buttons["Play"].exists)
+        capture("external-host-pause-resumed-after-one-play")
+
+        dismissWithHomeTwiceThenActivate()
+        wait(NSPredicate(format: "label == %@",
+            "revision=3;commands=1;A=playing:120;B=paused:240;received=A:play"),
+            on: app.staticTexts["notificationFixtureEvidence"])
+        wait(NSPredicate(format: "label == %@", "changes=1;phase=published;context=A;revision=2"),
+            on: app.staticTexts["notificationExternalChangeEvidence"])
+        _ = try inspectDeliveredNotification(previous: original)
+        capture("external-host-pause-exact-revisions-and-single-play-receipt")
+        app.buttons["Stop local peers"].tap()
+        wait(NSPredicate(format: "label == %@", "Stopped"), on: app.staticTexts["notificationFixtureStatus"])
+    }
+
     func testTimelineDragAndTrackButtonsReachExactHostWithoutRetargeting() throws {
         try openFreshNotification()
         let slider = springboard.sliders["mediaPlaybackPosition"]
@@ -203,7 +252,7 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
                       springboard.debugDescription)
     }
 
-    private func openFreshNotification() throws {
+    private func openFreshNotification(beforeExpansion: (() throws -> Void)? = nil) throws {
         app.launchArguments = ["--beluga-notification-loopback"]
         app.launch()
         wait(NSPredicate(format: "label == %@", "Local WebRTC ready"),
@@ -214,7 +263,14 @@ final class MediaNotificationIntegrationUITests: XCTestCase {
         let banner = springboard.staticTexts["Beluga media controls"]
         XCTAssertTrue(banner.waitForExistence(timeout: 8), springboard.debugDescription)
         capture("fresh-integrated-banner")
-        banner.press(forDuration: 2)
+        if let beforeExpansion {
+            try beforeExpansion()
+            // Fixture actions can outlive the transient banner. Expand that same delivered
+            // request through its system View action, without scheduling another notification.
+            openDeliveredNotificationUsingView(cycle: 0)
+        } else {
+            banner.press(forDuration: 2)
+        }
         XCTAssertTrue(source("Music", playing: false).waitForExistence(timeout: 5), springboard.debugDescription)
         XCTAssertTrue(source("Browser", playing: true).exists, springboard.debugDescription)
     }

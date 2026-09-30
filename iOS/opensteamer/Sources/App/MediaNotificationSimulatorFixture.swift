@@ -12,6 +12,7 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     @Published private(set) var evidence = "No host commands"
     @Published private(set) var ready = false
     @Published private(set) var deliveredIdentity = "0|uninspected"
+    @Published private(set) var externalChangeEvidence = "changes=0;phase=idle"
     private var identityInspections: UInt64 = 0
     private let gate = RemoteMediaCommandDispatchGate()
     private let owner = RemoteMediaCommandOwnerToken()
@@ -32,6 +33,9 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     private var aTrack = 1
     private var bTrack = 1
     private var commands: [String] = []
+    private var externalChanges: UInt64 = 0
+    private var externalPauseTask: Task<Void, Never>?
+    private var externalPauseOperationID: UUID?
 
     func start() async {
         guard host == nil else { return }
@@ -104,6 +108,52 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
         updateNotification()
     }
 
+    func scheduleExternalBrowserPause() {
+        guard ready, aPlaying, externalPauseTask == nil,
+              let sourceHost = host, let sourceViewer = viewer else { return }
+        let operationID = UUID()
+        let contextID = Self.contextID("A", track: aTrack)
+        externalPauseOperationID = operationID
+        externalChangeEvidence = "changes=\(externalChanges);phase=scheduled;context=\(contextID)"
+        externalPauseTask = Task { @MainActor [weak self, weak sourceHost, weak sourceViewer] in
+            guard let self else { return }
+            defer {
+                if self.externalPauseOperationID == operationID {
+                    self.externalPauseTask = nil
+                    self.externalPauseOperationID = nil
+                }
+            }
+            do {
+                // Leave headroom for the system's bounded Notification Center expansion.
+                // The oracle must first observe Playing before this unsolicited state change.
+                try await Task.sleep(for: .seconds(30))
+                guard !Task.isCancelled,
+                      self.externalPauseOperationID == operationID,
+                      let sourceHost, self.host === sourceHost,
+                      let sourceViewer, self.viewer === sourceViewer,
+                      self.ready, self.aPlaying,
+                      Self.contextID("A", track: self.aTrack) == contextID else { return }
+                self.aPlaying = false
+                self.revision += 1
+                let publishedRevision = self.revision
+                // This state originates on the host, without receiving any viewer command.
+                try await sourceHost.sendRemoteMediaState(self.update)
+                guard !Task.isCancelled,
+                      self.externalPauseOperationID == operationID,
+                      self.host === sourceHost, self.viewer === sourceViewer else { return }
+                self.externalChanges += 1
+                self.externalChangeEvidence = "changes=\(self.externalChanges);phase=published;context=\(contextID);revision=\(publishedRevision)"
+                self.updateEvidence()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.externalPauseOperationID == operationID else { return }
+                self.externalChangeEvidence = "changes=\(self.externalChanges);phase=failed;context=\(contextID)"
+                self.status = "External host pause failed: \(error)"
+            }
+        }
+    }
+
     func inspectDeliveredNotification() async {
         let cards = await UNUserNotificationCenter.current().deliveredNotifications().filter {
             $0.request.identifier == MediaNotificationCoordinator.notificationIdentifier
@@ -120,6 +170,9 @@ final class MediaNotificationSimulatorFixture: ObservableObject {
     }
 
     func stop() async {
+        externalPauseTask?.cancel()
+        externalPauseTask = nil
+        externalPauseOperationID = nil
         notifications.invalidate()
         gate.release(owner: owner)
         forwarders.forEach { $0.cancel() }
@@ -229,10 +282,14 @@ struct MediaNotificationSimulatorFixtureView: View {
             Text(fixture.evidence).accessibilityIdentifier("notificationFixtureEvidence")
             Text(fixture.deliveredIdentity).font(.caption).lineLimit(4).minimumScaleFactor(0.5)
                 .accessibilityIdentifier("notificationDeliveredIdentity")
+            Text(fixture.externalChangeEvidence).font(.caption).lineLimit(3).minimumScaleFactor(0.5)
+                .accessibilityIdentifier("notificationExternalChangeEvidence")
             Button("Inspect delivered notification") {
                 Task { await fixture.inspectDeliveredNotification() }
             }
             Button("Show media notification") { fixture.showNotification() }.disabled(!fixture.ready)
+            Button("Schedule external browser pause") { fixture.scheduleExternalBrowserPause() }
+                .disabled(!fixture.ready)
             Button("Stop local peers") { Task { await fixture.stop() } }
         }
         .padding()

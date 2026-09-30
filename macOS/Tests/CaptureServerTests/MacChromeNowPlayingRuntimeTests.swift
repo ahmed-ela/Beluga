@@ -352,6 +352,270 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(client.commandDispatches, 1)
     }
 
+    func testFreshPausedOwnerPublishesBeforeUnrelatedInventoryExhaustsDeadline() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        let expected = chromePlayer()
+        client.media = chromeMedia(paused: true)
+        for index in 2...5 {
+            client.windows.append(.init(id: String(index), tabs: [(String(index + 10), chromeURL)]))
+            client.errorByTab[String(index + 10)] = OSStatus(errAETimeout)
+        }
+        let exactObservation = ChromeTestBox<TimeInterval?>(nil)
+        client.onReadTab = { tab in
+            XCTAssertEqual(tab, expected.tab.tabID, "Unrelated discovery must not precede the exact selected read")
+            clock.update { $0 += 0.1 }
+            exactObservation.set(clock.get())
+        }
+        let censusStarted = ChromeTestBox(false)
+        client.onProperty = { property in
+            if property == 0x49442020 { censusStarted.set(true) }
+            if censusStarted.get() { clock.update { $0 += 0.1 } }
+        }
+        let deadline = 11.5
+        let result = makeBackend(client, now: { clock.get() })
+            .readSelection(preferred: expected, deadline: deadline)
+
+        XCTAssertEqual(exactObservation.get(), 10.1, "The exact player was freshly observed before census work")
+        XCTAssertEqual(client.scriptTabIDs, [expected.tab.tabID])
+        XCTAssertEqual(client.commandDispatches, 0, "An external pause observation must not mutate a player")
+        let observed: MacChromePlayerSnapshot?
+        switch result {
+        case .selected(let value): observed = value
+        case .incomplete(_, let holding): observed = holding
+        case .noPlayer: observed = nil
+        }
+        XCTAssertEqual(observed?.tab, expected.tab)
+        XCTAssertEqual(observed?.media.identity, expected.media.identity)
+        XCTAssertEqual(observed?.media.paused, true, "A fresh paused observation, not the old playing hint, reached the backend")
+        XCTAssertEqual(observed?.receivedAtUptime, 10.1)
+        guard case .selected(let paused) = result else {
+            return XCTFail("Fresh exact paused owner was withheld by unrelated inventory: \(result)")
+        }
+        XCTAssertTrue(paused.hasSameItem(as: expected))
+        XCTAssertTrue(paused.media.paused)
+        XCTAssertEqual(paused.media.enabledCommands, [0, 4, 5, 6, 7, MacChromeCommand.seekToPosition.rawValue])
+        XCTAssertEqual(paused.receivedAtUptime, 10.1)
+        XCTAssertLessThan(clock.get(), deadline, "Publication must precede the caller deadline, not revive a late snapshot")
+    }
+
+    func testFreshPlayingOwnerDoesNotSpendItsDeadlineOnUnrelatedInventory() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.windows.append(.init(id: "4", tabs: [("5", chromeURL)]))
+        client.errorByTab["5"] = OSStatus(errAETimeout)
+        client.onReadTab = { _ in clock.update { $0 += 0.1 } }
+        client.onProperty = { property in
+            XCTAssertNotEqual(property, 0x49442020, "A freshly playing owner must bypass the global census")
+        }
+        guard case .selected(let selected) = makeBackend(client, now: { clock.get() })
+            .readSelection(preferred: chromePlayer(), deadline: 11.5) else {
+            return XCTFail("Fresh selected playing owner became unavailable")
+        }
+        XCTAssertTrue(selected.hasSameItem(as: chromePlayer()))
+        XCTAssertFalse(selected.media.paused)
+        XCTAssertEqual(client.scriptTabIDs, ["2"])
+        XCTAssertEqual(client.commandDispatches, 0)
+        XCTAssertLessThan(clock.get(), 11.5)
+    }
+
+    func testPausedOwnerDeadlineRecoveryCannotBypassPermissionOrReplacementOwner() {
+        for permissionDenied in [true, false] {
+            let client = ChromeTestClient()
+            client.media = chromeMedia(paused: true)
+            if permissionDenied {
+                client.permissionStatus = -1743
+            } else {
+                client.onReadTab = { _ in
+                    client.owner = .init(processID: 43, launchDate: chromeOwner.launchDate)
+                }
+            }
+            let result = makeBackend(client).readSelection(preferred: chromePlayer(), deadline: 11.5)
+            guard case .incomplete(let failure, _) = result else {
+                return XCTFail("Uncertain selected owner became publication authority: \(result)")
+            }
+            XCTAssertEqual(failure, permissionDenied ? .permissionDenied : .staleItem)
+            XCTAssertEqual(client.scriptTabIDs, permissionDenied ? [] : ["2"])
+            XCTAssertEqual(client.commandDispatches, 0)
+            XCTAssertTrue(client.permissionRequests.allSatisfy { !$0 })
+        }
+    }
+
+    func testSelectedReadTimeoutOrStalenessCannotBorrowPausedHintOrBootstrapSibling() {
+        for failure in [OSStatus(errAETimeout), OSStatus(-1728)] {
+            let client = ChromeTestClient()
+            client.media = chromeMedia(paused: true)
+            client.windows[0].tabs.append(("3", chromeURL))
+            client.mediaByTab["3"] = chromeMedia()
+            client.errorByTab["2"] = failure
+            let result = makeBackend(client).readSelection(preferred: chromePlayer(), deadline: 11.5)
+            guard case .incomplete(let error, let holding) = result else {
+                return XCTFail("Unknown selected item became publication authority: \(result)")
+            }
+            XCTAssertEqual(error, failure == OSStatus(errAETimeout) ? .timedOut : .staleItem)
+            XCTAssertEqual(holding?.media.paused, false, "Only the old playing hint exists; no paused read succeeded")
+            XCTAssertEqual(client.scriptTabIDs, ["2"])
+            XCTAssertEqual(client.commandDispatches, 0)
+        }
+    }
+
+    func testSpeculativeCensusOverrunningAbsoluteDeadlineCannotPublishFreshPausedOwner() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.media = chromeMedia(paused: true)
+        client.onReadTab = { _ in clock.update { $0 += 0.1 } }
+        client.onProperty = { property in
+            if property == 0x49442020 { clock.set(11.6) }
+        }
+        let result = makeBackend(client, now: { clock.get() })
+            .readSelection(preferred: chromePlayer(), deadline: 11.5)
+        guard case .incomplete(.timedOut, let holding) = result else {
+            return XCTFail("An expired paused observation became publication authority: \(result)")
+        }
+        XCTAssertEqual(holding?.media.paused, true)
+        XCTAssertEqual(client.scriptTabIDs, ["2"])
+        XCTAssertEqual(client.commandDispatches, 0)
+    }
+
+    func testSpeculativeCensusTimeoutRechecksPermissionBeforePublishingPausedOwner() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.media = chromeMedia(paused: true)
+        for index in 2...5 {
+            client.windows.append(.init(id: String(index), tabs: [(String(index + 10), chromeURL)]))
+        }
+        client.onReadTab = { _ in clock.update { $0 += 0.1 } }
+        let censusStarted = ChromeTestBox(false)
+        client.onProperty = { property in
+            if property == 0x49442020 {
+                censusStarted.set(true)
+                client.permissionStatus = -1743
+            }
+            if censusStarted.get() { clock.update { $0 += 0.1 } }
+        }
+        let result = makeBackend(client, now: { clock.get() })
+            .readSelection(preferred: chromePlayer(), deadline: 11.5)
+        guard case .incomplete(.permissionDenied, let holding) = result else {
+            return XCTFail("Revoked permission survived the speculative timeout: \(result)")
+        }
+        XCTAssertEqual(holding?.media.paused, true)
+        XCTAssertEqual(client.scriptTabIDs, ["2"])
+        XCTAssertEqual(client.commandDispatches, 0)
+        XCTAssertTrue(client.permissionRequests.allSatisfy { !$0 })
+    }
+
+    func testSpeculativeCensusOwnerReplacementCannotPublishFreshPausedOwner() {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        client.media = chromeMedia(paused: true)
+        client.onReadTab = { _ in clock.update { $0 += 0.1 } }
+        client.onProperty = { property in
+            if property == 0x49442020 {
+                clock.set(11.2)
+                client.owner = .init(processID: 43, launchDate: chromeOwner.launchDate)
+            }
+        }
+        let result = makeBackend(client, now: { clock.get() })
+            .readSelection(preferred: chromePlayer(), deadline: 11.5)
+        guard case .incomplete(.staleItem, let holding) = result else {
+            return XCTFail("Replacement Chrome owner survived speculative census expiry: \(result)")
+        }
+        XCTAssertEqual(holding?.media.paused, true)
+        XCTAssertEqual(holding?.receivedAtUptime, 10.1)
+        XCTAssertEqual(client.scriptTabIDs, ["2"])
+        XCTAssertEqual(client.commandDispatches, 0)
+    }
+
+    func testTimelyCensusCanPromoteSuccessorAndFinalResumedOwnerStillWins() {
+        for resumesDuringDiscovery in [false, true] {
+            let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+            client.windows[0].tabs.append(("3", chromeURL))
+            client.mediaByTab["2"] = chromeMedia(paused: true)
+            client.mediaByTab["3"] = chromeMedia()
+            let censusStarted = ChromeTestBox(false), remainingCensusProperties = ChromeTestBox(4)
+            client.onProperty = { property in
+                if property == 0x49442020 { censusStarted.set(true) }
+                if censusStarted.get(), remainingCensusProperties.get() > 0 {
+                    clock.update { $0 += 0.2 }
+                    remainingCensusProperties.update { $0 -= 1 }
+                }
+            }
+            client.onReadTab = { tab in
+                clock.update { $0 += 0.1 }
+                if tab == "3", resumesDuringDiscovery { client.mediaByTab["2"] = chromeMedia() }
+            }
+            let result = makeBackend(client, now: { clock.get() })
+                .readSelection(preferred: chromePlayer(), deadline: 11.5)
+            guard case .selected(let selected) = result else {
+                return XCTFail("Timely successor discovery was starved by the census: \(result)")
+            }
+            XCTAssertEqual(selected.tab.tabID, resumesDuringDiscovery ? "2" : "3")
+            XCTAssertFalse(selected.media.paused)
+            XCTAssertEqual(client.scriptTabIDs, ["2", "3", "2"], "Handoff requires the final exact selected-owner read")
+            XCTAssertEqual(client.commandDispatches, 0)
+            XCTAssertLessThan(clock.get(), 11.5)
+        }
+    }
+
+    func testUnrelatedCandidatePermissionFailureDoesNotFallBackToFreshPausedOwner() {
+        let client = ChromeTestClient()
+        client.media = chromeMedia(paused: true)
+        client.windows[0].tabs.append(("3", chromeURL))
+        client.errorByTab["3"] = -1743
+        let result = makeBackend(client).readSelection(preferred: chromePlayer(), deadline: 11.5)
+        guard case .incomplete(.permissionDenied, let holding) = result else {
+            return XCTFail("An unrelated permission failure was treated as harmless timeout: \(result)")
+        }
+        XCTAssertEqual(holding?.media.paused, true)
+        XCTAssertEqual(client.scriptTabIDs, ["2", "3"])
+        XCTAssertEqual(client.commandDispatches, 0)
+    }
+
+    func testExternalPausedOwnerCrossesActualAppleEventsCompositeAndControllerWithoutCommand() async throws {
+        let client = ChromeTestClient(), clock = ChromeTestBox(10.0)
+        for index in 2...5 {
+            client.windows.append(.init(id: String(index), tabs: [(String(index + 10), chromeURL)]))
+            client.errorByTab[String(index + 10)] = OSStatus(errAETimeout)
+        }
+        client.onReadTab = { _ in clock.update { $0 += 0.1 } }
+        let expensiveCensus = ChromeTestBox(false), censusStarted = ChromeTestBox(false)
+        client.onProperty = { property in
+            guard expensiveCensus.get() else { return }
+            if property == 0x49442020 { censusStarted.set(true) }
+            if censusStarted.get() { clock.update { $0 += 0.1 } }
+        }
+        let backend = makeBackend(client, now: { clock.get() })
+        let chrome = MacChromeNowPlayingRuntime(backend: backend, now: { clock.get() })
+        let composite = MacSupportedNowPlayingRuntime(browser: chrome, music: ChromeRecoveryAbsentMusic())
+        let controller = MacSystemNowPlayingController(runtime: composite, operationTimeout: 20,
+            now: { Date(timeIntervalSince1970: 1000) })
+        defer { controller.stop() }
+        let updates = ChromeTestBox<[WebRTCRemoteMediaStateUpdate]>([])
+        let playing = expectation(description: "actual Chrome selected playing item")
+        let paused = expectation(description: "external pause publishes without a viewer command")
+        controller.start { update in
+            updates.update { $0.append(update) }
+            switch update.revision {
+            case 1: playing.fulfill()
+            case 2: paused.fulfill()
+            default: XCTFail("Unexpected additional controller publication")
+            }
+        }
+        await fulfillment(of: [playing], timeout: 20)
+        let initial = try XCTUnwrap(updates.get().last?.item)
+        XCTAssertEqual(initial.playbackState, .playing)
+        client.media = chromeMedia(paused: true)
+        expensiveCensus.set(true)
+        controller.refresh()
+        await fulfillment(of: [paused], timeout: 20)
+        let values = updates.get()
+        XCTAssertEqual(values.map(\.revision), [1, 2])
+        let observed = try XCTUnwrap(values.last?.item)
+        XCTAssertEqual(observed.contextID, initial.contextID)
+        XCTAssertEqual(observed.title, initial.title)
+        XCTAssertEqual(observed.playbackState, .paused)
+        XCTAssertEqual(observed.playbackRate, 0)
+        XCTAssertTrue(observed.capabilities.canPlay)
+        XCTAssertFalse(observed.capabilities.canPause)
+        XCTAssertEqual(client.scriptTabIDs, ["2", "2"])
+        XCTAssertEqual(client.commandDispatches, 0)
+    }
+
     func testPausedOwnerResumedDuringDiscoveryWinsFinalPromotionFence() {
         let client = ChromeTestClient()
         client.windows[0].tabs.append(("3", chromeURL))
