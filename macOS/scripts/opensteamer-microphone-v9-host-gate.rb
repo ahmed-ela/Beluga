@@ -187,6 +187,7 @@ module BelugaMicrophoneV9HostGate
   end
 
   class Commands
+    attr_reader :deadline
     def initialize(tools)
       @tools = tools; @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
     end
@@ -363,7 +364,98 @@ module BelugaMicrophoneV9HostGate
     read_fd!(fd)
   end
 
-  # Keep the immutable V91 whole-history hash/prefix/session fence unchanged.
+  # The byte-pinned frozen V91 SessionFence remains the differential reference,
+  # not a claimed invocation of this adapter. All admission/stat/hash/prefix/
+  # marker/refusal semantics below mirror it. The sole search optimization uses
+  # String#index to retain the exact last literal occurrence (including overlaps)
+  # rather than repeatedly reverse-scanning every one-MiB window. No global
+  # String/File patch, cache, prefix shortcut, or product-source change is used.
+  module SessionFenceAdapter
+    def self.last_match(window, marker)
+      found = nil; cursor = 0
+      while (position = window.index(marker, cursor))
+        found = position; cursor = position + 1
+      end
+      found
+    end
+
+    def self.observe!(path, pid, nonce, prior: nil, fresh_generation: false,
+                      deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20)
+      legacy = OpenSteamerV91Cutover
+      reference = legacy::SessionFence
+      check = lambda do
+        legacy::Util.fail!('host session scan monotonic deadline exceeded') unless
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
+      end
+      check.call
+      legacy::Util.fail!('fresh-generation session fence requires a prior snapshot') if fresh_generation && !prior
+      stat = legacy::Util.regular_file!(path, 'host stdout log', owner: Process.euid, links: 1)
+      if prior
+        legacy::Util.fail!('host stdout log was replaced') unless [stat.dev, stat.ino] == [prior.device, prior.inode]
+        legacy::Util.fail!('host stdout log was truncated') if stat.size < prior.size
+      end
+      online = "Worldwide paired-device availability is online pid=#{pid} nonce=#{nonce}"
+      markers = [online, *reference::RESET_MARKERS, *reference::UNSAFE_MARKERS, reference::STOP_MARKER].map(&:b)
+      overlap_bytes = markers.map(&:bytesize).max - 1
+      offsets = {}; digest = Digest::SHA256.new
+      prefix_digest = Digest::SHA256.new if prior
+      File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+        opened = file.stat
+        legacy::Util.fail!('host stdout log changed while opening') unless
+          opened.file? && [opened.dev, opened.ino, opened.nlink] == [stat.dev, stat.ino, 1]
+        observed_size = opened.size
+        legacy::Util.fail!('host stdout log was truncated') if prior && observed_size < prior.size
+        position = 0; overlap = ''.b
+        while position < observed_size
+          check.call
+          count = [reference::READ_CHUNK_BYTES, observed_size - position].min
+          chunk = file.pread(count, position)
+          legacy::Util.fail!('host stdout log short read') unless chunk.bytesize == count
+          digest.update(chunk)
+          if prior && position < prior.size
+            prefix_digest.update(chunk.byteslice(0, [count, prior.size - position].min))
+          end
+          window = (overlap + chunk).b
+          window_offset = position - overlap.bytesize
+          markers.each do |marker|
+            found = last_match(window, marker)
+            offsets[marker] = window_offset + found if found
+          end
+          overlap = window.byteslice([window.bytesize - overlap_bytes, 0].max, overlap_bytes)
+          position += count
+        end
+        after = File.lstat(path)
+        legacy::Util.fail!('host stdout log changed while reading') unless
+          after.file? && [after.dev, after.ino, after.nlink] == [opened.dev, opened.ino, 1] && after.size >= observed_size
+        stat = opened
+      end
+      check.call
+      if prior
+        legacy::Util.fail!('host stdout log historical bytes changed') unless prefix_digest.hexdigest == prior.digest
+      end
+      online_offset = offsets[online]
+      legacy::Util.fail!('host log lacks pinned generation availability marker') unless online_offset
+      reset = reference::RESET_MARKERS.map { |marker| offsets[marker] }.compact.max
+      legacy::Util.fail!('host log has no quiescent-session boundary') unless reset
+      if prior
+        if fresh_generation
+          legacy::Util.fail!('host lacks a fresh candidate quiescent-session boundary') unless reset >= prior.size
+          legacy::Util.fail!('candidate availability marker precedes its fresh quiescent boundary') unless online_offset > reset
+        else
+          legacy::Util.fail!('host quiescent-session boundary changed') unless reset == prior.last_reset_offset
+        end
+      end
+      legacy::Util.fail!('host has an authenticated/active peer after quiescent boundary') if
+        reference::UNSAFE_MARKERS.any? { |marker| offsets[marker] && offsets[marker] >= reset }
+      start_offset = offsets['Starting screen video capture']; stop_offset = offsets[reference::STOP_MARKER]
+      legacy::Util.fail!('host screen remains active') if start_offset && start_offset >= reset && (!stop_offset || start_offset > stop_offset)
+      reference::Snapshot.new(device: stat.dev, inode: stat.ino, size: stat.size, last_reset_offset: reset, digest: digest.hexdigest)
+    rescue Errno::ELOOP, Errno::ENOENT, EOFError => error
+      OpenSteamerV91Cutover::Util.fail!("host stdout log cannot be safely opened: #{error.message}")
+    end
+  end
+
+  # Preserve V91 whole-history hash/prefix/session semantics through the adapter.
   # This is an additional, independently reproducible generation-local digest
   # for the native parent; it never materializes or copies the historical log.
   # Appends beyond the captured extent are allowed, replacement/truncation and
@@ -396,7 +488,8 @@ module BelugaMicrophoneV9HostGate
     raise Refused, 'session tail unavailable', cause: nil
   end
 
-  def self.observe!(mode, request, tools, baseline_bytes, ready_bytes = nil)
+  def self.observe!(mode, request, tools, baseline_bytes, ready_bytes = nil,
+                    deadline: Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20)
     legacy = OpenSteamerV91Cutover
     observer = legacy::RealHost.new
     observer.define_singleton_method(:helper_path) do |name|
@@ -425,7 +518,7 @@ module BelugaMicrophoneV9HostGate
     if absent
       assert!(observer.send(:runtime_absent?), 'host is not absent/headless')
       runtime = nil; manager = 'none'; display = 'none'
-      session = legacy::SessionFence.observe!(LOG, session_pid, session_nonce, prior: prior)
+      session = SessionFenceAdapter.observe!(LOG, session_pid, session_nonce, prior: prior, deadline: deadline)
     else
       runtime = observer.send(:capture_predecessor_runtime_snapshot!)
       assert!(runtime.pid <= 2_147_483_647, 'current host PID refused')
@@ -454,15 +547,15 @@ module BelugaMicrophoneV9HostGate
       display = Digest::SHA256.hexdigest(topology)
       assert!(display == request['host_display_identity_sha256'], 'display identity changed')
       fresh = mode == 'host-ready' && (!ready || runtime.pid.to_s != ready['host_pid'])
-      session = legacy::SessionFence.observe!(LOG, runtime.pid, runtime.nonce, prior: prior, fresh_generation: fresh)
+      session = SessionFenceAdapter.observe!(LOG, runtime.pid, runtime.nonce, prior: prior, fresh_generation: fresh, deadline: deadline)
       observer.instance_variable_set(:@new_pid, runtime.pid)
       manager = observer.send(:readiness_generation!).to_s
       observer.send(:verify_dynamic_process!, runtime.pid, expected_start: runtime.start, expected_cdhash: 'a8b4287bbf0299946c21a01f445787f85d82197e')
       runtime.assert_same!(observer.send(:capture_predecessor_runtime_snapshot!))
       assert!(Digest::SHA256.hexdigest(legacy::Util.capture!(tools + '/observers/verify-live-display-topology-v23', '--opensteamer-any')) == display, 'display identity changed during observer')
     end
-    session = legacy::SessionFence.observe!(LOG, absent ? session_pid : runtime.pid, absent ? session_nonce : runtime.nonce, prior: session)
-    tail_sha = session_tail_sha256!(LOG, session)
+    session = SessionFenceAdapter.observe!(LOG, absent ? session_pid : runtime.pid, absent ? session_nonce : runtime.nonce, prior: session, deadline: deadline)
+    tail_sha = session_tail_sha256!(LOG, session, deadline: deadline)
     assert!(observer.send(:runtime_absent?), 'absent host changed during observer') if absent
     final_routes = ROUTES.keys.to_h { |type| [type, route!(legacy::Util.capture!(tools + '/observers/SwitchAudioSource', '-c', '-t', type, '-f', 'json'), type)] }
     assert!(routes == final_routes && committed!(request, observer) == committed_before, 'routes or committed evidence changed')
@@ -498,7 +591,7 @@ module BelugaMicrophoneV9HostGate
     OpenSteamerV91Cutover::Pins.bind_contract!(contract)
     baseline = mode == 'candidate-present' ? nil : read_fd!(4)
     ready = mode == 'candidate-present' ? nil : optional_fd!(5)
-    result = observe!(mode, request, tools, baseline, ready)
+    result = observe!(mode, request, tools, baseline, ready, deadline: commands.deadline)
     sources.each { |path, record| assert!(identity(File.lstat(path)) == record, 'sealed dependency identity changed') }
     puts result
     0

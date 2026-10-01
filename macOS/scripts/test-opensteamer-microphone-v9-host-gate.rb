@@ -278,6 +278,113 @@ class MicrophoneV9HostGateTests < Minitest::Test
     end
   end
 
+  def session_result(implementation, path, pid = 12, nonce = 'c' * 64, **options)
+    [:accepted, implementation.observe!(path, pid, nonce, **options).to_h]
+  rescue Legacy::Failure => error
+    [:refused, error.class, error.message]
+  end
+
+  def assert_session_equivalent(path, pid = 12, nonce = 'c' * 64, **options)
+    expected = session_result(Legacy::SessionFence, path, pid, nonce, **options)
+    assert_equal expected, session_result(Gate::SessionFenceAdapter, path, pid, nonce, **options)
+    expected
+  end
+
+  def test_forward_last_match_is_literal_binary_and_overlap_equivalent
+    values = ["".b, "aaaaa".b, "ababa\0\xffababa".b, "éλ".b + "Worldwide viewer disconnected\0".b]
+    needles = ['aaa', 'aba', 'missing', "\0", "\xff".b, *Legacy::SessionFence::RESET_MARKERS, *Legacy::SessionFence::UNSAFE_MARKERS]
+    values.each do |window|
+      needles.each do |needle|
+        expected = window.rindex(needle.b)
+        actual = Gate::SessionFenceAdapter.last_match(window.b, needle.b)
+        expected.nil? ? assert_nil(actual) : assert_equal(expected, actual)
+      end
+    end
+  end
+
+  def test_adapter_matches_frozen_reference_for_every_marker_across_one_mib_boundaries
+    Dir.mktmpdir('microphone-v9-forward-boundary.') do |directory|
+      path = directory + '/host.log'; nonce = 'c' * 64
+      online = "Worldwide paired-device availability is online pid=12 nonce=#{nonce}"
+      reset = Legacy::SessionFence::RESET_MARKERS.first
+      markers = [online, *Legacy::SessionFence::RESET_MARKERS, *Legacy::SessionFence::UNSAFE_MARKERS, Legacy::SessionFence::STOP_MARKER]
+      markers.each do |marker|
+        split = [1, marker.bytesize / 2, marker.bytesize - 1]
+        split.each do |before_boundary|
+          prefix = (reset + "\n" + online + "\n" + "éλ\0\xff".b).b
+          filler = 'x'.b * (Legacy::SessionFence::READ_CHUNK_BYTES - before_boundary - prefix.bytesize)
+          bytes = prefix + filler + marker.b + "\n" + reset.b + "\n" + online.b + "\n"
+          File.binwrite(path, bytes); File.chmod(0600, path)
+          assert_equal :accepted, assert_session_equivalent(path).first
+          # The boundary-spanning unsafe marker cannot hide behind a newer
+          # prefix: without the final reset it must fail exactly like V91.
+          if Legacy::SessionFence::UNSAFE_MARKERS.include?(marker)
+            File.binwrite(path, prefix + filler + marker.b + "\n")
+            assert_equal :refused, assert_session_equivalent(path).first
+          end
+        end
+      end
+    end
+  end
+
+  def test_adapter_preserves_prior_fresh_absent_recovery_and_corruption_decisions
+    Dir.mktmpdir('microphone-v9-forward-prior.') do |directory|
+      path = directory + '/host.log'; nonce = 'c' * 64; next_nonce = 'd' * 64
+      bytes = "history\0\xff".b + "Worldwide paired-device availability is online pid=12 nonce=#{nonce}\nWorldwide viewer disconnected\n".b
+      File.binwrite(path, bytes); File.chmod(0600, path)
+      assert_equal :accepted, assert_session_equivalent(path).first
+      prior = Legacy::SessionFence.observe!(path, 12, nonce)
+      assert_equal :accepted, assert_session_equivalent(path, prior: prior).first
+      assert_equal :refused, assert_session_equivalent(path, fresh_generation: true).first
+      invalid = bytes + "Worldwide paired-device availability is online pid=13 nonce=#{next_nonce}\n".b
+      File.binwrite(path, invalid)
+      assert_equal :refused, assert_session_equivalent(path, 13, next_nonce, prior: prior, fresh_generation: true).first
+      fresh = bytes + "Worldwide peer returned to idle\nWorldwide paired-device availability is online pid=13 nonce=#{next_nonce}\n".b
+      File.binwrite(path, fresh)
+      assert_equal :accepted, assert_session_equivalent(path, 13, next_nonce, prior: prior, fresh_generation: true).first
+      ready = Legacy::SessionFence.observe!(path, 13, next_nonce, prior: prior, fresh_generation: true)
+      assert_equal :accepted, assert_session_equivalent(path, 13, next_nonce, prior: ready).first
+      assert_equal :refused, assert_session_equivalent(path, 12, nonce, prior: prior).first
+      [fresh.sub('history', 'histori'), fresh.byteslice(0, prior.size - 1),
+       fresh + "controlOpen=true\n".b, fresh + "Worldwide viewer disconnected\n".b].each do |mutant|
+        File.binwrite(path, mutant)
+        assert_equal :refused, assert_session_equivalent(path, 13, next_nonce, prior: ready).first
+      end
+      File.binwrite(path, fresh); replacement = directory + '/replacement'; File.binwrite(replacement, fresh); File.chmod(0600, replacement)
+      File.rename(replacement, path)
+      assert_equal :refused, assert_session_equivalent(path, 13, next_nonce, prior: ready).first
+      assert_raises(Legacy::Failure) { Gate::SessionFenceAdapter.observe!(path, 13, next_nonce, deadline: 0) }
+    end
+  end
+
+  def test_adapter_and_reference_reject_short_reads_and_mid_read_replacement_or_truncation
+    Dir.mktmpdir('microphone-v9-forward-race.') do |directory|
+      path = directory + '/host.log'; nonce = 'c' * 64
+      bytes = "Worldwide availability is waiting for the paired iPhone\nWorldwide paired-device availability is online pid=12 nonce=#{nonce}\n"
+      %i[short replace truncate].each do |mutation|
+        results = [Legacy::SessionFence, Gate::SessionFenceAdapter].map do |implementation|
+          File.binwrite(path, bytes); File.chmod(0600, path)
+          File.open(path, File::RDONLY | File::NOFOLLOW) do |owned|
+            pread = owned.method(:pread)
+            owned.define_singleton_method(:pread) do |count, offset|
+              value = pread.call(count, offset)
+              case mutation
+              when :short then value = value.byteslice(0, value.bytesize - 1)
+              when :truncate then File.truncate(path, 1)
+              when :replace
+                replacement = directory + '/new'; File.binwrite(replacement, bytes); File.chmod(0600, replacement); File.rename(replacement, path)
+              end
+              value
+            end
+            File.stub(:open, ->(*_arguments, &block) { block.call(owned) }) { session_result(implementation, path) }
+          end
+        end
+        assert_equal :refused, results.first.first
+        assert_equal results.first, results.last
+      end
+    end
+  end
+
   def test_real_dynamic_codesign_rejects_duplicate_and_wrong_identity
     host = Legacy::RealHost.new
     metadata = "Identifier=com.elamin.AudioStreamer.CaptureServer\nTeamIdentifier=MSMG8CJLB3\nCDHash=a8b4287bbf0299946c21a01f445787f85d82197e\n"

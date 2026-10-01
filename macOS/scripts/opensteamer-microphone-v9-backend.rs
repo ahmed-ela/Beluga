@@ -468,8 +468,9 @@ impl RootContext{
         let metadata=file.metadata().map_err(|_|"session log stat unavailable")?;let size=gate.fields["session_log_size"].parse::<u64>().map_err(|_|"session log proof size malformed")?;
         let reset=gate.fields["session_log_reset_offset"].parse::<u64>().map_err(|_|"session log reset malformed")?;
         if !metadata.is_file()||metadata.uid()!=501||metadata.nlink()!=1||metadata.dev()!=gate.fields["session_log_device"].parse::<u64>().unwrap()||metadata.ino()!=gate.fields["session_log_inode"].parse::<u64>().unwrap()||metadata.len()<size||reset>=size||size-reset>32*1024*1024{return Err("session log exact inode/generation-local extent differs".into());}
-        // The sealed UID501 adapter still executes the unchanged immutable V91
-        // whole-history SessionFence, including every prior-prefix digest.
+        // The sealed UID501 adapter preserves the immutable V91 whole-history
+        // SessionFence semantics, including every prior-prefix digest. Its
+        // bounded forward search is checked against that immutable reference.
         // Independently bind its generation-local bytes on this held fixed FD;
         // do not buffer/hash the multi-gigabyte history or claim to duplicate it.
         use std::os::unix::fs::FileExt;
@@ -499,7 +500,7 @@ fn validate_session_tail(bytes:&[u8],gate:&HostGate)->Result<()>{
     if UNSAFE.iter().any(|marker|contains_bytes(bytes,marker.as_bytes())){return Err("session log active peer/capture after reset refused".into());}
     // A fresh host-ready generation must advertise its exact pid/nonce after
     // the fresh reset. Original and absent fences may legitimately have their
-    // online marker before a disconnect reset: immutable V91 history binds it.
+    // online marker before a disconnect reset: V91-equivalent history binds it.
     if gate.fields["mode"]=="host-ready"{
         let online=format!("Worldwide paired-device availability is online pid={} nonce={}",gate.fields["host_pid"],gate.fields["host_nonce"]);
         if !contains_bytes(bytes,online.as_bytes()){return Err("fresh generation lacks exact post-reset online marker".into());}
