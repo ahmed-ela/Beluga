@@ -411,9 +411,24 @@ private func refused(_ properties: PropertyHarness, _ expected: BelugaMicrophone
                 let monoCount = try BelugaMicrophoneEndpointContract.decodeChannels(mono)
                 try require(monoCount == 1, "native mono config refused")
                 empty[0] = 2
-                for malformed in [empty, Data(mono.dropLast()), mono + Data([0]), setting(mono, header + 4, 1, 4)] {
+                let pointerOffset = header + MemoryLayout<AudioBuffer>.offset(of: \.mData)!
+                for malformed in [empty, Data(mono.dropLast()), mono + Data([0]),
+                                  setting(mono, 4, 1, 1), setting(mono, 0, 0, 4),
+                                  setting(mono, pointerOffset, 1)] {
                     do { _ = try BelugaMicrophoneEndpointContract.decodeChannels(malformed); throw TestFailure(message: "bad native config accepted") }
                     catch BelugaMicrophoneIdleFailure.endpointIdentity { }
+                }
+            }),
+            ("HAL stream-config capacity is accepted only with null PCM storage", {
+                // Actual passive HAL bytes: 010000000000000001000000000800000000000000000000.
+                let actual = Data([0x01, 0, 0, 0, 0, 0, 0, 0, 0x01, 0, 0, 0,
+                                   0, 0x08, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                let byteSizeOffset = MemoryLayout<AudioBufferList>.offset(of: \.mBuffers)! +
+                    MemoryLayout<AudioBuffer>.offset(of: \.mDataByteSize)!
+                for configuration in [actual, setting(actual, byteSizeOffset, 0, 4),
+                                      setting(actual, byteSizeOffset, 1, 4)] {
+                    let channels = try BelugaMicrophoneEndpointContract.decodeChannels(configuration)
+                    try require(channels == 1, "null-pointer mono capacity refused")
                 }
             }),
             ("endpoint model liveness visibility role sample clock and native formats fail closed", {

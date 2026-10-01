@@ -139,7 +139,8 @@ enum BelugaMicrophoneEndpointContract {
         }
         if count == 0 { return 0 }
         let buffer = data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: header, as: AudioBuffer.self) }
-        guard buffer.mDataByteSize == 0, buffer.mData == nil else { throw BelugaMicrophoneIdleFailure.endpointIdentity }
+        // StreamConfiguration may report buffer capacity, but must not expose PCM storage.
+        guard buffer.mData == nil else { throw BelugaMicrophoneIdleFailure.endpointIdentity }
         return buffer.mNumberChannels
     }
 }
