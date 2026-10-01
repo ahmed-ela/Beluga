@@ -72,6 +72,14 @@ required_source = (
     "currentCount",
     "underflowCount",
     "--read-once",
+    "--read-v2-once",
+    "--self-test-v2",
+    "V2HeaderGeometryIsExact",
+    "V2InventoryIsExact",
+    "FailureFieldsAreExact",
+    "kOSVADiagnosticSnapshotV2MaximumByteCount",
+    "completeRegistryInventory",
+    "active-core-resources-only",
 )
 missing = [token for token in required_source if token not in source]
 if missing:
@@ -84,6 +92,11 @@ required_header = (
     "CFPropertyListRef whose concrete value is",
     "CFData containing exactly one OSVADiagnosticSnapshot",
     "typedef struct OSVADiagnosticSnapshot",
+    "kOSVADiagnosticSnapshotV2SchemaVersion = 2",
+    "kOSVADiagnosticSnapshotV2Property = 0x6F734432",
+    "kOSVADiagnosticSnapshotV2MaximumByteCount = 1048576",
+    "typedef struct OSVADiagnosticSnapshotV2Header",
+    "typedef struct OSVADiagnosticRegistryClientSnapshot",
 )
 missing = [token for token in required_header if token not in header]
 if missing:
@@ -250,5 +263,55 @@ if actual != expected:
 PY
 
 print "PASS diagnostic snapshot reader schema and coherence self-tests"
+
+v2_stdout="$test_root/self-test-v2.stdout"
+v2_stderr="$test_root/self-test-v2.stderr"
+"$binary_a" --self-test-v2 >"$v2_stdout" 2>"$v2_stderr"
+[[ ! -s "$v2_stderr" ]] || {
+    print -u2 "diagnostic-reader v2 self-test wrote unexpected stderr"
+    /bin/cat "$v2_stderr" >&2
+    exit 1
+}
+/usr/bin/python3 - "$v2_stdout" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+if len(lines) != 2:
+    raise SystemExit("v2 self-test must emit complete fixture and summary JSON")
+fixture, summary = map(json.loads, lines)
+if (
+    fixture["readerSchema"] != 2
+    or fixture["mode"] != "self-test-v2-fixture"
+    or fixture["snapshotSchemaVersion"] != 2
+    or fixture["claim"] != "read-only-complete-virtual-driver-diagnostic-snapshot"
+    or not fixture["endpointReadsCoherent"]
+    or not fixture["completeRegistryInventory"]
+    or not fixture["allDeclaredInvariantsHold"]
+    or fixture["capacityInvariantScope"] != "active-core-resources-only"
+    or fixture["coreSlotCapacity"] != 64
+    or fixture["registryRecordSize"] != 88
+    or fixture["totalByteCount"] != 3504 + 70 * 88
+):
+    raise SystemExit("v2 exact schema/full-inventory identity is invalid")
+registry = fixture["registry"]
+if fixture["registryRecordCount"] != 70 or fixture["driverRegisteredCount"] != 70:
+    raise SystemExit("v2 fixture must exceed the frozen v1 bank")
+if len(registry) != 70 or [r["registryIndex"] for r in registry] != list(range(70)):
+    raise SystemExit("v2 registry is truncated or has unstable/duplicate indices")
+if len({r["generation"] for r in registry}) != 70:
+    raise SystemExit("v2 registration generations are not unique")
+if len(fixture["coreClientSlots"]) != 64 or fixture["driverStartedCount"] != 0:
+    raise SystemExit("v2 active core inventory must be complete and separate")
+if fixture["visibleDriverRegisteredCount"] != 35 or fixture["hiddenDriverRegisteredCount"] != 35:
+    raise SystemExit("v2 registry endpoint counts are incomplete")
+if summary != {
+    "schema": 2, "mode": "self-test-v2", "passed": True, "tests": 75,
+    "coreAudioIOStarted": False, "routesMutated": False,
+}:
+    raise SystemExit(f"unexpected v2 negative-fixture summary: {summary!r}")
+PY
+print "PASS v2 complete bounded inventory and malformed/false-green rejection self-tests"
 print "PASS exact-UID reader imports only read-only Core Audio property APIs"
 print "DIAGNOSTIC_SNAPSHOT_READER_TESTS_PASSED_WITHOUT_CORE_AUDIO_IO"

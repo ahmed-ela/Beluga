@@ -93,7 +93,7 @@ $(DIAGNOSTIC_READER_BINARY): \
 			print -u2 "refusing to replace unexpected diagnostic-reader node: $@"; \
 			exit 73; \
 		fi; \
-		/usr/bin/unlink "$@"; \
+		/bin/rm -f -- "$@"; \
 	fi
 	"$(CURDIR)/scripts/build-diagnostic-snapshot-reader.sh" "$@"
 

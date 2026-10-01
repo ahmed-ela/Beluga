@@ -10,6 +10,17 @@
 
 #include "OpensteamerVirtualAudioCore.h"
 
+/* osD2 serializes exact core admission status values, not an inferred reason. */
+_Static_assert(OSVA_STATUS_OK == 0 && OSVA_STATUS_INVALID_ARGUMENT == 1 &&
+    OSVA_STATUS_UNSUPPORTED_CONFIGURATION == 2 && OSVA_STATUS_ATOMIC_NOT_LOCK_FREE == 3 &&
+    OSVA_STATUS_LIFECYCLE_ERROR == 4 && OSVA_STATUS_CLIENT_ALREADY_STARTED == 5 &&
+    OSVA_STATUS_CLIENT_CAPACITY_EXHAUSTED == 6 && OSVA_STATUS_NO_ACTIVE_TIMELINE == 7 &&
+    OSVA_STATUS_INACTIVE_CLIENT == 8 && OSVA_STATUS_STALE_CLIENT_LEASE == 9 &&
+    OSVA_STATUS_ENDPOINT_MISMATCH == 10 && OSVA_STATUS_SEED_EXHAUSTED == 11 &&
+    OSVA_STATUS_SESSION_EXHAUSTED == 12 && OSVA_STATUS_CLOCK_REGRESSION == 13 &&
+    OSVA_STATUS_ARITHMETIC_OVERFLOW == 14 && OSVA_STATUS_RETRY == 15,
+    "diagnostic v2 core admission status wire values changed");
+
 #include <CoreAudio/AudioHardware.h>
 #include <CoreAudio/CoreAudioTypes.h>
 #include <CoreFoundation/CFPlugInCOM.h>
@@ -20,6 +31,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #if defined(OSVA_DRIVER_TESTING)
 #include <sched.h>
@@ -193,6 +205,61 @@ typedef struct {
 } OSVADriverClient;
 
 static OSVADriverClient gDriverClients[OSVA_DRIVER_CLIENT_SLOT_COUNT];
+
+/* Only non-RT lifecycle/property calls access this list under gStateMutex.
+ * RT lookup remains the fixed, atomic gCoreClients array and retains no node. */
+typedef struct OSVARegisteredClientNode {
+  OSVADriverClient client;
+  uint64_t registry_index;
+  struct OSVARegisteredClientNode *next;
+} OSVARegisteredClientNode;
+static OSVARegisteredClientNode *gOverflowClients = NULL;
+static uint64_t gRegisteredClientCount = 0;
+static uint64_t gNextRegistryIndex = OSVA_DRIVER_CLIENT_SLOT_COUNT;
+static uint64_t gLastRegistrationGeneration = 0;
+static uint64_t gRegistryRevision = 0;
+static bool gRegistryRevisionExhausted = false;
+static OSVADiagnosticAdmissionFailureSnapshot gLastAdmissionFailure;
+#if defined(OSVA_DRIVER_TESTING)
+static bool gFailNextRegistrationAllocationForTesting = false;
+#endif
+
+static uint64_t OSVARegistryIndex(const OSVADriverClient *client) {
+  for (size_t index = 0; index < OSVA_DRIVER_CLIENT_SLOT_COUNT; ++index) {
+    if (client == &gDriverClients[index]) return (uint64_t)index;
+  }
+  for (const OSVARegisteredClientNode *node = gOverflowClients; node != NULL;
+       node = node->next) {
+    if (client == &node->client) return node->registry_index;
+  }
+  return UINT64_MAX;
+}
+
+static void OSVAAdvanceRegistryRevision(void) {
+  if (gRegistryRevision == UINT64_MAX) gRegistryRevisionExhausted = true;
+  else gRegistryRevision += 1;
+}
+
+static void OSVARecordAdmissionFailure(UInt32 operation, UInt32 reason,
+                                      AudioObjectID device, UInt32 clientID,
+                                      pid_t pid, const OSVADriverClient *client,
+                                      OSStatus status, OSVAStatus coreStatus) {
+  if (gLastAdmissionFailure.sequence != UINT64_MAX)
+    gLastAdmissionFailure.sequence += 1;
+  gLastAdmissionFailure.host_ticks = mach_absolute_time();
+  gLastAdmissionFailure.registry_index =
+      client == NULL ? UINT64_MAX : OSVARegistryIndex(client);
+  gLastAdmissionFailure.driver_client_generation =
+      client == NULL ? 0 : client->generation;
+  gLastAdmissionFailure.operation = operation;
+  gLastAdmissionFailure.reason = reason;
+  gLastAdmissionFailure.device_object_id = device;
+  gLastAdmissionFailure.client_id = clientID;
+  gLastAdmissionFailure.process_id = (SInt32)pid;
+  gLastAdmissionFailure.status = status;
+  gLastAdmissionFailure.core_status = (SInt32)coreStatus;
+  OSVAAdvanceRegistryRevision();
+}
 
 typedef struct {
   uint64_t driver_instance_generation;
@@ -1000,6 +1067,7 @@ static bool OSVAHasDeviceProperty(AudioObjectID objectID,
   switch (address->mSelector) {
   case kAudioObjectPropertyCustomPropertyInfoList:
   case kOSVADiagnosticSnapshotProperty:
+  case kOSVADiagnosticSnapshotV2Property:
     return OSVAIsGlobal(address);
   case kAudioObjectPropertyOwnedObjects:
   case kAudioDevicePropertyStreams:
@@ -1314,16 +1382,11 @@ static bool OSVALoadIOWorkLoopDiagnostic(
   return false;
 }
 
-static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
-  if (pthread_mutex_trylock(&gStateMutex) != 0) {
-    return false;
-  }
-  if (!atomic_load_explicit(&gCoreInitialized, memory_order_acquire) ||
-      pthread_mutex_trylock(&gCore.lifecycle_mutex) != 0) {
-    (void)pthread_mutex_unlock(&gStateMutex);
-    return false;
-  }
-
+/* Caller holds both lifecycle locks. Inventory storage was allocated before
+ * acquiring them; no allocation is performed by this complete capture. */
+static bool OSVACaptureDiagnosticSnapshotLocked(
+    OSVADiagnosticSnapshot *snapshotOut,
+    OSVADiagnosticRegistryClientSnapshot *inventory, size_t inventoryCapacity) {
   OSVADiagnosticSnapshot snapshot;
   memset(&snapshot, 0, sizeof(snapshot));
   snapshot.schema_version = kOSVADiagnosticSnapshotSchemaVersion;
@@ -1414,10 +1477,18 @@ static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
 
   bool driverStartsMatchCoreSlots = true;
   uint64_t referencedCoreSlotBitmap = 0;
-  for (size_t index = 0; index < OSVA_DRIVER_CLIENT_SLOT_COUNT; ++index) {
-    const OSVADriverClient *client = &gDriverClients[index];
+  OSVARegisteredClientNode *overflow = gOverflowClients;
+  size_t inventoryCount = 0;
+  for (size_t index = 0;
+       index < OSVA_DRIVER_CLIENT_SLOT_COUNT || overflow != NULL; ++index) {
+    const bool legacy = index < OSVA_DRIVER_CLIENT_SLOT_COUNT;
+    const uint64_t registryIndex = legacy ? index : overflow->registry_index;
+    const OSVADriverClient *client =
+        legacy ? &gDriverClients[index] : &overflow->client;
+    if (!legacy) overflow = overflow->next;
+    OSVADiagnosticDriverClientSlotSnapshot overflowSnapshot = {0};
     OSVADiagnosticDriverClientSlotSnapshot *slotSnapshot =
-        &snapshot.driver_client_slots[index];
+        legacy ? &snapshot.driver_client_slots[index] : &overflowSnapshot;
     slotSnapshot->generation = client->generation;
     slotSnapshot->registration_host_ticks =
         client->registration_host_ticks;
@@ -1443,19 +1514,24 @@ static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
     }
     slotSnapshot->flags |= kOSVADiagnosticDriverSlotRegistered;
     snapshot.driver_registered_count += 1;
-    snapshot.driver_registered_slot_bitmap |= UINT64_C(1) << index;
+    if (legacy) snapshot.driver_registered_slot_bitmap |= UINT64_C(1) << index;
     if (OSVAIsVisibleDevice(client->device_object_id)) {
       snapshot.visible_driver_registered_count += 1;
     } else {
       snapshot.hidden_driver_registered_count += 1;
     }
-    if (!client->started) {
-      continue;
+    if (client->started) {
+      slotSnapshot->flags |= kOSVADiagnosticDriverSlotStarted |
+                             kOSVADiagnosticDriverSlotLeaseValid;
     }
-    slotSnapshot->flags |= kOSVADiagnosticDriverSlotStarted |
-                           kOSVADiagnosticDriverSlotLeaseValid;
+    if (inventory != NULL) {
+      if (inventoryCount >= inventoryCapacity) return false;
+      inventory[inventoryCount].registry_index = registryIndex;
+      inventory[inventoryCount++].client = *slotSnapshot;
+    }
+    if (!client->started) continue;
     snapshot.driver_started_count += 1;
-    snapshot.driver_started_slot_bitmap |= UINT64_C(1) << index;
+    if (legacy) snapshot.driver_started_slot_bitmap |= UINT64_C(1) << index;
     if (OSVAIsVisibleDevice(client->device_object_id)) {
       snapshot.visible_driver_started_count += 1;
     } else {
@@ -1480,6 +1556,8 @@ static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
   driverStartsMatchCoreSlots =
       driverStartsMatchCoreSlots &&
       referencedCoreSlotBitmap == snapshot.core_active_slot_bitmap;
+  if (snapshot.driver_registered_count != gRegisteredClientCount ||
+      (inventory != NULL && inventoryCount != inventoryCapacity)) return false;
 
   bool recordsAvailable = true;
   for (size_t index = 0; index < OSVA_DIAGNOSTIC_ENDPOINT_COUNT; ++index) {
@@ -1491,13 +1569,9 @@ static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
         OSVALoadIOWorkLoopDiagnostic(index, &snapshot.io_work_loop[index]);
   }
   if (!recordsAvailable) {
-    (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
-    (void)pthread_mutex_unlock(&gStateMutex);
     return false;
   }
   if (gDiagnosticLifecycle.snapshot_observation_sequence == UINT64_MAX) {
-    (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
-    (void)pthread_mutex_unlock(&gStateMutex);
     return false;
   }
   gDiagnosticLifecycle.snapshot_observation_sequence += 1;
@@ -1530,7 +1604,8 @@ static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
     flags |= kOSVADiagnosticInvariantActiveImpliesClockValid;
   }
   if (snapshot.core_active_slot_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT &&
-      snapshot.driver_registered_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT &&
+      (inventory != NULL ||
+       snapshot.driver_registered_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT) &&
       snapshot.driver_started_count <= OSVA_DRIVER_CLIENT_SLOT_COUNT) {
     flags |= kOSVADiagnosticInvariantSlotCountsWithinCapacity;
   }
@@ -1575,11 +1650,126 @@ static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
         kOSVADiagnosticInvariantNoActiveSlotReferencesRetiredGeneration;
   }
   snapshot.invariant_flags = flags;
-
-  (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
-  (void)pthread_mutex_unlock(&gStateMutex);
+  if (inventory != NULL)
+    snapshot.invariant_flags |= kOSVADiagnosticInvariantCompleteRegistryInventory;
   *snapshotOut = snapshot;
   return true;
+}
+
+static bool OSVACopyDiagnosticSnapshot(OSVADiagnosticSnapshot *snapshotOut) {
+  if (pthread_mutex_trylock(&gStateMutex) != 0) return false;
+  /* The frozen bank cannot represent overflow identities, even if count <=64. */
+  if (gOverflowClients != NULL ||
+      !atomic_load_explicit(&gCoreInitialized, memory_order_acquire) ||
+      pthread_mutex_trylock(&gCore.lifecycle_mutex) != 0) {
+    (void)pthread_mutex_unlock(&gStateMutex);
+    return false;
+  }
+  const bool copied = OSVACaptureDiagnosticSnapshotLocked(snapshotOut, NULL, 0);
+  (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
+  (void)pthread_mutex_unlock(&gStateMutex);
+  return copied;
+}
+
+static void OSVACopyV2State(OSVADiagnosticSnapshotV2State *out,
+                           const OSVADiagnosticSnapshot *in) {
+  /* Field assignments deliberately do not assume v1/v2 scalar offsets match. */
+#define OSVA_COPY_V2_FIELD(field) out->field = in->field
+  OSVA_COPY_V2_FIELD(snapshot_sequence);
+  OSVA_COPY_V2_FIELD(captured_host_ticks);
+  OSVA_COPY_V2_FIELD(driver_instance_generation);
+  OSVA_COPY_V2_FIELD(invariant_flags);
+  OSVA_COPY_V2_FIELD(driver_lifecycle_sequence);
+  OSVA_COPY_V2_FIELD(core_lifecycle_sequence);
+  OSVA_COPY_V2_FIELD(host_ticks_per_second);
+  OSVA_COPY_V2_FIELD(timeline_seed);
+  OSVA_COPY_V2_FIELD(current_seed_generation);
+  OSVA_COPY_V2_FIELD(anchor_host_ticks);
+  OSVA_COPY_V2_FIELD(last_issued_seed);
+  OSVA_COPY_V2_FIELD(last_issued_session_id);
+  OSVA_COPY_V2_FIELD(active_client_count);
+  OSVA_COPY_V2_FIELD(visible_input_active_count);
+  OSVA_COPY_V2_FIELD(hidden_writer_active_count);
+  OSVA_COPY_V2_FIELD(core_active_slot_count);
+  OSVA_COPY_V2_FIELD(core_active_slot_bitmap);
+  OSVA_COPY_V2_FIELD(driver_registered_count);
+  OSVA_COPY_V2_FIELD(driver_started_count);
+  OSVA_COPY_V2_FIELD(visible_driver_registered_count);
+  OSVA_COPY_V2_FIELD(hidden_driver_registered_count);
+  OSVA_COPY_V2_FIELD(visible_driver_started_count);
+  OSVA_COPY_V2_FIELD(hidden_driver_started_count);
+  OSVA_COPY_V2_FIELD(driver_client_add_attempt_count);
+  OSVA_COPY_V2_FIELD(driver_client_add_count);
+  OSVA_COPY_V2_FIELD(driver_client_remove_attempt_count);
+  OSVA_COPY_V2_FIELD(driver_client_remove_count);
+  OSVA_COPY_V2_FIELD(global_start_attempt_count);
+  OSVA_COPY_V2_FIELD(global_start_transition_count);
+  OSVA_COPY_V2_FIELD(global_stop_attempt_count);
+  OSVA_COPY_V2_FIELD(global_stop_transition_count);
+  OSVA_COPY_V2_FIELD(seed_create_count);
+  OSVA_COPY_V2_FIELD(seed_clear_count);
+  OSVA_COPY_V2_FIELD(last_seed_create_host_ticks);
+  OSVA_COPY_V2_FIELD(last_seed_clear_host_ticks);
+  OSVA_COPY_V2_FIELD(last_cleared_seed);
+  OSVA_COPY_V2_FIELD(last_cleared_seed_generation);
+  OSVA_COPY_V2_FIELD(last_cleared_anchor_host_ticks);
+  OSVA_COPY_V2_FIELD(last_driver_transition);
+  OSVA_COPY_V2_FIELD(last_core_transition);
+#undef OSVA_COPY_V2_FIELD
+  memcpy(out->zero_timestamp, in->zero_timestamp, sizeof(out->zero_timestamp));
+  memcpy(out->io, in->io, sizeof(out->io));
+  memcpy(out->io_work_loop, in->io_work_loop, sizeof(out->io_work_loop));
+}
+
+static CFDataRef OSVACopyDiagnosticSnapshotV2(void) {
+  if (pthread_mutex_trylock(&gStateMutex) != 0) return NULL;
+  const uint64_t count = gRegisteredClientCount;
+  const uint64_t revision = gRegistryRevision;
+  const bool available = !gRegistryRevisionExhausted &&
+      atomic_load_explicit(&gCoreInitialized, memory_order_acquire);
+  (void)pthread_mutex_unlock(&gStateMutex);
+  const size_t headerSize = sizeof(OSVADiagnosticSnapshotV2Header);
+  const size_t recordSize = sizeof(OSVADiagnosticRegistryClientSnapshot);
+  if (!available || count >
+      (kOSVADiagnosticSnapshotV2MaximumByteCount - headerSize) / recordSize ||
+      count > (SIZE_MAX - headerSize) / recordSize) return NULL;
+  const size_t byteCount = headerSize + (size_t)count * recordSize;
+  /* Allocation is outside both lifecycle locks, bounded, and non-RT. */
+  UInt8 *bytes = calloc(1, byteCount);
+  if (bytes == NULL) return NULL;
+  if (pthread_mutex_trylock(&gStateMutex) != 0) { free(bytes); return NULL; }
+  if (gRegistryRevisionExhausted || revision != gRegistryRevision ||
+      count != gRegisteredClientCount ||
+      !atomic_load_explicit(&gCoreInitialized, memory_order_acquire) ||
+      pthread_mutex_trylock(&gCore.lifecycle_mutex) != 0) {
+    (void)pthread_mutex_unlock(&gStateMutex);
+    free(bytes);
+    return NULL;
+  }
+  OSVADiagnosticSnapshotV2Header *header = (void *)bytes;
+  OSVADiagnosticRegistryClientSnapshot *inventory = (void *)(bytes + headerSize);
+  OSVADiagnosticSnapshot snapshot;
+  const bool copied = OSVACaptureDiagnosticSnapshotLocked(
+      &snapshot, inventory, (size_t)count);
+  if (copied) {
+    header->schema_version = kOSVADiagnosticSnapshotV2SchemaVersion;
+    header->header_size = (UInt32)headerSize;
+    header->total_byte_count = byteCount;
+    header->registry_record_count = count;
+    header->registry_record_size = recordSize;
+    header->registry_revision = revision;
+    header->core_slot_capacity = kOSVADiagnosticClientSlotCapacity;
+    OSVACopyV2State(&header->state, &snapshot);
+    header->last_admission_failure = gLastAdmissionFailure;
+    memcpy(header->core_client_slots, snapshot.core_client_slots,
+           sizeof(header->core_client_slots));
+  }
+  (void)pthread_mutex_unlock(&gCore.lifecycle_mutex);
+  (void)pthread_mutex_unlock(&gStateMutex);
+  CFDataRef data = copied ? CFDataCreate(kCFAllocatorDefault, bytes,
+                                        (CFIndex)byteCount) : NULL;
+  free(bytes);
+  return data;
 }
 
 static size_t OSVADeviceRoleObjectCount(AudioObjectID objectID,
@@ -1608,8 +1798,9 @@ static UInt32 OSVAPropertyDataSize(AudioObjectID objectID,
                                    const AudioObjectPropertyAddress *address) {
   switch (address->mSelector) {
   case kAudioObjectPropertyCustomPropertyInfoList:
-    return (UInt32)sizeof(AudioServerPlugInCustomPropertyInfo);
+    return 2U * (UInt32)sizeof(AudioServerPlugInCustomPropertyInfo);
   case kOSVADiagnosticSnapshotProperty:
+  case kOSVADiagnosticSnapshotV2Property:
     return (UInt32)sizeof(CFPropertyListRef);
   case kAudioObjectPropertyBaseClass:
   case kAudioObjectPropertyClass:
@@ -2018,14 +2209,28 @@ static OSStatus OSVAGetPropertyData(AudioServerPlugInDriverRef driver,
 
   switch (address->mSelector) {
   case kAudioObjectPropertyCustomPropertyInfoList: {
-    AudioServerPlugInCustomPropertyInfo value = {
+    AudioServerPlugInCustomPropertyInfo value[2] = {{
         .mSelector = kOSVADiagnosticSnapshotProperty,
         .mPropertyDataType =
             kAudioServerPlugInCustomPropertyDataTypeCFPropertyList,
         .mQualifierDataType = kAudioServerPlugInCustomPropertyDataTypeNone,
-    };
+    }, {
+        .mSelector = kOSVADiagnosticSnapshotV2Property,
+        .mPropertyDataType = kAudioServerPlugInCustomPropertyDataTypeCFPropertyList,
+        .mQualifierDataType = kAudioServerPlugInCustomPropertyDataTypeNone,
+    }};
     return OSVAWriteScalar(&value, sizeof(value), dataSize, outDataSize,
                            outData);
+  }
+  case kOSVADiagnosticSnapshotV2Property: {
+    if (dataSize < sizeof(CFPropertyListRef))
+      return kAudioHardwareBadPropertySizeError;
+    CFDataRef data = OSVACopyDiagnosticSnapshotV2();
+    if (data == NULL) return kOSVADiagnosticSnapshotUnavailableError;
+    CFPropertyListRef value = data;
+    memcpy(outData, &value, sizeof(value));
+    *outDataSize = (UInt32)sizeof(value);
+    return noErr;
   }
   case kOSVADiagnosticSnapshotProperty: {
     if (dataSize < sizeof(CFPropertyListRef)) {
@@ -2445,6 +2650,12 @@ static OSVADriverClient *OSVAFindDriverClient(AudioObjectID deviceObjectID,
       return &gDriverClients[index];
     }
   }
+  for (OSVARegisteredClientNode *node = gOverflowClients; node != NULL;
+       node = node->next) {
+    if (node->client.registered &&
+        node->client.device_object_id == deviceObjectID &&
+        node->client.client_id == clientID) return &node->client;
+  }
   return NULL;
 }
 
@@ -2454,7 +2665,51 @@ static OSVADriverClient *OSVAFindFreeDriverClient(void) {
       return &gDriverClients[index];
     }
   }
-  return NULL;
+  if (gNextRegistryIndex == UINT64_MAX) return NULL;
+#if defined(OSVA_DRIVER_TESTING)
+  if (gFailNextRegistrationAllocationForTesting) {
+    gFailNextRegistrationAllocationForTesting = false;
+    return NULL;
+  }
+#endif
+  OSVARegisteredClientNode *node = calloc(1, sizeof(*node));
+  if (node == NULL) return NULL;
+  node->registry_index = gNextRegistryIndex++;
+  /* Append so complete diagnostic inventories have stable index ordering. */
+  OSVARegisteredClientNode **link = &gOverflowClients;
+  while (*link != NULL) link = &(*link)->next;
+  *link = node;
+  return &node->client;
+}
+
+static void OSVAReclaimOverflowClient(OSVADriverClient *client) {
+  OSVARegisteredClientNode **link = &gOverflowClients;
+  while (*link != NULL) {
+    if (&(*link)->client == client) {
+      OSVARegisteredClientNode *node = *link;
+      *link = node->next;
+      free(node);
+      return;
+    }
+    link = &(*link)->next;
+  }
+}
+
+static void OSVAResetRegistry(void) {
+  while (gOverflowClients != NULL) {
+    OSVARegisteredClientNode *node = gOverflowClients;
+    gOverflowClients = node->next;
+    free(node);
+  }
+  gRegisteredClientCount = 0;
+  gNextRegistryIndex = OSVA_DRIVER_CLIENT_SLOT_COUNT;
+  gLastRegistrationGeneration = 0;
+  gRegistryRevision = 0;
+  gRegistryRevisionExhausted = false;
+  memset(&gLastAdmissionFailure, 0, sizeof(gLastAdmissionFailure));
+#if defined(OSVA_DRIVER_TESTING)
+  gFailNextRegistrationAllocationForTesting = false;
+#endif
 }
 
 static size_t OSVAStartedClientCount(AudioObjectID deviceObjectID) {
@@ -2464,6 +2719,11 @@ static size_t OSVAStartedClientCount(AudioObjectID deviceObjectID) {
         gDriverClients[index].device_object_id == deviceObjectID) {
       count += 1;
     }
+  }
+  for (const OSVARegisteredClientNode *node = gOverflowClients; node != NULL;
+       node = node->next) {
+    if (node->client.registered && node->client.started &&
+        node->client.device_object_id == deviceObjectID) count += 1;
   }
   return count;
 }
@@ -2524,6 +2784,7 @@ static OSStatus OSVAInitialize(AudioServerPlugInDriverRef driver,
   memset(gCoreClients, 0, sizeof(gCoreClients));
   memset(gRingStorage, 0, sizeof(gRingStorage));
   memset(gDriverClients, 0, sizeof(gDriverClients));
+  OSVAResetRegistry();
   memset(&gDiagnosticLifecycle, 0, sizeof(gDiagnosticLifecycle));
   uint64_t driverInstanceGeneration = mach_absolute_time();
   if (driverInstanceGeneration == 0 ||
@@ -3079,6 +3340,14 @@ OSStatus OSVADriverResetForTesting(void) {
         }
       }
     }
+    for (OSVARegisteredClientNode *node = gOverflowClients; node != NULL;
+         node = node->next) {
+      if (node->client.registered && node->client.started) {
+        OSVAStatus stopStatus = OSVACoreStopClient(&gCore, node->client.lease);
+        if (status == OSVA_STATUS_OK && stopStatus != OSVA_STATUS_OK)
+          status = stopStatus;
+      }
+    }
     if (status == OSVA_STATUS_OK) {
       status = OSVACoreDestroy(&gCore);
     }
@@ -3091,6 +3360,7 @@ OSStatus OSVADriverResetForTesting(void) {
   memset(gCoreClients, 0, sizeof(gCoreClients));
   memset(gRingStorage, 0, sizeof(gRingStorage));
   memset(gDriverClients, 0, sizeof(gDriverClients));
+  OSVAResetRegistry();
   memset(&gDiagnosticLifecycle, 0, sizeof(gDiagnosticLifecycle));
   OSVAResetDiagnosticAtomics();
   gCoreInitialized = false;
@@ -3127,6 +3397,12 @@ OSStatus OSVADriverResetForTesting(void) {
   pthread_mutex_unlock(&gStateMutex);
   return OSVAStatusToOSStatus(status);
 }
+
+void OSVADriverFailNextRegistrationAllocationForTesting(void) {
+  pthread_mutex_lock(&gStateMutex);
+  gFailNextRegistrationAllocationForTesting = true;
+  pthread_mutex_unlock(&gStateMutex);
+}
 #endif
 
 static OSStatus
@@ -3143,22 +3419,37 @@ OSVAAddDeviceClient(AudioServerPlugInDriverRef driver,
   OSVAIncrementDiagnosticCounter(
       &gDiagnosticLifecycle.driver_client_add_attempt_count);
   OSVAAdvanceDiagnosticLifecycleSequence();
-  if (!gCoreInitialized ||
-      OSVAFindDriverClient(deviceObjectID, clientInfo->mClientID) != NULL) {
+  OSVADriverClient *existing =
+      OSVAFindDriverClient(deviceObjectID, clientInfo->mClientID);
+  if (!gCoreInitialized || existing != NULL) {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionAdd,
+        !gCoreInitialized ? kOSVADiagnosticFailureNotInitialized
+                          : kOSVADiagnosticFailureDuplicateRegistration,
+        deviceObjectID, clientInfo->mClientID, clientInfo->mProcessID, existing,
+        kAudioHardwareIllegalOperationError, OSVA_STATUS_OK);
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
+  if (gLastRegistrationGeneration == UINT64_MAX ||
+      gRegisteredClientCount == UINT64_MAX || gNextRegistryIndex == UINT64_MAX) {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionAdd,
+        kOSVADiagnosticFailureIdentityExhausted, deviceObjectID,
+        clientInfo->mClientID, clientInfo->mProcessID, NULL,
+        kAudioHardwareUnspecifiedError, OSVA_STATUS_OK);
+    pthread_mutex_unlock(&gStateMutex);
+    return kAudioHardwareUnspecifiedError;
+  }
   OSVADriverClient *client = OSVAFindFreeDriverClient();
   if (client == NULL) {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionAdd,
+        kOSVADiagnosticFailureRegistrationAllocation, deviceObjectID,
+        clientInfo->mClientID, clientInfo->mProcessID, NULL,
+        kAudioHardwareUnspecifiedError, OSVA_STATUS_OK);
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareUnspecifiedError;
   }
-  if (client->generation == UINT64_MAX) {
-    pthread_mutex_unlock(&gStateMutex);
-    return kAudioHardwareUnspecifiedError;
-  }
-  const size_t slotIndex = (size_t)(client - gDriverClients);
-  const uint64_t generation = client->generation + 1;
+  const uint64_t slotIndex = OSVARegistryIndex(client);
+  const uint64_t generation = ++gLastRegistrationGeneration;
   const uint64_t transitionHostTicks = mach_absolute_time();
   const uint64_t activeCount = atomic_load_explicit(
       &gCore.active_client_count, memory_order_relaxed);
@@ -3170,6 +3461,8 @@ OSVAAddDeviceClient(AudioServerPlugInDriverRef driver,
   client->process_id = clientInfo->mProcessID;
   client->registration_host_ticks = transitionHostTicks;
   client->last_transition_host_ticks = transitionHostTicks;
+  gRegisteredClientCount += 1;
+  OSVAAdvanceRegistryRevision();
   OSVAIncrementDiagnosticCounter(
       &gDiagnosticLifecycle.driver_client_add_count);
   OSVARecordDiagnosticTransition(
@@ -3199,10 +3492,15 @@ OSVARemoveDeviceClient(AudioServerPlugInDriverRef driver,
   OSVADriverClient *client =
       OSVAFindDriverClient(deviceObjectID, clientInfo->mClientID);
   if (client == NULL || client->started) {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionRemove,
+        client == NULL ? kOSVADiagnosticFailureMissingRegistration
+                       : kOSVADiagnosticFailureRemoveWhileStarted,
+        deviceObjectID, clientInfo->mClientID, clientInfo->mProcessID, client,
+        kAudioHardwareIllegalOperationError, OSVA_STATUS_OK);
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
-  const size_t slotIndex = (size_t)(client - gDriverClients);
+  const uint64_t slotIndex = OSVARegistryIndex(client);
   const uint64_t generation = client->generation;
   const uint64_t transitionHostTicks = mach_absolute_time();
   const uint64_t activeCount = atomic_load_explicit(
@@ -3218,6 +3516,10 @@ OSVARemoveDeviceClient(AudioServerPlugInDriverRef driver,
   memset(client, 0, sizeof(*client));
   client->generation = generation;
   client->last_transition_host_ticks = transitionHostTicks;
+  gRegisteredClientCount -= 1;
+  OSVAAdvanceRegistryRevision();
+  if (slotIndex >= OSVA_DRIVER_CLIENT_SLOT_COUNT)
+    OSVAReclaimOverflowClient(client);
   pthread_mutex_unlock(&gStateMutex);
   return noErr;
 }
@@ -3233,19 +3535,28 @@ static OSStatus OSVAStartIO(AudioServerPlugInDriverRef driver,
   OSVAAdvanceDiagnosticLifecycleSequence();
   OSVADriverClient *client = OSVAFindDriverClient(deviceObjectID, clientID);
   if (!gCoreInitialized || client == NULL || client->started) {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionStart,
+        !gCoreInitialized ? kOSVADiagnosticFailureNotInitialized
+        : client == NULL ? kOSVADiagnosticFailureMissingRegistration
+                         : kOSVADiagnosticFailureAlreadyStarted,
+        deviceObjectID, clientID, client == NULL ? 0 : client->process_id, client,
+        kAudioHardwareIllegalOperationError, OSVA_STATUS_OK);
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
   const OSVAEndpoint endpoint = OSVAEndpointForDevice(deviceObjectID);
-  const size_t driverSlotIndex = (size_t)(client - gDriverClients);
+  const uint64_t driverSlotIndex = OSVARegistryIndex(client);
   const uint64_t coreClientID = OSVACoreClientID(deviceObjectID, clientID);
   const uint64_t transitionHostTicks = mach_absolute_time();
   const uint64_t preActiveCount = atomic_load_explicit(
       &gCore.active_client_count, memory_order_relaxed);
   bool notify = OSVAStartedClientCount(deviceObjectID) == 0;
+  OSVAClientLease newLease = {0};
   OSVAStatus status = OSVACoreStartClient(
-      &gCore, endpoint, coreClientID, &client->lease);
+      &gCore, endpoint, coreClientID, &newLease);
   if (status == OSVA_STATUS_OK) {
+    client->lease = newLease;
+    OSVAAdvanceRegistryRevision();
     const uint64_t postActiveCount = atomic_load_explicit(
         &gCore.active_client_count, memory_order_relaxed);
     client->started = true;
@@ -3278,6 +3589,10 @@ static OSStatus OSVAStartIO(AudioServerPlugInDriverRef driver,
     if (OSVACoreGetZeroTimestamp(&gCore, &timestamp) == OSVA_STATUS_OK) {
       (void)OSVAStoreZeroTimestampCache(timestamp);
     }
+  } else {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionStart,
+        kOSVADiagnosticFailureCoreRejected, deviceObjectID, clientID,
+        client->process_id, client, OSVAStatusToOSStatus(status), status);
   }
   AudioServerPlugInHostRef host = gHost;
   pthread_mutex_unlock(&gStateMutex);
@@ -3298,11 +3613,17 @@ static OSStatus OSVAStopIO(AudioServerPlugInDriverRef driver,
   OSVAAdvanceDiagnosticLifecycleSequence();
   OSVADriverClient *client = OSVAFindDriverClient(deviceObjectID, clientID);
   if (!gCoreInitialized || client == NULL || !client->started) {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionStop,
+        !gCoreInitialized ? kOSVADiagnosticFailureNotInitialized
+        : client == NULL ? kOSVADiagnosticFailureMissingRegistration
+                         : kOSVADiagnosticFailureNotStarted,
+        deviceObjectID, clientID, client == NULL ? 0 : client->process_id, client,
+        kAudioHardwareIllegalOperationError, OSVA_STATUS_OK);
     pthread_mutex_unlock(&gStateMutex);
     return kAudioHardwareIllegalOperationError;
   }
   const OSVAEndpoint endpoint = OSVAEndpointForDevice(deviceObjectID);
-  const size_t driverSlotIndex = (size_t)(client - gDriverClients);
+  const uint64_t driverSlotIndex = OSVARegistryIndex(client);
   const uint64_t coreClientID = OSVACoreClientID(deviceObjectID, clientID);
   const uint32_t coreSlotIndex = client->lease.client_slot;
   const uint64_t coreSessionID = client->lease.session_id;
@@ -3318,6 +3639,7 @@ static OSStatus OSVAStopIO(AudioServerPlugInDriverRef driver,
   bool notify = OSVAStartedClientCount(deviceObjectID) == 1;
   OSVAStatus status = OSVACoreStopClient(&gCore, client->lease);
   if (status == OSVA_STATUS_OK) {
+    OSVAAdvanceRegistryRevision();
     const uint64_t postActiveCount = atomic_load_explicit(
         &gCore.active_client_count, memory_order_relaxed);
     OSVAIncrementDiagnosticCounter(
@@ -3348,6 +3670,10 @@ static OSStatus OSVAStopIO(AudioServerPlugInDriverRef driver,
     client->started = false;
     client->io_start_depth = 0;
     client->last_transition_host_ticks = transitionHostTicks;
+  } else {
+    OSVARecordAdmissionFailure(kOSVADiagnosticAdmissionStop,
+        kOSVADiagnosticFailureCoreRejected, deviceObjectID, clientID,
+        client->process_id, client, OSVAStatusToOSStatus(status), status);
   }
   AudioServerPlugInHostRef host = gHost;
   pthread_mutex_unlock(&gStateMutex);
