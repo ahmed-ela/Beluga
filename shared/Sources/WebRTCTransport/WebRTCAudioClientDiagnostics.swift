@@ -399,10 +399,12 @@ public struct WebRTCAudioClientDiagnosticsHeartbeat: Codable, Equatable, Sendabl
     public var failureSnapshot: WebRTCAudioClientSnapshot?
     public var events: [WebRTCAudioClientEvent]
     public var mediaPipeline: WebRTCRemoteMediaPipelineDiagnostics?
+    public var mediaSurface: WebRTCRemoteMediaSurfaceDiagnostics?
     public init(sequence: UInt64, sessionID: UUID, build: WebRTCAudioClientBuild,
                 snapshot: WebRTCAudioClientSnapshot, failureSnapshot: WebRTCAudioClientSnapshot? = nil,
                 events: [WebRTCAudioClientEvent] = [], observedElapsedMilliseconds: UInt64 = 0,
-                mediaPipeline: WebRTCRemoteMediaPipelineDiagnostics? = nil) {
+                mediaPipeline: WebRTCRemoteMediaPipelineDiagnostics? = nil,
+                mediaSurface: WebRTCRemoteMediaSurfaceDiagnostics? = nil) {
         self.sequence = sequence
         self.sessionID = sessionID
         self.observedElapsedMilliseconds = observedElapsedMilliseconds
@@ -411,11 +413,13 @@ public struct WebRTCAudioClientDiagnosticsHeartbeat: Codable, Equatable, Sendabl
         self.failureSnapshot = failureSnapshot
         self.events = events
         self.mediaPipeline = mediaPipeline
+        self.mediaSurface = mediaSurface
     }
     enum CodingKeys: String, CodingKey, CaseIterable {
         case sequence = "s", sessionID = "i", build = "b", snapshot = "n"
         case failureSnapshot = "f", events = "e", observedElapsedMilliseconds = "t"
         case mediaPipeline = "m"
+        case mediaSurface = "u"
     }
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -428,11 +432,12 @@ public struct WebRTCAudioClientDiagnosticsHeartbeat: Codable, Equatable, Sendabl
         events = try values.decode([WebRTCAudioClientEvent].self, forKey: .events)
         // Unknown or malformed optional telemetry must not erase the existing audio evidence.
         mediaPipeline = try? values.decodeIfPresent(WebRTCRemoteMediaPipelineDiagnostics.self, forKey: .mediaPipeline)
+        mediaSurface = try? values.decodeIfPresent(WebRTCRemoteMediaSurfaceDiagnostics.self, forKey: .mediaSurface)
     }
     public var isValid: Bool {
         guard sequence > 0, events.count <= Self.maximumEvents,
               snapshot.isValid, failureSnapshot?.isValid ?? true,
-              mediaPipeline?.isValid ?? true else { return false }
+              mediaPipeline?.isValid ?? true, mediaSurface?.isValid ?? true else { return false }
         var previous: UInt64 = 0
         var previousTime: UInt64 = 0
         for event in events {
@@ -587,6 +592,10 @@ struct AudioClientDiagnosticsEnvelope: Codable {
                                                      heartbeat: boundedHeartbeat))
             if data.count <= Self.maximumBytes { return data }
             // Optional media telemetry must never displace existing audio snapshots or history.
+            if boundedHeartbeat.mediaSurface != nil {
+                boundedHeartbeat.mediaSurface = nil
+                continue
+            }
             if boundedHeartbeat.mediaPipeline != nil {
                 boundedHeartbeat.mediaPipeline = nil
                 continue

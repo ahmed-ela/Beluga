@@ -3851,6 +3851,7 @@ public actor WebRTCPeer {
     private var audioClientDiagnosticsCapabilityIsLocallyAvailable = false
     private var pendingAudioClientDiagnosticsAuthorization: UUID?
     private var mediaPipelineDiagnosticsNegotiationEpoch: UInt64?
+    private var mediaSurfaceDiagnosticsNegotiationEpoch: UInt64?
     // Remote media uses its own replay histories and an exact SDP echo. Unknown message kinds are
     // never sent to an older peer sharing the strict v2 control-channel envelope.
     private var remoteMediaControlsNegotiationEpoch: UInt64?
@@ -4676,6 +4677,9 @@ public actor WebRTCPeer {
             mediaPipelineDiagnosticsNegotiationEpoch = audioClientDiagnosticsIsNegotiated()
                 && RemoteMediaPipelineDiagnosticsSDP.negotiated(hostOfferSDP: sdp, viewerAnswerSDP: answerSDP)
                 ? offerEpoch : nil
+            mediaSurfaceDiagnosticsNegotiationEpoch = audioClientDiagnosticsIsNegotiated()
+                && RemoteMediaSurfaceDiagnosticsSDP.negotiated(hostOfferSDP: sdp, viewerAnswerSDP: answerSDP)
+                ? offerEpoch : nil
             // `outboundSignal(.answer)` is the ordered post-capability event consumed by the
             // viewer. The application may retry its current challenge only after forwarding this
             // answer; the peer-side transport/capability check remains authoritative.
@@ -4764,6 +4768,9 @@ public actor WebRTCPeer {
             let mediaPipelineDiagnosticsNegotiated = pendingScreenMediaHostOfferSDP.map {
                 RemoteMediaPipelineDiagnosticsSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
             } ?? false
+            let mediaSurfaceDiagnosticsNegotiated = pendingScreenMediaHostOfferSDP.map {
+                RemoteMediaSurfaceDiagnosticsSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
+            } ?? false
             let negotiatedRemoteMediaCatalog = pendingScreenMediaHostOfferSDP.map {
                 RemoteMediaCatalogSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
             } ?? false
@@ -4785,6 +4792,8 @@ public actor WebRTCPeer {
             )
             mediaPipelineDiagnosticsNegotiationEpoch = audioClientDiagnosticsIsNegotiated()
                 && mediaPipelineDiagnosticsNegotiated ? offerEpoch : nil
+            mediaSurfaceDiagnosticsNegotiationEpoch = audioClientDiagnosticsIsNegotiated()
+                && mediaSurfaceDiagnosticsNegotiated ? offerEpoch : nil
             let expectedRemoteMediaAuthorization =
                 pendingRemoteMediaAuthorization
             pendingRemoteMediaAuthorization = nil
@@ -6145,10 +6154,12 @@ public actor WebRTCPeer {
     public func audioClientDiagnosticsObservation() -> (
         context: WebRTCAudioClientDiagnosticsContext,
         supportsMediaPipeline: Bool,
+        supportsMediaSurface: Bool,
         receivedMedia: WebRTCRemoteMediaPipelineDiagnostics.Stage?
     )? {
         guard let context = audioClientDiagnosticsContext(), context.isValid else { return nil }
         return (context, mediaPipelineDiagnosticsNegotiationEpoch == negotiationEpoch,
+                mediaSurfaceDiagnosticsNegotiationEpoch == negotiationEpoch,
                 lastReceivedRemoteMediaDiagnosticStage)
     }
 
@@ -6164,6 +6175,9 @@ public actor WebRTCPeer {
         // its exact SDP echo, including after renegotiation retires that capability.
         if mediaPipelineDiagnosticsNegotiationEpoch != negotiationEpoch {
             compatibleHeartbeat.mediaPipeline = nil
+        }
+        if mediaSurfaceDiagnosticsNegotiationEpoch != negotiationEpoch {
+            compatibleHeartbeat.mediaSurface = nil
         }
         try delegateProxy.audioDiagnosticsLane.send(compatibleHeartbeat, context: context)
     }
@@ -11248,6 +11262,7 @@ public actor WebRTCPeer {
         delegateProxy.audioDiagnosticsLane.configure(negotiationID: nil, acceptsIncoming: role == .host)
         pendingAudioClientDiagnosticsAuthorization = nil
         mediaPipelineDiagnosticsNegotiationEpoch = nil
+        mediaSurfaceDiagnosticsNegotiationEpoch = nil
         negotiationEpoch &+= 1
         return negotiationEpoch
     }
@@ -11336,8 +11351,9 @@ public actor WebRTCPeer {
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
                     sdp: audioDiagnosticsAuthorization.map {
-                        RemoteMediaPipelineDiagnosticsSDP.advertisingHostSupport(
-                            in: AudioClientDiagnosticsSDP.advertisingHostSupport(in: diagnosticsSDP, authorization: $0))
+                        RemoteMediaSurfaceDiagnosticsSDP.advertisingHostSupport(in:
+                            RemoteMediaPipelineDiagnosticsSDP.advertisingHostSupport(
+                                in: AudioClientDiagnosticsSDP.advertisingHostSupport(in: diagnosticsSDP, authorization: $0)))
                     } ?? diagnosticsSDP
                 )
                 peerConnection.setLocalDescription(localDescription) { error in
@@ -11405,10 +11421,11 @@ public actor WebRTCPeer {
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
                     sdp: advertisesAudioClientDiagnostics
-                        ? RemoteMediaPipelineDiagnosticsSDP.advertisingViewerSupport(
-                            in: AudioClientDiagnosticsSDP.advertisingViewerSupport(
-                                in: diagnosticsSDP, remoteOfferSDP: remoteOfferSDP),
-                            hostOfferSDP: remoteOfferSDP)
+                        ? RemoteMediaSurfaceDiagnosticsSDP.advertisingViewerSupport(in:
+                            RemoteMediaPipelineDiagnosticsSDP.advertisingViewerSupport(
+                                in: AudioClientDiagnosticsSDP.advertisingViewerSupport(
+                                    in: diagnosticsSDP, remoteOfferSDP: remoteOfferSDP),
+                                hostOfferSDP: remoteOfferSDP), hostOfferSDP: remoteOfferSDP)
                         : diagnosticsSDP
                 )
                 peerConnection.setLocalDescription(localDescription) { error in

@@ -18,11 +18,14 @@ private actor AudioDiagnosticsRecorder {
 }
 
 private enum LegacyAudioDiagnosticsSignaling: Sendable {
-    static func withoutMediaPipelineMarker(_ signal: RemoteSignalPayload) -> RemoteSignalPayload {
+    static func withoutMediaPipelineMarker(_ signal: RemoteSignalPayload, keepsPipeline: Bool = false) -> RemoteSignalPayload {
         func stripped(_ sdp: String) -> String {
             let separator = sdp.contains("\r\n") ? "\r\n" : "\n"
             return sdp.components(separatedBy: separator)
-                .filter { !$0.hasPrefix(RemoteMediaPipelineDiagnosticsSDP.attributePrefix) }
+                .filter {
+                    !$0.hasPrefix(RemoteMediaSurfaceDiagnosticsSDP.attributePrefix)
+                        && (keepsPipeline || !$0.hasPrefix(RemoteMediaPipelineDiagnosticsSDP.attributePrefix))
+                }
                 .joined(separator: separator)
         }
         switch signal {
@@ -55,6 +58,7 @@ final class AudioClientDiagnosticsTests: XCTestCase {
     func testCompactWorstCasePreservesCurrentAndFirstFailureWithinFourKiB() throws {
         var heartbeat = worstCaseHeartbeat()
         heartbeat.mediaPipeline = maximumMediaPipeline()
+        heartbeat.mediaSurface = maximumMediaSurface()
         let bytes = try AudioClientDiagnosticsEnvelope(version: 1, negotiationID: UUID(), heartbeat: heartbeat).encoded()
         XCTAssertLessThanOrEqual(bytes.count, 4096)
         let decoded = try AudioClientDiagnosticsEnvelope.decode(bytes).heartbeat
@@ -73,6 +77,7 @@ final class AudioClientDiagnosticsTests: XCTestCase {
         let baselineDecoded = try AudioClientDiagnosticsEnvelope.decode(baselineBytes).heartbeat
         var proposed = baseline
         proposed.mediaPipeline = maximumMediaPipeline()
+        proposed.mediaSurface = maximumMediaSurface()
         let rawAddedBytes = try JSONEncoder().encode(AudioClientDiagnosticsEnvelope(version: 1, negotiationID: nonce,
                                                                                    heartbeat: proposed))
         XCTAssertGreaterThan(rawAddedBytes.count, AudioClientDiagnosticsEnvelope.maximumBytes,
@@ -81,6 +86,7 @@ final class AudioClientDiagnosticsTests: XCTestCase {
         let decoded = try AudioClientDiagnosticsEnvelope.decode(bytes).heartbeat
         XCTAssertLessThanOrEqual(bytes.count, AudioClientDiagnosticsEnvelope.maximumBytes)
         XCTAssertNil(decoded.mediaPipeline)
+        XCTAssertNil(decoded.mediaSurface)
         XCTAssertEqual(decoded, baselineDecoded, "Optional telemetry must not displace the original audio snapshots or event history")
     }
 
@@ -298,6 +304,7 @@ final class AudioClientDiagnosticsTests: XCTestCase {
             let observationValue = await viewer.audioClientDiagnosticsObservation()
             let observation = try XCTUnwrap(observationValue)
             XCTAssertTrue(observation.supportsMediaPipeline)
+            XCTAssertTrue(observation.supportsMediaSurface)
             XCTAssertNil(observation.receivedMedia)
             let update = WebRTCRemoteMediaStateUpdate(revision: 42, item: nil)
             try await waitUntil {
@@ -311,6 +318,7 @@ final class AudioClientDiagnosticsTests: XCTestCase {
             var first = heartbeat(sequence: 1)
             first.mediaPipeline = .init(received: received.receivedMedia,
                                        applied: received.receivedMedia, publicationStatus: .ready)
+            first.mediaSurface = maximumMediaSurface()
             try await waitUntil {
                 do { try await viewer.sendAudioClientDiagnosticsHeartbeat(first, context: context); return true }
                 catch { return false }
@@ -334,9 +342,11 @@ final class AudioClientDiagnosticsTests: XCTestCase {
             let renewedValue = await viewer.audioClientDiagnosticsObservation()
             let renewed = try XCTUnwrap(renewedValue)
             XCTAssertTrue(renewed.supportsMediaPipeline)
+            XCTAssertTrue(renewed.supportsMediaSurface)
             XCTAssertNil(renewed.receivedMedia, "Old media receipt must not become successor-negotiation evidence")
             var freshHeartbeat = heartbeat(sequence: 1)
             freshHeartbeat.mediaPipeline = .init(received: renewed.receivedMedia)
+            freshHeartbeat.mediaSurface = maximumMediaSurface()
             try await waitUntil {
                 do { try await viewer.sendAudioClientDiagnosticsHeartbeat(freshHeartbeat, context: fresh); return true }
                 catch { return false }
@@ -346,6 +356,7 @@ final class AudioClientDiagnosticsTests: XCTestCase {
             XCTAssertTrue(recovered.isValid)
             XCTAssertFalse(recovered.isSameNegotiation(as: old))
             XCTAssertEqual(recovered.heartbeat.mediaPipeline, freshHeartbeat.mediaPipeline)
+            XCTAssertEqual(recovered.heartbeat.mediaSurface, freshHeartbeat.mediaSurface)
             let errors = await recorder.forwardingErrors
             XCTAssertTrue(errors.isEmpty, "\(errors)")
         } catch {
@@ -363,6 +374,14 @@ final class AudioClientDiagnosticsTests: XCTestCase {
     }
 
     func testRealLegacyHostSchemaReceivesHeartbeatWithoutUnnegotiatedMediaField() async throws {
+        try await verifyLegacySchema(keepsPipeline: false)
+    }
+
+    func testRealV1MediaPeerRetainsPipelineAndOmitsUnnegotiatedSurfaceSchema() async throws {
+        try await verifyLegacySchema(keepsPipeline: true)
+    }
+
+    private func verifyLegacySchema(keepsPipeline: Bool) async throws {
         let host = try WebRTCPeer(configuration: .init(role: .host, iceServers: [], mediaTopology: .videoControlOnly))
         let viewer = try WebRTCPeer.makeHeadlessViewerForTesting(configuration: .init(role: .viewer, iceServers: [],
                                                                                     mediaTopology: .videoControlOnly))
@@ -372,14 +391,14 @@ final class AudioClientDiagnosticsTests: XCTestCase {
         let hostForwarder = Task { [host, viewer, recorder] in
             do { for await event in host.events {
                 if case .outboundSignal(let signal) = event {
-                    try await viewer.handle(LegacyAudioDiagnosticsSignaling.withoutMediaPipelineMarker(signal))
+                    try await viewer.handle(LegacyAudioDiagnosticsSignaling.withoutMediaPipelineMarker(signal, keepsPipeline: keepsPipeline))
                 }
             }} catch { await recorder.fail(error) }
         }
         let viewerForwarder = Task { [host, viewer, recorder] in
             do { for await event in viewer.events {
                 if case .outboundSignal(let signal) = event {
-                    try await host.handle(LegacyAudioDiagnosticsSignaling.withoutMediaPipelineMarker(signal))
+                    try await host.handle(LegacyAudioDiagnosticsSignaling.withoutMediaPipelineMarker(signal, keepsPipeline: keepsPipeline))
                 }
             }} catch { await recorder.fail(error) }
         }
@@ -397,26 +416,31 @@ final class AudioClientDiagnosticsTests: XCTestCase {
             }
             let observationValue = await viewer.audioClientDiagnosticsObservation()
             let observation = try XCTUnwrap(observationValue)
-            XCTAssertFalse(observation.supportsMediaPipeline)
+            XCTAssertEqual(observation.supportsMediaPipeline, keepsPipeline)
+            XCTAssertFalse(observation.supportsMediaSurface)
             let hostObservationValue = await host.audioClientDiagnosticsObservation()
             let hostObservation = try XCTUnwrap(hostObservationValue)
-            XCTAssertFalse(hostObservation.supportsMediaPipeline)
+            XCTAssertEqual(hostObservation.supportsMediaPipeline, keepsPipeline)
+            XCTAssertFalse(hostObservation.supportsMediaSurface)
             var proposed = heartbeat(sequence: 1)
             proposed.mediaPipeline = maximumMediaPipeline()
+            proposed.mediaSurface = maximumMediaSurface()
             try await waitUntil {
                 do { try await viewer.sendAudioClientDiagnosticsHeartbeat(proposed, context: observation.context); return true }
                 catch { return false }
             }
             try await waitUntil { await recorder.received.count == 1 }
             var compatible = proposed
-            compatible.mediaPipeline = nil
+            if !keepsPipeline { compatible.mediaPipeline = nil }
+            compatible.mediaSurface = nil
             let received = await recorder.received[0]
             XCTAssertEqual(received.heartbeat, compatible)
             XCTAssertTrue(received.isValid)
             let bytes = try AudioClientDiagnosticsEnvelope(version: 1, negotiationID: UUID(), heartbeat: received.heartbeat).encoded()
             let root = try XCTUnwrap(JSONSerialization.jsonObject(with: bytes) as? [String: Any])
             let beat = try XCTUnwrap(root["h"] as? [String: Any])
-            XCTAssertTrue(Set(beat.keys).isSubset(of: Set(["s", "i", "b", "n", "f", "e", "t"])),
+            let allowed = Set(["s", "i", "b", "n", "f", "e", "t"] + (keepsPipeline ? ["m"] : []))
+            XCTAssertTrue(Set(beat.keys).isSubset(of: allowed),
                           "The old strict host heartbeat allowlist must accept every emitted field")
             let errors = await recorder.forwardingErrors
             XCTAssertTrue(errors.isEmpty, "\(errors)")
@@ -430,6 +454,13 @@ final class AudioClientDiagnosticsTests: XCTestCase {
         _ = await viewer.close(reason: .normal)
         hostForwarder.cancel(); viewerForwarder.cancel(); receiver.cancel()
         _ = await hostForwarder.value; _ = await viewerForwarder.value; _ = await receiver.value
+    }
+
+    private func maximumMediaSurface() -> WebRTCRemoteMediaSurfaceDiagnostics {
+        .init(nativeMetadata: .init(expectedRevision: .max, expectedState: .paused, metadataPresent: true,
+                                   currentItemMatches: true, playbackRate: .zero, enabledCommandMask: 63),
+              lastControl: .init(sequence: .max, origin: .nativeCommandCenter, revision: .max,
+                                 admitted: true, ageMilliseconds: 86_400_000))
     }
 
     func testRealLegacyPeerNeverNegotiatesAudioDiagnostics() async throws {

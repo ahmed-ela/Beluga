@@ -178,6 +178,7 @@ struct WorldwideAudioClientDiagnosticsSink {
             + "\(failure?.failurePhase.rawValue ?? "none")/\(failure?.native?.failureCode ?? 0)"
             + "/\(snapshot?.native?.failureContext?.eventSequence ?? 0)/\(failure?.native?.failureContext?.eventSequence ?? 0)"
             + "/\(heartbeat?.mediaPipeline.map { Self.mediaPipelineLog($0, prefix: "media", includeAge: false) } ?? "none")"
+            + "/\(heartbeat?.mediaSurface.map { Self.mediaSurfaceLog($0, prefix: "mediaSurface", includeAge: false) } ?? "none")"
         guard fingerprint != lastLogFingerprint || !pendingEvents.isEmpty
                 || (lastLogTime.map({ now - $0 >= Self.summaryLogInterval }) ?? true) else { return nil }
         lastLogTime = now
@@ -201,6 +202,11 @@ struct WorldwideAudioClientDiagnosticsSink {
             let prefix: String
             if case .fresh = value.status { prefix = "current.media" } else { prefix = "lastReceived.media" }
             message += " " + Self.mediaPipelineLog(pipeline, prefix: prefix)
+        }
+        if let surface = heartbeat?.mediaSurface {
+            let prefix: String
+            if case .fresh = value.status { prefix = "current.mediaSurface" } else { prefix = "lastReceived.mediaSurface" }
+            message += " " + Self.mediaSurfaceLog(surface, prefix: prefix)
         }
         if !pendingEvents.isEmpty {
             message += " events=" + pendingEvents.map {
@@ -230,6 +236,37 @@ struct WorldwideAudioClientDiagnosticsSink {
             + "\(prefix).selectedIndex=\(value.selectedItemIndex.map(String.init) ?? "none")"
         if includeAge {
             result += " \(prefix).extensionAgeMs=\(value.extensionAgeMilliseconds.map(String.init) ?? "unknown")"
+        }
+        return result
+    }
+
+    private static func mediaSurfaceLog(_ value: WebRTCRemoteMediaSurfaceDiagnostics,
+                                        prefix: String, includeAge: Bool = true) -> String {
+        // MPNowPlayingInfoCenter dictionary readback is not system-rendered player state.
+        var result = "\(prefix).nativePixels=unverified"
+        if let native = value.nativeMetadata {
+            result += " \(prefix).nativeEvidence=metadataReadback"
+                + " \(prefix).native.expectedRevision=\(native.expectedRevision.map(String.init) ?? "none")"
+                + " \(prefix).native.expectedState=\(native.expectedState?.rawValue ?? "unknown")"
+                + " \(prefix).native.metadataPresent=\(native.metadataPresent)"
+                + " \(prefix).native.currentItemMatches=\(native.currentItemMatches.map(String.init) ?? "unknown")"
+                + " \(prefix).native.playbackRate=\(native.playbackRate.rawValue)"
+                + " \(prefix).native.enabledCommandMask=\(native.enabledCommandMask)"
+        } else {
+            result += " \(prefix).native=none"
+        }
+        if let control = value.lastControl {
+            // A native entrypoint may be Lock Screen, Control Center, a headset, or another sender.
+            result += " \(prefix).controlEvidence=entryPoint"
+                + " \(prefix).control.sequence=\(control.sequence)"
+                + " \(prefix).control.origin=\(control.origin.rawValue)"
+                + " \(prefix).control.revision=\(control.revision.map(String.init) ?? "none")"
+                + " \(prefix).control.admitted=\(control.admitted)"
+            if includeAge {
+                result += " \(prefix).control.ageMs=\(control.ageMilliseconds.map(String.init) ?? "unknown")"
+            }
+        } else {
+            result += " \(prefix).control=none"
         }
         return result
     }

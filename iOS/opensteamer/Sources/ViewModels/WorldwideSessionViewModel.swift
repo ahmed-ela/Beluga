@@ -4163,6 +4163,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             // Optional instrumentation must not disable the existing audio diagnostics lane.
             heartbeat.mediaPipeline = pipeline.isValid ? pipeline : nil
         }
+        if observation.supportsMediaSurface {
+            let surface = backgroundPlayback.mediaSurfaceDiagnostics(owner: remoteMediaCommandOwner)
+            heartbeat.mediaSurface = surface.isValid ? surface : nil
+        }
         audioDiagnosticsSchedule.recordSendAttempt(at: now)
         do {
             try await sourcePeer.sendAudioClientDiagnosticsHeartbeat(heartbeat, context: context)

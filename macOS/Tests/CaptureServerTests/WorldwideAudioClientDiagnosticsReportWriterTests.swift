@@ -23,6 +23,26 @@ final class WorldwideAudioClientDiagnosticsReportWriterTests: XCTestCase {
         }
     }
 
+    func testReportPreservesOptionalMediaSurfaceWithoutInferringPixelsOrLeakingMediaIdentity() throws {
+        let surface = WebRTCRemoteMediaSurfaceDiagnostics(nativeMetadata: .init(expectedRevision: 11, expectedState: .paused,
+            metadataPresent: true, currentItemMatches: false, playbackRate: .positive, enabledCommandMask: 63),
+            lastControl: .init(sequence: 2, origin: .customNotification, revision: 10, admitted: true))
+        let value = report(mediaSurface: surface)
+        let bytes = try JSONEncoder().encode(value)
+        XCTAssertLessThan(bytes.count, WorldwideAudioClientReportStorage.maximumBytes)
+        let decoded = try JSONDecoder().decode(WorldwideAudioClientDiagnosticsReport.self, from: bytes)
+        XCTAssertEqual(decoded, value)
+        XCTAssertEqual(decoded.heartbeat?.mediaSurface, surface)
+        XCTAssertEqual(decoded.heartbeat?.mediaSurface?.nativeMetadata?.playbackRate, .positive,
+                       "An inconsistent dictionary readback must remain evidence, not a synthesized paused state")
+        XCTAssertEqual(decoded.acousticAudibility, "unverified")
+        let text = try XCTUnwrap(String(data: bytes, encoding: .utf8))
+        for forbidden in ["title", "artist", "contextID", "URL", "positionSeconds", "durationSeconds", "lockScreen"] {
+            XCTAssertFalse(text.contains(forbidden), forbidden)
+        }
+        XCTAssertNil(report().heartbeat?.mediaSurface, "Legacy reports remain without the optional surface")
+    }
+
     func testOnePendingReportCoalescesAndWritesAtMostOncePerFiveSeconds() {
         var schedule = WorldwideAudioClientReportSchedule()
         schedule.offer(report(peerGeneration: 1), terminal: false)
@@ -239,7 +259,8 @@ final class WorldwideAudioClientDiagnosticsReportWriterTests: XCTestCase {
     }
 
     private func report(peerGeneration: UInt64 = 7,
-                        status: WorldwideAudioClientDiagnosticsSink.Status = .fresh(.renderingNonzero)) -> WorldwideAudioClientDiagnosticsReport {
+                        status: WorldwideAudioClientDiagnosticsSink.Status = .fresh(.renderingNonzero),
+                        mediaSurface: WebRTCRemoteMediaSurfaceDiagnostics? = nil) -> WorldwideAudioClientDiagnosticsReport {
         var native = WebRTCAudioClientNativeSnapshot()
         var cause = WebRTCAudioClientFailureContext()
         cause.eventSequence = 1
@@ -253,7 +274,7 @@ final class WorldwideAudioClientDiagnosticsReportWriterTests: XCTestCase {
             sequence: 1, sessionID: UUID(), build: .init(buildNumber: 66), snapshot: snapshot,
             failureSnapshot: snapshot, events: (1...8).map {
                 .init(sequence: UInt64($0), elapsedMilliseconds: UInt64($0), kind: .nativeReceipt)
-            }
+            }, mediaSurface: mediaSurface
         )
         let latest = WorldwideAudioClientDiagnosticsSink.Latest(hostPID: 123, peerGeneration: peerGeneration,
             negotiationEpoch: 1, status: status, heartbeat: heartbeat, receiptUptime: 10)

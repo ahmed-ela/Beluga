@@ -603,6 +603,19 @@ rendered pixels. The loopback UI fixture bypasses the production VM/admission pa
 an injected VM event cannot stand in for native peer receipt. Keep those narrow tests
 separate from a correlated real-phone pause/update result.
 
+Media-surface observations additionally require their own exact current SDP nonce echo;
+never send the new heartbeat key under only the older media-pipeline capability. Test
+both mixed-version schemas, native loopback and renegotiation retirement. A malformed
+optional surface must not erase audio/pipeline evidence or revoke critical authority,
+and optional surface telemetry must be discarded first under the 4 KiB budget.
+Native readback must sample the actual Now Playing dictionary, project source equality
+privately to a boolean, classify absent/zero/positive/invalid rates, and never use the
+macOS-only playbackState getter as physical iOS glyph proof. Command entrypoints must
+be recorded at native/custom callers under existing ownership and admission locks;
+tests must prove rejection, owner replacement and uncertainty retirement without
+changing dispatch, callbacks, deadlines or command authority. Neither entrypoint nor
+readback establishes native surface visibility or rendered pixels.
+
 Exercise a pending command on the same poll that refreshes the mailbox heartbeat.
 Claim-time freshness must use a timestamp sampled after publication, not the earlier
 poll-start time; otherwise a valid new snapshot appears to come from the future.

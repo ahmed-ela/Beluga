@@ -389,6 +389,10 @@ final class WorldwideAudioClientDiagnosticsSinkTests: XCTestCase {
         heartbeat.mediaPipeline = .init(received: stage, applied: stage, published: stage, extensionRead: stage,
             lastEventRevision: .max, lastEventAdmitted: false, publicationStatus: .unavailable,
             extensionStatus: .unavailable, extensionAgeMilliseconds: 86_400_000, selectedItemIndex: 1)
+        heartbeat.mediaSurface = .init(nativeMetadata: .init(expectedRevision: .max, expectedState: .playing,
+            metadataPresent: true, currentItemMatches: false, playbackRate: .invalid, enabledCommandMask: 63),
+            lastControl: .init(sequence: .max, origin: .customNotification, revision: .max, admitted: false,
+                               ageMilliseconds: 86_400_000))
         XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: context()), peerGeneration: 7, now: 0))
         let log = try XCTUnwrap(sink.logMessageIfDue(now: 0))
         XCTAssertLessThan(log.utf8.count, 6_144)
@@ -444,6 +448,137 @@ final class WorldwideAudioClientDiagnosticsSinkTests: XCTestCase {
         XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 3))
         XCTAssertTrue(try XCTUnwrap(sink.logMessageIfDue(now: 3)).contains("current.media.received=2:1:0"))
         XCTAssertEqual(sink.latest(now: 3).status, .fresh(.intentionallyPaused))
+    }
+
+    func testMediaSurfaceLogSeparatesMetadataReadbackAndControlEntrypointWithoutMediaIdentity() throws {
+        var sink = makeSink()
+        let token = context()
+        var heartbeat = received(sequence: 1, context: token).heartbeat
+        // Preserve an inconsistent readback as evidence; never reinterpret it as actual player pixels.
+        heartbeat.mediaSurface = .init(nativeMetadata: .init(expectedRevision: 11, expectedState: .paused,
+            metadataPresent: true, currentItemMatches: true, playbackRate: .positive, enabledCommandMask: 63),
+            lastControl: .init(sequence: 7, origin: .nativeCommandCenter, revision: 11, admitted: true, ageMilliseconds: 123))
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 0))
+        let log = try XCTUnwrap(sink.logMessageIfDue(now: 0))
+        for marker in ["current.mediaSurface.nativePixels=unverified",
+                       "current.mediaSurface.nativeEvidence=metadataReadback",
+                       "current.mediaSurface.native.expectedRevision=11",
+                       "current.mediaSurface.native.expectedState=paused",
+                       "current.mediaSurface.native.metadataPresent=true",
+                       "current.mediaSurface.native.currentItemMatches=true",
+                       "current.mediaSurface.native.playbackRate=positive",
+                       "current.mediaSurface.native.enabledCommandMask=63",
+                       "current.mediaSurface.controlEvidence=entryPoint",
+                       "current.mediaSurface.control.sequence=7",
+                       "current.mediaSurface.control.origin=nativeCommandCenter",
+                       "current.mediaSurface.control.revision=11",
+                       "current.mediaSurface.control.admitted=true",
+                       "current.mediaSurface.control.ageMs=123"] {
+            XCTAssertTrue(log.contains(marker), marker)
+        }
+        for forbidden in ["title", "artist", "contextID", "URL", "positionSeconds", "durationSeconds", "playbackRate=1.0",
+                          "control.origin=lockScreen", "nativePixels=playing", "nativePixels=paused"] {
+            XCTAssertFalse(log.contains(forbidden), forbidden)
+        }
+        token.authorization.revoke()
+        let retired = try XCTUnwrap(sink.logMessageIfDue(now: 2))
+        XCTAssertTrue(retired.contains("lastReceived.mediaSurface.native.expectedRevision=11"))
+        XCTAssertTrue(retired.contains("lastReceived.mediaSurface.control.origin=nativeCommandCenter"))
+        XCTAssertTrue(retired.contains("lastReceived.mediaSurface.control.ageMs=123"))
+        XCTAssertFalse(retired.contains("current.mediaSurface."))
+    }
+
+    func testAbsentMediaSurfacePreservesLegacyLogAndOptionalSurfaceFieldsRemainUnknown() throws {
+        var sink = makeSink()
+        let token = context()
+        var heartbeat = received(sequence: 1, context: token).heartbeat
+        heartbeat.snapshot.playbackState = .paused
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 0))
+        XCTAssertFalse(try XCTUnwrap(sink.logMessageIfDue(now: 0)).contains("mediaSurface"))
+        heartbeat.sequence = 2
+        heartbeat.mediaSurface = .init(nativeMetadata: .init(),
+            lastControl: .init(sequence: 1, origin: .unspecified, admitted: false))
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 2))
+        let log = try XCTUnwrap(sink.logMessageIfDue(now: 2))
+        for marker in ["current.mediaSurface.native.expectedRevision=none", "current.mediaSurface.native.expectedState=unknown",
+                       "current.mediaSurface.native.metadataPresent=false", "current.mediaSurface.native.currentItemMatches=unknown",
+                       "current.mediaSurface.native.playbackRate=absent", "current.mediaSurface.native.enabledCommandMask=0",
+                       "current.mediaSurface.control.origin=unspecified", "current.mediaSurface.control.revision=none",
+                       "current.mediaSurface.control.admitted=false", "current.mediaSurface.control.ageMs=unknown"] {
+            XCTAssertTrue(log.contains(marker), marker)
+        }
+        heartbeat.sequence = 3
+        heartbeat.mediaSurface = .init()
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 4))
+        let unobserved = try XCTUnwrap(sink.logMessageIfDue(now: 4))
+        XCTAssertTrue(unobserved.contains("current.mediaSurface.native=none"))
+        XCTAssertTrue(unobserved.contains("current.mediaSurface.control=none"))
+        XCTAssertFalse(unobserved.contains("nativeEvidence=metadataReadback"))
+        XCTAssertFalse(unobserved.contains("controlEvidence=entryPoint"))
+    }
+
+    func testMediaSurfaceChangesLogAtMinimumCadenceWithoutChangingAudioFinding() throws {
+        var sink = makeSink()
+        let token = context()
+        var heartbeat = received(sequence: 1, context: token).heartbeat
+        heartbeat.snapshot.playbackState = .paused
+        heartbeat.mediaSurface = .init(nativeMetadata: .init(expectedRevision: 11, expectedState: .paused,
+            metadataPresent: true, currentItemMatches: true, playbackRate: .zero, enabledCommandMask: 63),
+            lastControl: .init(sequence: 1, origin: .customNotification, revision: 11, admitted: true))
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 0))
+        XCTAssertNotNil(sink.logMessageIfDue(now: 0))
+        heartbeat.sequence = 2
+        heartbeat.observedElapsedMilliseconds += 1_000
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 2))
+        XCTAssertNil(sink.logMessageIfDue(now: 2), "Unchanged surface must retain summary cadence")
+        heartbeat.sequence = 3
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaSurface?.nativeMetadata?.playbackRate = .positive
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 3))
+        XCTAssertTrue(try XCTUnwrap(sink.logMessageIfDue(now: 3)).contains("current.mediaSurface.native.playbackRate=positive"))
+        heartbeat.sequence = 4
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaSurface?.lastControl = .init(sequence: 2, origin: .nativeCommandCenter, revision: 11, admitted: false)
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 4))
+        XCTAssertNil(sink.logMessageIfDue(now: 4), "Surface transitions must not bypass the two-second output bound")
+        let origin = try XCTUnwrap(sink.logMessageIfDue(now: 5))
+        XCTAssertTrue(origin.contains("current.mediaSurface.control.sequence=2"))
+        XCTAssertTrue(origin.contains("current.mediaSurface.control.origin=nativeCommandCenter"))
+        XCTAssertTrue(origin.contains("current.mediaSurface.control.admitted=false"))
+        XCTAssertEqual(sink.latest(now: 5).status, .fresh(.intentionallyPaused))
+        heartbeat.sequence = 5
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaSurface = nil
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 7))
+        XCTAssertFalse(try XCTUnwrap(sink.logMessageIfDue(now: 7)).contains("mediaSurface"))
+        XCTAssertEqual(sink.latest(now: 7).status, .fresh(.intentionallyPaused))
+    }
+
+    func testMediaControlAgeAloneKeepsThirtySecondSummaryCadence() throws {
+        var sink = makeSink()
+        let token = context()
+        var heartbeat = received(sequence: 1, context: token).heartbeat
+        heartbeat.snapshot.playbackState = .paused
+        heartbeat.mediaSurface = .init(lastControl: .init(sequence: 1, origin: .customNotification,
+            revision: 11, admitted: true, ageMilliseconds: 123))
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 0))
+        XCTAssertTrue(try XCTUnwrap(sink.logMessageIfDue(now: 0)).contains("current.mediaSurface.control.ageMs=123"))
+        heartbeat.sequence = 2
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaSurface?.lastControl?.ageMilliseconds = 2_123
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 2))
+        XCTAssertNil(sink.logMessageIfDue(now: 2), "Age must not force a changed-signature log")
+        heartbeat.sequence = 3
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaSurface?.lastControl?.ageMilliseconds = 29_123
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 29))
+        XCTAssertNil(sink.logMessageIfDue(now: 29))
+        heartbeat.sequence = 4
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaSurface?.lastControl?.ageMilliseconds = 30_123
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 30))
+        XCTAssertTrue(try XCTUnwrap(sink.logMessageIfDue(now: 30)).contains("current.mediaSurface.control.ageMs=30123"))
+        XCTAssertEqual(sink.latest(now: 30).status, .fresh(.intentionallyPaused))
     }
 
     private func makeSink() -> WorldwideAudioClientDiagnosticsSink {
