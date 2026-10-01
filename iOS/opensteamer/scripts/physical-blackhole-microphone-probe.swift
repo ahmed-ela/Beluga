@@ -6894,7 +6894,7 @@ private final class MirrorLoopbackOutputQueueSession {
         )
     }
 
-    func start() throws {
+    func start(releaseChallenge: Bool = true) throws {
         guard queue == nil else { return }
         context.activate()
         var description = MirrorLoopbackQueueSupport.requestedDescription()
@@ -6968,7 +6968,7 @@ private final class MirrorLoopbackOutputQueueSession {
             guard readbackQueueVolumeScalar == 1.0 else {
                 throw ProbeError(code: "mirror_writer_queue_volume_not_unity")
             }
-            context.enableChallenge()
+            if releaseChallenge { context.enableChallenge() }
         } catch {
             stop()
             throw error
@@ -6979,6 +6979,14 @@ private final class MirrorLoopbackOutputQueueSession {
         guard let queue else { return false }
         return AudioSupport.currentDevice(queue)
             == MirrorLoopbackPolicy.hiddenUID
+    }
+
+    func releaseChallenge() throws {
+        guard currentDeviceMatches(), readbackFormat == .canonical,
+              readbackQueueVolumeScalar == 1.0 else {
+            throw ProbeError(code: "mirror_writer_release_contract_failed")
+        }
+        context.enableChallenge()
     }
 
     func progress() -> (
@@ -7334,7 +7342,9 @@ private enum MirrorLoopbackRestartVerifier {
 private enum MirrorLoopbackRealRunner {
     static func run(
         nonce: String,
-        requiredHeadroomSeconds: Double
+        requiredHeadroomSeconds: Double,
+        proofStartOrder: String = "visible-first",
+        observeEpoch: ((_ phase: String, _ visible: AudioDeviceID, _ hidden: AudioDeviceID) throws -> Void)? = nil
     ) throws -> MirrorLoopbackResult {
         let visible = try MirrorLoopbackExactUIDTranslator.resolve(
             exactUID: MirrorLoopbackPolicy.visibleUID,
@@ -7460,7 +7470,20 @@ private enum MirrorLoopbackRealRunner {
             input.stop()
         }
         let signalMonitor = SignalMonitor()
+        guard proofStartOrder == "visible-first" || proofStartOrder == "hidden-first" else {
+            throw ProbeError(code: "mirror_restart_order_invalid")
+        }
+        try observeEpoch?("before-start", visible.evidence.objectID, hidden.evidence.objectID)
+        if proofStartOrder == "hidden-first" {
+            // The writer establishes the first-client epoch without emitting
+            // the nonce before the input has demonstrated readiness.
+            try output.start(releaseChallenge: false)
+            try observeEpoch?("first-started", visible.evidence.objectID, hidden.evidence.objectID)
+        }
         try input.start()
+        if proofStartOrder == "visible-first" {
+            try observeEpoch?("first-started", visible.evidence.objectID, hidden.evidence.objectID)
+        }
         let inputReadyDeadline = ProcessInfo.processInfo.systemUptime
             + MirrorLoopbackPolicy.inputReadinessDeadlineSeconds
         while ProcessInfo.processInfo.systemUptime < inputReadyDeadline {
@@ -7498,7 +7521,18 @@ private enum MirrorLoopbackRealRunner {
                     * MirrorLoopbackPolicy.callbackFrames else {
             throw ProbeError(code: "mirror_input_readiness_timeout")
         }
-        try output.start()
+        // Readiness is not permission to emit after an observed route, device,
+        // signal or queue failure, including the iteration that met readiness.
+        guard signalMonitor.receivedSignal() == 0,
+              !inputFailure.hasFailure(), !outputFailure.hasFailure(),
+              input.currentDeviceMatches(), defaultGuard.notificationCount() == 0,
+              try defaultGuard.snapshot() == defaultsBefore,
+              deviceGuard.notificationCount() == 0 else {
+            throw ProbeError(code: "mirror_unsafe_before_challenge_release")
+        }
+        if proofStartOrder == "visible-first" { try output.start() }
+        else { try output.releaseChallenge() }
+        try observeEpoch?("both-started", visible.evidence.objectID, hidden.evidence.objectID)
 
         func readDeviceTimePair() throws -> MirrorLoopbackDeviceTimePair {
             MirrorLoopbackDeviceTimePair(
@@ -7548,6 +7582,7 @@ private enum MirrorLoopbackRealRunner {
             forcedFailures.append("mirror_device_time_read_failed")
         }
 
+        try observeEpoch?("proof-complete", visible.evidence.objectID, hidden.evidence.objectID)
         output.stop()
         input.stop()
         let defaultsAfter = try defaultGuard.snapshot()
@@ -7559,6 +7594,7 @@ private enum MirrorLoopbackRealRunner {
             visible: visible.evidence.objectID,
             hidden: hidden.evidence.objectID
         )
+        try observeEpoch?("drained", visible.evidence.objectID, hidden.evidence.objectID)
         let snapshot = collector.snapshot()
         let writerProgress = output.progress()
         let lastRawFrame: UInt64 = deviceTimePairs.last.map { pair in
@@ -8352,6 +8388,332 @@ private enum MirrorLoopbackProgram {
         }
     }
 }
+
+#if BELUGA_MICROPHONE_V9_ORACLE
+private struct BelugaV9EpochObservation: Codable {
+    let phase: String
+    let deviceUID: String
+    let deviceID: UInt32
+    let schema: UInt32
+    let sequence: UInt64
+    let capturedHostTicks: UInt64
+    let instance: UInt64
+    let driverLifecycle: UInt64
+    let coreLifecycle: UInt64
+    let timelineSeed: UInt64
+    let seedGeneration: UInt64
+    let anchorHostTicks: UInt64
+    let lastIssuedSeed: UInt64
+    let lastIssuedSessionID: UInt64
+    let idle: Bool
+    let active: UInt64
+    let visible: UInt64
+    let hidden: UInt64
+    let activeCore: UInt64
+    let started: UInt64
+    let visibleStarted: UInt64
+    let hiddenStarted: UInt64
+
+    init(phase: String, uid: String, device: UInt32,
+         snapshot: WorldwideVirtualMicrophoneDriverDiagnosticSnapshot, validatedPayload: Data) {
+        self.phase = phase; deviceUID = uid; deviceID = device
+        schema = snapshot.schemaVersion; sequence = snapshot.sequence
+        capturedHostTicks = snapshot.capturedHostTicks
+        let epoch = snapshot.epoch
+        instance = epoch.instance; driverLifecycle = epoch.driverLifecycle
+        coreLifecycle = epoch.coreLifecycle; timelineSeed = epoch.timelineSeed
+        seedGeneration = epoch.seedGeneration; anchorHostTicks = epoch.anchorHostTicks
+        lastIssuedSeed = epoch.lastIssuedSeed; lastIssuedSessionID = epoch.lastIssuedSessionID
+        idle = snapshot.isIdle
+        // This exact payload has already passed the unchanged production v2
+        // decoder, including every active-core and registration cross-check.
+        func u64(_ offset: Int) -> UInt64 {
+            (0..<8).reduce(UInt64(0)) { $0 | UInt64(validatedPayload[offset + $1]) << ($1 * 8) }
+        }
+        active = u64(144); visible = u64(152); hidden = u64(160)
+        activeCore = u64(168); started = u64(192)
+        visibleStarted = u64(216); hiddenStarted = u64(224)
+    }
+
+    var epochIdentity: [UInt64] {
+        [instance, driverLifecycle, coreLifecycle, timelineSeed, seedGeneration,
+         anchorHostTicks, lastIssuedSeed, lastIssuedSessionID, idle ? 1 : 0,
+         active, visible, hidden, activeCore, started, visibleStarted, hiddenStarted]
+    }
+}
+
+// Capture the same CFData read consumed by the production decoder. There is
+// no second property query, legacy fallback acceptance, or fixture injection.
+private final class BelugaV9PayloadCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var payload: Data?
+    func store(_ value: Data) { lock.lock(); defer { lock.unlock() }; payload = value }
+    func take() -> Data? { lock.lock(); defer { lock.unlock() }; defer { payload = nil }; return payload }
+}
+
+private struct BelugaV9OrderResult: Encodable {
+    let order: String
+    let nonce: String
+    let waveform: MirrorLoopbackResult
+    let epochs: [BelugaV9EpochObservation]
+}
+
+private struct BelugaV9PublicResult: Encodable {
+    let schema = "beluga.microphone.public-both-order.v1"
+    let nonce: String
+    let expectedInstance: UInt64
+    let effectiveUID: UInt32
+    let status: String
+    let failureCode: String
+    let orders: [BelugaV9OrderResult]
+}
+
+private enum BelugaV9EpochProof {
+    static let phases = ["before-start", "first-started", "both-started", "proof-complete", "drained"]
+
+    static func validateRoles(_ observation: BelugaV9EpochObservation, order: String) throws {
+        let idlePhase = observation.phase == "before-start" || observation.phase == "drained"
+        let firstPhase = observation.phase == "first-started"
+        let expectedActive: UInt64 = idlePhase ? 0 : firstPhase ? 1 : 2
+        let expectedVisible: UInt64 = idlePhase ? 0 : firstPhase ? (order == "visible-first" ? 1 : 0) : 1
+        let expectedHidden: UInt64 = idlePhase ? 0 : firstPhase ? (order == "hidden-first" ? 1 : 0) : 1
+        guard observation.active == expectedActive, observation.activeCore == expectedActive,
+              observation.started == expectedActive, observation.visible == expectedVisible,
+              observation.visibleStarted == expectedVisible, observation.hidden == expectedHidden,
+              observation.hiddenStarted == expectedHidden else {
+            throw ProbeError(code: "v9_actual_start_order_or_active_roles_mismatch")
+        }
+    }
+
+    static func validate(_ observations: [BelugaV9EpochObservation], instance: UInt64, order: String) throws {
+        guard ["visible-first", "hidden-first"].contains(order), observations.count == phases.count * 2 else {
+            throw ProbeError(code: "v9_epoch_observations_incomplete")
+        }
+        for observation in observations {
+            try validateRoles(observation, order: order)
+        }
+        for (index, observation) in observations.enumerated() {
+            guard observation.phase == phases[index / 2], observation.schema == 2,
+                  observation.instance == instance, observation.sequence > 0,
+                  observation.capturedHostTicks > 0,
+                  observation.deviceUID == (index.isMultiple(of: 2) ? MirrorLoopbackPolicy.visibleUID : MirrorLoopbackPolicy.hiddenUID),
+                  observation.deviceID == observations[index % 2].deviceID else {
+                throw ProbeError(code: "v9_epoch_identity_mismatch")
+            }
+        }
+        guard zip(observations, observations.dropFirst()).allSatisfy({
+            $0.sequence < $1.sequence && $0.capturedHostTicks < $1.capturedHostTicks
+        }), observations[0].deviceID != observations[1].deviceID,
+              stride(from: 0, to: observations.count, by: 2).allSatisfy({
+                  observations[$0].epochIdentity == observations[$0 + 1].epochIdentity
+              }) else {
+            throw ProbeError(code: "v9_epoch_freshness_mismatch")
+        }
+        let baseline = observations[0], started = observations[2], drained = observations[8]
+        guard observations.prefix(2).allSatisfy({ $0.idle && $0.timelineSeed == 0 && $0.seedGeneration == 0 && $0.anchorHostTicks == 0 }),
+              started.timelineSeed > baseline.lastIssuedSeed, started.seedGeneration == started.timelineSeed,
+              started.anchorHostTicks > 0,
+              observations[2..<8].allSatisfy({
+                  !$0.idle && $0.timelineSeed == started.timelineSeed &&
+                  $0.seedGeneration == started.seedGeneration && $0.anchorHostTicks == started.anchorHostTicks
+              }),
+              observations.suffix(2).allSatisfy({
+                  $0.idle && $0.timelineSeed == 0 && $0.seedGeneration == 0 && $0.anchorHostTicks == 0 &&
+                  $0.lastIssuedSeed == started.timelineSeed && $0.lastIssuedSessionID > baseline.lastIssuedSessionID &&
+                  $0.coreLifecycle > baseline.coreLifecycle && $0.driverLifecycle > baseline.driverLifecycle
+              }),
+              drained.lastIssuedSessionID == observations[9].lastIssuedSessionID else {
+            throw ProbeError(code: "v9_seed_join_or_drain_mismatch")
+        }
+    }
+
+    static func validateContinuity(_ previous: BelugaV9EpochObservation, _ next: BelugaV9EpochObservation) throws {
+        guard previous.idle, next.idle, previous.instance == next.instance,
+              next.sequence > previous.sequence, next.capturedHostTicks > previous.capturedHostTicks,
+              next.lastIssuedSeed >= previous.lastIssuedSeed,
+              next.lastIssuedSessionID >= previous.lastIssuedSessionID,
+              next.driverLifecycle >= previous.driverLifecycle, next.coreLifecycle >= previous.coreLifecycle else {
+            throw ProbeError(code: "v9_inter_order_continuity_failed")
+        }
+    }
+}
+
+private enum BelugaV9PublicProgram {
+    static func runIfRequested() -> Int32? {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        guard arguments.first == "mirror-loopback-v9" else { return nil }
+        guard arguments.count == 9,
+              arguments[1] == "--nonce", arguments[3] == "--expected-instance",
+              arguments[5] == "--required-headroom-seconds", arguments[7] == "--result",
+              arguments[8] == "both-order.json", arguments[6] == "60",
+              arguments[2].utf8.count == 64,
+              arguments[2].utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              let instance = UInt64(arguments[4]), instance > 0, arguments[4] == String(instance),
+              getuid() == 501, geteuid() == 501 else { return 64 }
+        let nonce = arguments[2]
+        var results: [BelugaV9OrderResult] = []
+        var failureCode = ""
+        do {
+            for order in ["visible-first", "hidden-first"] {
+                var epochs: [BelugaV9EpochObservation] = []
+                let orderNonce = nonce + ":" + order
+                let waveform = try MirrorLoopbackRealRunner.run(
+                    nonce: orderNonce, requiredHeadroomSeconds: 60,
+                    proofStartOrder: order,
+                    observeEpoch: { phase, visible, hidden in
+                        for (uid, device, isHidden) in [
+                            (MirrorLoopbackPolicy.visibleUID, visible, false),
+                            (MirrorLoopbackPolicy.hiddenUID, hidden, true),
+                        ] {
+                            let before = try MirrorLoopbackExactUIDTranslator.resolve(exactUID: uid, expectedHidden: isHidden)
+                            guard before.evidence.objectID == device else { throw ProbeError(code: "v9_endpoint_remapped") }
+                            let captured = BelugaV9PayloadCapture()
+                            let reader = WorldwideVirtualMicrophoneDriverDiagnosticReader(readProperty: { deviceID, address, size, value in
+                                var address = address
+                                let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &value)
+                                if status == noErr, address.mSelector == WorldwideVirtualMicrophoneDriverDiagnosticSnapshot.v2Property,
+                                   let property = value?.takeUnretainedValue(), CFGetTypeID(property) == CFDataGetTypeID() {
+                                    let data = unsafeDowncast(property, to: CFData.self)
+                                    let length = CFDataGetLength(data)
+                                    if length >= WorldwideVirtualMicrophoneDriverDiagnosticSnapshot.v2HeaderByteCount,
+                                       length <= WorldwideVirtualMicrophoneDriverDiagnosticSnapshot.maximumV2ByteCount,
+                                       let bytes = CFDataGetBytePtr(data) {
+                                        captured.store(Data(bytes: bytes, count: length))
+                                    }
+                                }
+                                return status
+                            })
+                            guard case .success(let snapshot) = reader.read(device),
+                                  snapshot.schemaVersion == 2, snapshot.epoch.instance == instance,
+                                  let payload = captured.take(),
+                                  case .success(let capturedSnapshot) = WorldwideVirtualMicrophoneDriverDiagnosticSnapshot.decodeV2(payload),
+                                  capturedSnapshot == snapshot else {
+                                throw ProbeError(code: "v9_complete_diagnostic_read_failed")
+                            }
+                            let after = try MirrorLoopbackExactUIDTranslator.resolve(exactUID: uid, expectedHidden: isHidden)
+                            guard after.evidence.objectID == device else { throw ProbeError(code: "v9_endpoint_remapped") }
+                            let observation = BelugaV9EpochObservation(phase: phase, uid: uid, device: device,
+                                                                     snapshot: snapshot, validatedPayload: payload)
+                            try BelugaV9EpochProof.validateRoles(observation, order: order)
+                            epochs.append(observation)
+                        }
+                    }
+                )
+                results.append(.init(order: order, nonce: orderNonce, waveform: waveform, epochs: epochs))
+                guard waveform.status == "passed", waveform.realQueuePathImplemented else {
+                    throw ProbeError(code: "v9_order_waveform_failed")
+                }
+                try BelugaV9EpochProof.validate(epochs, instance: instance, order: order)
+                if results.count == 2 {
+                    guard let previous = results[0].epochs.last, let next = epochs.first else {
+                        throw ProbeError(code: "v9_inter_order_continuity_failed")
+                    }
+                    try BelugaV9EpochProof.validateContinuity(previous, next)
+                }
+            }
+        } catch let error as ProbeError { failureCode = error.code }
+        catch { failureCode = "v9_public_proof_internal_failure" }
+        let passed = failureCode.isEmpty && results.count == 2
+        let result = BelugaV9PublicResult(nonce: nonce, expectedInstance: instance, effectiveUID: geteuid(),
+                                        status: passed ? "passed" : "failed", failureCode: failureCode, orders: results)
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try MirrorLoopbackWriter.write(Array(encoder.encode(result)), resultLeaf: "both-order.json")
+            return passed ? 0 : 1
+        } catch { return 74 }
+    }
+}
+
+#if BELUGA_MICROPHONE_V9_ORACLE_SELF_TEST
+private enum BelugaV9EpochSelfTest {
+    static func run() throws {
+        var fixture: [[String: Any]] = []
+        for (phaseIndex, phase) in BelugaV9EpochProof.phases.enumerated() {
+            let idle = phaseIndex == 0 || phaseIndex == 4
+            for endpoint in 0..<2 {
+                fixture.append([
+                    "phase": phase, "deviceUID": endpoint == 0 ? MirrorLoopbackPolicy.visibleUID : MirrorLoopbackPolicy.hiddenUID,
+                    "deviceID": endpoint == 0 ? 101 : 202, "schema": 2, "sequence": phaseIndex * 2 + endpoint + 10,
+                    "capturedHostTicks": phaseIndex * 2 + endpoint + 100,
+                    "instance": 42, "driverLifecycle": phaseIndex + 3, "coreLifecycle": phaseIndex * 2 + 10,
+                    "timelineSeed": idle ? 0 : 8, "seedGeneration": idle ? 0 : 8,
+                    "anchorHostTicks": idle ? 0 : 1000,
+                    "lastIssuedSeed": phaseIndex == 0 ? 7 : 8,
+                    "lastIssuedSessionID": phaseIndex < 2 ? 11 : 12, "idle": idle,
+                    "active": idle ? 0 : phaseIndex == 1 ? 1 : 2,
+                    "activeCore": idle ? 0 : phaseIndex == 1 ? 1 : 2,
+                    "started": idle ? 0 : phaseIndex == 1 ? 1 : 2,
+                    "visible": idle ? 0 : 1, "visibleStarted": idle ? 0 : 1,
+                    "hidden": idle || phaseIndex == 1 ? 0 : 1,
+                    "hiddenStarted": idle || phaseIndex == 1 ? 0 : 1,
+                ])
+            }
+        }
+        func decoded(_ value: [[String: Any]]) throws -> [BelugaV9EpochObservation] {
+            try JSONDecoder().decode([BelugaV9EpochObservation].self, from: JSONSerialization.data(withJSONObject: value))
+        }
+        try BelugaV9EpochProof.validate(decoded(fixture), instance: 42, order: "visible-first")
+        var testCount = 1
+        var hiddenFixture = fixture
+        for index in 2..<4 {
+            hiddenFixture[index]["visible"] = 0; hiddenFixture[index]["visibleStarted"] = 0
+            hiddenFixture[index]["hidden"] = 1; hiddenFixture[index]["hiddenStarted"] = 1
+        }
+        try BelugaV9EpochProof.validate(decoded(hiddenFixture), instance: 42, order: "hidden-first")
+        testCount += 1
+        let mutants: [(Int, String, Any)] = [
+            (0, "instance", 41), (0, "schema", 1), (2, "sequence", 10),
+            (4, "capturedHostTicks", 100), (0, "deviceID", 202), (3, "driverLifecycle", 99),
+            (4, "deviceUID", "wrong"), (4, "timelineSeed", 9), (5, "anchorHostTicks", 999),
+            (2, "timelineSeed", 7), (8, "idle", false), (9, "lastIssuedSessionID", 13),
+            (8, "seedGeneration", 8), (8, "coreLifecycle", 10),
+            (2, "active", 2), (2, "activeCore", 2), (2, "started", 2),
+            (2, "visible", 0), (2, "visibleStarted", 0), (2, "hidden", 1),
+            (2, "hiddenStarted", 1), (4, "visible", 2), (8, "active", 1),
+        ]
+        for (index, key, value) in mutants {
+            var changed = fixture; changed[index][key] = value
+            var refused = false
+            do { try BelugaV9EpochProof.validate(decoded(changed), instance: 42, order: "visible-first") }
+            catch { refused = true }
+            guard refused else { throw ProbeError(code: "v9_epoch_mutant_accepted") }
+            testCount += 1
+        }
+        // Coherently mirrored counts still must prove the actual first role.
+        do {
+            try BelugaV9EpochProof.validate(decoded(fixture), instance: 42, order: "hidden-first")
+            throw ProbeError(code: "v9_actual_first_role_mutant_accepted")
+        } catch let error as ProbeError where error.code == "v9_actual_start_order_or_active_roles_mismatch" {}
+        testCount += 1
+        do {
+            try BelugaV9EpochProof.validate(decoded(Array(fixture.dropLast())), instance: 42, order: "visible-first")
+            throw ProbeError(code: "v9_truncated_epochs_accepted")
+        } catch let error as ProbeError where error.code == "v9_epoch_observations_incomplete" {}
+        testCount += 1
+        let prior = try decoded(fixture)[9]
+        var nextFixture = fixture
+        nextFixture[0]["sequence"] = 100; nextFixture[0]["capturedHostTicks"] = 200
+        nextFixture[0]["driverLifecycle"] = 20; nextFixture[0]["coreLifecycle"] = 30
+        nextFixture[0]["lastIssuedSeed"] = 8; nextFixture[0]["lastIssuedSessionID"] = 12
+        try BelugaV9EpochProof.validateContinuity(prior, decoded(nextFixture)[0]); testCount += 1
+        for (key, value) in [("lastIssuedSeed", 7), ("lastIssuedSessionID", 11), ("driverLifecycle", 1), ("coreLifecycle", 2)] {
+            var changed = nextFixture; changed[0][key] = value
+            do {
+                try BelugaV9EpochProof.validateContinuity(prior, decoded(changed)[0])
+                throw ProbeError(code: "v9_inter_order_mutant_accepted")
+            } catch let error as ProbeError where error.code == "v9_inter_order_continuity_failed" {}
+            testCount += 1
+        }
+        print("V9_EPOCH_PROOF_OFFLINE_TESTS_PASS \(testCount)/\(testCount) liveQueries=0")
+    }
+}
+do { try BelugaV9EpochSelfTest.run(); Darwin.exit(0) }
+catch { Darwin.exit(1) }
+#else
+if let status = BelugaV9PublicProgram.runIfRequested() { Darwin.exit(status) }
+#endif
+#endif
 
 if let status = DefaultUIDSnapshotProgram.runIfRequested() {
     Darwin.exit(status)
