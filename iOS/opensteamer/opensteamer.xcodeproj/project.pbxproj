@@ -873,7 +873,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 92;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1126,7 +1126,7 @@
 				BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
 				CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 91;
+				CURRENT_PROJECT_VERSION = 92;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = MediaNotificationContent/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
