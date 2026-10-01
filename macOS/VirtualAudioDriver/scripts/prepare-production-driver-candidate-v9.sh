@@ -463,7 +463,7 @@ entry_boundary_files=(
     "$script_path" ""
     "$binding_request" "$binding_request_sha256"
     "${binding_request:h}" "directory0700"
-    "$binding_adapter" "c8736c354f54b8ca782bbdf68be6183623a6e3252d76499c65950d1547dd1090"
+    "$binding_adapter" "66810d9e15b69a34309561403a2553c751324ed8ba04334b74abe1c2e1cdd5b4"
     "$production_verifier" "3a8d420ec2428b22832d8cfc54315fa9e1adcc3dce5ff8cbb2d6f3c5f71acf90"
     "$plist_helper" "d449934961077b74a7c307d69fd92eddcc0c202c3fc441919efd5c37e498ea94"
     "$installer_signature_parser" "25293a4c83b5c6a6e1c95a95388d596f56057e5c5a54add0756017cfc6b0deac"

@@ -116,6 +116,28 @@ module OpensteamerMicrophoneReceiptBinding
     retain ? [record, bytes] : record
   end
 
+  # The receipt names Apple's Swift dispatch alias, not only its canonical tool.
+  # No other symlink or chain is admitted at this dependency-only boundary.
+  def self.receipt_tool_record(path, deadline, expected:, developer:)
+    time_left!(deadline)
+    require!(path.is_a?(String) && path.start_with?('/') && !path.include?("\0"), 'binding receipt tool path is malformed')
+    before = File.lstat(path)
+    return file_record(path, deadline, expected: expected, executable: true, single_link: false) unless before.symlink?
+    require!(path == developer + '/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift', 'binding receipt tool alias is not the reviewed Apple Swift path')
+    parent = directory_record(File.dirname(path))
+    link = File.readlink(path)
+    require!(before.nlink == 1 && (before.mode & 0022) == 0 && link == 'swift-frontend' && before.size == link.bytesize,
+             'binding receipt tool alias identity or target is unsafe')
+    target_path = File.dirname(path) + '/swift-frontend'
+    require!(File.realpath(path) == target_path, 'binding receipt tool alias target is not canonical and adjacent')
+    target = file_record(target_path, deadline, expected: expected, executable: true)
+    require!(stat_record(File.lstat(path)) == stat_record(before) && File.readlink(path) == link &&
+             File.realpath(path) == target_path && directory_record(parent['path']) == parent,
+             'binding receipt tool alias changed while reading')
+    { 'path' => path, 'sha256' => target['sha256'], 'kind' => 'apple-swift-adjacent-alias.v1',
+      'linkBytes' => link, 'linkStat' => stat_record(before), 'parent' => parent, 'target' => target }
+  end
+
   class Executor
     def call(argv, environment, directory, deadline, maximum)
       reader, writer = IO.pipe
@@ -239,7 +261,7 @@ module OpensteamerMicrophoneReceiptBinding
     require!(declared['tools'][xcodebuild] == request['xcodebuildSha256'] &&
              declared['tools'][RUBY] == request['rubySha256'], 'binding receipt lacks reviewed Xcode or fixed Ruby identity')
     tools = declared['tools'].sort.map do |path, digest|
-      [path, file_record(path, deadline, expected: digest, executable: true, single_link: false)]
+      [path, receipt_tool_record(path, deadline, expected: digest, developer: request['developerDirectory'])]
     end.to_h
     { 'product' => product, 'tooling' => tooling, 'adapter' => adapter,
       'receipt' => receipt, 'receiptParent' => parent, 'verifierSources' => verifiers,
@@ -307,7 +329,7 @@ module OpensteamerMicrophoneReceiptBinding
 
   private_class_method :require!, :keys!, :sha?, :parse_json, :deep_freeze,
                        :unprivileged!, :stat_record, :canonical!, :time_left!,
-                       :directory_record, :file_record, :environment, :git,
+                       :directory_record, :file_record, :receipt_tool_record, :environment, :git,
                        :git_record, :validate_request, :inputs
 end
 

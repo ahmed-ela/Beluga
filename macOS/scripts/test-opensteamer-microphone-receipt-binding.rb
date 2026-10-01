@@ -354,6 +354,114 @@ class OpensteamerMicrophoneReceiptBindingTests < Minitest::Test
     refuses('identity changed') { bind }
   end
 
+  def private_swift_alias
+    source_git = @developer + '/usr/bin/git'
+    @developer = @temporary + '/Developer'
+    developer_git = @developer + '/usr/bin/git'
+    write(developer_git, File.binread(source_git), 0755)
+    old_xcode = @xcode; @xcode = @developer + '/usr/bin/xcodebuild'
+    write(@xcode, 'private not-executed Xcode dependency fixture', 0755)
+    target = @developer + '/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend'
+    write(target, 'private not-executed Swift dependency fixture', 0755)
+    path = File.dirname(target) + '/swift'; File.symlink('swift-frontend', path)
+    @receipt['tools'].delete(old_xcode)
+    @receipt['tools'][@xcode] = sha(@xcode); @receipt['tools'][path] = sha(target)
+    write(@receipt_path, JSON.generate(@receipt), 0600)
+    @request = @request.merge('developerDirectory' => @developer, 'developerGitSha256' => sha(developer_git),
+                              'xcodebuildSha256' => sha(@xcode), 'receiptSha256' => sha(@receipt_path))
+    [path, target]
+  end
+
+  def test_exact_swift_alias_keeps_declared_key_link_and_canonical_target
+    path, target = private_swift_alias
+    record = bind
+    tool = record['inputs']['receiptTools'].fetch(path)
+    assert_equal path, tool['path']
+    assert_equal 'apple-swift-adjacent-alias.v1', tool['kind']
+    assert_equal 'swift-frontend', tool['linkBytes']
+    assert_equal File.lstat(path).ino, tool['linkStat']['inode']
+    assert_equal sha(target), tool['sha256']
+    assert_equal File.dirname(path), tool['parent']['path']
+    assert_equal target, tool['target']['path']
+    assert_equal sha(target), tool['target']['sha256']
+    assert_equal File.stat(target).ino, tool['target']['stat']['inode']
+    assert tool.frozen?
+    refute record['deploymentAuthority']
+    assert_equal record, @binding.send(:revalidate_with_executor, record, @request, @executor)
+    refuses('not canonical') { @binding.send(:file_record, path, Process.clock_gettime(Process::CLOCK_MONOTONIC) + 10) }
+  end
+
+  def test_swift_alias_retargets_chains_and_unsafe_target_are_refused
+    path, target = private_swift_alias
+    adjacent = File.dirname(path) + '/other-tool'; write(adjacent, File.binread(target), 0755)
+    ['other-tool', target, '../bin/swift-frontend', 'swift'].each do |link|
+      File.unlink(path); File.symlink(link, path)
+      refuses('alias') { bind }
+    end
+    File.unlink(path); File.symlink('swift-frontend', path)
+    File.unlink(target); File.symlink('other-tool', target)
+    refuses('canonical and adjacent') { bind }
+    File.unlink(target); write(target, 'private not-executed Swift dependency fixture', 0775)
+    refuses('permissions') { bind }
+    File.chmod(0755, target); File.chmod(0775, File.dirname(path))
+    refuses('directory') { bind }
+    assert_empty @executor.calls
+  end
+
+  def test_swift_alias_missing_nonexecutable_wrong_digest_and_target_hardlink_refuse
+    path, target = private_swift_alias
+    @receipt['tools'][path] = '0' * 64; write(@receipt_path, JSON.generate(@receipt), 0600)
+    refuses('pinned binding digest') { bind(@request.merge('receiptSha256' => sha(@receipt_path))) }
+    @receipt['tools'][path] = sha(target); write(@receipt_path, JSON.generate(@receipt), 0600)
+    @request['receiptSha256'] = sha(@receipt_path)
+    File.chmod(0644, target)
+    refuses('permissions') { bind }
+    File.chmod(0755, target); File.link(target, target + '.hardlink')
+    refuses('links') { bind }
+    File.unlink(target + '.hardlink'); File.unlink(target)
+    refuses('missing') { bind }
+    assert_empty @executor.calls
+  end
+
+  def test_receipt_alias_exception_does_not_accept_other_declared_tool_aliases
+    path = @temporary + '/other-tool-alias'; File.symlink('fixture-tool', path)
+    @receipt['tools'][path] = sha(@tool); write(@receipt_path, JSON.generate(@receipt), 0600)
+    refuses('reviewed Apple Swift path') { bind(@request.merge('receiptSha256' => sha(@receipt_path))) }
+    assert_empty @executor.calls
+  end
+
+  def test_swift_alias_link_and_target_drift_during_verification_are_fenced
+    path, target = private_swift_alias
+    replacement = File.dirname(path) + '/other-tool'; write(replacement, File.binread(target), 0755)
+    original = File.binread(target)
+    mutations = [
+      lambda { File.unlink(path); File.symlink('other-tool', path) },
+      lambda { File.unlink(path); File.symlink('other-tool', path); File.unlink(path); File.symlink('swift-frontend', path) },
+      lambda { copy = path + '.replacement'; File.symlink('swift-frontend', copy); File.rename(copy, path) },
+      lambda { File.binwrite(target, 'changed'); File.binwrite(target, original) },
+      lambda { replace_same_bytes(target) },
+      lambda { File.chmod(0644, target); File.chmod(0755, target) }
+    ]
+    mutations.each do |mutation|
+      File.unlink(path); File.symlink('swift-frontend', path)
+      @executor.during = mutation
+      refuses { bind }
+    end
+  end
+
+  def test_swift_alias_parent_mode_restore_and_directory_replacement_are_fenced
+    path, target = private_swift_alias
+    parent = File.dirname(path)
+    @executor.during = lambda { File.chmod(0750, parent); File.chmod(0700, parent) }
+    refuses('identity changed') { bind }
+    @executor.during = lambda do
+      held = parent + '.held'
+      File.rename(parent, held); Dir.mkdir(parent, 0700)
+      File.rename(held + '/swift', path); File.rename(held + '/swift-frontend', target)
+    end
+    refuses('identity changed') { bind }
+  end
+
   def test_receipt_git_commit_and_new_feature_drift_during_verification_refuse
     @executor.during = lambda { write(File.join(@product, 'late-source.swift'), 'late feature') }
     refuses('not clean') { bind }

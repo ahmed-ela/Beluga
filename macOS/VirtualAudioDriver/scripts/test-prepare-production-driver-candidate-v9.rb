@@ -174,6 +174,57 @@ class ProductionDriverCandidateV9Tests < Minitest::Test
     end
   end
 
+  def fixture_tree(root, paths)
+    paths.each do |relative, (bytes, mode)|
+      path = root + '/' + relative
+      FileUtils.mkdir_p(File.dirname(path), mode: 0700)
+      File.binwrite(path, bytes); File.chmod(mode, path)
+    end
+    prefix = ['/usr/bin/git', '-c', 'core.hooksPath=/dev/null', '-C', root]
+    [%w[init --quiet], %w[add --all], ['-c', 'user.name=Offline Fixture', '-c', 'user.email=offline-fixture@example.invalid',
+                                    '-c', 'commit.gpgsign=false', 'commit', '--quiet', '--no-verify', '-m', 'Offline closure fixture']].each do |argv|
+      _, error, status = command(prefix + argv)
+      assert status.success?, error
+    end
+    output, error, status = command(prefix + ['rev-parse', 'HEAD^{tree}'])
+    assert status.success?, error
+    output.chomp
+  end
+
+  def test_actual_complete_closure_pins_mixed_regular_and_alias_receipt_tools
+    product = @scratch + '/closure-product'; tooling = @scratch + '/closure-tooling'
+    [product, tooling].each { |path| Dir.mkdir(path, 0700) }
+    leaves = %w[scripts/build-driver.sh scripts/verify-driver-bundle.sh Driver/Info.plist Driver/OpensteamerVirtualMicrophone.c
+                src/OpensteamerVirtualAudioCore.c Driver/OpensteamerVirtualMicrophone.exports APPLE_SAMPLE_LICENSE.txt
+                Resources/en.lproj/Localizable.strings include/Fixture.h]
+    product_tree = fixture_tree(product, leaves.to_h { |leaf| ['macOS/VirtualAudioDriver/' + leaf, ['private build-source fixture', 0644]] })
+    relative = 'macOS/VirtualAudioDriver/scripts/'
+    tooling_files = %w[prepare-production-driver-candidate-v9.sh verify-production-driver-package-v9.sh beluga-production-driver-plist.py parse-installer-signature-v8.sh]
+      .to_h { |leaf| [relative + leaf, [File.binread(__dir__ + '/' + leaf), File.stat(__dir__ + '/' + leaf).mode & 0777]] }
+    adapter = 'macOS/scripts/opensteamer-microphone-receipt-binding.rb'
+    tooling_files[adapter] = [File.binread(__dir__ + '/../../scripts/opensteamer-microphone-receipt-binding.rb'), 0644]
+    tooling_tree = fixture_tree(tooling, tooling_files)
+    regular = @scratch + '/regular-tool'; target = @scratch + '/swift-frontend'; alias_path = @scratch + '/swift'
+    [regular, target].each { |path| File.binwrite(path, 'not executed fixture tool'); File.chmod(0755, path) }
+    File.symlink('swift-frontend', alias_path)
+    developer = File.realpath('/Applications/Xcode-26.6.0.app/Contents/Developer')
+    record = { 'request' => { 'productRoot' => product, 'productTree' => product_tree, 'toolingRoot' => tooling,
+                              'toolingTree' => tooling_tree, 'developerDirectory' => developer },
+               'inputs' => { 'developerGit' => { 'path' => developer + '/usr/bin/git' }, 'receiptTools' =>
+                 [regular, alias_path].to_h { |path| [path, { 'path' => path, 'sha256' => Digest::SHA256.file(path).hexdigest }] } } }
+    fixture = @scratch + '/closure-record.json'; File.binwrite(fixture, JSON.generate(record))
+    # This executes the unchanged whole closure branch. xcrun resolves paths only;
+    # no compiler, signer, notary, builder or release preparation is executed.
+    output, error, status = functions('candidate_input_identity closure <"$1"', fixture)
+    assert status.success?, error
+    tools = JSON.parse(output).fetch('tools')
+    assert_equal regular, tools.fetch(regular).fetch('canonical')
+    assert_equal target, tools.fetch(alias_path).fetch('canonical')
+    assert_equal File.lstat(alias_path).ino, tools.fetch(alias_path).fetch('stat')[1]
+    assert_equal File.stat(target).ino, tools.fetch(alias_path).fetch('targetStat')[1]
+    assert_equal Digest::SHA256.file(target).hexdigest, tools.fetch(alias_path).fetch('sha256')
+  end
+
   def test_actual_clean_runner_pins_cwd_and_blocks_json_shadow_bash_env_and_zsh_startup
     product = @scratch + '/bound-product'; Dir.mkdir(product, 0700)
     build = @scratch + '/private-build'; Dir.mkdir(build, 0700)
