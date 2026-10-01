@@ -17,6 +17,7 @@ lifecycle, MediaPlayer setup, reconnect, or audio diagnostics. Keep
 | User intent and reconnect | Manual off and denied permission must not loop back on during the same session. A genuinely new authenticated session gets its own admission lifetime. Replacement waits for exact prior-peer teardown. | `testManualMicrophoneOffCancelsPendingAutomaticAttemptAndPersistsAcrossRecovery`; `testNewAuthenticatedSessionMayRetryAutomaticMicrophoneAfterDenial`; `testReplacementConnectionWaitsForRetiredPeerCloseBeforeAudioActivation` |
 | Failure evidence | Retain the first concrete rejection, requested/actual policy and pre-rollback route evidence. Diagnostics explain failures; they never grant authority or turn failed capture into success. | `testCategoryObservationFailureDetailPrecedesGenericFailureAndIgnoresRetiredReceipts`; `IOSAudioDiagnosticsJournalTests` |
 | Mac process-tap startup | Keep `kAudioAggregateDeviceTapAutoStartKey` false on every fresh aggregate. Nonzero waits for tapped playback and can stall a fresh microphone reader on a silent Mac. Preserve the real output clock, private/unmuted tap, exclusions and exact native teardown. Never work around this with synthetic playback or a Voice Memos launch. | `testEveryFreshAggregateStartsWithoutWaitingForTappedPlayback`; production-aligned `TapStartupProbe` comparison with tap-only retirement and clean reader/writer teardown |
+| Mac HAL client admission | Non-recording registrations must not consume the fixed 64 active PCM leases. A fresh reader can register/start under dual-endpoint registration pressure without interrupting the existing writer or changing its clock/lease. Active-stream capacity and allocation failures still fail closed, preserve existing streams, and report the exact operation/client/status. | Production wrapper registration-pressure, bounded-active-capacity, and allocation-failure tests; complete v2 diagnostic inventory and malformed-reader fixtures |
 
 The native boundaries are in `shared/Sources/IOSWebRTCAudioDeviceShim/IOSWebRTCAudioDeviceShim.m`.
 The Swift stop/ownership ordering is in `WebRTCPeer.performIPhoneMicrophoneOutputOnlyDisable`.
@@ -117,10 +118,67 @@ route-change or call scenario instead of borrowing proof from an easier test.
 
 ## Enforcement and known baseline
 
-There is currently no checked-in CI workflow. The archive/upload script verifies the
-release artifact but does **not** run XCTest or consume these test results. These are
-required engineering/release checks, not an existing automatic CI merge block. Do not
-claim CI enforcement without wiring and verifying it separately.
+Every supported TestFlight archive/upload mode and the current signed Beluga Host
+builder require a source-bound offline microphone regression receipt, even if
+only an unrelated feature changed. Generate
+one with the mandatory runner using an explicit dedicated Simulator and an existing
+private test cache:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode-26.6.0.app/Contents/Developer \
+  scripts/validate-microphone-regressions.sh \
+  --simulator-udid "${BELUGA_SIMULATOR_UDID:?select the test simulator}" \
+  --scratch-path "${BELUGA_MIC_TEST_CACHE:?reuse the dedicated private cache}" \
+  --timeout-seconds 3600
+```
+
+The runner requires complete signed Simulator audio suites with the exact intentional
+physical-only skip list, all pinned Rust authority tests, Mac mic/routing/tap suites,
+production C wrapper/core tests and sanitizers, passive diagnostic decoder tests,
+reproducible universal bundles, the actual built-bundle load oracle, and malformed
+bundle rejection. Missing critical tests, empty or partial result sets, unexpected
+skips, failures, changed source/tool bytes, and altered evidence fail the gate.
+The loaded-bundle oracle checks both pristine initialization and drained retirement
+after registration pressure. Retiring a core slot clears its active session, while
+client, endpoint and seed fields remain historical; post-stop validation must compare
+their exact expected retired identities rather than demand pristine zero fields.
+Active counts, bitmaps, clocks, registrations and work loops must still be drained,
+and the oracle's malformed pristine/retired fixtures are mandatory evidence.
+The bounded phase budget above accommodates the complete release-identity mutation
+suite; it does not change the test list or individual XCTest execution deadlines.
+Simulator signing evidence is collected from the actual signed arm64 Simulator
+executable: its exact XML and canonical DER App Group identity must agree, and the
+entitlement sections must be covered by verified CodeDirectory page hashes. Strict
+signature verification runs before and after collection. The pinned Xcode Simulator
+format can have an empty code-signature entitlement slot; build settings and generated
+`.xcent` files are not accepted as artifact evidence. Physical/archive signing never
+uses this Simulator-specific collector. Its complete behavioral and refusal suite
+is a mandatory phase, not an optional fallback.
+The receipt retains and hashes the whole Simulator app beside the fresh result bundle.
+Verification recollects its signed identity using the exact recorded read-only tools;
+it does not depend on whatever app later occupies the reusable DerivedData cache.
+
+Retain its printed receipt path and digest independently. Set
+`BELUGA_MICROPHONE_REGRESSION_RECEIPT` and
+`BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256` when invoking the existing guarded
+archive/upload script or `macOS/scripts/build-beluga-host-app.sh`. The archive
+script validates the retained result artifacts before accessing
+release credentials/cache, rechecks before and after archive, and rechecks immediately
+before export/upload. The host builder verifies before output allocation or signing
+identity lookup, before signing, and before handing off the verified artifact.
+Both reject receipt/verifier replacement or changed bytes during an invocation.
+A changed source tree needs new matching evidence; a valid
+receipt can be reused for unchanged inputs within its seven-day validity window.
+No release mode has a skip-tests bypass. Config-only/cache-enrollment modes do not
+archive or upload and therefore do not require a receipt.
+
+This is local release enforcement, **not** a configured remote CI/branch-protection
+merge block. The receipt proves offline source behavior only. It neither installs a
+HAL driver nor proves Codex dictation, a phone's current microphone state, physical
+reconnect/route changes, or far-end call audio. Guarded driver deployment and fresh
+public installed-device capture remain separate requirements. Historical approved
+Mac/driver controllers remain unchanged; the next compatible guarded successor
+must independently revalidate the same source-bound evidence before live cutover.
 
 Build 80's behavior changes passed 419 runnable Simulator audio tests (22 explicit/physical
 skips), 35 Rust tests, the targeted negative mutations, and two fresh spare-phone launches

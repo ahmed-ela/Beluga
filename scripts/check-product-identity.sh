@@ -1464,8 +1464,14 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'function run_initialize_build_cache() {\n  verify_package_dependency_contract \\\n    || fail "current package inputs changed before build-cache enrollment"' 1 \
   'side-by-side TestFlight fresh enrollment current-package verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'verify_static_contract\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' 1 \
+  $'esac\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' 1 \
   'side-by-side TestFlight entrypoint current-package verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_microphone_regression_receipt' 5 \
+  'side-by-side TestFlight mandatory microphone receipt boundaries'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'"${MICROPHONE_REGRESSION_RUNNER}" --verify-receipt "${receipt}" \\\n    --receipt-sha256 "${expected_receipt_sha256}" || return 1' 1 \
+  'side-by-side TestFlight independently bound microphone receipt verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/sandbox-exec -p "${profile_text}"' 1 \
   'side-by-side TestFlight protected-path Xcode sandbox'
@@ -1861,8 +1867,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_ASC_P8_SHA256="22d0dffa775141c5bedb6eb255fb909f50f0547f1997f2ff9ad92609afce5300"' 1 \
   'side-by-side TestFlight exact API-key byte digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'sha256_private_file_contents' 3 \
-  'side-by-side TestFlight path-independent private-key hashing'
+  'sha256_private_file_contents' 7 \
+  'side-by-side TestFlight path-independent private-key and receipt hashing'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }' 1 \
   'side-by-side TestFlight private-key stdin digest parser'
@@ -1921,7 +1927,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'function run_authorized_api_key_upload() {\n  pin_app_store_connect_api_key_identity \\\n    || fail "reviewed App Store Connect API key is missing, changed, or unsafe (${TESTFLIGHT_ASC_API_KEY_PIN_FAILURE})"\n  run_authorized_upload\n}' 1 \
   'side-by-side TestFlight API-key pin-before-upload wrapper'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '--upload-authorized-side-by-side-testflight-with-api-key)' 1 \
+  '--upload-authorized-side-by-side-testflight-with-api-key)' 2 \
   'side-by-side TestFlight explicit API-key upload authorization mode'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'exec {TESTFLIGHT_ASC_API_KEY_FD}>&- || cleanup_failed=1' 1 \

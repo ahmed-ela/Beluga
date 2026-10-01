@@ -48,6 +48,7 @@ readonly PROTECTED_MIGRATION_EVIDENCE_DIRECTORY="/Users/ahmed/Library/Applicatio
 readonly SCRIPT_DIR=${0:A:h}
 readonly PROJECT_DIR=${SCRIPT_DIR:h}
 readonly REPOSITORY_ROOT=${PROJECT_DIR:h:h}
+readonly MICROPHONE_REGRESSION_RUNNER="${REPOSITORY_ROOT}/scripts/validate-microphone-regressions.sh"
 readonly PROJECT_PATH="${PROJECT_DIR}/opensteamer.xcodeproj"
 readonly SCHEME_PATH="${PROJECT_PATH}/xcshareddata/xcschemes/${EXPECTED_SCHEME}.xcscheme"
 readonly SCHEME_SOURCE_PATH="${PROJECT_DIR}/TestFlightScheme/${EXPECTED_SCHEME}.xcscheme"
@@ -319,6 +320,11 @@ typeset -i RELEASE_SCRATCH_CLEANUP_RUNNING=0
 typeset -i RELEASE_SCRATCH_CLEANUP_COMPLETE=0
 typeset -i RELEASE_EXIT_CLEANUP_RUNNING=0
 typeset -i RELEASE_EXIT_CLEANUP_COMPLETE=0
+typeset TESTFLIGHT_MICROPHONE_RECEIPT_PATH=""
+typeset TESTFLIGHT_MICROPHONE_RECEIPT_IDENTITY=""
+typeset TESTFLIGHT_MICROPHONE_RECEIPT_SHA256=""
+typeset TESTFLIGHT_MICROPHONE_RUNNER_IDENTITY=""
+typeset TESTFLIGHT_MICROPHONE_RUNNER_SHA256=""
 
 function fail() {
   print -u2 -r -- "side-by-side TestFlight guard failed: $1"
@@ -354,6 +360,47 @@ function sha256_private_file_contents() {
 function string_is_lowercase_sha256() {
   local candidate=$1
   [[ "${#candidate}" == 64 && "${candidate}" != *[^0-9a-f]* ]]
+}
+
+function verify_microphone_regression_receipt() {
+  # This is mandatory for every archive, irrespective of which feature changed.
+  # Verification is read-only: the dedicated runner validates real test artifacts
+  # against the current complete source/toolchain identity, not a caller's PASS flag.
+  local receipt="${BELUGA_MICROPHONE_REGRESSION_RECEIPT:-}"
+  local expected_receipt_sha256="${BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256:-}"
+  string_is_lowercase_sha256 "${expected_receipt_sha256}" || return 1
+  [[ -n "${receipt}" && "${receipt}" == /* \
+      && "${receipt:A}" == "${receipt}" \
+      && -f "${receipt}" && ! -L "${receipt}" \
+      && -f "${MICROPHONE_REGRESSION_RUNNER}" \
+      && ! -L "${MICROPHONE_REGRESSION_RUNNER}" \
+      && -x "${MICROPHONE_REGRESSION_RUNNER}" ]] || return 1
+  local receipt_identity runner_identity receipt_sha256 runner_sha256
+  receipt_identity=$(stat_identity "${receipt}") || return 1
+  runner_identity=$(stat_identity "${MICROPHONE_REGRESSION_RUNNER}") || return 1
+  receipt_sha256=$(sha256_private_file_contents "${receipt}") || return 1
+  runner_sha256=$(sha256_private_file_contents "${MICROPHONE_REGRESSION_RUNNER}") || return 1
+  string_is_lowercase_sha256 "${receipt_sha256}" || return 1
+  string_is_lowercase_sha256 "${runner_sha256}" || return 1
+  [[ "${receipt_sha256}" == "${expected_receipt_sha256}" ]] || return 1
+  if [[ -n "${TESTFLIGHT_MICROPHONE_RECEIPT_PATH}" ]]; then
+    [[ "${receipt}" == "${TESTFLIGHT_MICROPHONE_RECEIPT_PATH}" \
+        && "${receipt_identity}" == "${TESTFLIGHT_MICROPHONE_RECEIPT_IDENTITY}" \
+        && "${receipt_sha256}" == "${TESTFLIGHT_MICROPHONE_RECEIPT_SHA256}" \
+        && "${runner_identity}" == "${TESTFLIGHT_MICROPHONE_RUNNER_IDENTITY}" \
+        && "${runner_sha256}" == "${TESTFLIGHT_MICROPHONE_RUNNER_SHA256}" ]] || return 1
+  fi
+  "${MICROPHONE_REGRESSION_RUNNER}" --verify-receipt "${receipt}" \
+    --receipt-sha256 "${expected_receipt_sha256}" || return 1
+  [[ "$(stat_identity "${receipt}")" == "${receipt_identity}" \
+      && "$(sha256_private_file_contents "${receipt}")" == "${receipt_sha256}" \
+      && "$(stat_identity "${MICROPHONE_REGRESSION_RUNNER}")" == "${runner_identity}" \
+      && "$(sha256_private_file_contents "${MICROPHONE_REGRESSION_RUNNER}")" == "${runner_sha256}" ]] || return 1
+  TESTFLIGHT_MICROPHONE_RECEIPT_PATH=${receipt}
+  TESTFLIGHT_MICROPHONE_RECEIPT_IDENTITY=${receipt_identity}
+  TESTFLIGHT_MICROPHONE_RECEIPT_SHA256=${receipt_sha256}
+  TESTFLIGHT_MICROPHONE_RUNNER_IDENTITY=${runner_identity}
+  TESTFLIGHT_MICROPHONE_RUNNER_SHA256=${runner_sha256}
 }
 
 function verify_app_store_connect_api_key_static_contract() {
@@ -5450,6 +5497,8 @@ function create_safe_output_directory() {
 
 function archive_side_by_side_app() {
   local output_directory=$1
+  verify_microphone_regression_receipt \
+    || fail "fresh source-bound microphone regression receipt is required before archive"
   verify_output_directory_identity \
     || fail "private TestFlight output directory changed before archive"
   [[ "${output_directory}" == "${TESTFLIGHT_OUTPUT_DIRECTORY}" ]] \
@@ -5484,6 +5533,8 @@ function archive_side_by_side_app() {
   verify_xcodebuild_authentication_contract \
     || fail "release authentication identity changed during archive"
   (( archive_status == 0 )) || return ${archive_status}
+  verify_microphone_regression_receipt \
+    || fail "microphone regression source or evidence changed during archive"
   print_release_stage_timing archive "${stage_started_at}"
   stage_started_at=${SECONDS}
   verify_archive_destination_identity \
@@ -5555,6 +5606,8 @@ function run_authorized_upload() {
   verify_archive
   verify_xcodebuild_authentication_contract \
     || fail "release authentication identity changed before upload"
+  verify_microphone_regression_receipt \
+    || fail "microphone regression evidence changed or expired before upload"
   local upload_status=0
   local -i stage_started_at=${SECONDS}
   run_pinned_xcodebuild export -exportArchive \
@@ -5606,6 +5659,13 @@ function run_authorized_api_key_upload() {
 }
 
 verify_static_contract
+case "${1:-}" in
+  --archive-only | --upload-authorized-side-by-side-testflight | --upload-authorized-side-by-side-testflight-with-api-key)
+    (( $# == 1 )) || fail "archive/upload modes accept no additional arguments"
+    verify_microphone_regression_receipt \
+      || fail "set BELUGA_MICROPHONE_REGRESSION_RECEIPT and BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256 to fresh verified regression evidence"
+    ;;
+esac
 verify_package_dependency_contract \
   || fail "current package inputs do not match the reviewed release pins"
 pin_export_options_identity \

@@ -2220,10 +2220,24 @@ require_rejection "$CASE" \
 
 CASE=$(new_case testflight-entrypoint-current-package-verification)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'verify_static_contract\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' \
-  $'verify_static_contract\ntrue # current package inputs not verified at entrypoint\npin_export_options_identity'
+  $'esac\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' \
+  $'esac\ntrue # current package inputs not verified at entrypoint\npin_export_options_identity'
 require_rejection "$CASE" \
   'side-by-side TestFlight entrypoint current-package verification'
+
+CASE=$(new_case testflight-microphone-receipt-upload-boundary)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  verify_microphone_regression_receipt \\\n    || fail "microphone regression evidence changed or expired before upload"' \
+  $'  true # microphone receipt not checked before upload'
+require_rejection "$CASE" \
+  'side-by-side TestFlight mandatory microphone receipt boundaries'
+
+CASE=$(new_case testflight-microphone-receipt-independent-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    --receipt-sha256 "${expected_receipt_sha256}" || return 1' \
+  $'    --receipt-sha256 "${receipt_sha256}" || return 1'
+require_rejection "$CASE" \
+  'side-by-side TestFlight independently bound microphone receipt verification'
 
 CASE=$(new_case testflight-xcode-sandbox-profile-consumption)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \

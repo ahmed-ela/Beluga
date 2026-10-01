@@ -272,9 +272,17 @@ signing contract with manual signing flags.
 Build the signed Mac host from the repository root:
 
 ```sh
+BELUGA_MICROPHONE_REGRESSION_RECEIPT='/absolute/retained/receipt.json' \
+BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256='independently-retained-lowercase-sha256' \
 OPENSTEAMER_HOST_CODESIGN_IDENTITY='Apple Development: Your Name (TEAMID)' \
   macOS/scripts/build-beluga-host-app.sh
 ```
+
+Generate the source-bound offline receipt with the mandatory runner described in
+[Microphone regression guardrails](MICROPHONE_REGRESSION_GUARDRAILS.md). Reuse it
+only for unchanged source/tool/evidence identities; the builder refuses missing,
+stale, or altered proof before signing. This produces an artifact, not a live host
+or HAL-driver update.
 
 Use the signed `Beluga Host.app` for pairing and macOS privacy permissions. A naked
 SwiftPM executable is useful for deterministic tests but is not a substitute for the signed

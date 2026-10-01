@@ -23,10 +23,68 @@ readonly SCRATCH_PATH_INPUT="${OPENSTEAMER_HOST_SCRATCH_PATH:-}"
 readonly EXPECTED_ARCHITECTURES="${OPENSTEAMER_EXPECTED_ARCHITECTURES:-}"
 readonly MEDIA_AUTOMATION_ENTITLEMENTS="$ROOT_DIR/macOS/OpensteamerHost/MediaAutomation.entitlements"
 readonly MEDIA_NATIVE_MANIFEST="$ROOT_DIR/macOS/OpensteamerHost/org.example.opensteamer.media.json"
+readonly MICROPHONE_REGRESSION_RUNNER="$ROOT_DIR/scripts/validate-microphone-regressions.sh"
+HOST_MICROPHONE_RECEIPT_PATH=''
+HOST_MICROPHONE_RECEIPT_IDENTITY=''
+HOST_MICROPHONE_RECEIPT_SHA256=''
+HOST_MICROPHONE_RUNNER_IDENTITY=''
+HOST_MICROPHONE_RUNNER_SHA256=''
 
 fail() {
     print -u2 -- "build-beluga-host-app: $*"
     exit 1
+}
+
+microphone_receipt_stat_identity() {
+    /usr/bin/stat -f '%d:%i:%u:%g:%Lp:%HT' "$1" 2>/dev/null
+}
+
+microphone_receipt_sha256() {
+    /usr/bin/shasum -a 256 <"$1" 2>/dev/null | /usr/bin/awk \
+        'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }'
+}
+
+microphone_receipt_is_sha256() {
+    local candidate=$1
+    [[ "${#candidate}" == 64 && "$candidate" != *[^0-9a-f]* ]]
+}
+
+verify_microphone_regression_receipt() {
+    # Signed Mac artifacts require the same all-feature offline proof as TestFlight.
+    # Reuse unchanged evidence, not an unverified caller-supplied PASS flag.
+    local receipt="${BELUGA_MICROPHONE_REGRESSION_RECEIPT:-}"
+    local expected_sha="${BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256:-}"
+    microphone_receipt_is_sha256 "$expected_sha" || return 1
+    [[ -n "$receipt" && "$receipt" == /* && "${receipt:A}" == "$receipt" \
+        && -f "$receipt" && ! -L "$receipt" \
+        && -f "$MICROPHONE_REGRESSION_RUNNER" && ! -L "$MICROPHONE_REGRESSION_RUNNER" \
+        && -x "$MICROPHONE_REGRESSION_RUNNER" ]] || return 1
+    local receipt_identity runner_identity receipt_sha runner_sha
+    receipt_identity=$(microphone_receipt_stat_identity "$receipt") || return 1
+    runner_identity=$(microphone_receipt_stat_identity "$MICROPHONE_REGRESSION_RUNNER") || return 1
+    receipt_sha=$(microphone_receipt_sha256 "$receipt") || return 1
+    runner_sha=$(microphone_receipt_sha256 "$MICROPHONE_REGRESSION_RUNNER") || return 1
+    microphone_receipt_is_sha256 "$receipt_sha" || return 1
+    microphone_receipt_is_sha256 "$runner_sha" || return 1
+    [[ "$receipt_sha" == "$expected_sha" ]] || return 1
+    if [[ -n "$HOST_MICROPHONE_RECEIPT_PATH" ]]; then
+        [[ "$receipt" == "$HOST_MICROPHONE_RECEIPT_PATH" \
+            && "$receipt_identity" == "$HOST_MICROPHONE_RECEIPT_IDENTITY" \
+            && "$receipt_sha" == "$HOST_MICROPHONE_RECEIPT_SHA256" \
+            && "$runner_identity" == "$HOST_MICROPHONE_RUNNER_IDENTITY" \
+            && "$runner_sha" == "$HOST_MICROPHONE_RUNNER_SHA256" ]] || return 1
+    fi
+    "$MICROPHONE_REGRESSION_RUNNER" --verify-receipt "$receipt" \
+        --receipt-sha256 "$expected_sha" || return 1
+    [[ "$(microphone_receipt_stat_identity "$receipt")" == "$receipt_identity" \
+        && "$(microphone_receipt_sha256 "$receipt")" == "$receipt_sha" \
+        && "$(microphone_receipt_stat_identity "$MICROPHONE_REGRESSION_RUNNER")" == "$runner_identity" \
+        && "$(microphone_receipt_sha256 "$MICROPHONE_REGRESSION_RUNNER")" == "$runner_sha" ]] || return 1
+    HOST_MICROPHONE_RECEIPT_PATH=$receipt
+    HOST_MICROPHONE_RECEIPT_IDENTITY=$receipt_identity
+    HOST_MICROPHONE_RECEIPT_SHA256=$receipt_sha
+    HOST_MICROPHONE_RUNNER_IDENTITY=$runner_identity
+    HOST_MICROPHONE_RUNNER_SHA256=$runner_sha
 }
 
 run_bundle_verifier() {
@@ -45,6 +103,8 @@ run_private_virtual_display_import_verifier() {
         "$PRIVATE_VIRTUAL_DISPLAY_IMPORT_VERIFIER" "$@"
     fi
 }
+
+verify_microphone_regression_receipt || fail "current microphone regression receipt is required"
 
 [[ "$REQUIRE_FRESH_RELEASE" == 0 || "$REQUIRE_FRESH_RELEASE" == 1 ]] || fail \
     "OPENSTEAMER_REQUIRE_FRESH_RELEASE must be 0 or 1"
@@ -335,6 +395,8 @@ done
 /bin/chmod 644 "$CONTENTS_DIR/Info.plist" "$RESOURCES_DIR/ThirdPartyNotices.md" \
     "$RESOURCES_DIR/org.example.opensteamer.media.json" "$RESOURCES_DIR/AppIcon.icns"
 
+verify_microphone_regression_receipt || fail "microphone regression evidence changed before signing"
+
 /usr/bin/codesign --force --sign "$SIGNING_IDENTITY" --timestamp=none "$WEBRTC_FRAMEWORK" \
     || fail "could not sign LiveKitWebRTC.framework"
 post_sign_version_a_entries="$(/bin/ls -1A "$version_a" | LC_ALL=C /usr/bin/sort)" || fail \
@@ -362,6 +424,8 @@ if [[ -n "$DESIGNATED_REQUIREMENT_REFERENCE" ]]; then
 fi
 OPENSTEAMER_EXPECTED_ARCHITECTURES="$EXPECTED_ARCHITECTURES" \
     run_bundle_verifier "${VERIFY_ARGUMENTS[@]}"
+
+verify_microphone_regression_receipt || fail "microphone regression evidence changed before artifact handoff"
 
 print -u2 -- "Signed Beluga Host with: $SIGNING_IDENTITY"
 print -r -- "$APP_DIR"
