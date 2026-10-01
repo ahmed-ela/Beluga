@@ -276,6 +276,18 @@ public struct WebRTCRemoteMediaStateUpdate: Codable, Equatable, Sendable {
     }
 }
 
+extension WebRTCRemoteMediaPipelineDiagnostics.Stage {
+    /// Privacy-reduced observation only; never serializes source identity or media metadata.
+    public init?(update: WebRTCRemoteMediaStateUpdate) {
+        guard update.isValid else { return nil }
+        let items = update.allItems
+        self.init(revision: update.revision, itemCount: UInt8(items.count),
+                  playingMask: items.enumerated().reduce(UInt8(0)) { mask, entry in
+                      entry.element.playbackState == .playing ? mask | (1 << entry.offset) : mask
+                  })
+    }
+}
+
 /// An immutable state received under one exact transport negotiation. Application code may retain
 /// it for native controls, but cannot manufacture or replace its transport authority.
 public struct WebRTCReceivedRemoteMediaState: Equatable, Sendable {

@@ -106,6 +106,76 @@ private final class FakeMacSystemNowPlayingRuntime: MacSystemNowPlayingRuntime,
 }
 
 final class MacSystemNowPlayingControllerTests: XCTestCase {
+    func testSemanticDiagnosticsTraceExternalPauseWithoutLoggingMetadataTicksOrIssuingCommands() async throws {
+        let runtime = FakeMacSystemNowPlayingRuntime()
+        runtime.enqueue(.snapshot(Self.snapshot(title: "PRIVATE-INITIAL")))
+        let messages = NowPlayingLockedBox<[String]>([])
+        let states = NowPlayingLockedBox<[WebRTCRemoteMediaStateUpdate]>([])
+        let controller = MacSystemNowPlayingController(runtime: runtime,
+            stateDiagnostics: { message in messages.update { $0.append(message) } })
+        defer { controller.stop() }
+        let initial = expectation(description: "playing initially published")
+        let metadata = expectation(description: "metadata-only revision still published")
+        let paused = expectation(description: "unsolicited external pause published")
+        controller.start { update in
+            states.update { $0.append(update) }
+            switch update.revision {
+            case 1: initial.fulfill()
+            case 2: metadata.fulfill()
+            case 3: paused.fulfill()
+            default: break
+            }
+        }
+        await fulfillment(of: [initial], timeout: 2)
+        let initialMessages = messages.read()
+        runtime.enqueue(.snapshot(Self.snapshot(title: "PRIVATE-METADATA-CHANGE")))
+        controller.refresh()
+        await fulfillment(of: [metadata], timeout: 2)
+        XCTAssertEqual(messages.read(), initialMessages, "Metadata updates must not generate semantic trace noise")
+        runtime.enqueue(.snapshot(Self.snapshot(title: "PRIVATE-METADATA-CHANGE", playbackRate: 0,
+                                               enabledCommands: [0])))
+        controller.refresh()
+        await fulfillment(of: [paused], timeout: 2)
+        let actual = messages.read()
+        XCTAssertEqual(actual.filter { $0.contains("stage=observerAccepted") }.count, 2)
+        XCTAssertEqual(actual.filter { $0.contains("stage=controllerPublished") }.count, 2)
+        XCTAssertTrue(actual.contains { $0.contains("stage=observerAccepted")
+            && $0.contains("refresh=3 activeRefresh=3") && $0.contains("itemCount=1 playingMask=0") })
+        XCTAssertTrue(actual.contains { $0.contains("stage=controllerPublished")
+            && $0.contains("controllerRevision=3") && $0.contains("itemCount=1 playingMask=0") })
+        XCTAssertFalse(actual.contains { $0.contains("PRIVATE") || $0.contains("track-1") })
+        XCTAssertEqual(states.read().first?.item?.contextID, states.read().last?.item?.contextID)
+        XCTAssertEqual(states.read().last?.item?.playbackState, .paused)
+        XCTAssertEqual(runtime.commands, [])
+    }
+
+    func testDiagnosticsDistinguishWatchdogWithdrawalFromRejectedFreshLatePause() async throws {
+        let runtime = FakeMacSystemNowPlayingRuntime()
+        let messages = NowPlayingLockedBox<[String]>([])
+        let states = NowPlayingLockedBox<[WebRTCRemoteMediaStateUpdate]>([])
+        let withdrawn = expectation(description: "watchdog withdraws authority")
+        let rejected = expectation(description: "late fresh paused callback is diagnosed, not applied")
+        let controller = MacSystemNowPlayingController(runtime: runtime, operationTimeout: 0.02,
+            stateDiagnostics: { message in
+                messages.update { $0.append(message) }
+                if message.contains("stage=observerRejected") { rejected.fulfill() }
+            })
+        defer { controller.stop() }
+        controller.start { update in states.update { $0.append(update) }; withdrawn.fulfill() }
+        await fulfillment(of: [withdrawn], timeout: 2)
+        runtime.deliver(.snapshot(Self.snapshot(playbackRate: 0, enabledCommands: [0])))
+        await fulfillment(of: [rejected], timeout: 2)
+        let actual = messages.read()
+        XCTAssertTrue(actual.contains { $0.contains("stage=observerTimedOut")
+            && $0.contains("refresh=1 activeRefresh=1") && $0.contains("reason=watchdog") })
+        XCTAssertTrue(actual.contains { $0.contains("stage=observerRejected")
+            && $0.contains("refresh=1 activeRefresh=0") && $0.contains("itemCount=1 playingMask=0")
+            && $0.contains("reason=supersededRefresh") })
+        XCTAssertEqual(states.read().count, 1)
+        XCTAssertNil(states.read().first?.item)
+        XCTAssertEqual(runtime.commands, [])
+    }
+
     func testCopiedPreparedSeekIsSingleUseAcrossConcurrentPerformCalls() async throws {
         let runtime = FakeMacSystemNowPlayingRuntime()
         runtime.enqueue(.snapshot(Self.snapshot(enabledCommands: [0, 1, 6, 7])))

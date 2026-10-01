@@ -385,6 +385,10 @@ final class WorldwideAudioClientDiagnosticsSinkTests: XCTestCase {
         var heartbeat = received(sequence: .max, context: context(), snapshot: healthy(counter: .max / 1_000)).heartbeat
         heartbeat.events = (1...8).map { event(sequence: UInt64($0), attempt: .max) }
         heartbeat.failureSnapshot = heartbeat.snapshot
+        let stage = WebRTCRemoteMediaPipelineDiagnostics.Stage(revision: .max, itemCount: 2, playingMask: 3)
+        heartbeat.mediaPipeline = .init(received: stage, applied: stage, published: stage, extensionRead: stage,
+            lastEventRevision: .max, lastEventAdmitted: false, publicationStatus: .unavailable,
+            extensionStatus: .unavailable, extensionAgeMilliseconds: 86_400_000, selectedItemIndex: 1)
         XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: context()), peerGeneration: 7, now: 0))
         let log = try XCTUnwrap(sink.logMessageIfDue(now: 0))
         XCTAssertLessThan(log.utf8.count, 6_144)
@@ -392,6 +396,54 @@ final class WorldwideAudioClientDiagnosticsSinkTests: XCTestCase {
             XCTAssertFalse(log.contains(forbidden), forbidden)
         }
         XCTAssertTrue(log.contains("acousticAudibility=unverified"))
+    }
+
+    func testMediaPipelineLogDistinguishesEveryBoundaryWithoutMediaIdentity() throws {
+        var sink = makeSink()
+        let token = context()
+        var heartbeat = received(sequence: 1, context: token).heartbeat
+        heartbeat.mediaPipeline = .init(
+            received: .init(revision: 8, itemCount: 2, playingMask: 2),
+            applied: .init(revision: 7, itemCount: 2, playingMask: 3),
+            published: .init(revision: 6, itemCount: 1, playingMask: 1),
+            extensionRead: .init(revision: 5, itemCount: 1, playingMask: 1),
+            lastEventRevision: 8, lastEventAdmitted: false, publicationStatus: .busy,
+            extensionStatus: .current, extensionAgeMilliseconds: 250, selectedItemIndex: 0)
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 0))
+        let log = try XCTUnwrap(sink.logMessageIfDue(now: 0))
+        for marker in ["current.media.received=8:2:2", "current.media.applied=7:2:3",
+                       "current.media.published=6:1:1", "current.media.extensionRead=5:1:1",
+                       "current.media.eventRevision=8", "current.media.eventAdmitted=false",
+                       "current.media.publication=busy", "current.media.extension=current",
+                       "current.media.extensionAgeMs=250", "current.media.selectedIndex=0"] {
+            XCTAssertTrue(log.contains(marker), marker)
+        }
+        token.authorization.revoke()
+        let retired = try XCTUnwrap(sink.logMessageIfDue(now: 2))
+        XCTAssertTrue(retired.contains("lastReceived.media.received=8:2:2"))
+        XCTAssertFalse(retired.contains("current.media."))
+    }
+
+    func testMediaStateChangesLogPromptlyButAgeAloneKeepsSummaryCadence() throws {
+        var sink = makeSink()
+        let token = context()
+        var heartbeat = received(sequence: 1, context: token).heartbeat
+        // Keep the original audio finding stable so only the optional media boundary changes.
+        heartbeat.snapshot.playbackState = .paused
+        heartbeat.mediaPipeline = .init(received: .init(revision: 1, itemCount: 1, playingMask: 1))
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 0))
+        XCTAssertNotNil(sink.logMessageIfDue(now: 0))
+        heartbeat.sequence = 2
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaPipeline?.extensionAgeMilliseconds = 2_000
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 2))
+        XCTAssertNil(sink.logMessageIfDue(now: 2))
+        heartbeat.sequence = 3
+        heartbeat.observedElapsedMilliseconds += 1_000
+        heartbeat.mediaPipeline?.received = .init(revision: 2, itemCount: 1, playingMask: 0)
+        XCTAssertTrue(sink.receive(.init(heartbeat: heartbeat, context: token), peerGeneration: 7, now: 3))
+        XCTAssertTrue(try XCTUnwrap(sink.logMessageIfDue(now: 3)).contains("current.media.received=2:1:0"))
+        XCTAssertEqual(sink.latest(now: 3).status, .fresh(.intentionallyPaused))
     }
 
     private func makeSink() -> WorldwideAudioClientDiagnosticsSink {

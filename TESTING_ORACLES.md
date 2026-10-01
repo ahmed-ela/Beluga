@@ -586,6 +586,23 @@ from a fresh read-only inspection after each cycle. Retain the earlier failed
 long-press evidence rather than treating the alternate path as its root-cause fix.
 These isolated tests do not prove a real YouTube effect or physical locked-screen behavior.
 
+For a stale external-pause report, correlate host refresh acceptance, controller state,
+successful wire publication, viewer receipt/admission, successful App Group publication
+and the extension's last fresh read. Record only revision, item count, playback bitmask
+and bounded statuses; never titles, URLs, content/context identifiers or audio. The
+native-send trace's `summaryScope=attempt` describes the attempted catalog, not
+the effective wire projection for an older primary-only viewer. Use the viewer's
+received stage to establish what it actually accepted.
+The optional media-pipeline fields on audio diagnostics require their exact current SDP
+nonce echo, because older hosts reject unknown heartbeat keys. Test both mixed-version
+directions and renegotiation, retain the 4 KiB envelope bound, and keep diagnostics
+incapable of granting media/command authority. The extension receipt is best-effort,
+bounded and uses a separate nonblocking diagnostic lock; its timestamp is the actual
+read time, never renewed by host/app observation. A receipt proves a state read, not
+rendered pixels. The loopback UI fixture bypasses the production VM/admission path;
+an injected VM event cannot stand in for native peer receipt. Keep those narrow tests
+separate from a correlated real-phone pause/update result.
+
 Exercise a pending command on the same poll that refreshes the mailbox heartbeat.
 Claim-time freshness must use a timestamp sampled after publication, not the earlier
 poll-start time; otherwise a valid new snapshot appears to come from the future.

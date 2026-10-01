@@ -271,6 +271,122 @@ public struct WebRTCAudioClientEvent: Codable, Equatable, Sendable {
     }
 }
 
+/// Aggregate playback-state boundaries only; never media content or source identities.
+public struct WebRTCRemoteMediaPipelineDiagnostics: Codable, Equatable, Sendable {
+    public struct Stage: Codable, Equatable, Sendable {
+        public var revision: UInt64
+        public var itemCount: UInt8
+        public var playingMask: UInt8
+
+        public init(revision: UInt64, itemCount: UInt8, playingMask: UInt8) {
+            self.revision = revision
+            self.itemCount = itemCount
+            self.playingMask = playingMask
+        }
+
+        public var isValid: Bool {
+            revision > 0 && itemCount <= 2
+                && UInt16(playingMask) < (UInt16(1) << itemCount)
+        }
+
+        enum CodingKeys: String, CodingKey, CaseIterable {
+            case revision = "r", itemCount = "c", playingMask = "p"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            try validateMediaPipelineKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            revision = try values.decode(UInt64.self, forKey: .revision)
+            itemCount = try values.decode(UInt8.self, forKey: .itemCount)
+            playingMask = try values.decode(UInt8.self, forKey: .playingMask)
+            guard isValid else { throw invalidMediaPipeline(decoder) }
+        }
+    }
+
+    public enum PublicationStatus: String, Codable, Equatable, Sendable {
+        case notObserved, ready, unavailable, busy, failed
+    }
+
+    public enum ExtensionStatus: String, Codable, Equatable, Sendable {
+        case notObserved, current, unavailable, busy, failed, retired
+    }
+
+    public var received: Stage?
+    public var applied: Stage?
+    public var published: Stage?
+    public var extensionRead: Stage?
+    public var lastEventRevision: UInt64?
+    public var lastEventAdmitted: Bool?
+    public var publicationStatus: PublicationStatus
+    public var extensionStatus: ExtensionStatus
+    public var extensionAgeMilliseconds: UInt32?
+    public var selectedItemIndex: UInt8?
+
+    public init(received: Stage? = nil, applied: Stage? = nil, published: Stage? = nil,
+                extensionRead: Stage? = nil, lastEventRevision: UInt64? = nil,
+                lastEventAdmitted: Bool? = nil, publicationStatus: PublicationStatus = .notObserved,
+                extensionStatus: ExtensionStatus = .notObserved,
+                extensionAgeMilliseconds: UInt32? = nil, selectedItemIndex: UInt8? = nil) {
+        self.received = received
+        self.applied = applied
+        self.published = published
+        self.extensionRead = extensionRead
+        self.lastEventRevision = lastEventRevision
+        self.lastEventAdmitted = lastEventAdmitted
+        self.publicationStatus = publicationStatus
+        self.extensionStatus = extensionStatus
+        self.extensionAgeMilliseconds = extensionAgeMilliseconds
+        self.selectedItemIndex = selectedItemIndex
+    }
+
+    public var isValid: Bool {
+        [received, applied, published, extensionRead].allSatisfy { $0?.isValid ?? true }
+            && (lastEventRevision.map { $0 > 0 } ?? true)
+            && (extensionAgeMilliseconds.map { $0 <= 86_400_000 } ?? true)
+            && (selectedItemIndex.map { $0 <= 1 } ?? true)
+    }
+
+    enum CodingKeys: String, CodingKey, CaseIterable {
+        case received = "r", applied = "a", published = "p", extensionRead = "e"
+        case lastEventRevision = "v", lastEventAdmitted = "d", publicationStatus = "s"
+        case extensionStatus = "x", extensionAgeMilliseconds = "t", selectedItemIndex = "i"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        try validateMediaPipelineKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        received = try values.decodeIfPresent(Stage.self, forKey: .received)
+        applied = try values.decodeIfPresent(Stage.self, forKey: .applied)
+        published = try values.decodeIfPresent(Stage.self, forKey: .published)
+        extensionRead = try values.decodeIfPresent(Stage.self, forKey: .extensionRead)
+        lastEventRevision = try values.decodeIfPresent(UInt64.self, forKey: .lastEventRevision)
+        lastEventAdmitted = try values.decodeIfPresent(Bool.self, forKey: .lastEventAdmitted)
+        publicationStatus = try values.decodeIfPresent(PublicationStatus.self, forKey: .publicationStatus) ?? .notObserved
+        extensionStatus = try values.decodeIfPresent(ExtensionStatus.self, forKey: .extensionStatus) ?? .notObserved
+        extensionAgeMilliseconds = try values.decodeIfPresent(UInt32.self, forKey: .extensionAgeMilliseconds)
+        selectedItemIndex = try values.decodeIfPresent(UInt8.self, forKey: .selectedItemIndex)
+        guard isValid else { throw invalidMediaPipeline(decoder) }
+    }
+}
+
+private struct MediaPipelineCodingKey: CodingKey {
+    let stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private func invalidMediaPipeline(_ decoder: any Decoder) -> DecodingError {
+    .dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Invalid media-pipeline diagnostics."))
+}
+
+private func validateMediaPipelineKeys(_ decoder: any Decoder, allowed: [String]) throws {
+    let values = try decoder.container(keyedBy: MediaPipelineCodingKey.self)
+    guard Set(values.allKeys.map(\.stringValue)).isSubset(of: Set(allowed)) else {
+        throw invalidMediaPipeline(decoder)
+    }
+}
+
 /// Retain and repeat the most recent events and first unresolved failure snapshot across losses.
 /// Correlation UUIDs must be freshly generated per media session/policy, never persistent identity.
 public struct WebRTCAudioClientDiagnosticsHeartbeat: Codable, Equatable, Sendable {
@@ -282,9 +398,11 @@ public struct WebRTCAudioClientDiagnosticsHeartbeat: Codable, Equatable, Sendabl
     public var snapshot: WebRTCAudioClientSnapshot
     public var failureSnapshot: WebRTCAudioClientSnapshot?
     public var events: [WebRTCAudioClientEvent]
+    public var mediaPipeline: WebRTCRemoteMediaPipelineDiagnostics?
     public init(sequence: UInt64, sessionID: UUID, build: WebRTCAudioClientBuild,
                 snapshot: WebRTCAudioClientSnapshot, failureSnapshot: WebRTCAudioClientSnapshot? = nil,
-                events: [WebRTCAudioClientEvent] = [], observedElapsedMilliseconds: UInt64 = 0) {
+                events: [WebRTCAudioClientEvent] = [], observedElapsedMilliseconds: UInt64 = 0,
+                mediaPipeline: WebRTCRemoteMediaPipelineDiagnostics? = nil) {
         self.sequence = sequence
         self.sessionID = sessionID
         self.observedElapsedMilliseconds = observedElapsedMilliseconds
@@ -292,14 +410,29 @@ public struct WebRTCAudioClientDiagnosticsHeartbeat: Codable, Equatable, Sendabl
         self.snapshot = snapshot
         self.failureSnapshot = failureSnapshot
         self.events = events
+        self.mediaPipeline = mediaPipeline
     }
     enum CodingKeys: String, CodingKey, CaseIterable {
         case sequence = "s", sessionID = "i", build = "b", snapshot = "n"
         case failureSnapshot = "f", events = "e", observedElapsedMilliseconds = "t"
+        case mediaPipeline = "m"
+    }
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sequence = try values.decode(UInt64.self, forKey: .sequence)
+        sessionID = try values.decode(UUID.self, forKey: .sessionID)
+        observedElapsedMilliseconds = try values.decode(UInt64.self, forKey: .observedElapsedMilliseconds)
+        build = try values.decode(WebRTCAudioClientBuild.self, forKey: .build)
+        snapshot = try values.decode(WebRTCAudioClientSnapshot.self, forKey: .snapshot)
+        failureSnapshot = try values.decodeIfPresent(WebRTCAudioClientSnapshot.self, forKey: .failureSnapshot)
+        events = try values.decode([WebRTCAudioClientEvent].self, forKey: .events)
+        // Unknown or malformed optional telemetry must not erase the existing audio evidence.
+        mediaPipeline = try? values.decodeIfPresent(WebRTCRemoteMediaPipelineDiagnostics.self, forKey: .mediaPipeline)
     }
     public var isValid: Bool {
         guard sequence > 0, events.count <= Self.maximumEvents,
-              snapshot.isValid, failureSnapshot?.isValid ?? true else { return false }
+              snapshot.isValid, failureSnapshot?.isValid ?? true,
+              mediaPipeline?.isValid ?? true else { return false }
         var previous: UInt64 = 0
         var previousTime: UInt64 = 0
         for event in events {
@@ -453,6 +586,11 @@ struct AudioClientDiagnosticsEnvelope: Codable {
             let data = try JSONEncoder().encode(Self(version: version, negotiationID: negotiationID,
                                                      heartbeat: boundedHeartbeat))
             if data.count <= Self.maximumBytes { return data }
+            // Optional media telemetry must never displace existing audio snapshots or history.
+            if boundedHeartbeat.mediaPipeline != nil {
+                boundedHeartbeat.mediaPipeline = nil
+                continue
+            }
             // Never drop the current or retained failure snapshot to make room for history.
             guard !boundedHeartbeat.events.isEmpty else {
                 throw WebRTCAudioClientDiagnosticsLaneFailure.oversized

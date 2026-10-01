@@ -25,6 +25,139 @@ final class MediaNotificationCoordinatorTests: XCTestCase {
         XCTAssertEqual(store.directoryURL.lastPathComponent, "MediaControls-v1")
     }
 
+    func testPublicationDiagnosticsRetainOnlySuccessfullyPublishedHostRevision() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaNotificationStore(directoryURL: directory)
+        let coordinator = MediaNotificationCoordinator(store: store,
+            allowsNotificationDelivery: false, automaticallyPolls: false)
+        XCTAssertEqual(coordinator.mediaPipelineDiagnostics().publicationStatus, .unavailable)
+        XCTAssertNil(coordinator.mediaPipelineDiagnostics().published, "Invalidation revision 1 is not a host revision")
+        let initial = makeState()
+        coordinator.update(state: initial, ready: true) { _, _ in false }
+        let first = coordinator.mediaPipelineDiagnostics()
+        XCTAssertEqual(first.publicationStatus, .ready)
+        XCTAssertEqual(first.published, .init(revision: 1, itemCount: 2, playingMask: 3))
+        let lock = Darwin.open(directory.appendingPathComponent("mailbox.lock").path, O_RDWR)
+        XCTAssertGreaterThanOrEqual(lock, 0)
+        defer { flock(lock, LOCK_UN); Darwin.close(lock); coordinator.invalidate() }
+        XCTAssertEqual(flock(lock, LOCK_EX | LOCK_NB), 0)
+        let paused = makeState(revision: 2, authorization: initial.authorization, playing: false)
+        coordinator.update(state: paused, ready: true) { _, _ in false }
+        let busy = coordinator.mediaPipelineDiagnostics()
+        XCTAssertEqual(busy.publicationStatus, .busy)
+        XCTAssertEqual(busy.published, first.published, "An attempted paused write must not become publication proof")
+        XCTAssertEqual(flock(lock, LOCK_UN), 0)
+        XCTAssertEqual(try store.readSnapshot()?.revision, 1)
+        coordinator.update(state: paused, ready: true) { _, _ in false }
+        let published = coordinator.mediaPipelineDiagnostics()
+        XCTAssertEqual(published.publicationStatus, .ready)
+        XCTAssertEqual(published.published, .init(revision: 2, itemCount: 2, playingMask: 0))
+        coordinator.update(state: makeState(revision: 2, authorization: initial.authorization), ready: true) { _, _ in false }
+        let failed = coordinator.mediaPipelineDiagnostics()
+        XCTAssertEqual(failed.publicationStatus, .failed, "Same-revision semantic mutation is rejected by the real store")
+        XCTAssertEqual(failed.published, published.published)
+        XCTAssertTrue(failed.isValid)
+        coordinator.invalidate()
+        XCTAssertEqual(coordinator.mediaPipelineDiagnostics().publicationStatus, .unavailable)
+        XCTAssertNil(coordinator.mediaPipelineDiagnostics().published)
+    }
+
+    func testUnconfiguredNotificationStoreNeverReportsPublicationProof() {
+        let coordinator = MediaNotificationCoordinator(store: nil,
+            allowsNotificationDelivery: false, automaticallyPolls: false)
+        coordinator.update(state: makeState(), ready: true) { _, _ in XCTFail("Unavailable mailbox dispatched"); return false }
+        let diagnostics = coordinator.mediaPipelineDiagnostics()
+        XCTAssertEqual(diagnostics.publicationStatus, .unavailable)
+        XCTAssertNil(diagnostics.published)
+        XCTAssertEqual(diagnostics.extensionStatus, .notObserved)
+    }
+
+    func testExtensionReadDiagnosticsPreserveSampleAgeAndRetireStaleFutureOrDifferentEpoch() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaNotificationStore(directoryURL: directory)
+        let coordinator = MediaNotificationCoordinator(store: store,
+            allowsNotificationDelivery: false, automaticallyPolls: false)
+        defer { coordinator.invalidate() }
+        coordinator.update(state: makeState(revision: 7), ready: true) { _, _ in false }
+        let snapshot = try XCTUnwrap(store.readSnapshot())
+        let sample = ProcessInfo.processInfo.systemUptime
+        let receipt = MediaNotificationExtensionReadReceipt(epoch: snapshot.epoch, revision: 7,
+            itemCount: 2, playingMask: 3, readStatus: .current, selectedItemIndex: 1, sampledAtUptime: sample)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(receipt))
+        let current = coordinator.mediaPipelineDiagnostics(now: sample + 2)
+        XCTAssertEqual(current.extensionStatus, .current)
+        XCTAssertEqual(current.extensionRead, .init(revision: 7, itemCount: 2, playingMask: 3))
+        XCTAssertEqual(current.selectedItemIndex, 1)
+        XCTAssertEqual(current.extensionAgeMilliseconds, 2_000)
+        XCTAssertEqual(coordinator.mediaPipelineDiagnostics(now: sample + 3).extensionAgeMilliseconds, 3_000,
+                       "App observation must not refresh extension-read age")
+        let stale = coordinator.mediaPipelineDiagnostics(now: sample + 6)
+        XCTAssertEqual(stale.extensionStatus, .retired)
+        XCTAssertEqual(stale.extensionAgeMilliseconds, 6_000)
+        XCTAssertNil(stale.extensionRead)
+        XCTAssertNil(stale.selectedItemIndex)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(.init(epoch: snapshot.epoch, revision: 8,
+            itemCount: 2, playingMask: 0, readStatus: .current, selectedItemIndex: 0, sampledAtUptime: sample + 10)))
+        let future = coordinator.mediaPipelineDiagnostics(now: sample + 9)
+        XCTAssertEqual(future.extensionStatus, .retired)
+        XCTAssertNil(future.extensionAgeMilliseconds)
+        XCTAssertNil(future.extensionRead)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(.init(epoch: UUID(), revision: 9,
+            itemCount: 2, playingMask: 0, readStatus: .current, selectedItemIndex: 0, sampledAtUptime: sample + 10)))
+        let different = coordinator.mediaPipelineDiagnostics(now: sample + 11)
+        XCTAssertEqual(different.extensionStatus, .retired)
+        XCTAssertEqual(different.extensionAgeMilliseconds, 1_000)
+        XCTAssertNil(different.extensionRead)
+        let old = coordinator.mediaPipelineDiagnostics(now: sample + 100_000)
+        XCTAssertEqual(old.extensionAgeMilliseconds, 86_400_000)
+        XCTAssertTrue(old.isValid)
+        let json = String(decoding: try JSONEncoder().encode(current), as: UTF8.self)
+        for privateValue in ["browser", "music", "Track", snapshot.epoch.uuidString, "contextID", "title", "URL"] {
+            XCTAssertFalse(json.contains(privateValue))
+        }
+    }
+
+    func testExtensionFailureAndDiagnosticLockContentionNeverInventReadProof() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = MediaNotificationStore(directoryURL: directory)
+        let coordinator = MediaNotificationCoordinator(store: store,
+            allowsNotificationDelivery: false, automaticallyPolls: false)
+        defer { coordinator.invalidate() }
+        coordinator.update(state: makeState(), ready: true) { _, _ in false }
+        let snapshot = try XCTUnwrap(store.readSnapshot())
+        let sample = ProcessInfo.processInfo.systemUptime
+        let statuses: [(MediaNotificationExtensionReadReceipt.ReadStatus,
+                        WebRTCRemoteMediaPipelineDiagnostics.ExtensionStatus)] =
+            [(.unavailable, .unavailable), (.busy, .busy), (.failed, .failed)]
+        for (readStatus, expected) in statuses {
+            XCTAssertTrue(try store.recordExtensionReadReceipt(.init(epoch: snapshot.epoch, revision: nil,
+                itemCount: 0, playingMask: 0, readStatus: readStatus, selectedItemIndex: nil, sampledAtUptime: sample)))
+            let diagnostics = coordinator.mediaPipelineDiagnostics(now: sample + 2)
+            XCTAssertEqual(diagnostics.extensionStatus, expected)
+            XCTAssertNil(diagnostics.extensionRead)
+            XCTAssertNil(diagnostics.selectedItemIndex)
+            XCTAssertEqual(diagnostics.extensionAgeMilliseconds, 2_000)
+        }
+        XCTAssertTrue(try store.recordExtensionReadReceipt(.init(epoch: snapshot.epoch, revision: 1,
+            itemCount: 2, playingMask: 3, readStatus: .current, selectedItemIndex: 1, sampledAtUptime: sample)))
+        let lock = Darwin.open(directory.appendingPathComponent("diagnostics.lock").path, O_RDWR)
+        XCTAssertGreaterThanOrEqual(lock, 0)
+        defer { flock(lock, LOCK_UN); Darwin.close(lock) }
+        XCTAssertEqual(flock(lock, LOCK_EX | LOCK_NB), 0)
+        let busy = coordinator.mediaPipelineDiagnostics(now: sample + 2)
+        XCTAssertEqual(busy.extensionStatus, .busy)
+        XCTAssertNil(busy.extensionRead)
+        XCTAssertNil(busy.extensionAgeMilliseconds)
+        XCTAssertEqual(busy.publicationStatus, .ready)
+        XCTAssertEqual(flock(lock, LOCK_UN), 0)
+        let current = coordinator.mediaPipelineDiagnostics(now: sample + 2)
+        XCTAssertEqual(current.extensionStatus, .current)
+        XCTAssertEqual(current.extensionAgeMilliseconds, 2_000)
+    }
+
     func testSecondarySourceReachesGateAndOnlyHostAcknowledgementReportsApplied() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -235,9 +368,10 @@ final class MediaNotificationCoordinatorTests: XCTestCase {
     }
 
     private func makeState(revision: UInt64 = 1, authorization: WebRTCRemoteMediaAuthorization = .init(),
-                           expanded: Bool = false, duration: Double = 500) -> WebRTCReceivedRemoteMediaState {
+                           expanded: Bool = false, duration: Double = 500,
+                           playing: Bool = true) -> WebRTCReceivedRemoteMediaState {
         func item(_ context: String) -> WebRTCRemoteMediaItem {
-            .init(contextID: context, sourceName: context, title: "Track", playbackState: .playing,
+            .init(contextID: context, sourceName: context, title: "Track", playbackState: playing ? .playing : .paused,
                   elapsedTime: 120, duration: duration, playbackRate: 1,
                   capabilities: .init(canPlay: true, canPause: true, canSkipForward: expanded,
                                       canSkipBackward: expanded, canSeekForward: true, canSeekBackward: true,

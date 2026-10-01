@@ -770,6 +770,11 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     private let operationTimeout: TimeInterval
     private let now: @Sendable () -> Date
     private let onCommandEnqueued: (@Sendable () -> Void)?
+    private let stateDiagnostics: @Sendable (String) -> Void
+    private let stateTraceSession = UUID()
+    private var stateTraceGate = RemoteMediaStateTrace.Gate()
+    private var stateTraceGeneration: UInt64 = 0
+    private var stateTraceRefreshID: UInt64 = 0
     private var timer: DispatchSourceTimer?
     private var lifecycle: MacRemoteMediaCommandGate.Lifecycle?
     private var onStateChanged:
@@ -796,6 +801,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         operationTimeout = 2
         now = Date.init
         onCommandEnqueued = nil
+        stateDiagnostics = { print($0) }
     }
 
     init(
@@ -803,13 +809,15 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         pollInterval: TimeInterval? = nil,
         operationTimeout: TimeInterval = 2,
         now: @escaping @Sendable () -> Date = Date.init,
-        onCommandEnqueued: (@Sendable () -> Void)? = nil
+        onCommandEnqueued: (@Sendable () -> Void)? = nil,
+        stateDiagnostics: @escaping @Sendable (String) -> Void = { print($0) }
     ) {
         self.runtime = runtime
         self.pollInterval = pollInterval
         self.operationTimeout = operationTimeout
         self.now = now
         self.onCommandEnqueued = onCommandEnqueued
+        self.stateDiagnostics = stateDiagnostics
     }
 
     func start(
@@ -820,6 +828,8 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             guard let self,
                   self.gate.lifecycleIsCurrent(requestedLifecycle) else { return }
             self.lifecycle = requestedLifecycle
+            self.stateTraceGeneration &+= 1
+            self.stateTraceRefreshID = 0
             self.onStateChanged = onStateChanged
             self.revision = 0
             self.currentContextID = nil
@@ -979,6 +989,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         nextRefreshID &+= 1
         if nextRefreshID == 0 { nextRefreshID = 1 }
         let refreshID = nextRefreshID
+        let traceGeneration = stateTraceGeneration
         activeRefreshID = refreshID
         runtime.fetchCatalog { [weak self] result in
             guard let self else { return }
@@ -986,7 +997,8 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 self?.finishRefresh(
                     id: refreshID,
                     lifecycle: lifecycle,
-                    result: result
+                    result: result,
+                    traceGeneration: traceGeneration
                 )
             }
         }
@@ -994,7 +1006,9 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             self?.finishRefresh(
                 id: refreshID,
                 lifecycle: lifecycle,
-                result: .noActiveMedia
+                result: .noActiveMedia,
+                traceGeneration: traceGeneration,
+                isWatchdog: true
             )
         }
     }
@@ -1002,12 +1016,34 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     private func finishRefresh(
         id: UInt64,
         lifecycle candidateLifecycle: MacRemoteMediaCommandGate.Lifecycle,
-        result: MacNowPlayingRuntimeCatalogResult
+        result: MacNowPlayingRuntimeCatalogResult,
+        traceGeneration: UInt64,
+        isWatchdog: Bool = false
     ) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard activeRefreshID == id,
               lifecycle == candidateLifecycle,
-              gate.lifecycleIsCurrent(candidateLifecycle) else { return }
+              gate.lifecycleIsCurrent(candidateLifecycle) else {
+            // A successfully completed refresh leaves an inert scheduled watchdog;
+            // only an actual late runtime reply is evidence of a rejected sample.
+            if !isWatchdog {
+                traceState(.observerRejected, summary: .init(result: result),
+                    generation: traceGeneration, refreshID: id,
+                    reason: activeRefreshID != id ? .supersededRefresh : .retiredLifecycle,
+                    failure: true)
+            }
+            return
+        }
+        stateTraceRefreshID = id
+        let reason: RemoteMediaStateTrace.Reason
+        switch result {
+        case .snapshot: reason = .snapshot
+        case .noActiveMedia: reason = .empty
+        case .retry: reason = .retry
+        }
+        traceState(isWatchdog ? .observerTimedOut : .observerAccepted,
+            summary: .init(result: result), generation: traceGeneration, refreshID: id,
+            reason: isWatchdog ? .watchdog : reason, failure: isWatchdog || reason == .retry)
         activeRefreshID = nil
         switch result {
         case .snapshot(let catalog):
@@ -1132,9 +1168,25 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         lastPublishedAdditionalItems = additionalItems
         revision &+= 1
         if revision == 0 { revision = 1 }
+        traceState(.controllerPublished,
+            summary: .init(item: item, additionalItems: additionalItems),
+            generation: stateTraceGeneration, refreshID: stateTraceRefreshID, reason: .state)
         onStateChanged?(
             WebRTCRemoteMediaStateUpdate(revision: revision, item: item, additionalItems: additionalItems)
         )
+    }
+
+    private func traceState(_ stage: RemoteMediaStateTrace.Stage,
+                            summary: RemoteMediaStateTraceSummary,
+                            generation: UInt64, refreshID: UInt64,
+                            reason: RemoteMediaStateTrace.Reason, failure: Bool = false) {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard stateTraceGate.shouldReport(stage: stage, summary: summary, epoch: generation,
+                                         failure: failure, uptime: uptime) else { return }
+        stateDiagnostics(RemoteMediaStateTrace.message(stage: stage, session: stateTraceSession,
+            processID: ProcessInfo.processInfo.processIdentifier, generation: generation,
+            refreshID: refreshID, activeRefreshID: activeRefreshID ?? 0,
+            controllerRevision: revision, summary: summary, reason: reason, uptime: uptime))
     }
 
     private static func validTime(_ value: Double?) -> Double? {

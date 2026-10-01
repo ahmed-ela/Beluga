@@ -7,6 +7,7 @@ final class MediaNotificationStore: @unchecked Sendable {
     enum StoreError: Error { case busy, invalid, capacity, io(Int32) }
     static let maximumFileBytes = 262_144
     static let maximumConsumedRequests = 1_024
+    static let maximumExtensionReceiptBytes = 1_024
     let directoryURL: URL
 
     private struct Record<Value: Codable>: Codable {
@@ -53,6 +54,31 @@ final class MediaNotificationStore: @unchecked Sendable {
         try locked {
             guard let value: MediaNotificationSnapshot = try read("snapshot.json"), value.isFresh(at: now) else { return nil }
             return value
+        }
+    }
+
+    /// Diagnostic I/O must not hold the authoritative snapshot/command mailbox lock.
+    @discardableResult
+    func recordExtensionReadReceipt(_ receipt: MediaNotificationExtensionReadReceipt) throws -> Bool {
+        guard receipt.isValid else { throw StoreError.invalid }
+        return try locked(lockName: "diagnostics.lock") {
+            let previous: MediaNotificationExtensionReadReceipt? =
+                try read("extension-read.json", maximumBytes: Self.maximumExtensionReceiptBytes)
+            if let previous, previous.isValid, receipt.hasSameObservation(as: previous),
+               receipt.sampledAtUptime >= previous.sampledAtUptime,
+               receipt.sampledAtUptime - previous.sampledAtUptime <
+                    MediaNotificationExtensionReadReceipt.minimumWriteInterval { return false }
+            try write(receipt, to: "extension-read.json")
+            return true
+        }
+    }
+
+    func readExtensionReadReceipt() throws -> MediaNotificationExtensionReadReceipt? {
+        try locked(lockName: "diagnostics.lock") {
+            guard let receipt: MediaNotificationExtensionReadReceipt =
+                try read("extension-read.json", maximumBytes: Self.maximumExtensionReceiptBytes) else { return nil }
+            guard receipt.isValid else { throw StoreError.invalid }
+            return receipt
         }
     }
 
@@ -132,7 +158,7 @@ final class MediaNotificationStore: @unchecked Sendable {
         return value
     }
 
-    private func locked<Value>(_ body: () throws -> Value) throws -> Value {
+    private func locked<Value>(lockName: String = "mailbox.lock", _ body: () throws -> Value) throws -> Value {
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
         guard directoryURL.standardizedFileURL == directoryURL.resolvingSymlinksInPath().standardizedFileURL else {
@@ -142,7 +168,7 @@ final class MediaNotificationStore: @unchecked Sendable {
         try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                                               ofItemAtPath: directoryURL.path)
         #endif
-        let descriptor = Darwin.open(directoryURL.appendingPathComponent("mailbox.lock").path,
+        let descriptor = Darwin.open(directoryURL.appendingPathComponent(lockName).path,
                                      O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw StoreError.io(errno) }
         defer { Darwin.close(descriptor) }
@@ -163,14 +189,15 @@ final class MediaNotificationStore: @unchecked Sendable {
         return Int(info.st_size)
     }
 
-    private func read<Value: Codable>(_ name: String) throws -> Value? {
+    private func read<Value: Codable>(_ name: String,
+                                      maximumBytes: Int = MediaNotificationStore.maximumFileBytes) throws -> Value? {
         let descriptor = Darwin.open(directoryURL.appendingPathComponent(name).path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             if errno == ENOENT { return nil }
             throw StoreError.io(errno)
         }
         defer { Darwin.close(descriptor) }
-        let expectedSize = try validate(descriptor, maximumBytes: Self.maximumFileBytes)
+        let expectedSize = try validate(descriptor, maximumBytes: maximumBytes)
         var bytes = [UInt8](repeating: 0, count: expectedSize + 1)
         let count = bytes.withUnsafeMutableBytes { Darwin.read(descriptor, $0.baseAddress, $0.count) }
         guard count >= 0 else { throw StoreError.io(errno) }

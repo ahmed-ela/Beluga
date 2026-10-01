@@ -24,6 +24,9 @@ final class MediaNotificationCoordinator: NSObject, UNUserNotificationCenterDele
     private var permissionNeedsForeground = false
     private var notificationTask: Task<Void, Never>?
     private var deliveredEpoch: UUID?
+    private var publishedEpoch: UUID?
+    private var publishedStage: WebRTCRemoteMediaPipelineDiagnostics.Stage?
+    private var publicationStatus = WebRTCRemoteMediaPipelineDiagnostics.PublicationStatus.notObserved
     private var pendingAcknowledgements: [UUID: (request: MediaNotificationRequest,
         result: MediaNotificationResult, expiresAt: Double)] = [:]
 
@@ -82,8 +85,17 @@ final class MediaNotificationCoordinator: NSObject, UNUserNotificationCenterDele
     }
 
     private func publishUnavailable() {
-        try? store?.publishSnapshot(.init(epoch: epoch, revision: 1,
-            publishedAtUptime: ProcessInfo.processInfo.systemUptime, ready: false, entries: []))
+        guard let store else { publicationStatus = .unavailable; return }
+        let snapshot = MediaNotificationSnapshot(epoch: epoch, revision: 1,
+            publishedAtUptime: ProcessInfo.processInfo.systemUptime, ready: false, entries: [])
+        do {
+            try store.publishSnapshot(snapshot)
+            recordSuccessfulPublication(snapshot)
+        } catch MediaNotificationStore.StoreError.busy {
+            publicationStatus = .busy
+        } catch {
+            publicationStatus = .failed
+        }
     }
 
     @discardableResult
@@ -91,13 +103,64 @@ final class MediaNotificationCoordinator: NSObject, UNUserNotificationCenterDele
         guard let state, let store else { return false }
         let now = ProcessInfo.processInfo.systemUptime
         do {
-            try store.publishSnapshot(snapshot(for: state, at: now))
+            let snapshot = snapshot(for: state, at: now)
+            try store.publishSnapshot(snapshot)
+            recordSuccessfulPublication(snapshot)
             lastPublished = now
             return true
+        } catch MediaNotificationStore.StoreError.busy {
+            publicationStatus = .busy
+            return false
         } catch {
             // A busy or unavailable shared container never weakens the live command gate.
+            publicationStatus = .failed
             return false
         }
+    }
+
+    private func recordSuccessfulPublication(_ snapshot: MediaNotificationSnapshot) {
+        publishedEpoch = snapshot.epoch
+        publishedStage = snapshot.ready
+            ? .init(revision: snapshot.revision, itemCount: UInt8(snapshot.entries.count),
+                    playingMask: snapshot.playingMask)
+            : nil
+        publicationStatus = snapshot.ready ? .ready : .unavailable
+    }
+
+    func mediaPipelineDiagnostics(now: Double = ProcessInfo.processInfo.systemUptime)
+        -> WebRTCRemoteMediaPipelineDiagnostics {
+        var diagnostics = WebRTCRemoteMediaPipelineDiagnostics()
+        diagnostics.published = publishedEpoch == epoch ? publishedStage : nil
+        diagnostics.publicationStatus = publicationStatus
+        guard let store else { return diagnostics }
+        do {
+            guard let receipt = try store.readExtensionReadReceipt() else { return diagnostics }
+            if now.isFinite, now >= receipt.sampledAtUptime {
+                diagnostics.extensionAgeMilliseconds = UInt32(min(86_400_000,
+                    (now - receipt.sampledAtUptime) * 1_000))
+            }
+            guard receipt.epoch == epoch, receipt.isFresh(at: now) else {
+                diagnostics.extensionStatus = .retired
+                return diagnostics
+            }
+            switch receipt.readStatus {
+            case .current:
+                diagnostics.extensionStatus = .current
+                if let revision = receipt.revision {
+                    diagnostics.extensionRead = .init(revision: revision, itemCount: receipt.itemCount,
+                                                     playingMask: receipt.playingMask)
+                    diagnostics.selectedItemIndex = receipt.selectedItemIndex
+                }
+            case .unavailable: diagnostics.extensionStatus = .unavailable
+            case .busy: diagnostics.extensionStatus = .busy
+            case .failed: diagnostics.extensionStatus = .failed
+            }
+        } catch MediaNotificationStore.StoreError.busy {
+            diagnostics.extensionStatus = .busy
+        } catch {
+            diagnostics.extensionStatus = .failed
+        }
+        return diagnostics
     }
 
     private func snapshot(for state: WebRTCReceivedRemoteMediaState, at now: Double) -> MediaNotificationSnapshot {

@@ -1522,6 +1522,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         currentRemoteMediaState?.update
     }
     private var remoteMediaStateTransportAuthorizationGeneration: UUID?
+    private var lastRemoteMediaDiagnosticEvent: (generation: UUID, revision: UInt64, admitted: Bool)?
     private var remoteMediaRefresh = RemoteMediaRefreshGate()
     private var remoteMediaRefreshTask: Task<Void, Never>?
     private var recoveryCoordinator: ICERecoveryCoordinator?
@@ -4149,13 +4150,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         guard audioDiagnosticsSchedule.shouldSend(
             at: now, latestEventSequence: audioDiagnostics.events.last?.sequence
         ) else { return }
-        guard let context = await sourcePeer.audioClientDiagnosticsContext() else { return }
+        guard let observation = await sourcePeer.audioClientDiagnosticsObservation() else { return }
+        let context = observation.context
         guard !Task.isCancelled, context.isValid,
               peer === sourcePeer, sessionGeneration == generation else { return }
         updateAudioDiagnosticsPolicyFacts()
-        guard let heartbeat = audioDiagnostics.heartbeat(
+        guard var heartbeat = audioDiagnostics.heartbeat(
             build: Self.audioDiagnosticsBuild, at: Self.audioDiagnosticsNow()
         ) else { return }
+        if observation.supportsMediaPipeline {
+            let pipeline = mediaPipelineDiagnostics(received: observation.receivedMedia)
+            // Optional instrumentation must not disable the existing audio diagnostics lane.
+            heartbeat.mediaPipeline = pipeline.isValid ? pipeline : nil
+        }
         audioDiagnosticsSchedule.recordSendAttempt(at: now)
         do {
             try await sourcePeer.sendAudioClientDiagnosticsHeartbeat(heartbeat, context: context)
@@ -4172,6 +4179,21 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphonePermissionGranted: microphonePermissionGranted,
             microphoneBlockedByCall: microphoneIsBlockedByCall
         )
+    }
+
+    private func mediaPipelineDiagnostics(received: WebRTCRemoteMediaPipelineDiagnostics.Stage?)
+        -> WebRTCRemoteMediaPipelineDiagnostics {
+        var result = backgroundPlayback.mediaPipelineDiagnostics(owner: remoteMediaCommandOwner)
+        result.received = received
+        if remoteMediaStateTransportAuthorizationGeneration == transportAuthorizationGeneration,
+           let state = currentRemoteMediaState {
+            result.applied = .init(update: state.update)
+        }
+        if let event = lastRemoteMediaDiagnosticEvent, event.generation == transportAuthorizationGeneration {
+            result.lastEventRevision = event.revision
+            result.lastEventAdmitted = event.admitted
+        }
+        return result
     }
 
     private func scheduleAudioDiagnosticsSample(from sourcePeer: WebRTCPeer, generation: UUID) {
@@ -7540,7 +7562,7 @@ final class WorldwideSessionViewModel: ObservableObject {
             reconcileRemoteMediaCommandAvailability()
 
         case .remoteMediaStateChanged(let receivedState):
-            guard RemoteMediaStateAdmission.accept(
+            let admitted = RemoteMediaStateAdmission.accept(
                 receivedState,
                 currentState: currentRemoteMediaState,
                 refresh: &remoteMediaRefresh,
@@ -7552,7 +7574,10 @@ final class WorldwideSessionViewModel: ObservableObject {
                     isControlChannelReady: isControlChannelReady,
                     recoveryProofRequired: recoveryProofRequired
                 )
-            ) else { break }
+            )
+            lastRemoteMediaDiagnosticEvent = (transportAuthorizationGeneration,
+                receivedState.update.revision, admitted)
+            guard admitted else { break }
             remoteMediaRefreshTask?.cancel()
             remoteMediaRefreshTask = nil
             currentRemoteMediaState = receivedState
@@ -12045,6 +12070,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioDiagnostics.heartbeat(build: Self.audioDiagnosticsBuild, at: now ?? Self.audioDiagnosticsNow())
     }
 
+    func debugMediaPipelineDiagnosticsForTests() -> WebRTCRemoteMediaPipelineDiagnostics {
+        mediaPipelineDiagnostics(received: nil)
+    }
+
     func debugCaptureAudioDiagnosticsForTests(from sourcePeer: WebRTCPeer,
                                              statistics: WebRTCStatisticsSnapshot) async {
         audioDiagnostics.observeStatistics(statistics, at: Self.audioDiagnosticsNow(), wallNow: Date())
@@ -13179,6 +13208,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         remoteMediaRefresh.invalidate()
         currentRemoteMediaState = nil
         remoteMediaStateTransportAuthorizationGeneration = nil
+        lastRemoteMediaDiagnosticEvent = nil
         guard let remoteMediaCommandOwner else { return }
         backgroundPlayback.clearRemoteMedia(owner: remoteMediaCommandOwner)
     }

@@ -177,6 +177,7 @@ struct WorldwideAudioClientDiagnosticsSink {
             + "\(failure?.audioPolicyID?.uuidString ?? "none")/\(failure?.recoveryAttempt ?? 0)/"
             + "\(failure?.failurePhase.rawValue ?? "none")/\(failure?.native?.failureCode ?? 0)"
             + "/\(snapshot?.native?.failureContext?.eventSequence ?? 0)/\(failure?.native?.failureContext?.eventSequence ?? 0)"
+            + "/\(heartbeat?.mediaPipeline.map { Self.mediaPipelineLog($0, prefix: "media", includeAge: false) } ?? "none")"
         guard fingerprint != lastLogFingerprint || !pendingEvents.isEmpty
                 || (lastLogTime.map({ now - $0 >= Self.summaryLogInterval }) ?? true) else { return nil }
         lastLogTime = now
@@ -196,6 +197,11 @@ struct WorldwideAudioClientDiagnosticsSink {
         if let failure {
             message += " " + Self.snapshotLog(failure, prefix: "retainedFailure")
         }
+        if let pipeline = heartbeat?.mediaPipeline {
+            let prefix: String
+            if case .fresh = value.status { prefix = "current.media" } else { prefix = "lastReceived.media" }
+            message += " " + Self.mediaPipelineLog(pipeline, prefix: prefix)
+        }
         if !pendingEvents.isEmpty {
             message += " events=" + pendingEvents.map {
                 "\($0.sequence):\($0.kind.rawValue):policy=\($0.audioPolicyID?.uuidString ?? "none")"
@@ -209,6 +215,23 @@ struct WorldwideAudioClientDiagnosticsSink {
         pendingEvents.removeAll(keepingCapacity: true)
         droppedEventCount = 0
         return message
+    }
+
+    private static func mediaPipelineLog(_ value: WebRTCRemoteMediaPipelineDiagnostics,
+                                         prefix: String, includeAge: Bool = true) -> String {
+        func stage(_ value: WebRTCRemoteMediaPipelineDiagnostics.Stage?) -> String {
+            value.map { "\($0.revision):\($0.itemCount):\($0.playingMask)" } ?? "none"
+        }
+        var result = "\(prefix).received=\(stage(value.received)) \(prefix).applied=\(stage(value.applied)) "
+            + "\(prefix).published=\(stage(value.published)) \(prefix).extensionRead=\(stage(value.extensionRead)) "
+            + "\(prefix).eventRevision=\(value.lastEventRevision.map(String.init) ?? "none") "
+            + "\(prefix).eventAdmitted=\(value.lastEventAdmitted.map(String.init) ?? "unknown") "
+            + "\(prefix).publication=\(value.publicationStatus.rawValue) \(prefix).extension=\(value.extensionStatus.rawValue) "
+            + "\(prefix).selectedIndex=\(value.selectedItemIndex.map(String.init) ?? "none")"
+        if includeAge {
+            result += " \(prefix).extensionAgeMs=\(value.extensionAgeMilliseconds.map(String.init) ?? "unknown")"
+        }
+        return result
     }
 
     private static func snapshotLog(_ value: WebRTCAudioClientSnapshot, prefix: String) -> String {

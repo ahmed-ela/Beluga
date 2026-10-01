@@ -192,6 +192,99 @@ final class MediaNotificationStoreTests: XCTestCase {
         }
     }
 
+    func testExtensionReadReceiptContainsOnlyBoundedPrivacyReducedFields() throws {
+        let store = MediaNotificationStore(directoryURL: directory)
+        let receipt = readReceipt()
+        XCTAssertTrue(try store.recordExtensionReadReceipt(receipt))
+        XCTAssertEqual(try store.readExtensionReadReceipt(), receipt)
+        let file = directory.appendingPathComponent("extension-read.json")
+        let data = try Data(contentsOf: file)
+        XCTAssertLessThan(data.count, MediaNotificationStore.maximumExtensionReceiptBytes)
+        let record = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let value = try XCTUnwrap(record["value"] as? [String: Any])
+        XCTAssertEqual(Set(value.keys), Set(["epoch", "revision", "itemCount", "playingMask",
+                                            "readStatus", "selectedItemIndex", "sampledAtUptime"]))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("contextID"))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("title"))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("URL"))
+    }
+
+    func testExtensionReadReceiptThrottlesHeartbeatButRecordsSemanticTransitions() throws {
+        let store = MediaNotificationStore(directoryURL: directory)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(readReceipt()))
+        XCTAssertFalse(try store.recordExtensionReadReceipt(readReceipt(time: now + 0.2)))
+        XCTAssertEqual(try store.readExtensionReadReceipt()?.sampledAtUptime, now)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(readReceipt(time: now + 1)))
+        XCTAssertTrue(try store.recordExtensionReadReceipt(readReceipt(mask: 0, time: now + 1.1)))
+        XCTAssertTrue(try store.recordExtensionReadReceipt(readReceipt(revision: 2, mask: 0, time: now + 1.2)))
+        XCTAssertTrue(try store.recordExtensionReadReceipt(readReceipt(revision: 2, mask: 0, index: 0, time: now + 1.3)))
+        let busy = readReceipt(revision: nil, count: 0, mask: 0, status: .busy, index: nil, time: now + 1.4)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(busy))
+        XCTAssertFalse(try store.recordExtensionReadReceipt(readReceipt(revision: nil, count: 0, mask: 0,
+            status: .busy, index: nil, time: now + 1.5)))
+        XCTAssertEqual(try store.readExtensionReadReceipt(), busy)
+    }
+
+    func testExtensionReadReceiptCannotAlterSnapshotOrCommandAdmission() throws {
+        let store = MediaNotificationStore(directoryURL: directory)
+        let initial = snapshot()
+        try store.publishSnapshot(initial)
+        let command = request()
+        XCTAssertTrue(try store.submit(command, now: now))
+        let unrelated = MediaNotificationExtensionReadReceipt(epoch: UUID(), revision: 99,
+            itemCount: 2, playingMask: 3, readStatus: .current, selectedItemIndex: 1, sampledAtUptime: now)
+        XCTAssertTrue(try store.recordExtensionReadReceipt(unrelated))
+        XCTAssertEqual(try store.readSnapshot(now: now), initial)
+        XCTAssertEqual(try store.claimPendingRequest(epoch: epoch, now: now), command)
+        XCTAssertEqual(try store.acknowledgement(for: command)?.result, .pending)
+    }
+
+    func testInvalidAndOversizedExtensionReadReceiptsFailClosed() throws {
+        let store = MediaNotificationStore(directoryURL: directory)
+        let invalid = [readReceipt(revision: 0), readReceipt(count: 3), readReceipt(mask: 4),
+            readReceipt(index: 2), readReceipt(time: .nan), readReceipt(time: -1),
+            readReceipt(status: .failed), readReceipt(revision: nil), readReceipt(count: 0, mask: 0, index: nil)]
+        for receipt in invalid {
+            XCTAssertFalse(receipt.isValid)
+            XCTAssertThrowsError(try store.recordExtensionReadReceipt(receipt))
+        }
+        XCTAssertTrue(try store.recordExtensionReadReceipt(readReceipt()))
+        try Data(repeating: 65, count: MediaNotificationStore.maximumExtensionReceiptBytes + 1)
+            .write(to: directory.appendingPathComponent("extension-read.json"))
+        XCTAssertThrowsError(try store.readExtensionReadReceipt())
+    }
+
+    func testExtensionReceiptReadAndWriteReturnBusyWithoutBlockingAuthoritativeMailbox() async throws {
+        let store = MediaNotificationStore(directoryURL: directory)
+        let receipt = readReceipt()
+        XCTAssertTrue(try store.recordExtensionReadReceipt(receipt))
+        let descriptor = Darwin.open(directory.appendingPathComponent("diagnostics.lock").path, O_RDWR)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
+        XCTAssertEqual(flock(descriptor, LOCK_EX | LOCK_NB), 0)
+        let returned = expectation(description: "receipt operations return while owner still holds lock")
+        let worker = Task.detached {
+            var writeWasBusy = false
+            var readWasBusy = false
+            do { _ = try store.recordExtensionReadReceipt(receipt) }
+            catch MediaNotificationStore.StoreError.busy { writeWasBusy = true }
+            catch { }
+            do { _ = try store.readExtensionReadReceipt() }
+            catch MediaNotificationStore.StoreError.busy { readWasBusy = true }
+            catch { }
+            returned.fulfill()
+            return writeWasBusy && readWasBusy
+        }
+        await fulfillment(of: [returned], timeout: 1)
+        try store.publishSnapshot(snapshot())
+        XCTAssertTrue(try store.submit(request(), now: now))
+        // Drain even if an accidental blocking-lock mutation caused the expectation to fail.
+        XCTAssertEqual(flock(descriptor, LOCK_UN), 0)
+        let bothWereBusy = await worker.value
+        XCTAssertTrue(bothWereBusy)
+        XCTAssertEqual(try store.readExtensionReadReceipt(), receipt)
+    }
+
     func testNonblockingLockRefusesConcurrentOwner() throws {
         let store = MediaNotificationStore(directoryURL: directory)
         try store.publishSnapshot(snapshot())
@@ -289,6 +382,13 @@ final class MediaNotificationStoreTests: XCTestCase {
         XCTAssertEqual(results.accepted, 1)
         XCTAssertNotNil(try first.claimPendingRequest(epoch: epoch, now: now))
         XCTAssertNil(try second.claimPendingRequest(epoch: epoch, now: now))
+    }
+
+    private func readReceipt(revision: UInt64? = 1, count: UInt8 = 2, mask: UInt8 = 1,
+                             status: MediaNotificationExtensionReadReceipt.ReadStatus = .current,
+                             index: UInt8? = 1, time: Double? = nil) -> MediaNotificationExtensionReadReceipt {
+        .init(epoch: epoch, revision: revision, itemCount: count, playingMask: mask,
+              readStatus: status, selectedItemIndex: index, sampledAtUptime: time ?? now)
     }
 
     private func entry(context: String = "A", playing: Bool = false, expanded: Bool = false,

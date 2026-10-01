@@ -917,6 +917,7 @@ actor WorldwideScreenService {
     private var keyFrameControlTask: Task<Void, Never>?
     private var remoteMediaCommandTask: Task<Void, Never>?
     private let remoteMediaTraceSession = UUID()
+    private var remoteMediaStateTraceGate = RemoteMediaStateTrace.Gate()
     private var remoteMediaCommandCapacity =
         WorldwideRemoteMediaCommandQueueCapacity()
     private var peer: WebRTCPeer?
@@ -1866,17 +1867,27 @@ actor WorldwideScreenService {
         guard !isStopped,
               update.isValid,
               update.revision > latestRemoteMediaControllerRevision else {
+            traceRemoteMediaState(.serviceRejected, update: update,
+                controllerRevision: update.revision,
+                reason: isStopped ? .retiredLifecycle : (!update.isValid ? .invalidState : .staleRevision),
+                failure: true)
             return
         }
         latestRemoteMediaControllerRevision = update.revision
         latestRemoteMediaItem = update.item
         latestRemoteMediaAdditionalItems = update.additionalItems
         remoteMediaPublication.applyControllerUpdate(update)
+        traceRemoteMediaState(.serviceDesired, update: update,
+            controllerRevision: update.revision, reason: .state)
         await publishCurrentRemoteMediaStateIfPossible()
     }
 
     private func publishCurrentRemoteMediaStateIfPossible() async {
         while transportAllowsCapture, let peer {
+            // Trace the captured peer, not a replacement installed during this actor hop.
+            // These values do not participate in publication/transport admission.
+            let traceSourcePeerGeneration = peerGeneration
+            let tracePriorLastSentRevision = remoteMediaPublication.lastSuccessfullySent?.revision ?? 0
             let remoteMediaIsAvailable =
                 await peer.remoteMediaControlsAreNegotiated()
             remoteMediaPublication.setRemoteMediaAvailable(
@@ -1888,10 +1899,13 @@ actor WorldwideScreenService {
                 return
             }
             let sourcePeerGeneration = peerGeneration
+            let sourceControllerRevision = remoteMediaPublication.desiredControllerRevision ?? 0
             let refresh = pendingRemoteMediaStateRefresh
             var succeeded = false
+            var nativeAccepted = false
             do {
                 try await peer.sendRemoteMediaState(attempt.update, respondingTo: refresh)
+                nativeAccepted = true
                 if self.peer === peer,
                    peerGeneration == sourcePeerGeneration {
                     succeeded = true
@@ -1910,6 +1924,22 @@ actor WorldwideScreenService {
                 attempt,
                 succeeded: succeeded
             )
+            let traceLastSentRevision = traceSourcePeerGeneration == peerGeneration
+                ? remoteMediaPublication.lastSuccessfullySent?.revision ?? 0
+                : tracePriorLastSentRevision
+            if succeeded, completion != .ignored {
+                traceRemoteMediaState(.nativeSent, update: attempt.update,
+                    controllerRevision: sourceControllerRevision,
+                    sourcePeerGeneration: traceSourcePeerGeneration,
+                    sourceLastSentRevision: traceLastSentRevision, reason: .state)
+            } else {
+                traceRemoteMediaState(nativeAccepted ? .nativeRetired : .nativeFailed,
+                    update: attempt.update,
+                    controllerRevision: sourceControllerRevision,
+                    sourcePeerGeneration: traceSourcePeerGeneration,
+                    sourceLastSentRevision: traceLastSentRevision,
+                    reason: nativeAccepted ? .peerRetired : .sendFailed, failure: true)
+            }
             if succeeded {
                 cancelRemoteMediaPublicationRetry()
             } else if completion == .retryLatest,
@@ -1923,6 +1953,28 @@ actor WorldwideScreenService {
             }
             guard completion == .publishNewest else { return }
         }
+    }
+
+    private func traceRemoteMediaState(_ stage: RemoteMediaStateTrace.Stage,
+                                      update: WebRTCRemoteMediaStateUpdate,
+                                      controllerRevision: UInt64,
+                                      sourcePeerGeneration: UInt64? = nil,
+                                      sourceLastSentRevision: UInt64? = nil,
+                                      reason: RemoteMediaStateTrace.Reason,
+                                      failure: Bool = false) {
+        let generation = sourcePeerGeneration ?? peerGeneration
+        let summary = RemoteMediaStateTraceSummary(item: update.item,
+                                                  additionalItems: update.additionalItems)
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard remoteMediaStateTraceGate.shouldReport(stage: stage, summary: summary,
+            epoch: generation, failure: failure, uptime: uptime) else { return }
+        logger.info(RemoteMediaStateTrace.message(stage: stage, session: remoteMediaTraceSession,
+            processID: ProcessInfo.processInfo.processIdentifier, peerGeneration: generation,
+            controllerRevision: controllerRevision,
+            wireRevision: stage == .serviceDesired || stage == .serviceRejected ? 0 : update.revision,
+            lastSuccessfullySentRevision: sourceLastSentRevision
+                ?? remoteMediaPublication.lastSuccessfullySent?.revision ?? 0,
+            summary: summary, reason: reason, uptime: uptime))
     }
 
     private func scheduleRemoteMediaPublicationRetry(

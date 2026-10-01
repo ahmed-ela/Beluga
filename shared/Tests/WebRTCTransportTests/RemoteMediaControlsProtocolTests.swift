@@ -108,6 +108,29 @@ private final class RemoteMediaCallbackResults: @unchecked Sendable {
 }
 
 final class RemoteMediaControlsProtocolTests: XCTestCase {
+    func testPipelineStagePreservesOrderedPlaybackBitsWithoutSourceMetadata() throws {
+        let playing = WebRTCRemoteMediaItem(contextID: "private-first-source", sourceName: "private-app",
+            title: "private-title", playbackState: .playing, elapsedTime: 10, duration: 50,
+            playbackRate: 1, capabilities: .init(canPlay: false, canPause: true,
+                canSkipForward: false, canSkipBackward: false))
+        let paused = WebRTCRemoteMediaItem(contextID: "private-second-source", sourceName: "private-app",
+            title: "private-title", playbackState: .paused, elapsedTime: 10, duration: 50,
+            playbackRate: 0, capabilities: .init(canPlay: true, canPause: false,
+                canSkipForward: false, canSkipBackward: false))
+        let first = try XCTUnwrap(WebRTCRemoteMediaPipelineDiagnostics.Stage(update:
+            .init(revision: 17, item: playing, additionalItems: [paused])))
+        XCTAssertEqual(first.revision, 17)
+        XCTAssertEqual(first.itemCount, 2)
+        XCTAssertEqual(first.playingMask, 1)
+        let reversed = try XCTUnwrap(WebRTCRemoteMediaPipelineDiagnostics.Stage(update:
+            .init(revision: 18, item: paused, additionalItems: [playing])))
+        XCTAssertEqual(reversed.playingMask, 2)
+        let bytes = try JSONEncoder().encode(first)
+        XCTAssertFalse(String(decoding: bytes, as: UTF8.self).contains("private"))
+        XCTAssertEqual(WebRTCRemoteMediaPipelineDiagnostics.Stage(update: .init(revision: 19, item: nil))?.itemCount, 0)
+        XCTAssertNil(WebRTCRemoteMediaPipelineDiagnostics.Stage(update: .init(revision: 0, item: playing)))
+    }
+
     func testCatalogNegotiationRequiresExactAdditiveEchoAndPreservesLegacyBase() {
         let authority = WebRTCRemoteMediaAuthorization()
         let legacy = "v=0\r\n" + RemoteMediaControlsSDP.attributeLine(for: authority) + "\r\nm=audio 9 RTP/AVP 0\r\n"

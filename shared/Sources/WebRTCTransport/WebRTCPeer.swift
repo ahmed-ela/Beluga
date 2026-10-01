@@ -3850,6 +3850,7 @@ public actor WebRTCPeer {
     private var screenClientDiagnosticsNegotiationEpoch: UInt64?
     private var audioClientDiagnosticsCapabilityIsLocallyAvailable = false
     private var pendingAudioClientDiagnosticsAuthorization: UUID?
+    private var mediaPipelineDiagnosticsNegotiationEpoch: UInt64?
     // Remote media uses its own replay histories and an exact SDP echo. Unknown message kinds are
     // never sent to an older peer sharing the strict v2 control-channel envelope.
     private var remoteMediaControlsNegotiationEpoch: UInt64?
@@ -3885,6 +3886,7 @@ public actor WebRTCPeer {
     #endif
     private var highestSentRemoteMediaStateRevision: UInt64 = 0
     private var highestReceivedRemoteMediaStateRevision: UInt64 = 0
+    private var lastReceivedRemoteMediaDiagnosticStage: WebRTCRemoteMediaPipelineDiagnostics.Stage?
     private var latestReceivedRemoteMediaState: WebRTCReceivedRemoteMediaState?
     private var lastSentRemoteMediaStateUpdate:
         WebRTCRemoteMediaStateUpdate?
@@ -4671,6 +4673,9 @@ public actor WebRTCPeer {
                     : nil,
                 acceptsIncoming: false
             )
+            mediaPipelineDiagnosticsNegotiationEpoch = audioClientDiagnosticsIsNegotiated()
+                && RemoteMediaPipelineDiagnosticsSDP.negotiated(hostOfferSDP: sdp, viewerAnswerSDP: answerSDP)
+                ? offerEpoch : nil
             // `outboundSignal(.answer)` is the ordered post-capability event consumed by the
             // viewer. The application may retry its current challenge only after forwarding this
             // answer; the peer-side transport/capability check remains authoritative.
@@ -4756,6 +4761,9 @@ public actor WebRTCPeer {
             let audioDiagnosticsAuthorization = pendingScreenMediaHostOfferSDP.flatMap {
                 AudioClientDiagnosticsSDP.negotiatedAuthorization(hostOfferSDP: $0, viewerAnswerSDP: sdp)
             }
+            let mediaPipelineDiagnosticsNegotiated = pendingScreenMediaHostOfferSDP.map {
+                RemoteMediaPipelineDiagnosticsSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
+            } ?? false
             let negotiatedRemoteMediaCatalog = pendingScreenMediaHostOfferSDP.map {
                 RemoteMediaCatalogSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
             } ?? false
@@ -4775,6 +4783,8 @@ public actor WebRTCPeer {
                     ? audioDiagnosticsAuthorization : nil,
                 acceptsIncoming: true
             )
+            mediaPipelineDiagnosticsNegotiationEpoch = audioClientDiagnosticsIsNegotiated()
+                && mediaPipelineDiagnosticsNegotiated ? offerEpoch : nil
             let expectedRemoteMediaAuthorization =
                 pendingRemoteMediaAuthorization
             pendingRemoteMediaAuthorization = nil
@@ -6130,6 +6140,18 @@ public actor WebRTCPeer {
         return delegateProxy.audioDiagnosticsLane.currentContext()
     }
 
+    /// One actor observation binds receipt counters and optional schema support to the exact
+    /// diagnostics negotiation. It performs no native audio read and grants no command authority.
+    public func audioClientDiagnosticsObservation() -> (
+        context: WebRTCAudioClientDiagnosticsContext,
+        supportsMediaPipeline: Bool,
+        receivedMedia: WebRTCRemoteMediaPipelineDiagnostics.Stage?
+    )? {
+        guard let context = audioClientDiagnosticsContext(), context.isValid else { return nil }
+        return (context, mediaPipelineDiagnosticsNegotiationEpoch == negotiationEpoch,
+                lastReceivedRemoteMediaDiagnosticStage)
+    }
+
     public func sendAudioClientDiagnosticsHeartbeat(
         _ heartbeat: WebRTCAudioClientDiagnosticsHeartbeat,
         context: WebRTCAudioClientDiagnosticsContext
@@ -6137,7 +6159,13 @@ public actor WebRTCPeer {
         guard !isClosed, role == .viewer else {
             throw WebRTCAudioClientDiagnosticsLaneFailure.unavailable
         }
-        try delegateProxy.audioDiagnosticsLane.send(heartbeat, context: context)
+        var compatibleHeartbeat = heartbeat
+        // Older hosts strictly reject unknown heartbeat keys. Never emit the added key without
+        // its exact SDP echo, including after renegotiation retires that capability.
+        if mediaPipelineDiagnosticsNegotiationEpoch != negotiationEpoch {
+            compatibleHeartbeat.mediaPipeline = nil
+        }
+        try delegateProxy.audioDiagnosticsLane.send(compatibleHeartbeat, context: context)
     }
 
     /// True only for the current host offer and viewer answer that both carried media-controls v1.
@@ -9744,6 +9772,7 @@ public actor WebRTCPeer {
             return
         }
         highestReceivedRemoteMediaStateRevision = update.revision
+        lastReceivedRemoteMediaDiagnosticStage = .init(update: update)
         let state = WebRTCReceivedRemoteMediaState(envelope: envelope)
         latestReceivedRemoteMediaState = isTransportHealthyForMedia() ? state : nil
         emit(.remoteMediaStateChanged(state))
@@ -10202,6 +10231,7 @@ public actor WebRTCPeer {
         #endif
         highestSentRemoteMediaStateRevision = 0
         highestReceivedRemoteMediaStateRevision = 0
+        lastReceivedRemoteMediaDiagnosticStage = nil
         latestReceivedRemoteMediaState = nil
         lastSentRemoteMediaStateUpdate = nil
         if wasNegotiated, emitAvailability {
@@ -11217,6 +11247,7 @@ public actor WebRTCPeer {
     private func nextNegotiationEpoch() -> UInt64 {
         delegateProxy.audioDiagnosticsLane.configure(negotiationID: nil, acceptsIncoming: role == .host)
         pendingAudioClientDiagnosticsAuthorization = nil
+        mediaPipelineDiagnosticsNegotiationEpoch = nil
         negotiationEpoch &+= 1
         return negotiationEpoch
     }
@@ -11305,7 +11336,8 @@ public actor WebRTCPeer {
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
                     sdp: audioDiagnosticsAuthorization.map {
-                        AudioClientDiagnosticsSDP.advertisingHostSupport(in: diagnosticsSDP, authorization: $0)
+                        RemoteMediaPipelineDiagnosticsSDP.advertisingHostSupport(
+                            in: AudioClientDiagnosticsSDP.advertisingHostSupport(in: diagnosticsSDP, authorization: $0))
                     } ?? diagnosticsSDP
                 )
                 peerConnection.setLocalDescription(localDescription) { error in
@@ -11373,8 +11405,10 @@ public actor WebRTCPeer {
                 let localDescription = LKRTCSessionDescription(
                     type: productDescription.type,
                     sdp: advertisesAudioClientDiagnostics
-                        ? AudioClientDiagnosticsSDP.advertisingViewerSupport(
-                            in: diagnosticsSDP, remoteOfferSDP: remoteOfferSDP)
+                        ? RemoteMediaPipelineDiagnosticsSDP.advertisingViewerSupport(
+                            in: AudioClientDiagnosticsSDP.advertisingViewerSupport(
+                                in: diagnosticsSDP, remoteOfferSDP: remoteOfferSDP),
+                            hostOfferSDP: remoteOfferSDP)
                         : diagnosticsSDP
                 )
                 peerConnection.setLocalDescription(localDescription) { error in

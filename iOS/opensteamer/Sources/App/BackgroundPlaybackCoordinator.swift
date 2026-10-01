@@ -531,6 +531,11 @@ final class BackgroundPlaybackCoordinator {
         }
     }
 
+    func mediaPipelineDiagnostics(owner: RemoteMediaCommandOwnerToken?) -> WebRTCRemoteMediaPipelineDiagnostics {
+        guard let owner, owner == remoteMediaCommandOwner else { return .init() }
+        return mediaNotifications?.mediaPipelineDiagnostics() ?? .init()
+    }
+
     private func updateNativeCommandAvailability() {
         let capabilities = remoteMediaUpdate?.item?.capabilities
         let ready = remoteMediaTransportIsReady && remoteMediaCommandSender != nil

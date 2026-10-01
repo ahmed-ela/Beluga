@@ -73,6 +73,7 @@ final class MediaNotificationPresentation: ObservableObject {
     private let store: MediaNotificationStore?
     private var epoch: UUID?
     private var selection = MediaNotificationSelection()
+    private var lastReceiptAttempt: MediaNotificationExtensionReadReceipt?
 
     init(store: MediaNotificationStore?) { self.store = store }
 
@@ -101,6 +102,8 @@ final class MediaNotificationPresentation: ObservableObject {
 
     func refresh() {
         let now = ProcessInfo.processInfo.systemUptime
+        var readStatus = MediaNotificationExtensionReadReceipt.ReadStatus.unavailable
+        defer { recordReadReceipt(status: readStatus, at: now) }
         guard let store, let epoch else {
             snapshot = nil
             scrub = nil
@@ -138,15 +141,33 @@ final class MediaNotificationPresentation: ObservableObject {
             else if status == "Controls unavailable. Open Beluga to reconnect." || status == "Connect to your Mac in Beluga." {
                 status = "Choose a source to control."
             }
+            readStatus = .current
         } catch MediaNotificationStore.StoreError.busy {
             // A contended read is not fresh authority, even when old UI remains visible.
             snapshot = nil
             scrub = nil
+            readStatus = .busy
         } catch {
             snapshot = nil
             scrub = nil
             status = "Controls unavailable. Open Beluga to reconnect."
+            readStatus = .failed
         }
+    }
+
+    private func recordReadReceipt(status: MediaNotificationExtensionReadReceipt.ReadStatus, at now: Double) {
+        guard let store, let epoch else { return }
+        let accepted = status == .current ? snapshot : nil
+        let selectedIndex = accepted?.entries.firstIndex { $0.contextID == selectedContextID }
+        let receipt = MediaNotificationExtensionReadReceipt(epoch: epoch, revision: accepted?.revision,
+            itemCount: UInt8(accepted?.entries.count ?? 0), playingMask: accepted?.playingMask ?? 0,
+            readStatus: status, selectedItemIndex: selectedIndex.map { UInt8($0) }, sampledAtUptime: now)
+        if let previous = lastReceiptAttempt, receipt.hasSameObservation(as: previous),
+           now >= previous.sampledAtUptime,
+           now - previous.sampledAtUptime < MediaNotificationExtensionReadReceipt.minimumWriteInterval { return }
+        lastReceiptAttempt = receipt
+        // A missing, contended or failed receipt must never affect presentation or controls.
+        _ = try? store.recordExtensionReadReceipt(receipt)
     }
 
     func select(_ contextID: String) {

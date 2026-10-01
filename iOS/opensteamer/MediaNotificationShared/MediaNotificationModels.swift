@@ -101,6 +101,45 @@ struct MediaNotificationSnapshot: Codable, Equatable, Sendable {
         isValid && now.isFinite && now >= publishedAtUptime
             && now - publishedAtUptime <= Self.maximumAge
     }
+
+    var playingMask: UInt8 {
+        entries.prefix(2).enumerated().reduce(0) { mask, entry in
+            entry.element.isPlaying ? mask | (UInt8(1) << entry.offset) : mask
+        }
+    }
+}
+
+/// A last-read receipt, not proof of rendered pixels or command authority.
+struct MediaNotificationExtensionReadReceipt: Codable, Equatable, Sendable {
+    enum ReadStatus: String, Codable, Sendable { case current, unavailable, busy, failed }
+    static let minimumWriteInterval: Double = 1
+    static let maximumAge: Double = 5
+
+    let epoch: UUID
+    let revision: UInt64?
+    let itemCount: UInt8
+    let playingMask: UInt8
+    let readStatus: ReadStatus
+    let selectedItemIndex: UInt8?
+    let sampledAtUptime: Double
+
+    var isValid: Bool {
+        guard sampledAtUptime.isFinite, sampledAtUptime >= 0, itemCount <= 2,
+              playingMask < (UInt8(1) << itemCount),
+              selectedItemIndex.map({ $0 < itemCount }) ?? true else { return false }
+        if readStatus == .current { return revision.map { $0 > 0 } == true && itemCount > 0 }
+        return revision == nil && itemCount == 0 && playingMask == 0 && selectedItemIndex == nil
+    }
+
+    func isFresh(at now: Double) -> Bool {
+        isValid && now.isFinite && now >= sampledAtUptime && now - sampledAtUptime <= Self.maximumAge
+    }
+
+    func hasSameObservation(as other: Self) -> Bool {
+        epoch == other.epoch && revision == other.revision && itemCount == other.itemCount
+            && playingMask == other.playingMask && readStatus == other.readStatus
+            && selectedItemIndex == other.selectedItemIndex
+    }
 }
 
 struct MediaNotificationRequest: Codable, Equatable, Sendable {

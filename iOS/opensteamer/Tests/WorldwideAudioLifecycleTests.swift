@@ -18771,6 +18771,27 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         XCTAssertEqual(whileHeld?.revision, 3)
         XCTAssertEqual(whileHeld?.entries.first?.isPlaying, false)
 
+        let acceptedTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertEqual(acceptedTrace.lastEventRevision, 3)
+        XCTAssertEqual(acceptedTrace.lastEventAdmitted, true)
+        XCTAssertEqual(acceptedTrace.applied?.revision, 3)
+        XCTAssertEqual(acceptedTrace.applied?.playingMask, 0)
+        XCTAssertEqual(acceptedTrace.published?.revision, 3)
+        XCTAssertEqual(acceptedTrace.publicationStatus, .ready)
+        XCTAssertNil(acceptedTrace.received, "An injected VM event must not manufacture native peer receipt")
+
+        events.continuation.yield(.remoteMediaStateChanged(state(revision: 2, playing: true)))
+        for _ in 0..<100 {
+            if viewModel.debugMediaPipelineDiagnosticsForTests().lastEventRevision == 2 { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let rejectedTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertEqual(rejectedTrace.lastEventRevision, 2)
+        XCTAssertEqual(rejectedTrace.lastEventAdmitted, false)
+        XCTAssertEqual(rejectedTrace.applied?.revision, 3)
+        XCTAssertEqual(rejectedTrace.published?.revision, 3,
+                       "Rejected event evidence cannot rewrite applied/published state")
+
         // Drain the non-cooperative reader even when the publication assertions fail.
         await gate.open(healthyIOSPlayoutDiagnostics())
         await fulfillment(of: [readerReturned], timeout: 2)
@@ -18780,6 +18801,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         events.continuation.finish()
         await consumer.value
         viewModel.disconnect()
+        let retiredTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertNil(retiredTrace.applied)
+        XCTAssertNil(retiredTrace.lastEventRevision)
         await peer.close()
     }
 
