@@ -43,10 +43,10 @@ module NativeMediaCallbackIsolation
       /^            info\[MPMediaItemPropertyArtwork\] = (MPMediaItemArtwork\(boundsSize: image\.size\) \{ @Sendable _ in image \})$/,
       'immutable artwork callback')[1]
     command = one!(installation,
-      /^            let gate = commandGate\n(            let target = nativeCommand\.addTarget \{ @Sendable _ in\n                gate\.dispatch\(command\) \? \.success : \.commandFailed\n            \})$/,
+      /^            let gate = commandGate\n(            let target = nativeCommand\.addTarget \{ @Sendable _ in\n                gate\.dispatch\(command, origin: \.nativeCommandCenter\) \? \.success : \.commandFailed\n            \})$/,
       'synchronous native command callback')[1]
     position = one!(installation,
-      /^        let gate = commandGate\n(        let positionTarget = commandCenter\.changePlaybackPositionCommand\.addTarget \{ @Sendable event in\n            guard let event = event as\? MPChangePlaybackPositionCommandEvent else \{ return \.commandFailed \}\n            return gate\.dispatch\(\.seekToPosition\(event\.positionTime\)\) \? \.success : \.commandFailed\n        \})$/,
+      /^        let gate = commandGate\n(        let positionTarget = commandCenter\.changePlaybackPositionCommand\.addTarget \{ @Sendable event in\n            guard let event = event as\? MPChangePlaybackPositionCommandEvent else \{ return \.commandFailed \}\n            return gate\.dispatch\(\.seekToPosition\(event\.positionTime\), origin: \.nativeCommandCenter\)\n                \? \.success : \.commandFailed\n        \})$/,
       'synchronous native position callback')[1]
     { 'artwork' => artwork, 'command' => command, 'position' => position }
   end
@@ -60,9 +60,13 @@ module NativeMediaCallbackIsolation
           case seekToPosition(TimeInterval)
       }
 
+      enum FixtureOrigin: Sendable {
+          case nativeCommandCenter
+      }
+
       final class FixtureGate: @unchecked Sendable {
-          func dispatch(_ command: Int) -> Bool { command >= 0 }
-          func dispatch(_ intent: FixtureIntent) -> Bool {
+          func dispatch(_ command: Int, origin: FixtureOrigin) -> Bool { command >= 0 }
+          func dispatch(_ intent: FixtureIntent, origin: FixtureOrigin) -> Bool {
               switch intent {
               case .seekToPosition(let position): return position.isFinite && position >= 0
               }
