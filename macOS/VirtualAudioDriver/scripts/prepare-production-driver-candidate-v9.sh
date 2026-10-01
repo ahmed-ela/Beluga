@@ -677,6 +677,7 @@ expected_regular_files=(
 )
 bundle_tree_sha256() {
     local bundle="$1"
+    local -x LC_ALL=C
     {
         while IFS= read -r -d '' relative; do
             if [[ "$relative" == "." ]]; then

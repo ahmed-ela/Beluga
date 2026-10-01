@@ -15,6 +15,12 @@ class ProductionDriverCandidateV9Tests < Minitest::Test
   MAIN = "\n(( $# == 6 )) || usage\n".freeze
   PREFIX = TEXT.split(MAIN, 2).first.freeze
   RUNNER = TEXT[/^build_root=""\nbuild_root_identity=""\ncandidate_run\(\) \{\n.*?^\}\n/m].freeze
+  VERIFIER_TEXT = File.binread(File.join(__dir__, 'verify-production-driver-package-v9.sh')).freeze
+  PRODUCER_TREE_DIGEST = (TEXT[/^expected_regular_files=\(\n.*?^\)\n/m] +
+                          TEXT[/^bundle_tree_sha256\(\) \{\n.*?^\}\n/m]).freeze
+  VERIFIER_TREE_DIGEST = (VERIFIER_TEXT[/^expected_regular_files=\(\n.*?^\)\n/m] +
+                          VERIFIER_TEXT[/^collect_nodes\(\) \{\n.*?^\}\n/m] +
+                          VERIFIER_TEXT[/^tree_sha256\(\) \{\n.*?^\}\n/m]).freeze
   ENVIRONMENT = { 'PATH' => '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME' => '/var/empty', 'LC_ALL' => 'C' }.freeze
 
   def setup
@@ -171,6 +177,97 @@ class ProductionDriverCandidateV9Tests < Minitest::Test
              '\n[[ "$(candidate_input_identity tree "$1")" != "$baseline" ]] || exit 91'.gsub('\\n', "\n")
       _, error, status = functions(body, tree)
       assert status.success?, error
+    end
+  end
+
+  def production_digest_fixture
+    bundle = @scratch + '/candidate with spaces/OpensteamerVirtualMicrophone.driver'
+    files = {
+      'Contents/Info.plist' => ['offline plist fixture', 0644],
+      'Contents/MacOS/OpensteamerVirtualMicrophone' => ['offline executable fixture', 0755],
+      'Contents/Resources/APPLE_SAMPLE_LICENSE.txt' => ['offline license fixture', 0644],
+      'Contents/Resources/en.lproj/Localizable.strings' => ['offline strings fixture', 0644],
+      'Contents/_CodeSignature/CodeResources' => ['offline signature fixture', 0644]
+    }
+    files.each do |relative, (bytes, mode)|
+      path = bundle + '/' + relative
+      FileUtils.mkdir_p(File.dirname(path), mode: 0755)
+      File.binwrite(path, bytes); File.chmod(mode, path)
+    end
+    Dir.glob(bundle + '/**/*').select { |path| File.directory?(path) }.each { |path| File.chmod(0755, path) }
+    File.chmod(0755, bundle)
+    canonical_nodes = [
+      'Directory|755|.',
+      'Directory|755|Contents',
+      'Regular File|644|Contents/Info.plist',
+      'Directory|755|Contents/MacOS',
+      'Regular File|755|Contents/MacOS/OpensteamerVirtualMicrophone',
+      'Directory|755|Contents/Resources',
+      'Regular File|644|Contents/Resources/APPLE_SAMPLE_LICENSE.txt',
+      'Directory|755|Contents/Resources/en.lproj',
+      'Regular File|644|Contents/Resources/en.lproj/Localizable.strings',
+      'Directory|755|Contents/_CodeSignature',
+      'Regular File|644|Contents/_CodeSignature/CodeResources'
+    ]
+    canonical_bytes = canonical_nodes.map { |node| node + "\0" }.join +
+      files.map { |relative, (bytes, _)| relative + "\0" + Digest::SHA256.hexdigest(bytes) + "\0" }.join
+    [bundle, Digest::SHA256.hexdigest(canonical_bytes)]
+  end
+
+  def production_tree_digest(bundle, kind, locale, original_mutant: false)
+    if kind == :producer
+      source = PRODUCER_TREE_DIGEST
+      if original_mutant
+        source = source.sub("    local -x LC_ALL=C\n", '')
+        refute_equal PRODUCER_TREE_DIGEST, source
+      end
+      body = <<~SH
+        digest="$(bundle_tree_sha256 "$1")"
+        [[ "$LC_ALL" == "$2" ]] || exit 90
+        /usr/bin/printf '%s\n' "$digest"
+      SH
+    else
+      source = VERIFIER_TEXT[/^export LC_ALL=C$/] + "\n" + VERIFIER_TREE_DIGEST
+      body = 'tree_sha256 "$1"'
+    end
+    output, error, status = command(['/bin/zsh', '-f', '-c', "set -euo pipefail\n" + source + body,
+                                     'offline-tree-digest', bundle, locale],
+                                    'LC_ALL' => locale, 'LANG' => locale)
+    assert status.success?, error
+    assert_match(/\A[0-9a-f]{64}\n\z/, output)
+    output.chomp
+  end
+
+  def test_actual_producer_and_verifier_tree_digest_match_under_c_and_utf8
+    bundle, canonical = production_digest_fixture
+    %w[C en_US.UTF-8].each do |locale|
+      assert_equal canonical, production_tree_digest(bundle, :producer, locale)
+      assert_equal canonical, production_tree_digest(bundle, :verifier, locale)
+    end
+  end
+
+  def test_original_producer_locale_mutant_reproduces_reviewed_pin_failure
+    bundle, canonical = production_digest_fixture
+    assert_equal canonical, production_tree_digest(bundle, :producer, 'C', original_mutant: true)
+    original_utf8 = production_tree_digest(bundle, :producer, 'en_US.UTF-8', original_mutant: true)
+    refute_equal canonical, original_utf8
+    refute_equal production_tree_digest(bundle, :verifier, 'en_US.UTF-8'), original_utf8
+  end
+
+  def test_actual_production_tree_digest_retains_byte_mode_and_extra_node_sensitivity
+    changes = [
+      ->(bundle) { File.binwrite(bundle + '/Contents/Info.plist', 'mutated plist fixture') },
+      ->(bundle) { File.chmod(0600, bundle + '/Contents/Info.plist') },
+      ->(bundle) { Dir.mkdir(bundle + '/Contents/extra-empty', 0755) }
+    ]
+    changes.each do |change|
+      bundle, canonical = production_digest_fixture
+      change.call(bundle)
+      %w[C en_US.UTF-8].each do |locale|
+        producer = production_tree_digest(bundle, :producer, locale)
+        refute_equal canonical, producer
+        assert_equal producer, production_tree_digest(bundle, :verifier, locale)
+      end
     end
   end
 
