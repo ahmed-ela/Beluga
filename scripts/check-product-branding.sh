@@ -308,6 +308,18 @@ is_production_rendezvous_match() {
   [[ "$token" == "$PRODUCTION_RENDEZVOUS_HOST" ]] || return 1
 
   case "$file_path" in
+    macOS/BelugaHost/Info.plist)
+      # This is a shipped service address, not display branding. Permit only its
+      # exact configuration key/value; the same token in other plist text fails.
+      content=$(awk -v wanted="$line" '
+        NR == wanted - 1 || NR == wanted {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          print
+        }
+      ' "$file_path")
+      [[ "$content" == "<key>BelugaRendezvousURL</key>"$'\n'"<string>wss://${PRODUCTION_RENDEZVOUS_HOST}</string>" ]]
+      ;;
     iOS/opensteamer/project.yml)
       is_project_yml_production_rendezvous_match "$line"
       ;;
@@ -399,6 +411,80 @@ is_production_rendezvous_match() {
   esac
 }
 
+is_mac_client_compatibility_content_match() {
+  local file_path=$1 line=$2 token=$3 content
+  local host_id="com.elamin.${FORMER_CAMEL}.CaptureServer"
+  case "$file_path" in
+    iOS/opensteamer/Sources/Security/ViewerPairedMacCatalogStore.swift|\
+      macOS/Sources/BelugaUpdateCore/BelugaUpdateOperation.swift|\
+      macOS/Sources/BelugaUpdateCore/BelugaUpdateInstalledArtifact.swift|\
+      macOS/Sources/CaptureServer/BelugaHostPresentation.swift|\
+      macOS/Tests/CaptureServerTests/BelugaUpdatePeerIdentityTests.swift|\
+      macOS/Tests/CaptureServerTests/BelugaUpdateInstalledArtifactTests.swift|\
+      macOS/Tests/CaptureServerTests/BelugaMenuBarTests.swift|\
+      macOS/scripts/build-beluga-mac-client-contract.rb|\
+      macOS/scripts/verify-beluga-mac-client-tests.rb|\
+      macOS/BelugaHost/Release.json|\
+      android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java|\
+      ANDROID_CLIENT_PLAN.md|\
+      shared/Sources/WebRTCTransport/WebRTCAudioShareSender.swift) ;;
+    *) return 1 ;;
+  esac
+  content=$(awk -v wanted="$line" 'NR == wanted {
+    sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit
+  }' "$file_path")
+
+  # Exact persistence, signature and wire contracts only; these paths gain no
+  # permission to use the former product name in presentation or new identifiers.
+  case "$file_path" in
+    iOS/opensteamer/Sources/Security/ViewerPairedMacCatalogStore.swift)
+      [[ "$token" == "$FORMER_CAMEL" && "$content" == \
+        'service: "org.example.'"$FORMER_CAMEL"'", account: "worldwide-paired-macs-catalog"' ]] ;;
+    macOS/Sources/BelugaUpdateCore/BelugaUpdateOperation.swift)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        'package static let expectedBundleIdentifier = "'"$host_id"'"' ]] ;;
+    macOS/Sources/BelugaUpdateCore/BelugaUpdateInstalledArtifact.swift)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        'static let signingRequirement = "anchor apple generic and identifier \"'"$host_id"'\" and certificate leaf[subject.OU] = \"MSMG8CJLB3\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"' ]] ;;
+    macOS/Sources/CaptureServer/BelugaHostPresentation.swift)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        '&& bundleIdentifier == "'"$host_id"'"' ]] ;;
+    macOS/Tests/CaptureServerTests/BelugaUpdatePeerIdentityTests.swift)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        'XCTAssertTrue(source.contains("identifier \"\(role == .main ? "'"$host_id"'" : "com.elamin.beluga.Updater")\""))' ]] ;;
+    macOS/Tests/CaptureServerTests/BelugaUpdateInstalledArtifactTests.swift)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        'XCTAssertTrue(Reader.signingRequirement.contains("identifier \"'"$host_id"'\""))' ]] ;;
+    macOS/Tests/CaptureServerTests/BelugaMenuBarTests.swift)
+      if [[ "$token" == "${FORMER_CAMEL}.CaptureServer" ]]; then
+        [[ "$content" == 'bundleIdentifier: "'"$host_id"'",' || \
+          "$content" == 'arguments: arguments, bundleIdentifier: "'"$host_id"'",' ]]
+      else
+        [[ "$token" == "$PRODUCTION_RENDEZVOUS_HOST" && "$content" == \
+          'let endpoint = "wss://'"$PRODUCTION_RENDEZVOUS_HOST"'"' ]]
+      fi ;;
+    macOS/scripts/build-beluga-mac-client-contract.rb)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        "BUNDLE_ID = '$host_id'" ]] ;;
+    macOS/scripts/verify-beluga-mac-client-tests.rb)
+      [[ "$token" == "$PRODUCTION_RENDEZVOUS_HOST" && "$content" == \
+        "value = 'wss://$PRODUCTION_RENDEZVOUS_HOST'" ]] ;;
+    macOS/BelugaHost/Release.json)
+      [[ "$token" == "${FORMER_CAMEL}.CaptureServer" && "$content" == \
+        '"bundleIdentifier": "'"$host_id"'",' ]] ;;
+    android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java)
+      [[ "$token" == "${FORMER_CAMEL}.RemoteInvitation.Checksum.v1" && "$content" == \
+        '"'"$FORMER_CAMEL"'.RemoteInvitation.Checksum.v1\0".getBytes(StandardCharsets.US_ASCII);' ]] ;;
+    ANDROID_CLIENT_PLAN.md)
+      [[ "$token" == "${FORMER_LOWER}.control" && "$content" == \
+        '`'"$FORMER_LOWER"'.control`/`.v2` envelopes, stereo Opus negotiation and H.264 screen' ]] ;;
+    shared/Sources/WebRTCTransport/WebRTCAudioShareSender.swift)
+      [[ "$token" == "$FORMER_LOWER" && "$content" == \
+        '|| $0.hasPrefix("a='"$FORMER_LOWER"'") || $0.hasPrefix("a=opensteamer")' ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 is_allowed_legacy_token() {
   local file_path=$1
   local token=$2
@@ -476,7 +562,7 @@ is_allowed_legacy_token() {
       ;;
     macOS/BelugaHost/Info.plist|macOS/OpensteamerHost/Info.plist|macOS/Sources/CaptureServer/Info.plist|\
       macOS/Sources/CaptureCore/SystemAudioCaptureSource.swift|\
-      macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift|\
+      macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift|\
       macOS/Sources/CaptureServer/WorldwidePairingStore.swift|\
       macOS/scripts/build-opensteamer-host-app.sh|\
       macOS/scripts/build-beluga-host-app.sh|\
@@ -559,6 +645,7 @@ while IFS=: read -r file_path line token; do
   [[ -n "$file_path" ]] || continue
   if is_allowed_legacy_token "$file_path" "$token" || \
     is_scoped_compatibility_content_match "$file_path" "$line" "$token" || \
+    is_mac_client_compatibility_content_match "$file_path" "$line" "$token" || \
     is_readme_release_identity_match "$file_path" "$line" "$token" || \
     is_production_rendezvous_match "$file_path" "$line" "$token"; then
     continue

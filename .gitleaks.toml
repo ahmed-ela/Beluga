@@ -11,3 +11,19 @@ paths = [
 regexes = [
   '''Curve25519\.(?:Signing|KeyAgreement)\.(?:PrivateKey|PublicKey)''',
 ]
+
+[[allowlists]]
+description = "Reviewed public Sparkle verification key, not a signing credential"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+paths = ['''^macOS/BelugaHost/Release\.json$''']
+regexes = ['''^\s*"publicEDKey": "1/xdC78VgHIKw\+HVPx6aAFWwv\+\+\+/ggtTlMm6QLOkQc="\s*$''']
+
+[[allowlists]]
+description = "Published Sparkle generate_keys executable checksum, not a key"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "line"
+paths = ['''^macOS/scripts/build-beluga-mac-client-contract\.rb$''']
+regexes = ['''^\s*'generate_keys' => 'c37679f98d9121981cf7b2d18592fdc8b44931bffa604acf10c9e11791b6222e'\s*$''']

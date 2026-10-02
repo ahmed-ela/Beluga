@@ -26,6 +26,11 @@ handoff_gate = 'verify_microphone_regression_receipt || fail "microphone regress
 require!(main.index(signing_gate) < main.index('/usr/bin/codesign --force'), 'signing precedes evidence recheck')
 require!(main.index(handoff_gate) > main.index('run_bundle_verifier "${VERIFY_ARGUMENTS[@]}"'), 'handoff gate precedes artifact verification')
 require!(main.index(handoff_gate) < main.index('print -r -- "$APP_DIR"'), 'artifact is handed off before evidence recheck')
+sparkle_guard = "legacy LiveKit-only builder cannot accept a Sparkle manifest; use macOS/scripts/build-beluga-mac-client.rb"
+require!(main.include?(sparkle_guard), 'legacy builder Sparkle compatibility refusal is absent')
+require!(main.index(sparkle_guard) < main.index('/bin/mkdir "$APP_OUTPUT_DIR"'), 'legacy output allocation precedes Sparkle refusal')
+require!(main.index(sparkle_guard) < main.index('/usr/bin/security find-identity'), 'legacy signing identity is accessed before Sparkle refusal')
+require!(main.index(sparkle_guard) < main.index('/usr/bin/swift build'), 'legacy build precedes Sparkle refusal')
 
 Dir.mktmpdir('beluga-microphone-host-release-gate.') do |fixture|
   fixture = File.realpath(fixture)
@@ -56,6 +61,8 @@ Dir.mktmpdir('beluga-microphone-host-release-gate.') do |fixture|
   File.symlink(receipt, symlink)
   actual_builder = File.join(host_scripts, 'build-beluga-host-app.sh')
   File.write(actual_builder, source)
+  manifest = File.join(fixture, 'Package.swift')
+  File.write(manifest, '.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")')
 
   # Every supported normal/prebuilt/release configuration must refuse missing
   # evidence before output creation or the signing/build path is reached.
@@ -73,6 +80,25 @@ Dir.mktmpdir('beluga-microphone-host-release-gate.') do |fixture|
     require!(!status.success? && output.include?('current microphone regression receipt is required'),
              'host builder did not refuse missing receipt at entry')
     require!(!File.exist?(output_dir), 'host builder allocated output before refusing evidence')
+  end
+
+  # The real builder must refuse incompatible source immediately after valid
+  # receipt admission, even in the prebuilt path. It must not create output,
+  # discover a signing identity, or invoke Swift/signing for this fixture.
+  %w[0 1].each do |fresh|
+    output_dir = File.join(fixture, "sparkle-forbidden-output-#{fresh}")
+    output, status = Open3.capture2e(
+      { 'BELUGA_MICROPHONE_REGRESSION_RECEIPT' => receipt,
+        'BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256' => digest,
+        'OPENSTEAMER_HOST_APP_OUTPUT_DIR' => output_dir,
+        'OPENSTEAMER_REQUIRE_FRESH_RELEASE' => fresh,
+        'OPENSTEAMER_ALLOW_PREBUILT_FOR_TESTS' => '1',
+        'OPENSTEAMER_HOST_PREBUILT_BIN_DIR' => File.join(fixture, 'no-prebuilt-products') },
+      '/bin/zsh', actual_builder
+    )
+    require!(!status.success? && output.include?(sparkle_guard),
+             'legacy builder did not refuse Sparkle immediately after valid receipt')
+    require!(!File.exist?(output_dir), 'legacy builder allocated output before refusing Sparkle')
   end
 
   harness = File.join(host_scripts, 'hook-test.zsh')

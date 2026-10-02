@@ -178,6 +178,30 @@ write_current_automatic_signing_fixture "$AUTOMATIC_SIGNING"
 commit_all "$AUTOMATIC_SIGNING"
 "$AUTOMATIC_SIGNING/scripts/check-product-branding.sh" "$AUTOMATIC_SIGNING" >/dev/null
 
+MAC_RENDEZVOUS="$TEMPORARY_ROOT/mac-rendezvous"
+initialize_repository "$MAC_RENDEZVOUS"
+mkdir -p "$MAC_RENDEZVOUS/macOS/BelugaHost"
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+commit_all "$MAC_RENDEZVOUS"
+"$MAC_RENDEZVOUS/scripts/check-product-branding.sh" "$MAC_RENDEZVOUS" >/dev/null
+
+print -rl -- '<key>CFBundleDisplayName</key>' "<string>${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+require_failure "$MAC_RENDEZVOUS" 'macOS/BelugaHost/Info.plist:2:'
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>http://${PRODUCTION_HOST}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+require_failure "$MAC_RENDEZVOUS" 'macOS/BelugaHost/Info.plist:2:'
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>Beluga at ${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+require_failure "$MAC_RENDEZVOUS" 'macOS/BelugaHost/Info.plist:2:'
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+mkdir -p "$MAC_RENDEZVOUS/macOS/OtherApp"
+cp "$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist" "$MAC_RENDEZVOUS/macOS/OtherApp/Info.plist"
+commit_all "$MAC_RENDEZVOUS"
+require_failure "$MAC_RENDEZVOUS" 'macOS/OtherApp/Info.plist:2:'
+
 HOST_CONTRACTS="$TEMPORARY_ROOT/host-contracts"
 initialize_repository "$HOST_CONTRACTS"
 mkdir -p \
@@ -299,6 +323,88 @@ require_scoped_content_rejected() {
   commit_all "$repository"
   require_failure "$repository" "$relative_path:1:$token"
 }
+
+MAC_CLIENT_COMPATIBILITY="$TEMPORARY_ROOT/mac-client-compatibility"
+initialize_repository "$MAC_CLIENT_COMPATIBILITY"
+MAC_CLIENT_COMPATIBILITY_PATHS=(
+  iOS/opensteamer/Sources/Security/ViewerPairedMacCatalogStore.swift
+  macOS/Sources/BelugaUpdateCore/BelugaUpdateOperation.swift
+  macOS/Sources/BelugaUpdateCore/BelugaUpdateInstalledArtifact.swift
+  macOS/Sources/CaptureServer/BelugaHostPresentation.swift
+  macOS/Tests/CaptureServerTests/BelugaUpdatePeerIdentityTests.swift
+  macOS/Tests/CaptureServerTests/BelugaUpdateInstalledArtifactTests.swift
+  macOS/Tests/CaptureServerTests/BelugaMenuBarTests.swift
+  macOS/scripts/build-beluga-mac-client-contract.rb
+  macOS/scripts/verify-beluga-mac-client-tests.rb
+  macOS/BelugaHost/Release.json
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java
+  ANDROID_CLIENT_PLAN.md
+  shared/Sources/WebRTCTransport/WebRTCAudioShareSender.swift
+)
+for relative_path in "${MAC_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  mkdir -p "$MAC_CLIENT_COMPATIBILITY/${relative_path:h}"
+done
+print -r -- 'service: "org.example.AudioStreamer", account: "worldwide-paired-macs-catalog"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[1]}"
+print -r -- 'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[2]}"
+print -r -- 'static let signingRequirement = "anchor apple generic and identifier \"com.elamin.AudioStreamer.CaptureServer\" and certificate leaf[subject.OU] = \"MSMG8CJLB3\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[3]}"
+print -r -- '&& bundleIdentifier == "com.elamin.AudioStreamer.CaptureServer"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[4]}"
+print -r -- 'XCTAssertTrue(source.contains("identifier \"\(role == .main ? "com.elamin.AudioStreamer.CaptureServer" : "com.elamin.beluga.Updater")\""))' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[5]}"
+print -r -- 'XCTAssertTrue(Reader.signingRequirement.contains("identifier \"com.elamin.AudioStreamer.CaptureServer\""))' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[6]}"
+print -rl -- "let endpoint = \"${PRODUCTION_URL}\"" \
+  'bundleIdentifier: "com.elamin.AudioStreamer.CaptureServer",' \
+  'arguments: arguments, bundleIdentifier: "com.elamin.AudioStreamer.CaptureServer",' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[7]}"
+print -r -- "BUNDLE_ID = 'com.elamin.AudioStreamer.CaptureServer'" \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[8]}"
+print -r -- "value = '${PRODUCTION_URL}'" \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[9]}"
+print -r -- '"bundleIdentifier": "com.elamin.AudioStreamer.CaptureServer",' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[10]}"
+print -r -- '"AudioStreamer.RemoteInvitation.Checksum.v1\0".getBytes(StandardCharsets.US_ASCII);' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[11]}"
+print -r -- '`audiostreamer.control`/`.v2` envelopes, stereo Opus negotiation and H.264 screen' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[12]}"
+print -r -- '|| $0.hasPrefix("a=audiostreamer") || $0.hasPrefix("a=opensteamer")' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[13]}"
+commit_all "$MAC_CLIENT_COMPATIBILITY"
+"$MAC_CLIENT_COMPATIBILITY/scripts/check-product-branding.sh" "$MAC_CLIENT_COMPATIBILITY" >/dev/null
+
+# Every newly permitted path still rejects former-brand presentation. Separate
+# fixtures avoid a first failure hiding a later path's accidental broad allowance.
+for relative_path in "${MAC_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  require_scoped_content_rejected "mac-client-display-${relative_path:t}" "$relative_path" \
+    'Text("AudioStreamer")' AudioStreamer
+done
+require_scoped_content_rejected mac-client-identity-wrong-path \
+  macOS/Sources/BelugaUpdateCore/Unreviewed.swift \
+  'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer"' \
+  AudioStreamer.CaptureServer
+require_scoped_content_rejected mac-client-identity-wrong-token "${MAC_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer.preview"' \
+  AudioStreamer.CaptureServer.preview
+require_scoped_content_rejected mac-client-identity-trailing-brand "${MAC_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer" // AudioStreamer' \
+  AudioStreamer.CaptureServer
+require_scoped_content_rejected mac-client-keychain-wrong-account "${MAC_CLIENT_COMPATIBILITY_PATHS[1]}" \
+  'service: "org.example.AudioStreamer", account: "unreviewed-catalog"' AudioStreamer
+require_scoped_content_rejected mac-client-release-display-field "${MAC_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  '"displayName": "com.elamin.AudioStreamer.CaptureServer",' AudioStreamer.CaptureServer
+require_scoped_content_rejected mac-client-rendezvous-wrong-token "${MAC_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  "value = 'wss://audiostreamer-rendezvous.elaminahmed04.workers.dev'" \
+  audiostreamer-rendezvous.elaminahmed04.workers.dev
+require_scoped_content_rejected android-checksum-wrong-domain "${MAC_CLIENT_COMPATIBILITY_PATHS[11]}" \
+  '"AudioStreamer.RemoteInvitation.Checksum.v2\0".getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.RemoteInvitation.Checksum.v2
+require_scoped_content_rejected audio-share-negative-prefix-wrong-context "${MAC_CLIENT_COMPATIBILITY_PATHS[13]}" \
+  'Text("a=audiostreamer")' audiostreamer
+require_scoped_content_rejected android-plan-wire-wrong-context "${MAC_CLIENT_COMPATIBILITY_PATHS[12]}" \
+  '# audiostreamer.control' audiostreamer.control
 
 require_scoped_content_rejected physical-identity-wrong-path \
   iOS/opensteamer/Tests/UnreviewedTests.swift \

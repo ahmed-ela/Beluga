@@ -106,6 +106,19 @@ run_private_virtual_display_import_verifier() {
 
 verify_microphone_regression_receipt || fail "current microphone regression receipt is required"
 
+# This historical artifact contract embeds LiveKit only. Sparkle also carries
+# nested code and update policy: use the versioned Mac-client builder instead of
+# signing an unloadable app and discovering the mismatch in the final verifier.
+# A conservative source tripwire (including comments) is intentional; it does
+# not parse Swift or relax the legacy verifier's exact dependency/layout policy.
+[[ -f "$ROOT_DIR/Package.swift" && ! -L "$ROOT_DIR/Package.swift" \
+    && -r "$ROOT_DIR/Package.swift" ]] || fail "Package.swift must be a readable regular file"
+legacy_manifest_sparkle_status=0
+/usr/bin/grep -F -q -- 'Sparkle' "$ROOT_DIR/Package.swift" \
+    || legacy_manifest_sparkle_status=$?
+[[ "$legacy_manifest_sparkle_status" == 1 ]] || fail \
+    "legacy LiveKit-only builder cannot accept a Sparkle manifest; use macOS/scripts/build-beluga-mac-client.rb"
+
 [[ "$REQUIRE_FRESH_RELEASE" == 0 || "$REQUIRE_FRESH_RELEASE" == 1 ]] || fail \
     "OPENSTEAMER_REQUIRE_FRESH_RELEASE must be 0 or 1"
 [[ "$ALLOW_PREBUILT_FOR_TESTS" == 0 || "$ALLOW_PREBUILT_FOR_TESTS" == 1 ]] || fail \

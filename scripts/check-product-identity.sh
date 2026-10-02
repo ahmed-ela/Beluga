@@ -1155,8 +1155,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"${EXPECTED_PACKAGE_MANIFEST_SHA256}"' 2 \
   'side-by-side TestFlight current release package-manifest binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${EXPECTED_PACKAGE_RESOLVED_STATE}"' 2 \
-  'side-by-side TestFlight current release absent-lock binding'
+  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}"' 2 \
+  'side-by-side TestFlight current release resolved-package binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}"' 3 \
   'side-by-side TestFlight cache-enrollment package-manifest provenance'
@@ -1425,14 +1425,20 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function resolve_pinned_package_dependencies() {' 1 \
   'side-by-side TestFlight one-time native package resolution'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_PACKAGE_MANIFEST_SHA256="443fe7a76bfbe8cda2d193c047cc04122c01479f8763ccd9e2d5871b7e504f82"' 1 \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="c518eda5d6313c66fd38d8e8b4ae5ab537f276edccc5149f19b29dfef3c0c5aa"' 1 \
   'side-by-side TestFlight exact package manifest pin'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_PACKAGE_RESOLVED_STATE="absent"' 1 \
-  'side-by-side TestFlight exact absent-lock state'
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="b3ab744638912653cdcd8d3890a460390e651343720897a8a24ba84273ec83c7"' 1 \
+  'side-by-side TestFlight exact resolved-package pin'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '&& ! -e "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}"' 1 \
-  'side-by-side TestFlight rejects stale remote dependency lock'
+  '&& -f "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}"' 1 \
+  'side-by-side TestFlight requires regular non-symlink dependency lock'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"$(sha256_private_file_contents "${PACKAGE_MANIFEST_PATH}")"' 1 \
+  'side-by-side TestFlight exact manifest bytes'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"$(sha256_private_file_contents "${PACKAGE_RESOLVED_PATH}")"' 1 \
+  'side-by-side TestFlight exact resolved-package bytes'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'VENDOR_ARCHIVE_PATH="${REPOSITORY_ROOT}/shared/Vendor/LiveKitWebRTC/LiveKitWebRTC.xcframework.zip"' 1 \
   'side-by-side TestFlight exact local vendor path'
@@ -1867,8 +1873,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_ASC_P8_SHA256="22d0dffa775141c5bedb6eb255fb909f50f0547f1997f2ff9ad92609afce5300"' 1 \
   'side-by-side TestFlight exact API-key byte digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'sha256_private_file_contents' 7 \
-  'side-by-side TestFlight path-independent private-key and receipt hashing'
+  'sha256_private_file_contents' 9 \
+  'side-by-side TestFlight path-independent private-key, receipt, and package hashing'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }' 1 \
   'side-by-side TestFlight private-key stdin digest parser'
@@ -2147,7 +2153,7 @@ assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   'iOS local-network description identity'
 assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   NSCameraUsageDescription \
-  'Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.' \
+  'Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.' \
   'iOS camera usage description'
 assert_literal_count iOS/opensteamer/Sources/Views/BrowserView.swift \
   '.navigationTitle("Beluga")' 1 'iOS navigation-title identity'
@@ -2386,7 +2392,7 @@ if require_directory macOS/Sources; then
   [[ -z "$PROTECTED_PAIRING_SOURCE_MATCHES" ]] \
     || fail 'protected legacy pairing Keychain service appears in macOS runtime source'
 fi
-assert_literal_count macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift \
+assert_literal_count macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift \
   '"com.elamin.AudioStreamer.CaptureServer.runtime"' 1 \
   'preserved cross-version runtime lock namespace'
 assert_literal_count macOS/scripts/build-opensteamer-host-app.sh \

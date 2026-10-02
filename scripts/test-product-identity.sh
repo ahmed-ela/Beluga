@@ -88,6 +88,7 @@ mkdir -p \
   "$BASELINE/macOS/scripts" \
   "$BASELINE/macOS/Sources/CaptureCore" \
   "$BASELINE/macOS/Sources/CaptureServer" \
+  "$BASELINE/macOS/Sources/BelugaUpdateCore" \
   "$BASELINE/macOS/LaunchAgents" \
   "$BASELINE/macOS/RelayBridge" \
   "$BASELINE/macOS/VirtualAudioDriver/Driver" \
@@ -486,7 +487,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleName</key><string>Beluga</string>
 <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-<key>NSCameraUsageDescription</key><string>Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>
+<key>NSCameraUsageDescription</key><string>Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.</string>
 <key>NSLocalNetworkUsageDescription</key><string>Beluga finds the Mac capture server on your local Wi-Fi network.</string>
 </dict></plist>' >"$BASELINE/iOS/opensteamer/Sources/Support/Info.plist"
 print -r -- 'struct BrowserViewFixture {
@@ -525,7 +526,7 @@ print -r -- 'let store = WorldwidePairingStore(
 fflush(stdout)' >"$BASELINE/macOS/Sources/CaptureServer/CaptureServerMain.swift"
 print -r -- 'static let legacyRuntimeDirectoryName =
     "com.elamin.AudioStreamer.CaptureServer.runtime"' \
-  >"$BASELINE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"
+  >"$BASELINE/macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift"
 print -r -- 'codesign --identifier com.elamin.AudioStreamer.CaptureServer executable' \
   >"$BASELINE/macOS/scripts/build-opensteamer-host-app.sh"
 print -r -- 'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' \
@@ -810,7 +811,7 @@ require_rejection "$CASE" 'iOS CFBundleDisplayName identity'
 
 CASE=$(new_case camera-usage-description)
 replace_once "$CASE/iOS/opensteamer/Sources/Support/Info.plist" \
-  '<key>NSCameraUsageDescription</key><string>Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>' \
+  '<key>NSCameraUsageDescription</key><string>Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.</string>' \
   '<key>NSCameraUsageDescription</key><string>Beluga uses the camera during ordinary audio streaming.</string>'
 require_rejection "$CASE" 'iOS camera usage description'
 
@@ -2169,15 +2170,33 @@ require_rejection "$CASE" 'side-by-side TestFlight package update suppression'
 
 CASE=$(new_case testflight-package-manifest-pin)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_PACKAGE_MANIFEST_SHA256="443fe7a76bfbe8cda2d193c047cc04122c01479f8763ccd9e2d5871b7e504f82"' \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="c518eda5d6313c66fd38d8e8b4ae5ab537f276edccc5149f19b29dfef3c0c5aa"' \
   'EXPECTED_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight exact package manifest pin'
 
-CASE=$(new_case testflight-package-resolved-state)
+CASE=$(new_case testflight-package-resolved-pin)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_PACKAGE_RESOLVED_STATE="absent"' \
-  'EXPECTED_PACKAGE_RESOLVED_STATE="allow-stale-remote-lock"'
-require_rejection "$CASE" 'side-by-side TestFlight exact absent-lock state'
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="b3ab744638912653cdcd8d3890a460390e651343720897a8a24ba84273ec83c7"' \
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact resolved-package pin'
+
+CASE=$(new_case testflight-package-resolved-regular)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '&& -f "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}"' \
+  '&& -e "${PACKAGE_RESOLVED_PATH}" # allow a symlink lock'
+require_rejection "$CASE" 'side-by-side TestFlight requires regular non-symlink dependency lock'
+
+CASE=$(new_case testflight-package-manifest-bytes)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '"$(sha256_private_file_contents "${PACKAGE_MANIFEST_PATH}")"' \
+  '"${EXPECTED_PACKAGE_MANIFEST_SHA256}" # skip actual manifest bytes'
+require_rejection "$CASE" 'side-by-side TestFlight exact manifest bytes'
+
+CASE=$(new_case testflight-package-resolved-bytes)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '"$(sha256_private_file_contents "${PACKAGE_RESOLVED_PATH}")"' \
+  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}" # skip actual resolved bytes'
+require_rejection "$CASE" 'side-by-side TestFlight exact resolved-package bytes'
 
 CASE=$(new_case testflight-vendor-missing-contract)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -3039,7 +3058,7 @@ replace_once "$CASE/macOS/Sources/CaptureServer/CaptureServerMain.swift" \
 require_rejection "$CASE" 'immediate primary one-time pairing-code flush'
 
 CASE=$(new_case mac-runtime-lock-namespace)
-replace_once "$CASE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift" \
+replace_once "$CASE/macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift" \
   '"com.elamin.AudioStreamer.CaptureServer.runtime"' \
   '"org.example.AudioStreamer.CaptureServer.runtime"'
 require_rejection "$CASE" 'preserved cross-version runtime lock namespace'
@@ -4945,7 +4964,7 @@ source <(/usr/bin/sed \
   -e 's|^readonly TESTFLIGHT_BUILD_ROOT=.*$|readonly TESTFLIGHT_BUILD_ROOT="${ENROLLMENT_RECOVERY_BUILD_ROOT}"|' \
   -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${ENROLLMENT_RECOVERY_MOUNT_ROOT}"|' \
   -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="${EXPECTED_PACKAGE_MANIFEST_SHA256}"|' \
-  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="${EXPECTED_PACKAGE_RESOLVED_STATE}"|' \
+  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="${EXPECTED_PACKAGE_RESOLVED_SHA256}"|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
 trap - EXIT ZERR HUP INT QUIT TERM
 

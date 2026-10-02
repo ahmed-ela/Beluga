@@ -110,8 +110,8 @@ readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5
 readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5
 readonly PACKAGE_MANIFEST_PATH="${REPOSITORY_ROOT}/Package.swift"
 readonly PACKAGE_RESOLVED_PATH="${REPOSITORY_ROOT}/Package.resolved"
-readonly EXPECTED_PACKAGE_MANIFEST_SHA256="443fe7a76bfbe8cda2d193c047cc04122c01479f8763ccd9e2d5871b7e504f82"
-readonly EXPECTED_PACKAGE_RESOLVED_STATE="absent"
+readonly EXPECTED_PACKAGE_MANIFEST_SHA256="c518eda5d6313c66fd38d8e8b4ae5ab537f276edccc5149f19b29dfef3c0c5aa"
+readonly EXPECTED_PACKAGE_RESOLVED_SHA256="b3ab744638912653cdcd8d3890a460390e651343720897a8a24ba84273ec83c7"
 readonly VENDOR_ARCHIVE_PATH="${REPOSITORY_ROOT}/shared/Vendor/LiveKitWebRTC/LiveKitWebRTC.xcframework.zip"
 # Replaced only after the actual patched slices and complete ZIP pass artifact verification.
 # A non-checksum placeholder deliberately prevents archive/export from consuming unreviewed code.
@@ -621,10 +621,11 @@ function verify_package_dependency_contract() {
   [[ "${PACKAGE_MANIFEST_PATH:A}" == "${PACKAGE_MANIFEST_PATH}" \
       && "${PACKAGE_RESOLVED_PATH:A}" == "${PACKAGE_RESOLVED_PATH}" \
       && -f "${PACKAGE_MANIFEST_PATH}" && ! -L "${PACKAGE_MANIFEST_PATH}" \
-      && "${EXPECTED_PACKAGE_RESOLVED_STATE}" == 'absent' \
-      && ! -e "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}" \
-      && "$(sha256_file "${PACKAGE_MANIFEST_PATH}")" \
-        == "${EXPECTED_PACKAGE_MANIFEST_SHA256}" ]] \
+      && -f "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}" \
+      && "$(sha256_private_file_contents "${PACKAGE_MANIFEST_PATH}")" \
+        == "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
+      && "$(sha256_private_file_contents "${PACKAGE_RESOLVED_PATH}")" \
+        == "${EXPECTED_PACKAGE_RESOLVED_SHA256}" ]] \
     && verify_pinned_vendor_archive \
       "${VENDOR_ARCHIVE_PATH}" "${EXPECTED_VENDOR_ARCHIVE_SHA256}"
 }
@@ -5570,7 +5571,7 @@ function run_initialize_build_cache() {
     || fail "current package inputs changed before build-cache enrollment"
   [[ "${EXPECTED_PACKAGE_MANIFEST_SHA256}" \
         == "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}" \
-      && "${EXPECTED_PACKAGE_RESOLVED_STATE}" \
+      && "${EXPECTED_PACKAGE_RESOLVED_SHA256}" \
         == "${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256}" ]] \
     || fail "build-cache enrollment provenance pins do not match the current package inputs"
   TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=1
