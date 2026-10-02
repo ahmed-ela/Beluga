@@ -472,6 +472,38 @@ fn failure_event_owner(output:&os::Captured,pid:u32,fd:i32,identity:&Identity,pa
     let process=parse(rows[0],b"pc")?;let file=parse(rows[1],b"fDain")?;
     if positive(&process[&b'p'])?!=pid as u64||process[&b'c'].len()>256||file[&b'f']!=fd.to_string()||file[&b'a']!="r"||file[&b'D']!=format!("0x{:x}",identity.device)||positive(&file[&b'i'])?!=identity.inode||file[&b'n']!=path.to_str().ok_or("failed event path encoding differs")?{return Err("failed guardian event is not exclusively this held read-only inspection descriptor".into());}Ok(())
 }
+fn failed_011_empty_mapping(output:&os::Captured)->Result<()>{
+    if matches!(output.code,0|1)&&output.stdout.is_empty()&&output.stderr.is_empty(){return Ok(());}
+    Err(inspector_summary("failed_011_executable_owner",output))
+}
+fn failed_011_mapping_fence(output:Result<os::Captured>,checked:Result<()>)->Result<()>{
+    match(output,checked){
+        (Ok(output),Ok(()))=>failed_011_empty_mapping(&output),
+        (Err(reason),Ok(()))=>Err(reason),
+        (Ok(_),Err(reason))=>Err(reason),
+        (Err(reason),Err(fence))=>Err(format!("{reason} held_image_fence_error_sha256={}",sha256(fence.as_bytes()))),
+    }
+}
+fn failed_011_absence(owners:&[u32],old_worker:&os::SealedExecutable,helpers:[&os::SealedExecutable;3],reconciler:Option<&os::SealedExecutable>)->Result<()>{
+    if !matches!((owners.len(),reconciler.is_some()),(1,false)|(2,true)){return Err("failed 011 owner/image role set differs".into());}
+    use os::Failed011ExecutableRole as Role;
+    let mut images=vec![(old_worker,Role::OriginalWorker),(helpers[0],Role::IdleHelper),(helpers[1],Role::BothOrderProbe),(helpers[2],Role::RouteGuardian)];
+    if let Some(reconciler)=reconciler{images.push((reconciler,Role::ConsumedReconciler));}
+    // Fixed held-inode searches do not require reconstructing unrelated live
+    // executable paths. Two finite sweeps are observations, not atomic absence.
+    for _ in 0..2{
+        for(image,_)in &images{image.reconcile_revalidate()?;}
+        let before=os::failed_011_process_inventory(owners)?;
+        for(image,role)in &images{
+            image.reconcile_revalidate()?;
+            let output=(||inspector_capture("failed_011_executable_owner",os::OwnedChild::failed_011_executable_owners(image,*role)?,65536))();
+            failed_011_mapping_fence(output,image.reconcile_revalidate())?;
+        }
+        let after=os::failed_011_process_inventory(owners)?;
+        os::failed_011_processes_unchanged(&before,&after)?;
+        for(image,_)in &images{image.reconcile_revalidate()?;}
+    }Ok(())
+}
 fn failure_reconciliation_record(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<Vec<u8>>{
     let mut fields=BTreeMap::new();
     for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v1"),("terminal",FAILURE_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("reconciler_worker_sha256",worker_sha),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{fields.insert(key,value.to_string());}
@@ -522,7 +554,7 @@ fn failed_011_terminal_clear(state:&Path,request:&Request)->Result<()>{
     let old_worker=os::SealedExecutable::open(&exec.join("worker"),FAILED_011_WORKER)?;
     let reconciler_ancestry=sealed_fs::root_ancestry_path(Path::new(RECONCILE_011_WORKER).parent().unwrap(),0o711)?;let reconciler_directory=GateDirectory::capture(Path::new(RECONCILE_011_WORKER).parent().unwrap())?;let reconciler=os::SealedExecutable::open(Path::new(RECONCILE_011_WORKER),&fields["reconciler_worker_sha256"])?;
     let old_owner=strict_flat(&inventory.bytes("child-active-001")?,CHILD_FENCE_FIELDS,8192)?;let new_owner=strict_flat(&inventory.bytes("child-active-002")?,CHILD_FENCE_FIELDS,8192)?;
-    os::failed_011_processes_absent(&[positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"old owner PID overflow")?,positive(&new_owner["owner_pid"])?.try_into().map_err(|_|"reconciler owner PID overflow")?])?;
+    failed_011_absence(&[positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"old owner PID overflow")?,positive(&new_owner["owner_pid"])?.try_into().map_err(|_|"reconciler owner PID overflow")?],&old_worker,[&helpers[0],&helpers[1],&helpers[2]],Some(&reconciler))?;
     old_worker.reconcile_revalidate()?;reconciler.reconcile_revalidate()?;reconciler_directory.revalidate()?;for helper in &helpers{helper.reconcile_revalidate()?;}for held in ancestry.iter().chain(exec_ancestry.iter()).chain(reconciler_ancestry.iter()){held.revalidate()?;}inventory.revalidate()
 }
 
@@ -532,7 +564,7 @@ pub(super) fn reconcile_failed_no_effects_011(request:&Request,worker_sha:&str)-
     worker.reconcile_revalidate()?;let(mut context,original,old_worker)=RootContext::open_failed_011(request)?;old_worker.reconcile_revalidate()?;
     let old_owner=strict_flat(&original.bytes("child-active-001")?,CHILD_FENCE_FIELDS,8192)?;let old_pid=positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"original owner PID overflow")?;
     let event=original.nodes.get("guardian-1.events").ok_or("original guardian event descriptor missing")?;
-    let absence=||->Result<()>{os::failed_011_processes_absent(&[old_pid])?;let output=inspector_capture("failed_011_event_owner",os::OwnedChild::failed_011_event_owners()?,65536)?;failure_event_owner(&output,std::process::id(),event.file.as_raw_fd(),&event.identity,&event.path)?;event.revalidate()};
+    let absence=||->Result<()>{failed_011_absence(&[old_pid],&old_worker,[&context.idle,&context.probe,&context.guardian],None)?;let output=inspector_capture("failed_011_event_owner",os::OwnedChild::failed_011_event_owners()?,65536)?;failure_event_owner(&output,std::process::id(),event.file.as_raw_fd(),&event.identity,&event.path)?;event.revalidate()};
     // Every passive inspector is covered by fresh child-active-002. This is
     // absence now, never a retrospective guardian teardown/coverage proof.
     absence()?;let before=context.gate("--candidate-present")?;context.record("reconciliation-host-before.txt",&before.bytes)?;
@@ -908,7 +940,7 @@ fn core_launch(bytes:&[u8])->Result<(u32,u64)>{
     let pid=positive(fields.get("pid").ok_or("CoreAudio PID missing")?)?;let runs=positive(fields.get("runs").ok_or("CoreAudio runs missing")?)?;
     if !closed||depth!=0||pid>i32::MAX as u64{return Err("CoreAudio launch extent/PID differs".into());}Ok((pid as u32,runs))
 }
-const INSPECTOR_ROLES:&[&str]=&["core_launch_before","core_process","core_pids","core_start","core_launch_after","driver_selector_before","driver_process_before","driver_procinfo_before","driver_mappings","driver_owners_prior","driver_owners_candidate","driver_process_after","driver_procinfo_after","driver_selector_after","failed_011_event_owner"];
+const INSPECTOR_ROLES:&[&str]=&["core_launch_before","core_process","core_pids","core_start","core_launch_after","driver_selector_before","driver_process_before","driver_procinfo_before","driver_mappings","driver_owners_prior","driver_owners_candidate","driver_process_after","driver_procinfo_after","driver_selector_after","failed_011_event_owner","failed_011_executable_owner"];
 fn inspector_role(role:&str)->&str{if INSPECTOR_ROLES.contains(&role){role}else{"unknown_inspector"}}
 fn inspector_summary(role:&str,captured:&os::Captured)->String{
     format!("trusted OS identity inspector refused role={} code={} stdout_bytes={} stdout_sha256={} stderr_bytes={} stderr_sha256={}",inspector_role(role),captured.code,captured.stdout.len(),sha256(&captured.stdout),captured.stderr.len(),sha256(&captured.stderr))
@@ -1734,6 +1766,30 @@ impl Backend for OsBackend{
         let bytes=b"p456\0cworker\0\nf37\0ar\0D0x1000010\0i123\0n/private/tmp/exclusive-fixture-event\0\n".to_vec();let output=|code,stdout,stderr|os::Captured{code,stdout,stderr};failure_event_owner(&output(0,bytes.clone(),vec![]),456,37,&identity,path).unwrap();
         let text=String::from_utf8(bytes.clone()).unwrap();for mutant in [text.replace("p456","p457"),text.replace("f37","f38"),text.replace("ar\0","aw\0"),text.replace("i123","i124"),text.replace("D0x1000010","D0x1000011"),text.replace("exclusive-fixture-event","other-event"),text.replace("f37\0","f37\0f37\0"),text.replace("\0", ""),text.replace("ar\0", ""),text.clone()+"p999\0cunknown\0\nf40\0ar\0D0x1000010\0i123\0n/private/tmp/exclusive-fixture-event\0\n",text.clone()+"f38\0ar\0D0x1000010\0i123\0n/private/tmp/exclusive-fixture-event\0\n"]{assert!(failure_event_owner(&output(0,mutant.into_bytes(),vec![]),456,37,&identity,path).is_err());}
         for(code,stdout,stderr)in [(1,bytes.clone(),vec![]),(1,vec![],vec![]),(0,vec![],vec![]),(0,bytes,vec![b'!'])]{assert!(failure_event_owner(&output(code,stdout,stderr),456,37,&identity,path).is_err());}
+    }
+    #[test]fn failed_helper_mapping_absence_accepts_only_two_byte_empty_statuses(){
+        let output=|code,stdout:Vec<u8>,stderr:Vec<u8>|os::Captured{code,stdout,stderr};
+        for code in [0,1]{failed_011_empty_mapping(&output(code,vec![],vec![])).unwrap();}
+        for code in [-1,2,64,78,128,143]{assert!(failed_011_empty_mapping(&output(code,vec![],vec![])).is_err());}
+        let mappings=[b"p456\0canything\0\nftxt\0D0x1000010\0i123\0n/fixed/held/worker\0\n".as_slice(),b"p456\0canything\0\n",b"p456",b"\0\n",b"\n"];
+        for code in [0,1]{
+            for bytes in mappings{assert!(failed_011_empty_mapping(&output(code,bytes.to_vec(),vec![])).is_err());}
+            for bytes in [b"warning".as_slice(),b"\n",b"\0"]{assert!(failed_011_empty_mapping(&output(code,vec![],bytes.to_vec())).is_err());}
+        }
+        let reason=failed_011_empty_mapping(&output(1,b"partial".to_vec(),vec![])).unwrap_err();
+        assert!(reason.contains("role=failed_011_executable_owner")&&reason.contains("code=1")&&reason.contains("stdout_bytes=7")&&reason.contains(&sha256(b"partial")));
+    }
+    #[test]fn failed_helper_mapping_requires_post_query_held_identity_even_on_error(){
+        for code in [0,1]{
+            let empty=||os::Captured{code,stdout:vec![],stderr:vec![]};
+            failed_011_mapping_fence(Ok(empty()),Ok(())).unwrap();
+            assert!(failed_011_mapping_fence(Ok(empty()),Err("held inode changed".into())).is_err());
+        }
+        assert_eq!(failed_011_mapping_fence(Err("query unavailable".into()),Ok(())).unwrap_err(),"query unavailable");
+        let reason=failed_011_mapping_fence(Err("query unavailable".into()),Err("held inode changed".into())).unwrap_err();
+        assert!(reason.starts_with("query unavailable")&&reason.contains(&sha256(b"held inode changed")));
+        let positive=os::Captured{code:0,stdout:b"live forbidden inode".to_vec(),stderr:vec![]};
+        assert!(failed_011_mapping_fence(Ok(positive),Ok(())).is_err());
     }
     fn gate_metadata_identities()->Vec<Identity>{
         (1..=5).map(|inode|Identity{device:2,inode,uid:0,gid:0,mode:0o40711,links:1,size:128,mtime:10,mtime_nsec:1,ctime:20,ctime_nsec:2}).collect()

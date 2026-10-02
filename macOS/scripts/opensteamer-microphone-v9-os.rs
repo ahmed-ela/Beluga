@@ -5,7 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::fd::FromRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::{CommandExt,ExitStatusExt};
 use std::path::{Path,PathBuf};
@@ -30,7 +30,6 @@ unsafe extern "C" {
     fn waitid(kind:i32,pid:u32,info:*mut SigInfo,options:i32)->i32;
     fn proc_listpids(kind:u32,group:u32,buffer:*mut std::ffi::c_void,size:i32)->i32;
     fn proc_pidinfo(pid:i32,flavor:i32,arg:u64,buffer:*mut std::ffi::c_void,size:i32)->i32;
-    fn proc_pidpath(pid:i32,buffer:*mut std::ffi::c_void,size:u32)->i32;
     fn signal(number:i32,handler:usize)->usize;
 }
 
@@ -40,6 +39,16 @@ struct SigInfo{signo:i32,error:i32,code:i32,pid:i32,uid:u32,status:i32,address:u
 #[repr(C)]
 #[derive(Default)]
 struct ShortProcess{pid:u32,parent:u32,group:u32,status:u32,command:[u8;16],flags:u32,uid:u32,gid:u32,ruid:u32,rgid:u32,svuid:u32,svgid:u32,reserved:u32}
+// Public SDK PROC_PIDTBSDINFO (3), LP64 proc_bsdinfo. Only its identity and
+// birth-time fields are authority; display names/status/counters are not.
+#[repr(C)]
+#[derive(Default)]
+struct BsdProcess{flags:u32,status:u32,xstatus:u32,pid:u32,parent:u32,uid:u32,gid:u32,ruid:u32,rgid:u32,svuid:u32,svgid:u32,reserved:u32,command:[u8;16],name:[u8;32],files:u32,group:u32,jobs:u32,tty:u32,tty_group:u32,nice:i32,start_sec:u64,start_usec:u64}
+const _: [();136]=[();std::mem::size_of::<BsdProcess>()];
+#[derive(Clone,Debug,PartialEq,Eq)]
+struct Failed011ProcessIdentity{pid:u32,parent:u32,group:u32,uid:u32,gid:u32,ruid:u32,rgid:u32,svuid:u32,svgid:u32,start_sec:u64,start_usec:u64}
+#[derive(Debug)]
+pub(super) struct Failed011ProcessInventory{current:Failed011ProcessIdentity,processes:std::collections::BTreeMap<u32,Failed011ProcessIdentity>}
 
 const CLOEXEC: i32 = 0x0100_0000;
 const NONBLOCK: i32 = 4;
@@ -95,39 +104,71 @@ pub(super) fn supervisor_check()->Result<()>{supervision_poll(false)}
 pub(super) fn unresolved_cleanup()->Result<Option<(u32,u32,String)>>{
     CLEANUP_UNRESOLVED.get().map(|failure|failure.lock().map(|value|value.clone()).map_err(|_|"owned cleanup latch poisoned".into())).unwrap_or(Ok(None))
 }
-fn absent_original_process(pid:u32,parent:u32,group:u32,path:&str,owners:&[u32],forbidden:&[String])->Result<()>{
-    if pid<=1||owners.iter().any(|owner|*owner<=1)||owners.contains(&pid)||owners.contains(&parent)||owners.contains(&group)||forbidden.iter().any(|role|role==path){return Err("failed attempt still has a live owner/descendant/group/sealed helper".into());}Ok(())
+fn failed_process_ids_from(ids:&[i32],extent:i32,errno:i32)->Result<Vec<i32>>{
+    let capacity=std::mem::size_of_val(ids);let errno=if extent<=0{errno}else{0};
+    if extent<=0||extent as usize>=capacity||extent%4!=0{return Err(format!("failed 011 syscall=proc_listpids kind=1 returned_bytes={extent} capacity_bytes={capacity} errno={errno}: unavailable/truncated"));}
+    let rows=&ids[..extent as usize/4];let mut unique=std::collections::BTreeSet::new();
+    for pid in rows{if *pid<0||(*pid>1&&!unique.insert(*pid)){return Err(format!("failed 011 syscall=proc_listpids kind=1 returned_bytes={extent}: negative/duplicate PID={pid}"));}}
+    let rows=rows.iter().copied().filter(|pid|*pid>1).collect::<Vec<_>>();if rows.is_empty(){return Err("failed 011 process inventory has no userspace PIDs".into());}Ok(rows)
 }
 fn failed_process_ids()->Result<Vec<i32>>{
     supervisor_check()?;let mut ids=[0i32;4096];let extent=unsafe{proc_listpids(1,0,ids.as_mut_ptr().cast(),std::mem::size_of_val(&ids) as i32)};
-    if extent<=0||extent as usize>=std::mem::size_of_val(&ids)||extent%4!=0{return Err("failed 011 process inventory unavailable/truncated".into());}
-    let ids=ids[..extent as usize/4].iter().copied().filter(|pid|*pid>1).collect::<Vec<_>>();let unique=ids.iter().copied().collect::<std::collections::BTreeSet<_>>();
-    if ids.is_empty()||unique.len()!=ids.len(){return Err("failed 011 process inventory empty/duplicates".into());}Ok(ids)
+    let errno=if extent<=0{std::io::Error::last_os_error().raw_os_error().unwrap_or(0)}else{0};failed_process_ids_from(&ids,extent,errno)
 }
 fn departed_process(pid:i32,mut inventory:impl FnMut()->Result<Vec<i32>>)->Result<()>{
     // A syscall failure is not absence. Only two new complete inventories
     // omitting this exact PID can explain a process that exited mid-inspection.
-    for _ in 0..2{if inventory()?.contains(&pid){return Err("failed 011 unreadable process is still live".into());}}Ok(())
+    for pass in 1..=2{if inventory().map_err(|reason|format!("failed 011 PID={pid} departure inventory={pass} failed: {reason}"))?.contains(&pid){return Err(format!("failed 011 PID={pid} unreadable process remains live in departure inventory={pass}"));}}Ok(())
 }
-pub(super) fn failed_011_processes_absent(owners:&[u32])->Result<()>{
-    if !OwnedChild::root_identity()||owners.is_empty()||owners.len()>2{return Err("failed 011 absence inspector authority/bounds differ".into());}
-    let prefix="/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b";
-    let mut forbidden=["worker","idle-helper","both-order-probe","route-guardian"].iter().map(|name|format!("{prefix}/{name}")).collect::<Vec<_>>();
-    if owners.len()==2{forbidden.push(super::backend::RECONCILE_011_WORKER.into());}
+fn failed_process_identity(pid:i32,info:&BsdProcess)->Result<Failed011ProcessIdentity>{
+    if pid<=1||info.pid!=pid as u32||info.start_sec==0||info.start_usec>=1_000_000{return Err(format!("failed 011 PID={pid} syscall=proc_pidinfo flavor=3: PID/birth tuple differs"));}
+    Ok(Failed011ProcessIdentity{pid:info.pid,parent:info.parent,group:info.group,uid:info.uid,gid:info.gid,ruid:info.ruid,rgid:info.rgid,svuid:info.svuid,svgid:info.svgid,start_sec:info.start_sec,start_usec:info.start_usec})
+}
+fn read_failed_process(pid:i32)->Result<Failed011ProcessIdentity>{
+    supervisor_check()?;let mut info=BsdProcess::default();let expected=std::mem::size_of::<BsdProcess>() as i32;
+    let extent=unsafe{proc_pidinfo(pid,3,0,(&mut info as *mut BsdProcess).cast(),expected)};
+    let errno=if extent<=0{std::io::Error::last_os_error().raw_os_error().unwrap_or(0)}else{0};
+    failed_process_info_from(pid,&info,extent,errno)
+}
+fn failed_process_info_from(pid:i32,info:&BsdProcess,extent:i32,errno:i32)->Result<Failed011ProcessIdentity>{
+    let expected=std::mem::size_of::<BsdProcess>() as i32;let errno=if extent<=0{errno}else{0};
+    if extent!=expected{return Err(format!("failed 011 PID={pid} syscall=proc_pidinfo flavor=3 returned_bytes={extent} expected_bytes={expected} errno={errno}"));}failed_process_identity(pid,info)
+}
+fn failed_process_ownership(info:&Failed011ProcessIdentity,owners:&[u32],current:u32)->Result<()>{
+    if owners.contains(&info.pid)||owners.contains(&info.parent)||owners.contains(&info.group){return Err(format!("failed 011 PID={} parent={} group={}: live original owner/descendant/group",info.pid,info.parent,info.group));}
+    if info.pid==current&&(info.uid,info.gid,info.ruid,info.rgid,info.svuid,info.svgid)!=(0,0,0,0,0,0){return Err(format!("failed 011 current PID={current} effective/real/saved root identity differs"));}Ok(())
+}
+fn failed_process_observation(pid:i32,owners:&[u32],current:u32,mut inspect:impl FnMut(i32)->Result<Failed011ProcessIdentity>,mut inventory:impl FnMut()->Result<Vec<i32>>)->Result<Option<Failed011ProcessIdentity>>{
+    let mut rows=Vec::new();for _ in 0..2{
+        match inspect(pid){Ok(info)=>{if info.pid!=pid as u32{return Err(format!("failed 011 observed PID differs from requested PID={pid}"));}failed_process_ownership(&info,owners,current)?;rows.push(info);},Err(reason)=>{
+            if pid==current as i32{return Err(reason);}return match departed_process(pid,&mut inventory){Ok(())=>Ok(None),Err(proof)=>Err(format!("{reason}; departure not proved: {proof}"))};
+        }}
+    }
+    if rows[0]!=rows[1]{return Err(format!("failed 011 PID={pid} BSD birth/ownership identity changed during inspection"));}Ok(rows.pop())
+}
+fn failed_inventory_unchanged(before:&std::collections::BTreeMap<u32,Failed011ProcessIdentity>,after:&std::collections::BTreeMap<u32,Failed011ProcessIdentity>)->Result<()>{
+    for(pid,identity)in before{if let Some(next)=after.get(pid){if identity!=next{return Err(format!("failed 011 surviving PID={pid} BSD birth/ownership identity changed"));}}}Ok(())
+}
+fn failed_process_snapshot(owners:&[u32],current:u32,mut inventory:impl FnMut()->Result<Vec<i32>>,mut inspect:impl FnMut(i32)->Result<Failed011ProcessIdentity>)->Result<Failed011ProcessInventory>{
+    let unique=owners.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    if current<=1||current>i32::MAX as u32||owners.is_empty()||owners.len()>2||owners.iter().any(|pid|*pid<=1||*pid>i32::MAX as u32||*pid==current)||unique.len()!=owners.len(){return Err("failed 011 PID ownership/current bounds differ".into());}
+    let first=inspect(current as i32)?;failed_process_ownership(&first,owners,current)?;let mut previous=std::collections::BTreeMap::new();
+    // Complete bounded inventories, not a frozen global PID set. Birth tuples
+    // fence surviving PIDs; new/departed unrelated processes may differ. This
+    // is not an atomic exec detector: held-vnode text sweeps are separate.
     for _ in 0..2{
-        for pid in failed_process_ids()?{
-            supervisor_check()?;
-            let mut info=ShortProcess::default();if unsafe{proc_pidinfo(pid,13,0,(&mut info as *mut ShortProcess).cast(),std::mem::size_of::<ShortProcess>() as i32)}!=std::mem::size_of::<ShortProcess>() as i32{departed_process(pid,failed_process_ids)?;continue;}if info.pid!=pid as u32{return Err("failed 011 process PID differs".into());}
-            let mut path=[0u8;4096];let count=unsafe{proc_pidpath(pid,path.as_mut_ptr().cast(),path.len() as u32)};
-            if count<=0{departed_process(pid,failed_process_ids)?;continue;}if count as usize>=path.len(){return Err("failed 011 executable identity truncated".into());}
-            let end=path.iter().position(|byte|*byte==0).ok_or("failed 011 executable path framing unavailable")?;
-            let path=std::str::from_utf8(&path[..end]).map_err(|_|"failed 011 executable path encoding differs")?;
-            if !super::canonical_path(path){return Err("failed 011 executable path is not canonical".into());}absent_original_process(info.pid,info.parent,info.group,path,owners,&forbidden)?;
-            let mut after=ShortProcess::default();if unsafe{proc_pidinfo(pid,13,0,(&mut after as *mut ShortProcess).cast(),std::mem::size_of::<ShortProcess>() as i32)}!=std::mem::size_of::<ShortProcess>() as i32{departed_process(pid,failed_process_ids)?;continue;}
-            let mut after_path=[0u8;4096];let after_count=unsafe{proc_pidpath(pid,after_path.as_mut_ptr().cast(),after_path.len() as u32)};if after_count<=0{departed_process(pid,failed_process_ids)?;continue;}
-            if after_count as usize>=after_path.len()||&after_path[..end+1]!=path.as_bytes().iter().copied().chain([0]).collect::<Vec<_>>().as_slice()||(after.pid,after.parent,after.group,after.uid,after.gid,after.ruid,after.rgid)!=(info.pid,info.parent,info.group,info.uid,info.gid,info.ruid,info.rgid){return Err("failed 011 process identity changed during absence inspection".into());}
-        }
-    }Ok(())
+        let ids=inventory()?;let mut next=std::collections::BTreeMap::new();
+        for pid in ids{if let Some(info)=failed_process_observation(pid,owners,current,&mut inspect,&mut inventory)?{if next.insert(info.pid,info).is_some(){return Err("failed 011 process snapshot duplicate PID".into());}}}
+        if next.get(&current)!=Some(&first){return Err("failed 011 current root process missing/changed in complete inventory".into());}failed_inventory_unchanged(&previous,&next)?;previous=next;
+    }
+    if inspect(current as i32)?!=first{return Err("failed 011 current root BSD birth/ownership identity changed after inventory".into());}Ok(Failed011ProcessInventory{current:first,processes:previous})
+}
+pub(super) fn failed_011_process_inventory(owners:&[u32])->Result<Failed011ProcessInventory>{
+    if !OwnedChild::root_identity(){return Err("failed 011 process inspector requires root identity".into());}
+    failed_process_snapshot(owners,std::process::id(),failed_process_ids,read_failed_process)
+}
+pub(super) fn failed_011_processes_unchanged(before:&Failed011ProcessInventory,after:&Failed011ProcessInventory)->Result<()>{
+    if before.current!=after.current{return Err("failed 011 current reconciler BSD birth/ownership identity changed across mapped sweeps".into());}failed_inventory_unchanged(&before.processes,&after.processes)
 }
 pub(super) fn enter_recovery()->Result<()>{
     let channel=SUPERVISOR.get().ok_or("native recovery lacks owned supervisor")?;let mut state=channel.lock().map_err(|_|"supervisor channel lock poisoned")?;
@@ -174,8 +215,33 @@ impl SealedExecutable {
         Ok(())
     }
     pub(super) fn reconcile_revalidate(&self)->Result<()>{
+        self.revalidate()?;super::sealed_fs::clean_gate_metadata(&self.file)?;
+        if self.identity.size==0||self.identity.size>MAX_NATIVE as u64{return Err("held reconciliation executable extent refused".into());}
+        // Positional reads never alter the offset shared with inherited FDs.
+        // The pinned size bounds even a concurrently growing source; full
+        // identity and clean metadata are rechecked after the exact bytes.
+        let mut bytes=Vec::with_capacity(self.identity.size as usize);let mut chunk=[0u8;8192];let mut offset=0u64;
+        while offset<self.identity.size{
+            supervisor_check()?;let limit=(self.identity.size-offset).min(chunk.len() as u64) as usize;
+            let count=self.file.read_at(&mut chunk[..limit],offset).map_err(|_|"held reconciliation executable positional read failed")?;
+            if count==0{return Err("held reconciliation executable bytes truncated".into());}bytes.extend_from_slice(&chunk[..count]);offset+=count as u64;
+        }
+        let mut extra=[0u8;1];if self.file.read_at(&mut extra,offset).map_err(|_|"held reconciliation executable extent read failed")?!=0||sha256(&bytes)!=self.digest{return Err("held reconciliation executable bytes/digest differ".into());}
         self.revalidate()?;super::sealed_fs::clean_gate_metadata(&self.file)?;self.revalidate()
     }
+}
+
+#[derive(Clone,Copy,Debug)]
+pub(super) enum Failed011ExecutableRole{OriginalWorker,IdleHelper,BothOrderProbe,RouteGuardian,ConsumedReconciler}
+impl Failed011ExecutableRole{
+    fn path(self)->&'static str{match self{
+        Self::OriginalWorker=>"/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b/worker",
+        Self::IdleHelper=>"/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b/idle-helper",
+        Self::BothOrderProbe=>"/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b/both-order-probe",
+        Self::RouteGuardian=>"/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b/route-guardian",
+        Self::ConsumedReconciler=>"/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker",
+    }}
+    fn validate(self,path:&Path)->Result<()>{if path!=Path::new(self.path()){return Err("failed 011 held executable is not the exact fixed role path".into());}Ok(())}
 }
 
 #[derive(Debug)]
@@ -290,6 +356,10 @@ impl OwnedChild {
     }
     pub(super) fn failed_011_event_owners()->Result<Self>{
         let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-F0pcDafin","--","/Library/Application Support/opensteamer/microphone-v9-transactions/driver-microphone-v9-151f574a1c3c354b/guardian-1.events"]);Self::root_inspector(command)
+    }
+    pub(super) fn failed_011_executable_owners(image:&SealedExecutable,role:Failed011ExecutableRole)->Result<Self>{
+        role.validate(&image.path)?;image.reconcile_revalidate()?;
+        let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-d","txt","-F0pcDfin","--"]).arg(&image.path);Self::root_inspector(command)
     }
     fn root_inspector(mut command:Command)->Result<Self>{
         if unsafe{getuid()}!=0||unsafe{geteuid()}!=0{return Err("root OS inspector admission differs".into());}
@@ -483,10 +553,45 @@ impl Drop for OwnedChild{fn drop(&mut self){
 #[cfg(test)]
 mod tests{
     use super::*;
-    #[test]fn failed_attempt_process_absence_never_uses_display_name_as_authority(){
-        let forbidden=vec!["/fixed/sealed/route-guardian".into(),"/fixed/sealed/worker".into()];absent_original_process(12,1,12,"/usr/bin/true",&[456],&forbidden).unwrap();
-        for(pid,parent,group,path)in [(456,1,456,"/usr/bin/true"),(12,456,12,"/usr/bin/true"),(12,1,456,"/usr/bin/true"),(12,1,12,"/fixed/sealed/route-guardian"),(12,1,12,"/fixed/sealed/worker")]{assert!(absent_original_process(pid,parent,group,path,&[456],&forbidden).is_err());}
-        assert!(absent_original_process(12,1,12,"/usr/bin/true",&[0],&forbidden).is_err());assert!(absent_original_process(1,1,1,"/usr/bin/true",&[456],&forbidden).is_err());
+    fn bsd_fixture(pid:u32)->BsdProcess{BsdProcess{pid,parent:1,group:pid,uid:501,gid:20,ruid:501,rgid:20,svuid:501,svgid:20,start_sec:1_800_000_000,start_usec:123456,..Default::default()}}
+    fn failed_identity_fixture(pid:u32)->Failed011ProcessIdentity{
+        let mut info=bsd_fixture(pid);if pid==99{info.uid=0;info.gid=0;info.ruid=0;info.rgid=0;info.svuid=0;info.svgid=0;}failed_process_identity(pid as i32,&info).unwrap()
+    }
+    #[test]fn failed_process_public_bsd_abi_and_birth_tuple_are_exact_not_display_authority(){
+        assert_eq!(std::mem::size_of::<BsdProcess>(),136);assert_eq!(std::mem::offset_of!(BsdProcess,pid),12);assert_eq!(std::mem::offset_of!(BsdProcess,group),100);assert_eq!(std::mem::offset_of!(BsdProcess,start_sec),120);assert_eq!(std::mem::offset_of!(BsdProcess,start_usec),128);
+        let mut info=bsd_fixture(12);let identity=failed_process_identity(12,&info).unwrap();info.command=[b'x';16];info.name=[b'y';32];info.status=99;info.files=123;info.flags=42;assert_eq!(failed_process_identity(12,&info).unwrap(),identity);
+        for field in 0..3{let mut info=bsd_fixture(12);match field{0=>info.pid=13,1=>info.start_sec=0,_=>info.start_usec=1_000_000};assert!(failed_process_identity(12,&info).is_err());}assert!(failed_process_identity(1,&bsd_fixture(1)).is_err());
+        for extent in [-1,0,64,135,137]{let reason=failed_process_info_from(12,&bsd_fixture(12),extent,13).unwrap_err();assert!(reason.contains("PID=12 syscall=proc_pidinfo flavor=3"));assert!(reason.contains(&format!("returned_bytes={extent} expected_bytes=136 errno={}",if extent<=0{13}else{0})));}failed_process_info_from(12,&bsd_fixture(12),136,0).unwrap();
+    }
+    #[test]fn failed_process_complete_inventory_rejects_unknown_extent_and_duplicate_pids(){
+        let rows=[0,1,12,99,0,0,0,0];assert_eq!(failed_process_ids_from(&rows,16,0).unwrap(),vec![12,99]);
+        for extent in [-1,0,3,32,36]{assert!(failed_process_ids_from(&rows,extent,13).is_err());}
+        assert_eq!(failed_process_ids_from(&[0,1,0,99,0,0,0,0],16,0).unwrap(),vec![99]);
+        for rows in [[0,1,12,12,0,0,0,0],[0,1,-12,99,0,0,0,0],[0,1,99,99,0,0,0,0]]{assert!(failed_process_ids_from(&rows,16,0).is_err());}assert!(failed_process_ids_from(&rows,8,0).is_err());
+        let reason=failed_process_ids_from(&rows,-1,13).unwrap_err();assert!(reason.contains("syscall=proc_listpids kind=1 returned_bytes=-1")&&reason.contains("errno=13"));
+    }
+    #[test]fn failed_attempt_process_snapshot_checks_ownership_and_all_root_credentials(){
+        failed_process_ownership(&failed_identity_fixture(12),&[456,457],99).unwrap();
+        for field in 0..3{let mut info=failed_identity_fixture(12);match field{0=>info.pid=456,1=>info.parent=456,_=>info.group=456};assert!(failed_process_ownership(&info,&[456],99).is_err());}
+        for field in 0..6{let mut current=failed_identity_fixture(99);match field{0=>current.uid=501,1=>current.gid=20,2=>current.ruid=501,3=>current.rgid=20,4=>current.svuid=501,_=>current.svgid=20};assert!(failed_process_ownership(&current,&[456],99).is_err());}
+        for owners in [vec![],vec![0],vec![1],vec![99],vec![456,456],vec![456,457,458],vec![u32::MAX]]{assert!(failed_process_snapshot(&owners,99,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).is_err());}
+    }
+    #[test]fn failed_process_snapshot_accepts_complete_unrelated_churn_but_not_surviving_birth_change(){
+        let mut inventories=[vec![99,12],vec![99,13]].into_iter();let before=failed_process_snapshot(&[456],99,||Ok(inventories.next().unwrap()),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();
+        let after=failed_process_snapshot(&[456],99,||Ok(vec![99,14]),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();failed_011_processes_unchanged(&before,&after).unwrap();
+        let mut calls=0;assert!(failed_process_snapshot(&[456],99,||Ok(vec![99,12]),|pid|{let mut info=failed_identity_fixture(pid as u32);if pid==12{calls+=1;if calls>2{info.start_usec+=1;}}Ok(info)}).is_err());
+        let stable=failed_process_snapshot(&[456],99,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();
+        for field in 0..10{let mut rows=stable.processes.clone();let changed=rows.get_mut(&12).unwrap();match field{0=>changed.parent+=1,1=>changed.group+=1,2=>changed.uid+=1,3=>changed.gid+=1,4=>changed.ruid+=1,5=>changed.rgid+=1,6=>changed.svuid+=1,7=>changed.svgid+=1,8=>changed.start_sec+=1,_=>changed.start_usec+=1}assert!(failed_011_processes_unchanged(&stable,&Failed011ProcessInventory{current:stable.current.clone(),processes:rows}).is_err());}
+        let mut current=stable.current.clone();current.start_sec+=1;assert!(failed_011_processes_unchanged(&stable,&Failed011ProcessInventory{current,processes:stable.processes.clone()}).is_err());
+        assert!(failed_process_snapshot(&[456],99,||Ok(vec![12]),|pid|Ok(failed_identity_fixture(pid as u32))).is_err());
+    }
+    #[test]fn unknown_bsd_process_requires_proven_departure_and_keeps_original_diagnostic(){
+        let reason="failed 011 PID=42 syscall=proc_pidinfo flavor=3 returned_bytes=0 expected_bytes=136 errno=13";
+        let mut calls=0;assert!(failed_process_observation(42,&[456],99,|_|Err(reason.into()),||{calls+=1;Ok(vec![99,12])}).unwrap().is_none());assert_eq!(calls,2);
+        for inventories in [vec![vec![99,42],vec![99]],vec![vec![99],vec![99,42]]]{let mut rows=inventories.into_iter();let error=failed_process_observation(42,&[456],99,|_|Err(reason.into()),||Ok(rows.next().unwrap())).unwrap_err();assert!(error.starts_with(reason)&&error.contains("departure not proved")&&error.contains("PID=42"));}
+        let error=failed_process_observation(42,&[456],99,|_|Err(reason.into()),||Err("truncated inventory".into())).unwrap_err();assert!(error.starts_with(reason)&&error.contains("truncated inventory"));
+        let mut inventories=0;assert!(failed_process_observation(99,&[456],99,|_|Err(reason.into()),||{inventories+=1;Ok(vec![])}).is_err());assert_eq!(inventories,0);
+        let mut calls=0;assert!(failed_process_observation(12,&[456],99,|_|{calls+=1;let mut info=failed_identity_fixture(12);if calls==2{info.start_usec+=1;}Ok(info)},||Ok(vec![99])).is_err());
     }
     #[test]fn disappearing_process_requires_two_complete_fresh_absence_inventories(){
         let mut calls=0;departed_process(42,||{calls+=1;Ok(vec![12,13])}).unwrap();assert_eq!(calls,2);
@@ -494,6 +599,25 @@ mod tests{
         assert!(departed_process(42,||Err("inventory unavailable".into())).is_err());
     }
     use std::os::unix::fs::PermissionsExt;
+    #[test]fn failed_011_text_inspector_roles_admit_only_exact_held_pathnames(){
+        let roles=[Failed011ExecutableRole::OriginalWorker,Failed011ExecutableRole::IdleHelper,Failed011ExecutableRole::BothOrderProbe,Failed011ExecutableRole::RouteGuardian,Failed011ExecutableRole::ConsumedReconciler];
+        for role in roles{role.validate(Path::new(role.path())).unwrap();for other in roles{if role.path()!=other.path(){assert!(role.validate(Path::new(other.path())).is_err());}}
+            for path in [format!("{}/extra",role.path()),format!("{} (deleted)",role.path()),role.path().replace("151f574a1c3c354b","other"),format!("{}/../worker",role.path()),"/private/tmp/worker".into()]{if path!=role.path(){assert!(role.validate(Path::new(&path)).is_err());}}
+        }
+        assert_eq!(Failed011ExecutableRole::ConsumedReconciler.path(),"/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker");
+    }
+    #[test]fn private_reconciliation_executable_hashes_positional_bytes_without_offset_changes(){
+        assert!(!OwnedChild::root_identity(),"private held-image fixtures must never run as root");
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();let directory=std::env::temp_dir().join(format!("beluga-v9-reconcile-image-{}-{stamp}",std::process::id()));std::fs::create_dir(&directory).unwrap();std::fs::set_permissions(&directory,std::fs::Permissions::from_mode(0o700)).unwrap();let directory=std::fs::canonicalize(directory).unwrap();let path=directory.join("private-image");
+        let bytes=b"private UID501 image fixture\n";let mut writer=OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(NOFOLLOW).open(&path).unwrap();writer.write_all(bytes).unwrap();writer.sync_all().unwrap();drop(writer);
+        // This manual private fixture does not claim the production root-open
+        // policy. It exercises the actual reconciliation revalidation only.
+        let mut file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&path).unwrap();file.seek(SeekFrom::Start(7)).unwrap();let identity=Identity::of(&file.metadata().unwrap());assert_eq!(identity.uid,unsafe{geteuid()});let mut image=SealedExecutable{file,identity,digest:sha256(bytes),path:path.clone()};image.reconcile_revalidate().unwrap();assert_eq!(image.file.stream_position().unwrap(),7);
+        let digest=image.digest.clone();image.digest="0".repeat(64);assert!(image.reconcile_revalidate().is_err());image.digest=digest;
+        image.identity.inode+=1;assert!(image.reconcile_revalidate().is_err());image.identity.inode-=1;
+        let write_only=OpenOptions::new().write(true).custom_flags(NOFOLLOW).open(&path).unwrap();let unreadable=SealedExecutable{identity:Identity::of(&write_only.metadata().unwrap()),file:write_only,digest:image.digest.clone(),path:path.clone()};assert!(unreadable.reconcile_revalidate().is_err());drop(unreadable);
+        let retained=directory.join("retained-private-image");std::fs::rename(&path,&retained).unwrap();let mut replacement=OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).unwrap();replacement.write_all(bytes).unwrap();drop(replacement);assert!(image.reconcile_revalidate().is_err());drop(image);std::fs::remove_file(path).unwrap();std::fs::remove_file(retained).unwrap();std::fs::remove_dir(directory).unwrap();
+    }
     #[test]fn global_single_image_inspector_accepts_only_fixed_canonical_role_paths(){
         let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::DRIVER);fixed_driver_image_path(Path::new(&canonical)).unwrap();
         let namespace="driver-microphone-v9-fixture";let prefix=format!("{}/{namespace}",super::super::ROOT_TRANSACTIONS);
