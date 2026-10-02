@@ -50,6 +50,7 @@ struct WorldwidePairingStore: Sendable {
     func loadPairedViewer(
         for identity: RemoteDeviceIdentity
     ) throws -> RemotePairedDeviceRecord? {
+        try requireLegacyNamespace()
         guard let data = try dataStore.data(for: Self.pairedViewerAccount) else { return nil }
         let record = try decode(RemotePairedDeviceRecord.self, from: data)
         try validate(record, for: identity)
@@ -61,13 +62,27 @@ struct WorldwidePairingStore: Sendable {
         _ record: RemotePairedDeviceRecord,
         for identity: RemoteDeviceIdentity
     ) throws {
+        try requireLegacyNamespace()
         try validate(record, for: identity)
         try dataStore.set(try encode(record), for: Self.pairedViewerAccount)
     }
 
     /// Removes only the viewer binding; the long-lived host identity remains intact.
     func resetPairedViewer() throws {
+        try requireLegacyNamespace()
         try dataStore.removeData(for: Self.pairedViewerAccount)
+    }
+
+    /// All new host callers migrate before writing. The original single-viewer item is
+    /// retained as evidence, never dual-written or revived after catalog creation.
+    var phoneCatalog: WorldwidePairedPhoneCatalogStore {
+        WorldwidePairedPhoneCatalogStore(dataStore: dataStore)
+    }
+
+    private func requireLegacyNamespace() throws {
+        guard try dataStore.data(for: WorldwidePairedPhoneCatalogStore.catalogAccount) == nil else {
+            throw WorldwidePairingStoreError.catalogIsAuthoritative
+        }
     }
 
     /// Enforces role and local-key invariants at every persistence boundary.
@@ -217,6 +232,7 @@ struct WorldwideKeychainDataStore: WorldwidePairingDataStore {
 
 /// Validation, encoding, and Keychain failures at the pairing persistence boundary.
 enum WorldwidePairingStoreError: LocalizedError, Equatable {
+    case catalogIsAuthoritative
     case identityRoleMismatch
     case identityRecordMismatch
     case invalidPersistedData
@@ -225,6 +241,8 @@ enum WorldwidePairingStoreError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .catalogIsAuthoritative:
+            "The paired-phone catalog is authoritative; legacy pairing access is refused."
         case .identityRoleMismatch:
             "The saved worldwide identity does not belong to a Mac host."
         case .identityRecordMismatch:

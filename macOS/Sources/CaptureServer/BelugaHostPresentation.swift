@@ -3,6 +3,7 @@ import RemoteSessionCore
 
 enum BelugaHostPresentationPhase: Sendable, Equatable {
     case starting
+    case unselected
     case inviting
     case invitationExpired
     case pairedConnecting
@@ -15,10 +16,11 @@ enum BelugaHostPresentationPhase: Sendable, Equatable {
     var title: String {
         switch self {
         case .starting: "Starting Beluga"
+        case .unselected: "Choose or pair a phone"
         case .inviting: "Waiting for secure pairing"
         case .invitationExpired: "Pairing invitation expired"
         case .pairedConnecting: "Connecting to the pairing service"
-        case .pairedWaiting: "Ready for your paired iPhone"
+        case .pairedWaiting: "Ready for your selected phone"
         case .preparingSession: "Preparing an encrypted session"
         case .sessionPrepared: "Encrypted session negotiated"
         case .unavailable: "Connection unavailable — retrying"
@@ -48,6 +50,16 @@ struct BelugaHostPresentation: Sendable, CustomStringConvertible, CustomDebugStr
     let phase: BelugaHostPresentationPhase
     let pairedPhoneName: String?
     let invitation: BelugaPairingInvitation?
+    let phones: BelugaPhoneCatalogPresentation
+
+    init(revision: UInt64, phase: BelugaHostPresentationPhase, pairedPhoneName: String?,
+         invitation: BelugaPairingInvitation?, phones: BelugaPhoneCatalogPresentation = .unavailable) {
+        self.revision = revision
+        self.phase = phase
+        self.pairedPhoneName = pairedPhoneName.map(BelugaPairedPhonePresentation.safeName)
+        self.invitation = invitation
+        self.phones = phones
+    }
 
     static let starting = BelugaHostPresentation(
         revision: 0, phase: .starting, pairedPhoneName: nil, invitation: nil

@@ -7,7 +7,8 @@ import Foundation
 /// `openat`/`fstatat` relative to that descriptor, and the pathname is re-opened and compared before
 /// the lock is returned. A directory rename/replacement or lock-entry substitution therefore fails
 /// closed instead of allowing a second host to acquire a different inode under the same pathname.
-package final class WorldwideHostProcessLock {
+// The only mutable state is the descriptor, protected by descriptorLock.
+package final class WorldwideHostProcessLock: @unchecked Sendable {
     package static let legacyRuntimeDirectoryName = "com.elamin.AudioStreamer.CaptureServer.runtime"
     private static let fileName = "worldwide-host.lock"
 
@@ -75,6 +76,11 @@ package final class WorldwideHostProcessLock {
         self.descriptor = nil
         descriptorLock.unlock()
         Darwin.close(descriptor)
+    }
+
+    /// Local retained-lease evidence, not a substitute for acquisition/path validation.
+    package var isHeld: Bool {
+        descriptorLock.withLock { descriptor != nil }
     }
 
     private struct OpenedDirectory {

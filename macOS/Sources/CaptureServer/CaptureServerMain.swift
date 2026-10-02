@@ -25,9 +25,10 @@ struct CaptureServerMain {
             await run(arguments: arguments)
         case .menuBar(let arguments, let endpoint):
             let application = BelugaMenuBarApplication(arguments: arguments, endpoint: endpoint) {
-                arguments, presentation, additionalMedia in
+                arguments, presentation, additionalMedia, phoneCommands in
                 await run(arguments: arguments, presentation: presentation,
-                          presentsInvitationInConsole: false, additionalMedia: additionalMedia)
+                          presentsInvitationInConsole: false, additionalMedia: additionalMedia,
+                          phoneCommands: phoneCommands)
             }
             application.run()
         }
@@ -38,7 +39,8 @@ struct CaptureServerMain {
         arguments: [String],
         presentation: @escaping @Sendable (BelugaHostPresentation) -> Void = { _ in },
         presentsInvitationInConsole: Bool = true,
-        additionalMedia: CaptureAdditionalMediaLifetime? = nil
+        additionalMedia: CaptureAdditionalMediaLifetime? = nil,
+        phoneCommands: @escaping @Sendable (BelugaPhoneCatalogCommands) -> Void = { _ in }
     ) async {
         do {
             if let clientMode = try WorldwideSecondaryTestViewerControlClientMode
@@ -324,6 +326,14 @@ struct CaptureServerMain {
                         )
                     }
                 }
+                let terminationMonitor = activeTerminationSignalMonitor
+                let ownerIsValid: @Sendable () -> Bool = {
+                    worldwideHostProcessLock.isHeld && serviceLifetime.isValid
+                        && terminationMonitor != nil && terminationMonitor?.pendingSignal() == nil
+                }
+                // Only the primary phone session is switched. Independent browser audio shares
+                // retain their own capture lifetime; LAN/test-sidecar modes are not admitted.
+                let allowsPhoneChanges = !options.lanEnabled && !options.secondaryTestViewerEnabled
                 let coordinator = WorldwideHostCoordinator(
                     endpoint: rendezvousURL,
                     forceRelay: options.forceRelay,
@@ -359,6 +369,8 @@ struct CaptureServerMain {
                         virtualDisplayTeardownDeadline?.makeNativeCaptureWatchdog()
                     },
                     presentation: presentation,
+                    catalogMutationIsAuthorized: { allowsPhoneChanges && ownerIsValid() },
+                    catalogOwnerIsValid: ownerIsValid,
                     logger: logger
                 )
                 try serviceLifetime.install(
@@ -375,6 +387,7 @@ struct CaptureServerMain {
                 try activeTerminationSignalMonitor?.throwIfSignaled()
                 try serviceLifetime.requireValid()
                 worldwideHostCoordinator = coordinator
+                phoneCommands(.owned(by: coordinator))
 
                 // Present an already-ready primary invitation before any optional sidecar work.
                 // A secondary rendezvous can therefore never consume the primary code's window.
@@ -393,6 +406,8 @@ struct CaptureServerMain {
                     }
                 case .paired:
                     logger.info("Worldwide host is available for the paired iPhone")
+                case .unselected:
+                    logger.info("No phone is selected; use the Beluga menu to pair or select a phone")
                 }
 
                 if options.secondaryTestViewerEnabled {

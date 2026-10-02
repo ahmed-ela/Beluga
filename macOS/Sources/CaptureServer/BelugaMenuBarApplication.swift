@@ -13,7 +13,12 @@ final class BelugaMenuBarModel: ObservableObject {
     @Published var allowRemoteControl = false
     @Published var canShareAudio = false
     @Published var showingAudioShare = false
+    @Published private(set) var isChangingPhone = false
+    @Published private(set) var phoneChangeMessage: String?
     private var expirationTask: Task<Void, Never>?
+    private var phoneCommands: BelugaPhoneCatalogCommands?
+    private var phoneCommandTask: Task<Void, Never>?
+    private var phoneCommandID: UUID?
     private var didFinish = false
     var start: (() -> Bool)?
 
@@ -41,6 +46,12 @@ final class BelugaMenuBarModel: ObservableObject {
 
     func finished() {
         didFinish = true
+        phoneCommands = nil
+        phoneCommandID = nil
+        phoneCommandTask?.cancel()
+        phoneCommandTask = nil
+        isChangingPhone = false
+        phoneChangeMessage = nil
         expirationTask?.cancel()
         expirationTask = nil
         presentation = BelugaHostPresentation(
@@ -49,11 +60,60 @@ final class BelugaMenuBarModel: ObservableObject {
         )
     }
 
+    var canChangePhone: Bool {
+        !didFinish && hasStarted && !isChangingPhone && phoneCommands != nil
+            && presentation.phones.action != nil
+    }
+
+    func installPhoneCommands(_ commands: BelugaPhoneCatalogCommands) {
+        guard !didFinish else { return }
+        phoneCommands = commands
+    }
+
+    @discardableResult
+    func changePhone(_ command: BelugaPhoneCatalogCommand,
+                     ticket: WorldwidePhoneCatalogAction) -> Task<Void, Never>? {
+        guard !didFinish else { return nil }
+        guard canChangePhone, ticket == presentation.phones.action, let phoneCommands else {
+            phoneChangeMessage = "Phone list changed or a connection is active. Try again when ready."
+            return nil
+        }
+        switch command {
+        case .pairAnother:
+            guard presentation.phones.canAddPhone else { return nil }
+        case .select(let id):
+            guard id == nil || presentation.phones.items.contains(where: { $0.id == id }) else { return nil }
+        case .forget(let id):
+            guard presentation.phones.items.contains(where: { $0.id == id }) else { return nil }
+        }
+        let operation = UUID()
+        phoneCommandID = operation
+        isChangingPhone = true
+        phoneChangeMessage = nil
+        let task = Task { [weak self] in
+            var succeeded = false
+            do {
+                try Task.checkCancellation()
+                try await phoneCommands.perform(command, ticket)
+                succeeded = true
+            } catch { }
+            guard let self, !self.didFinish, self.phoneCommandID == operation else { return }
+            self.phoneCommandID = nil
+            self.phoneCommandTask = nil
+            self.isChangingPhone = false
+            if !succeeded {
+                self.phoneChangeMessage = "Phone change was not applied. Wait until the current connection is idle, then try again."
+            }
+        }
+        phoneCommandTask = task
+        return task
+    }
+
     private func expire(revision: UInt64) {
         guard presentation.revision == revision, presentation.invitation != nil else { return }
         presentation = BelugaHostPresentation(
             revision: revision, phase: .invitationExpired,
-            pairedPhoneName: nil, invitation: nil
+            pairedPhoneName: nil, invitation: nil, phones: presentation.phones
         )
     }
 }
@@ -69,7 +129,8 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
     private let runtimeArguments: [String]?
     private let endpoint: URL?
     private let runtime: @Sendable ([String], @escaping @Sendable (BelugaHostPresentation) -> Void,
-                                   CaptureAdditionalMediaLifetime?)
+                                   CaptureAdditionalMediaLifetime?,
+                                   @escaping @Sendable (BelugaPhoneCatalogCommands) -> Void)
         async -> Void
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
@@ -79,7 +140,8 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
     init(arguments: [String]?, endpoint: URL?,
          runtime: @escaping @Sendable (
              [String], @escaping @Sendable (BelugaHostPresentation) -> Void,
-             CaptureAdditionalMediaLifetime?
+             CaptureAdditionalMediaLifetime?,
+             @escaping @Sendable (BelugaPhoneCatalogCommands) -> Void
          ) async -> Void) {
         runtimeArguments = arguments
         self.endpoint = endpoint
@@ -187,7 +249,9 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
         }
         let runtime = runtime
         runtimeTask = Task { [weak self] in
-            await runtime(arguments, sink, additionalMedia)
+            await runtime(arguments, sink, additionalMedia) { [weak self] commands in
+                Task { @MainActor in self?.model.installPhoneCommands(commands) }
+            }
             self?.shareOwner.revoke()
             self?.model.canShareAudio = false
             self?.share.ownerStopped()
@@ -235,13 +299,16 @@ private struct BelugaMenuBarView: View {
     let hasEndpoint: Bool
     let quit: () -> Void
     let startShare: () -> Void
+    @State private var phoneToForget: BelugaPairedPhonePresentation?
+    @State private var forgetTicket: WorldwidePhoneCatalogAction?
+    @State private var confirmsForget = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Beluga").font(.title2.bold())
             Text(versionLabel).font(.caption).foregroundStyle(.secondary)
             if !model.hasStarted {
-                Text("Stream this Mac to your iPhone using secure QR pairing.")
+                Text("Stream this Mac to your phone using secure QR pairing.")
                 Toggle("Allow remote keyboard and pointer control", isOn: $model.allowRemoteControl)
                 Text("Uses your normal Mac display. Audio sharing never needs remote-control permission.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -255,8 +322,9 @@ private struct BelugaMenuBarView: View {
             } else {
                 Text(model.presentation.phase.title)
                 if let phone = model.presentation.pairedPhoneName {
-                    Text("Paired iPhone: \(phone)").font(.caption)
+                    Text("Selected phone: \(phone)").font(.caption)
                 }
+                phoneControls
                 if let invitation = model.presentation.invitation {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         if invitation.isValid(at: context.date) {
@@ -286,10 +354,71 @@ private struct BelugaMenuBarView: View {
             Button("Quit Beluga", action: quit)
         }
         .padding(18).frame(width: 360)
+        .confirmationDialog("Forget this phone?", isPresented: $confirmsForget, titleVisibility: .visible) {
+            Button("Forget phone", role: .destructive) {
+                if let phoneToForget, let forgetTicket {
+                    model.changePhone(.forget(phoneToForget.id), ticket: forgetTicket)
+                }
+                phoneToForget = nil
+                forgetTicket = nil
+            }
+            Button("Cancel", role: .cancel) { phoneToForget = nil; forgetTicket = nil }
+        } message: {
+            Text("Remove \(phoneToForget?.label ?? "this phone") from this Mac? Other saved phones are kept. Pair it again to reconnect.")
+        }
         .sheet(isPresented: $model.showingAudioShare) {
             BelugaAudioShareView(model: share, canStart: model.canShareAudio
                 && !updater.isUpdateInProgress, start: startShare,
                 close: { model.showingAudioShare = false })
+        }
+    }
+
+    private var phoneControls: some View {
+        let catalog = model.presentation.phones
+        return VStack(alignment: .leading, spacing: 8) {
+            Menu("Saved phones (\(catalog.items.count))") {
+                ForEach(catalog.items) { phone in
+                    Button {
+                        if let ticket = catalog.action {
+                            model.changePhone(.select(phone.id), ticket: ticket)
+                        }
+                    } label: {
+                        Text(phone.label + (phone.needsPairingRecovery ? " — finish pairing" : ""))
+                    }
+                    .disabled(catalog.selectedPhoneID == phone.id)
+                }
+                Divider()
+                Button("No phone selected") {
+                    if let ticket = catalog.action {
+                        model.changePhone(.select(nil), ticket: ticket)
+                    }
+                }.disabled(catalog.selectedPhoneID == nil)
+            }.disabled(!model.canChangePhone)
+            Button(catalog.items.isEmpty ? "Pair a phone…" : "Pair another phone…") {
+                if let ticket = catalog.action {
+                    model.changePhone(.pairAnother, ticket: ticket)
+                }
+            }.disabled(!model.canChangePhone || !catalog.canAddPhone)
+            if !catalog.items.isEmpty {
+                Menu("Forget a saved phone…") {
+                    ForEach(catalog.items) { phone in
+                        Button(phone.label, role: .destructive) {
+                            phoneToForget = phone
+                            forgetTicket = catalog.action
+                            confirmsForget = true
+                        }
+                    }
+                }.disabled(!model.canChangePhone)
+            }
+            if model.isChangingPhone {
+                Text("Updating phone selection…").font(.caption)
+            } else if catalog.action == nil {
+                Text("Phone changes wait until the phone session is idle. Active connections are never disconnected here.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let message = model.phoneChangeMessage {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
