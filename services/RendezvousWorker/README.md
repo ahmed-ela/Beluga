@@ -9,6 +9,18 @@ The public surface is deliberately small:
 - `WSS /v2/availability` carries only persistent paired-device availability. The distinct path makes new clients fail closed against an old Worker instead of being interpreted as invitation traffic.
 - Channel, role, and the joining role's proof are accepted only in bounded `X-AudioStreamer-Channel`, `X-AudioStreamer-Role`, and `X-AudioStreamer-Admission` upgrade headers. Availability hosts additionally register the independently derived viewer capability in `X-AudioStreamer-Viewer-Admission`, send exact mode `availability`, and require the Worker to echo `Sec-WebSocket-Protocol: audiostreamer.availability.v1`; viewers never send the registration header. Pairing clients require an exact `audiostreamer.pairing.v1` echo. Query strings, missing/unknown required subprotocols, role-swapped proofs, availability headers on v1, and alternate paths are rejected.
 
+The additive browser audio-share registry and static receiver are **production disabled**
+(`AUDIO_SHARE_ENABLED="false"`), undeployed, and not a native audio sender. They use a
+separate `/v3/audio-share/<publicID>` first-frame-authenticated protocol and
+`AudioShareSession` Durable Object and fixed global `AudioShareBudget` authority,
+never the phone invitation/availability modes. Creation defaults to 100 per
+rolling day and 32 unexpired grants; each share allows at most 64 cumulative
+listener/ICE issuances and eight active listeners. Birth-fenced public locators
+permit safe finite tombstone collection without admitting an old link again.
+See [the exact protocol and integration gates](../../browser/beluga-audio/README.md).
+Do not enable/deploy these routes before native sender integration and live expiry,
+revocation, and phone-coexistence validation. Existing v1/v2 joins remain unchanged.
+
 The `X-AudioStreamer-*`, `audiostreamer.pairing.v1`, and
 `audiostreamer.availability.v1` spellings are deployed v1 compatibility ABI. They intentionally
 retain the former product name so Beluga clients remain compatible with existing releases.
@@ -60,6 +72,14 @@ npx wrangler secret put CLOUDFLARE_TURN_API_TOKEN
 ```
 
 If exactly one secret is present, or credential provisioning times out or returns an invalid response, the viewer is rejected with `turn_unavailable`; the invitation is not consumed. The Worker accepts only a bounded `201 application/json` response, restricts provisioned ICE URLs to Cloudflare's expected `stun.cloudflare.com` and `turn.cloudflare.com` hosts and STUN/TURN transports, normalizes strict password-credential schemas, and never persists generated credentials. `.dev.vars.example` documents local secret names; `.dev.vars` is ignored.
+
+Sharing uses **separate** server-side `AUDIO_SHARE_TURN_KEY_ID` and
+`AUDIO_SHARE_TURN_API_TOKEN` secrets and `AUDIO_SHARE_TURN_*` configuration. It
+never reuses the existing phone TURN secrets. Without both sharing secrets,
+sharing stays direct-STUN-only; a partial configuration rejects listener grants.
+Review the sharing key's relay bandwidth/billing ceiling independently before
+enabling the feature. Anonymous global capacity exhaustion remains possible; the
+conservative budget protects bounded aggregate work, not per-user fairness.
 
 ## Deployment
 

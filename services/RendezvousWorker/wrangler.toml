@@ -5,6 +5,11 @@ workers_dev = true
 preview_urls = false
 
 [vars]
+AUDIO_SHARE_ENABLED = "false"
+AUDIO_SHARE_DAILY_CREATION_LIMIT = "100"
+AUDIO_SHARE_ACTIVE_GRANT_LIMIT = "32"
+AUDIO_SHARE_TURN_CREDENTIAL_TTL_SECONDS = "600"
+AUDIO_SHARE_TURN_FETCH_TIMEOUT_MS = "5000"
 INVITATION_TTL_SECONDS = "300"
 TOMBSTONE_TTL_SECONDS = "300"
 STUN_URLS = "stun:stun.cloudflare.com:3478"
@@ -26,3 +31,24 @@ class_name = "RendezvousSession"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RendezvousSession"]
+
+[assets]
+directory = "../../browser/beluga-audio/public"
+binding = "AUDIO_SHARE_ASSETS"
+run_worker_first = true
+
+[[durable_objects.bindings]]
+name = "AUDIO_SHARE"
+class_name = "AudioShareSession"
+
+[[migrations]]
+tag = "v2-audio-share"
+new_sqlite_classes = ["AudioShareSession"]
+
+[[durable_objects.bindings]]
+name = "AUDIO_SHARE_BUDGET"
+class_name = "AudioShareBudget"
+
+[[migrations]]
+tag = "v3-audio-share-budget"
+new_sqlite_classes = ["AudioShareBudget"]
