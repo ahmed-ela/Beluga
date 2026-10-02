@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0A6518B4EB4B3E68DC6BD363 /* RemoteKeyboardInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */; };
 		103C41100893D8012C60ADE6 /* ViewerPairingPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */; };
+		19CE26C9E38D12024AF7FCAD /* ViewerPairedMacCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5A33EC9CB89E034411DA6AF /* ViewerPairedMacCatalogTests.swift */; };
 		19DAC364217DD39D74EA628F /* MediaNotificationContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B91C374837F36DA0427D311B /* MediaNotificationContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1B68820CF3936A71D2B7BCEA /* PhysicalScreenSequenceOracleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82C1960DA0B4FF5EE2B3F7CF /* PhysicalScreenSequenceOracleTests.swift */; };
 		1E220F17ECE4F06A1552C770 /* PhysicalOracleEvaluatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */; };
@@ -22,6 +23,7 @@
 		36CBD1F0C6AD6F23F693C3C2 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90600912C0AAEC02C723EDA9 /* ContentView.swift */; };
 		3A5EB408BB3A725650ACE3EF /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29668F249D8DE7F958C15E34 /* NotificationViewController.swift */; };
 		40AFC270DF77FF0D0BAB3BB3 /* WebRTCRemoteScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */; };
+		40D3CFD63612C6444328F55D /* PairingQRCodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EE34FEA553207807A8844CA /* PairingQRCodeScannerView.swift */; };
 		410A20E5A1359F7ACEC16FEE /* RemoteMediaArtworkNetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2929FAEAC7A483ECCCDA903 /* RemoteMediaArtworkNetworkTests.swift */; };
 		442A7D004ECD12C8DCF14225 /* MediaNotificationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E46ECD3A741BE3F41BD29377 /* MediaNotificationStoreTests.swift */; };
 		49F1CBD5FC9B1DF0215D2B4B /* MediaNotificationScrub.swift in Sources */ = {isa = PBXBuildFile; fileRef = C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */; };
@@ -94,6 +96,7 @@
 		F5EC00BDA63D36E530D77711 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */; };
 		F6A34A96DBB573F8703BC7EE /* MediaNotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */; };
 		F8D2517FF85FB96B2BA6908E /* MediaNotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */; };
+		FBA65F445529781AD077585C /* ViewerPairedMacCatalogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2C4AA09B1C513A80467F38C /* ViewerPairedMacCatalogStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -173,6 +176,7 @@
 		726474C0ACC95EEE5055A4CC /* WorldwideSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideSessionViewModel.swift; sourceTree = "<group>"; };
 		76F2CC18DCFD9E1ACAC69A25 /* OpensteamerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpensteamerApp.swift; sourceTree = "<group>"; };
 		77E21C152BA0763A029B6EA5 /* PhysicalOracleEvaluator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluator.swift; sourceTree = "<group>"; };
+		7EE34FEA553207807A8844CA /* PairingQRCodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingQRCodeScannerView.swift; sourceTree = "<group>"; };
 		7F06E1C3C90ECEA0551E3A92 /* MediaNotificationCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationCoordinatorTests.swift; sourceTree = "<group>"; };
 		82C1960DA0B4FF5EE2B3F7CF /* PhysicalScreenSequenceOracleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalScreenSequenceOracleTests.swift; sourceTree = "<group>"; };
 		89673B77A859E243F7FD3131 /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
@@ -199,12 +203,14 @@
 		CE709A348BA23148805A49B5 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; name = THIRD_PARTY_NOTICES.md; path = ../../THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
 		D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideRemoteInputLifecycleTests.swift; sourceTree = "<group>"; };
 		D569873264824C9D3B3BE438 /* Beluga.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Beluga.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D5A33EC9CB89E034411DA6AF /* ViewerPairedMacCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairedMacCatalogTests.swift; sourceTree = "<group>"; };
 		D6219C964B51CAC699E64A54 /* ScreenSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenSessionViewModel.swift; sourceTree = "<group>"; };
 		DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalOracleEvaluatorTests.swift; sourceTree = "<group>"; };
 		DD7C32B18437F49BE65ED68D /* WorldwidePhysicalOracles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwidePhysicalOracles.swift; sourceTree = "<group>"; };
 		DEC26144551DD1E27BA28F74 /* RemoteTokenState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteTokenState.swift; sourceTree = "<group>"; };
 		DF002ECF8773045115B13E3F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		E21F5AD974B8BC968D754A01 /* RemoteMediaArtwork.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMediaArtwork.swift; sourceTree = "<group>"; };
+		E2C4AA09B1C513A80467F38C /* ViewerPairedMacCatalogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairedMacCatalogStore.swift; sourceTree = "<group>"; };
 		E46ECD3A741BE3F41BD29377 /* MediaNotificationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationStoreTests.swift; sourceTree = "<group>"; };
 		EAF086BC42722EF1C50CE8EB /* IPhone15SecondaryViewerDevelopmentPhysicalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPhone15SecondaryViewerDevelopmentPhysicalUITests.swift; sourceTree = "<group>"; };
 		ECB116DB67832023573C8889 /* WebRTCAudioPlaybackSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCAudioPlaybackSessionTests.swift; sourceTree = "<group>"; };
@@ -321,6 +327,7 @@
 				218C21538913DA6CC4E8E209 /* BrowserView+WorldwidePresentation.swift */,
 				4CA340C807653853951DB090 /* DiagnosticsView.swift */,
 				6DBE9263C82F3F738B8AA3DF /* MetricRow.swift */,
+				7EE34FEA553207807A8844CA /* PairingQRCodeScannerView.swift */,
 				235E2095A9F021D79D1278C5 /* PlayerView.swift */,
 				A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */,
 				22BA2C0E3FA5E56CBEFF2B54 /* WorldwideScreenViewerView.swift */,
@@ -353,6 +360,7 @@
 			isa = PBXGroup;
 			children = (
 				B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */,
+				E2C4AA09B1C513A80467F38C /* ViewerPairedMacCatalogStore.swift */,
 				2F3847AFDCAAE82502B598F0 /* ViewerPairingStore.swift */,
 			);
 			path = Security;
@@ -481,6 +489,7 @@
 				F2929FAEAC7A483ECCCDA903 /* RemoteMediaArtworkNetworkTests.swift */,
 				C7B1BF8B41EA3FE864A61077 /* RemoteMediaArtworkTests.swift */,
 				25ECEB6D6E00D5B159214DD9 /* RemoteMediaSurfaceDiagnosticsTests.swift */,
+				D5A33EC9CB89E034411DA6AF /* ViewerPairedMacCatalogTests.swift */,
 				6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */,
 				ECB116DB67832023573C8889 /* WebRTCAudioPlaybackSessionTests.swift */,
 				EF58ACCC60E0F1CDD3B085F1 /* WorldwideAudioLifecycleTests.swift */,
@@ -673,6 +682,7 @@
 				F8D2517FF85FB96B2BA6908E /* MediaNotificationStore.swift in Sources */,
 				C9E6069A49A4706FF9BF6058 /* MetricRow.swift in Sources */,
 				70D49162C0A5742D3966087D /* OpensteamerApp.swift in Sources */,
+				40D3CFD63612C6444328F55D /* PairingQRCodeScannerView.swift in Sources */,
 				9D6CA655E54E17D37AC4035E /* PlayerView.swift in Sources */,
 				0A6518B4EB4B3E68DC6BD363 /* RemoteKeyboardInputView.swift in Sources */,
 				D806D73117B192D1A552E2E5 /* RemoteMediaArtwork.swift in Sources */,
@@ -688,6 +698,7 @@
 				627187065AADC178DAECE8BE /* ScreenViewerView.swift in Sources */,
 				C8262450EBF279627543D271 /* ServerInfo.swift in Sources */,
 				82252C5C7C19C8D8D08E1FAE /* StreamSessionViewModel.swift in Sources */,
+				FBA65F445529781AD077585C /* ViewerPairedMacCatalogStore.swift in Sources */,
 				688161A555027B4D83A84E0D /* ViewerPairingState.swift in Sources */,
 				B360334715EDEAA9E9E527C3 /* ViewerPairingStore.swift in Sources */,
 				40AFC270DF77FF0D0BAB3BB3 /* WebRTCRemoteScreenView.swift in Sources */,
@@ -733,6 +744,7 @@
 				410A20E5A1359F7ACEC16FEE /* RemoteMediaArtworkNetworkTests.swift in Sources */,
 				5F6310C5C74FD76205C2BDD6 /* RemoteMediaArtworkTests.swift in Sources */,
 				2D314AECD89DC6E2F17B5C55 /* RemoteMediaSurfaceDiagnosticsTests.swift in Sources */,
+				19CE26C9E38D12024AF7FCAD /* ViewerPairedMacCatalogTests.swift in Sources */,
 				103C41100893D8012C60ADE6 /* ViewerPairingPersistenceTests.swift in Sources */,
 				303BED46E3673163FCA92B36 /* WebRTCAudioPlaybackSessionTests.swift in Sources */,
 				7A896917C5694180149B0C64 /* WorldwideAudioLifecycleTests.swift in Sources */,

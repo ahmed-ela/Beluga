@@ -34,7 +34,7 @@
 		<string>_mcap-screen._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>
+	<string>Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Beluga finds the Mac capture server on your local Wi-Fi network.</string>
 	<key>NSMicrophoneUsageDescription</key>

@@ -79,6 +79,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
     private let pairingBackgroundTask: any TransitionBackgroundTaskCoordinating
     private let connectionTelemetry: any ConnectionTelemetryRecording
     private var activeOperationID: UUID?
+    private var cancellationTask: Task<Void, Never>?
     private var bootstrapClient: (any ViewerPairingBootstrapTransport)?
     private var bootstrapClientOperationID: UUID?
     private var availabilityClient: (any ViewerPairedAvailabilityTransport)?
@@ -340,7 +341,11 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
             // single attempt and must propagate through the outer handler instead of silently
             // starting a second full deadline against the durable record.
             do {
+                guard try pairingState.recoveryInvitationMatchesSelectedMac(input) else {
+                    throw WorldwideViewerConnectionError.invalidPairingRecovery
+                }
                 let invitation = try RemoteInvitationCode(input)
+                let expectedMac = pairingState.boundRecoveryMac
                 var replacementRetry = 0
                 while true {
                     do {
@@ -349,6 +354,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                             endpoint: endpoint,
                             pairingState: pairingState,
                             operationID: operationID,
+                            expectedMac: expectedMac,
                             onRecoverableInvitationAdmitted: onRecoverableInvitationAdmitted,
                             onAuthenticatedPairingCompleted: onAuthenticatedPairingCompleted
                         )
@@ -466,10 +472,18 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         stateText = "Not connected"
         pairingBackgroundTask.endTransitionTask()
         let transports = removeTransports(ownedBy: operationID)
-        Task {
+        let priorCancellation = cancellationTask
+        cancellationTask = Task {
+            await priorCancellation?.value
             await transports.bootstrap?.close()
             await transports.availability?.close()
         }
+    }
+
+    /// Switching saved Macs waits for exact cancelled transports rather than merely clearing UI.
+    func waitForCancelledTransports() async {
+        let retirement = cancellationTask
+        await retirement?.value
     }
 
     func clearError() {
@@ -490,6 +504,7 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
         endpoint: URL,
         pairingState: ViewerPairingState,
         operationID: UUID,
+        expectedMac: RemotePairedDeviceRecord? = nil,
         onRecoverableInvitationAdmitted: @escaping @MainActor () throws -> Void,
         onAuthenticatedPairingCompleted: @escaping @MainActor () -> Void
     ) async throws -> RemotePairedDeviceRecord {
@@ -552,8 +567,14 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                     let pending = try agreement.makePendingRecord(
                         peerConfirmation: peerConfirmation
                     )
+                    if let expectedMac {
+                        guard pending.remoteDeviceID == expectedMac.remoteDeviceID,
+                              pending.remoteSigningPublicKey == expectedMac.remoteSigningPublicKey else {
+                            throw WorldwideViewerConnectionError.invalidPairingRecovery
+                        }
+                    }
                     // Persist the pair root before either side enters the commit protocol.
-                    try pairingState.savePairingRecord(pending)
+                    try pairingState.savePairingRecord(pending, bootstrapInvitation: invitation.exportedCode)
                     record = pending
                     // The viewer confirmation is deliberately asymmetric: the Mac cannot
                     // create a durable record until it receives this message, and this message

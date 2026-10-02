@@ -355,6 +355,8 @@ struct BrowserView: View {
     @StateObject private var invitationAdmissionState = WorldwideInvitationAdmissionState()
     @State private var showsToken = false
     @State private var showsInvitationCode = false
+    @State private var showsPairingScanner = false
+    @State private var changingSavedMac = false
     @State private var worldwidePreparationTask: Task<Void, Never>?
     @State private var worldwidePreparationGeneration = UUID()
     @FocusState private var invitationCodeIsFocused: Bool
@@ -438,6 +440,39 @@ struct BrowserView: View {
             .accessibilityLabel("Connect from Anywhere")
             .accessibilityValue(presentation.accessibilityValue)
             .accessibilityIdentifier("worldwidePresentationState")
+
+            Section("Saved Macs") {
+                ForEach(viewerPairingState.savedMacs, id: \.remoteDeviceID) { mac in
+                    HStack {
+                        Button {
+                            changeSavedMac(to: mac.remoteDeviceID, connect: true)
+                        } label: {
+                            Label(mac.remoteDisplayName ?? "Mac", systemImage:
+                                viewerPairingState.pairingRecord?.remoteDeviceID == mac.remoteDeviceID
+                                    ? "checkmark.desktopcomputer" : "desktopcomputer")
+                        }
+                        .accessibilityIdentifier("connectSavedMac-\(mac.remoteDeviceID.uuidString)")
+                        Spacer()
+                        Button(role: .destructive) {
+                            changeSavedMac(to: mac.remoteDeviceID, forget: true)
+                        } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Forget \(mac.remoteDisplayName ?? "Mac")")
+                    }
+                }
+                Button {
+                    changeSavedMac(to: nil, scan: true)
+                } label: { Label("Scan Mac QR Code", systemImage: "qrcode.viewfinder") }
+                .disabled(viewerPairingState.savedMacs.count >= ViewerPairedMacCatalogStore.maximumMacCount)
+                .accessibilityIdentifier("scanMacPairingQRCode")
+                if viewerPairingState.pairingRecord != nil {
+                    Button {
+                        changeSavedMac(to: nil)
+                    } label: { Label("Add Mac with Code", systemImage: "plus") }
+                    .disabled(viewerPairingState.savedMacs.count >= ViewerPairedMacCatalogStore.maximumMacCount)
+                }
+            }
+            .disabled(changingSavedMac || viewerPairingState.viewerIdentity == nil)
 
             #if DEBUG
             Section("Worldwide Development") {
@@ -544,6 +579,12 @@ struct BrowserView: View {
             }
         }
         .navigationTitle("Beluga")
+        .sheet(isPresented: $showsPairingScanner) {
+            PairingQRCodeScannerView { invitation in
+                invitationCodeState.token = invitation.exportedCode
+                pairAndConnectWorldwide()
+            }
+        }
         .onAppear {
             #if DEBUG
             loadDevelopmentSecondaryInvitationIfRequested()
@@ -965,6 +1006,59 @@ struct BrowserView: View {
 
     // MARK: - Connection actions
 
+    @MainActor
+    static func admitSavedMacChange(
+        isCurrent: () -> Bool,
+        waitForCancelledTransports: () async -> Void,
+        admitRetiredMedia: () async -> Bool
+    ) async -> Bool {
+        guard !Task.isCancelled, isCurrent() else { return false }
+        await waitForCancelledTransports()
+        guard !Task.isCancelled, isCurrent() else { return false }
+        guard await admitRetiredMedia() else { return false }
+        return !Task.isCancelled && isCurrent()
+    }
+
+    private func changeSavedMac(
+        to deviceID: UUID?, connect: Bool = false,
+        forget: Bool = false, scan: Bool = false
+    ) {
+        guard !changingSavedMac else { return }
+        changingSavedMac = true
+        cancelWorldwidePreparation()
+        worldwideViewModel.disconnect()
+        let generation = worldwidePreparationGeneration
+        worldwidePreparationTask = Task { @MainActor in
+            guard await Self.admitSavedMacChange(
+                isCurrent: { worldwidePreparationGeneration == generation },
+                waitForCancelledTransports: {
+                    await worldwideConnection.waitForCancelledTransports()
+                },
+                admitRetiredMedia: {
+                    await worldwideViewModel.admitFreshConnectionPreparation()
+                }
+            ) else {
+                changingSavedMac = false
+                return
+            }
+            do {
+                if forget, let deviceID {
+                    try viewerPairingState.forgetMac(deviceID)
+                } else {
+                    try viewerPairingState.selectMac(deviceID)
+                }
+                worldwideConnection.clearError()
+                changingSavedMac = false
+                worldwidePreparationTask = nil
+                if scan { showsPairingScanner = true }
+                if connect { connectPairedWorldwide() }
+            } catch {
+                changingSavedMac = false
+                worldwidePreparationTask = nil
+            }
+        }
+    }
+
     private func connectRemote() {
         // The legacy PCM renderer and worldwide WebRTC renderer both own the process-wide
         // iOS audio session. Keep the UI connection paths mutually exclusive so one renderer
@@ -1237,17 +1331,8 @@ struct BrowserView: View {
     }
 
     private func forgetWorldwidePairing() {
-        cancelWorldwidePreparation()
-        if worldwideViewModel.hasActiveSession {
-            worldwideViewModel.disconnect()
-        }
-        do {
-            try viewerPairingState.forgetPairedMac()
-            clearSavedInvitation()
-            worldwideConnection.clearError()
-        } catch {
-            // ViewerPairingState publishes the Keychain failure without dropping in-memory state.
-        }
+        guard let mac = viewerPairingState.pairingRecord else { return }
+        changeSavedMac(to: mac.remoteDeviceID, forget: true)
     }
 
     private func cancelWorldwidePreparation() {

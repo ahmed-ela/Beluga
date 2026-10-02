@@ -14,6 +14,10 @@ protocol ViewerPairingStoring {
     func deletePairedMac() throws
 }
 
+protocol ViewerPairingIdentityReading {
+    func loadExistingViewerIdentity() throws -> RemoteDeviceIdentity?
+}
+
 /// Stores proof that a one-time invitation crossed the rendezvous admission boundary.
 /// The proof is separate from the durable paired-device record because a crash may occur between
 /// those two persistence phases.
@@ -297,8 +301,17 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
         _ record: RemotePairedDeviceRecord,
         for identity: RemoteDeviceIdentity
     ) throws {
+        try Self.validateRecord(record, for: identity)
+    }
+
+    static func validateRecord(
+        _ record: RemotePairedDeviceRecord,
+        for identity: RemoteDeviceIdentity
+    ) throws {
         // Public-key and device identifiers must agree before interpreting the recovery phase.
-        guard record.version == RemotePairedDeviceRecord.currentVersion,
+        guard identity.version == RemoteDeviceIdentity.currentVersion,
+              identity.role == .viewer,
+              record.version == RemotePairedDeviceRecord.currentVersion,
               record.localRole == .viewer,
               record.remoteRole == .host,
               record.localDeviceID == identity.deviceID,
@@ -341,7 +354,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
         }
     }
 
-    private func validLocalRecoveryCommit(
+    private static func validLocalRecoveryCommit(
         _ commit: RemotePairingCommit,
         expectedPhase: RemotePairingCommitPhase,
         record: RemotePairedDeviceRecord
@@ -362,7 +375,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
 /// of the app state. A primary identity by itself is an explicit unpaired state, so legacy data is
 /// consulted only when the primary namespace is entirely empty. No method ever combines an
 /// identity from one service with a record from the other.
-final class ViewerPairingNamespaceSelectorStore: ViewerPairingStoring {
+final class ViewerPairingNamespaceSelectorStore: ViewerPairingStoring, ViewerPairingIdentityReading {
     private enum Namespace {
         case primary
         case legacy
@@ -405,6 +418,10 @@ final class ViewerPairingNamespaceSelectorStore: ViewerPairingStoring {
             throw ViewerPairingStoreError.identityPersistenceFailed
         }
         return selection.identity
+    }
+
+    func loadExistingViewerIdentity() throws -> RemoteDeviceIdentity? {
+        try resolveSelection(createPrimaryIdentityWhenEmpty: false)?.identity
     }
 
     func loadPairedMac(
