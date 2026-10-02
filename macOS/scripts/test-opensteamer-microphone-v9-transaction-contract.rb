@@ -292,4 +292,104 @@ class MicrophoneV9TransactionContractTests < Minitest::Test
     source = File.read(__dir__ + '/opensteamer-microphone-v9-transaction-contract.rb')
     refute_match(/Process\.(?:spawn|kill)|sudo|launchctl|coreaudiod|installer\s+-pkg/, source)
   end
+
+  def prepared_fixture
+    root = File.realpath(Dir.mktmpdir('microphone-v9-final-unit-')); File.chmod(0700, root)
+    make = lambda do |leaf, value, mode = 0600|
+      bytes = value.is_a?(String) ? value : JSON.generate(value) + "\n"
+      path = root + '/' + leaf
+      File.open(path, File::WRONLY | File::CREAT | File::EXCL, mode) { |file| file.write(bytes) }
+      { 'path' => path, 'sha256' => Digest::SHA256.hexdigest(bytes) }
+    end
+    n = native
+    producer = { 'toolingRoot' => n['guard_tooling_root'], 'toolingCommit' => C::PRODUCER_COMMIT, 'toolingTree' => C::PRODUCER_TREE }
+    receipt = make.call('receipt.json', producer.merge('toolingCommit' => n['guard_tooling_commit'], 'toolingTree' => n['guard_tooling_tree']))
+    static = make.call('static', 'immutable source evidence')
+    static_identity = C.read_file!(static)[1]
+    binding = make.call('binding.json', { 'inputs' => { 'fixture' => static_identity } })
+    n['fresh_binding_sha256'] = binding['sha256']
+    tools = C::TOOL_ROLES.zip(C::TOOL_DIGEST_KEYS).to_h do |role, key|
+      d = make.call(role, 'offline executable ' + role, 0700); n[key] = d['sha256']; [role, d]
+    end
+    initial = { 'schema' => C::SCHEMA, 'nativeRequest' => n, 'receiptRequest' => receipt,
+      'freshBinding' => binding, 'tools' => tools, 'gateObservation' => make.call('old-gate.json', gate(n)) }
+    calls = []; clock = [Time.at(10)]
+    artifacts = ->(**_options) { calls << :artifacts; [{ 'fixture' => static_identity }, producer] }
+    revalidate = ->(_binding, _fresh) { calls << :receipt; clock[0] = Time.at(20); true }
+    C.stub(:verify_artifacts!, artifacts) do
+      OpensteamerMicrophoneReceiptBinding.stub(:revalidate, revalidate) do
+        Time.stub(:now, -> { clock[0] }) { yield initial, make, static, calls, clock }
+      end
+    end
+  ensure
+    FileUtils.remove_entry_secure(root) if root && File.directory?(root)
+  end
+
+  def test_full_static_audits_precede_actual_fresh_collection_without_restamping_old_gate
+    prepared_fixture do |initial, make, _static, calls, _clock|
+      result = C.verify_with_fresh_collection(initial) do |prepared|
+        assert_equal [:artifacts, :receipt, :artifacts], calls
+        assert prepared.frozen?; assert prepared['nativeRequest'].frozen?
+        actual = gate(prepared['nativeRequest']).merge('observedAtUnixMs' => 20_000)
+        prepared.merge('gateObservation' => make.call('actual-fresh-gate.json', actual))
+      end
+      assert_equal false, result['deploymentAuthority']
+      assert_equal 10_000, C.parse_json(File.binread(initial['gateObservation']['path']))['observedAtUnixMs']
+      assert_equal 20_000, C.parse_json(File.binread(result['gateObservation']['path']))['observedAtUnixMs']
+      assert_equal [:artifacts, :receipt, :artifacts], calls # No receipt CLI after collection.
+    end
+    prepared_fixture { |initial, _make, _static, _calls, _clock| refuse { C.verify(initial) } }
+  end
+
+  def test_final_gate_stale_future_reused_and_static_field_mutants_refuse
+    [-1, 14_999, 20_001].each do |timestamp|
+      prepared_fixture do |initial, make, _static, _calls, _clock|
+        refuse do
+          C.verify_with_fresh_collection(initial) { |prepared|
+            prepared.merge('gateObservation' => make.call('bad-gate.json', gate(prepared['nativeRequest']).merge('observedAtUnixMs' => timestamp)))
+          }
+        end
+      end
+    end
+    prepared_fixture { |initial, _make, _static, _calls, _clock| refuse { C.verify_with_fresh_collection(initial) { |prepared| prepared } } }
+    prepared_fixture do |initial, make, _static, _calls, _clock|
+      refuse do
+        C.verify_with_fresh_collection(initial) { |prepared|
+          changed = prepared['nativeRequest'].merge('host_pid' => '2')
+          prepared.merge('nativeRequest' => changed, 'gateObservation' => make.call('drift-gate.json', gate(changed).merge('observedAtUnixMs' => 20_000)))
+        }
+      end
+    end
+  end
+
+  def test_final_prepared_file_mutation_and_callback_failure_refuse
+    prepared_fixture do |initial, make, static, _calls, _clock|
+      refuse do
+        C.verify_with_fresh_collection(initial) { |prepared|
+          File.open(static['path'], 'ab') { |file| file.write(' changed') }
+          prepared.merge('gateObservation' => make.call('fresh-gate.json', gate(prepared['nativeRequest']).merge('observedAtUnixMs' => 20_000)))
+        }
+      end
+    end
+    prepared_fixture do |initial, _make, _static, _calls, _clock|
+      error = assert_raises(RuntimeError) { C.verify_with_fresh_collection(initial) { raise 'owned collection failed' } }
+      assert_equal 'owned collection failed', error.message
+    end
+  end
+
+  def test_internal_preparation_is_single_use_deadline_bound_and_not_a_selectable_token
+    prepared_fixture do |initial, make, _static, _calls, _clock|
+      context = C.send(:prepare_verification, initial)
+      fresh = initial.merge('gateObservation' => make.call('fresh-gate.json', gate(initial['nativeRequest']).merge('observedAtUnixMs' => 20_000)))
+      assert C.send(:finish_verification, context, fresh, refresh: true)
+      refuse { C.send(:finish_verification, context, fresh, refresh: true) }
+      refuse { C.send(:finish_verification, {}, fresh, refresh: true) }
+    end
+    prepared_fixture do |initial, make, _static, _calls, _clock|
+      context = C.send(:prepare_verification, initial)
+      context.instance_variable_set(:@deadline, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1)
+      fresh = initial.merge('gateObservation' => make.call('fresh-gate.json', gate(initial['nativeRequest']).merge('observedAtUnixMs' => 20_000)))
+      refuse { C.send(:finish_verification, context, fresh, refresh: true) }
+    end
+  end
 end

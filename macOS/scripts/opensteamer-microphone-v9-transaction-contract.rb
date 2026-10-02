@@ -334,7 +334,25 @@ module OpensteamerMicrophoneV9TransactionContract
              'inherited interpreter, loader or Git overrides are forbidden')
   end
 
-  def self.verify(request)
+  class PreparedVerification
+    attr_reader :request, :verification, :fences, :deadline
+    def initialize(request, verification, fences, deadline)
+      @request, @verification, @deadline = request, verification, deadline
+      @fences = fences
+      @consumed = false
+    end
+    def consume!
+      OpensteamerMicrophoneV9TransactionContract.require!(!@consumed, 'prepared verification was already consumed')
+      @consumed = true
+      OpensteamerMicrophoneV9TransactionContract.check_deadline!(deadline)
+    end
+    def invalidate!; @consumed = true; end
+  end
+  private_constant :PreparedVerification
+
+  # Context never leaves the owning verification call or becomes a saved token.
+  # All original artifact/receipt/tool byte audits precede final runtime collection.
+  def self.prepare_verification(request)
     unelevated!
     request = freeze_tree(parse_json(JSON.generate(request)))
     validate_request!(request)
@@ -364,16 +382,81 @@ module OpensteamerMicrophoneV9TransactionContract
     TOOL_ROLES.each do |role|
       require!(read_file!(request['tools'].fetch(role), deadline: deadline)[1] == tools.fetch(role), 'native tool changed during verification')
     end
-    validate_gate!(native, parse_json(gate_bytes), now_ms: (Time.now.to_f * 1000).to_i)
-    { 'schema' => RECORD_SCHEMA, 'deploymentAuthority' => false,
+    verification = { 'schema' => RECORD_SCHEMA, 'deploymentAuthority' => false,
       'scope' => 'read-only-original-uid-preparation-native-worker-must-reprove-runtime',
       'nativeRequestSha256' => Digest::SHA256.hexdigest(native_text(native)),
       'nativeRequest' => native_text(native),
       'producerArtifacts' => before, 'freshReceiptRequest' => request_identity,
       'freshBinding' => binding_identity, 'tools' => tools, 'gateObservation' => gate_identity }
+    PreparedVerification.new(request, freeze_tree(verification), freeze_tree([verification, binding.fetch('inputs')]), deadline)
   rescue OpensteamerMicrophoneReceiptBinding::Refusal, SystemCallError, IOError
     raise Refusal, 'coordinator input or fresh original receipt refused (contents redacted)', cause: nil
   end
+
+  def self.identity_fence!(value, deadline:)
+    check_deadline!(deadline)
+    if value.is_a?(Hash) && value['kind'] == 'apple-swift-adjacent-alias.v1'
+      before = File.lstat(value.fetch('path'))
+      expected = value.fetch('linkStat').values_at('device', 'inode', 'uid', 'gid', 'mode', 'links', 'size', 'mtimeNs', 'ctimeNs')
+      require!(before.symlink? && stat_identity(before) == expected && File.readlink(value.fetch('path')) == value.fetch('linkBytes') &&
+               File.realpath(value.fetch('path')) == value.fetch('target').fetch('path') &&
+               stat_identity(File.lstat(value.fetch('path'))) == expected, 'prepared Swift alias changed')
+    elsif value.is_a?(Hash) && value.key?('path') && (value.key?('identity') || value.key?('stat'))
+      path = value.fetch('path'); before = File.lstat(path)
+      expected = value['identity'] || value.fetch('stat').values_at('device', 'inode', 'uid', 'gid', 'mode', 'links', 'size', 'mtimeNs', 'ctimeNs')
+      require!(File.realpath(path) == path && stat_identity(before) == expected, 'prepared input identity changed')
+      if before.file?
+        File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+          require!(stat_identity(file.stat) == expected, 'prepared input changed at reopen')
+        end
+      else
+        require!(before.directory?, 'prepared input type changed')
+      end
+      require!(stat_identity(File.lstat(path)) == expected, 'prepared input path changed')
+    end
+    if value.is_a?(Hash)
+      value.each_value { |item| identity_fence!(item, deadline: deadline) }
+    elsif value.is_a?(Array)
+      value.each { |item| identity_fence!(item, deadline: deadline) }
+    end
+    check_deadline!(deadline)
+  rescue SystemCallError, IOError
+    raise Refusal, 'prepared input unavailable', cause: nil
+  end
+
+  def self.finish_verification(context, request, refresh:)
+    require!(context.instance_of?(PreparedVerification), 'prepared verification type differs')
+    context.consume!
+    request = freeze_tree(parse_json(JSON.generate(request))); validate_request!(request)
+    require!(request.reject { |key, _| key == 'gateObservation' } == context.request.reject { |key, _| key == 'gateObservation' },
+             'fresh collection changed preaudited coordinator fields')
+    if refresh
+      require!(request.fetch('gateObservation').fetch('path') != context.request.fetch('gateObservation').fetch('path'),
+               'fresh collection reused the prior gate file')
+    end
+    identity_fence!(context.fences, deadline: context.deadline)
+    gate_bytes, gate_identity = read_file!(request.fetch('gateObservation'), mode: 0600, maximum: MAX_JSON, deadline: context.deadline)
+    identity_fence!(context.fences, deadline: context.deadline)
+    validate_gate!(request.fetch('nativeRequest'), parse_json(gate_bytes), now_ms: (Time.now.to_r * 1000).to_i)
+    context.verification.merge('gateObservation' => gate_identity)
+  end
+
+  def self.verify(request)
+    context = prepare_verification(request)
+    finish_verification(context, context.request, refresh: false)
+  ensure
+    context&.invalidate!
+  end
+
+  def self.verify_with_fresh_collection(request)
+    require!(block_given?, 'fresh collection callback is missing')
+    context = prepare_verification(request)
+    fresh_request = yield context.request
+    finish_verification(context, fresh_request, refresh: true)
+  ensure
+    context&.invalidate!
+  end
+  private_class_method :prepare_verification, :identity_fence!, :finish_verification
 
   def self.main(arguments)
     unelevated!

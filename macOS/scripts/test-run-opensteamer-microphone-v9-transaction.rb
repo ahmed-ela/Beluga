@@ -157,4 +157,145 @@ class MicrophoneV9SupervisorTest < Minitest::Test
       end
     end
   end
+
+  def seal_fixture
+    directory do |path|
+      make = lambda do |name, value, mode = 0600|
+        target = File.join(path, name); bytes = value.is_a?(String) ? value : JSON.generate(value) + "\n"
+        File.open(target, File::WRONLY | File::CREAT | File::EXCL, mode) { |file| file.write(bytes) }
+        { 'path' => target, 'sha256' => Digest::SHA256.hexdigest(bytes) }
+      end
+      n = native; tools = C::TOOL_ROLES.to_h { |role| [role, make.call(role, role, 0700)] }
+      C::TOOL_ROLES.zip(C::TOOL_DIGEST_KEYS).each { |role, key| n[key] = tools[role]['sha256'] }
+      binding = make.call('binding.json', {}); n['fresh_binding_sha256'] = binding['sha256']
+      gate = lambda do |ms|
+        mappings = %w[namespace nonce hostPid hostStartIdentitySha256 hostNonce hostLockDevice hostLockInode hostLaunchdRuns hostDisplayIdentitySha256 hostExecutableSha256 predecessorDriverInstance predecessorDriverDevice predecessorDriverInode predecessorDriverExecutableSha256 inputUid outputUid systemOutputUid].zip(
+          %w[namespace nonce host_pid host_start_identity_sha256 host_nonce host_lock_device host_lock_inode host_launchd_runs host_display_identity_sha256 host_executable_sha256 predecessor_driver_instance predecessor_driver_device predecessor_driver_inode predecessor_driver_executable_sha256 input_uid output_uid system_output_uid])
+        mappings.to_h { |key, pinned| [key, n.fetch(pinned)] }.merge(
+          'schema' => 'opensteamer.microphone-v9-quiescent-observation.v1', 'observedAtUnixMs' => ms,
+          'peerConnected' => false, 'authenticatedPeer' => false, 'iceConnected' => false,
+          'controlOpen' => false, 'screenCaptureActive' => false, 'sessionBoundaryProven' => true,
+          'routeNotifications' => 0, 'routeMonitorTeardownClean' => true,
+          'hostTerminal' => 'COMMITTED_CANDIDATE', 'namespaceAbsent' => true)
+      end
+      initial = { 'schema' => C::SCHEMA, 'nativeRequest' => n, 'receiptRequest' => make.call('receipt.json', {}),
+        'freshBinding' => binding, 'gateObservation' => make.call('old-gate.json', gate.call(100_000)), 'tools' => tools }
+      initial_descriptor = make.call('initial.json', initial)
+      manifest = %w[productCommit productTree guardToolingCommit guardToolingTree].zip(%w[product_commit product_tree guard_tooling_commit guard_tooling_tree]).to_h { |key, pinned| [key, n[pinned]] }
+      manifest['tools'] = tools.transform_values { |entry| S::Build.file_record(entry['path']) }
+      manifest['sources'] = {}; manifest['sealedInputs'] = {}
+      %w[swiftCompiler rustCompiler sdkSettings].each { |key| manifest[key] = S::Build.file_record(tools['worker']['path']) }
+      manifest_descriptor = make.call('manifest.json', manifest)
+      events = []; clock = [Time.at(100)]; dispatched = []
+      verification = lambda do |request|
+        native_bytes = C.native_text(request.fetch('nativeRequest'))
+        { 'nativeRequest' => native_bytes, 'nativeRequestSha256' => Digest::SHA256.hexdigest(native_bytes),
+          'gateObservation' => C.read_file!(request.fetch('gateObservation'), mode: 0600, maximum: C::MAX_JSON)[1] }
+      end
+      session_factory = lambda do |evidence, **_options|
+        session = Object.new
+        session.define_singleton_method(:abort_reason) { nil }
+        session.define_singleton_method(:abort!) { |_reason| }
+        session.define_singleton_method(:run) do |argv|
+          events << :dispatch; dispatched << argv
+          preparation = C.parse_json(File.binread(File.join(evidence, 'dispatch-inputs.json')))
+          fields = { 'schema' => S::SEAL_SCHEMA, 'namespace' => n['namespace'], 'nonce' => n['nonce'],
+            'request_sha256' => preparation['nativeRequest']['sha256'], 'build_manifest_sha256' => manifest_descriptor['sha256'],
+            'worker_sha256' => n['worker_sha256'], 'terminal' => 'SEALED_INPUTS_NOT_INSTALLED', 'authority_sha256' => 'e' * 64 }
+          [fields.map { |key, value| "#{key}=#{value}\n" }.join, '', Struct.new(:success?).new(true)]
+        end
+        session
+      end
+      audit = lambda { |*_arguments| events << :audit; clock[0] = Time.at(200); manifest }
+      fresh_verification = lambda do |request, &callback|
+        events << :prepare
+        fresh = callback.call(C.freeze_tree(C.parse_json(JSON.generate(request))))
+        events << :finish
+        assert File.file?(File.join(path, 'evidence', 'dispatch-inputs.json')), 'private persistence must precede final Contract fences'
+        C.validate_gate!(n, C.parse_json(File.binread(fresh['gateObservation']['path'])), now_ms: (clock[0].to_r * 1000).to_i)
+        verification.call(fresh)
+      end
+      mktemp = lambda { |*_arguments| target = File.join(path, 'evidence'); Dir.mkdir(target, 0700); target }
+      S.stub(:original_uid!, nil) do
+        S::Build.stub(:audit_build!, audit) do
+          S.stub(:local_source_generation!, ->(*_arguments) { events << :source }) do
+            S.stub(:bootstrap_script, 'offline-never-executed') do
+              S::OwnedSession.stub(:new, session_factory) do
+                Dir.stub(:mktmpdir, mktemp) do
+                  Time.stub(:now, -> { clock[0] }) do
+                    C.stub(:verify_with_fresh_collection, fresh_verification) do
+                      yield initial, initial_descriptor, manifest_descriptor, make, gate, events, clock, dispatched, verification
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def test_slow_audits_precede_fresh_collection_and_final_fences_follow_private_fsync
+    seal_fixture do |initial, descriptor, manifest, make, gate, events, _clock, dispatched, _verify|
+      fresh_descriptor = nil
+      result = S.seal!(descriptor['path'], descriptor['sha256'], manifest['path'], manifest['sha256'], collect_fresh: lambda { |prepared|
+        events << :collect; assert prepared.frozen?; assert prepared['nativeRequest'].frozen?
+        fresh_descriptor = make.call('fresh.json', initial.merge('gateObservation' => make.call('new-gate.json', gate.call(200_000))))
+      })
+      assert_equal [:audit, :prepare, :collect, :source, :finish, :dispatch], events
+      assert_equal 1, dispatched.size
+      refute result['deploymentAuthority']; refute result['liveInstalled']
+      preparation = C.parse_json(File.binread(File.join(result['evidence'], 'dispatch-inputs.json')))
+      assert_equal fresh_descriptor, preparation['coordinator']
+      assert_equal 100_000, C.parse_json(File.binread(initial['gateObservation']['path']))['observedAtUnixMs']
+    end
+  end
+
+  def test_callback_failure_static_drift_and_stale_after_persistence_never_dispatch
+    [:failure, :drift, :stale].each do |kind|
+      seal_fixture do |initial, descriptor, manifest, make, gate, _events, clock, dispatched, _verify|
+        persist = S.method(:persist_dispatch_inputs!)
+        persistence = lambda { |*arguments| value = persist.call(*arguments); clock[0] = Time.at(206) if kind == :stale; value }
+        S.stub(:persist_dispatch_inputs!, persistence) do
+          error = assert_raises(kind == :failure ? RuntimeError : (kind == :stale ? C::Refusal : S::Refused)) do
+            S.seal!(descriptor['path'], descriptor['sha256'], manifest['path'], manifest['sha256'], collect_fresh: lambda { |_prepared|
+              raise 'owned collector failed' if kind == :failure
+              fresh = initial.merge('gateObservation' => make.call('new-gate.json', gate.call(200_000)))
+              fresh = fresh.merge('nativeRequest' => fresh['nativeRequest'].merge('host_pid' => '2')) if kind == :drift
+              make.call('fresh.json', fresh)
+            })
+          end
+          assert_equal 'owned collector failed', error.message if kind == :failure
+          assert_empty dispatched
+        end
+      end
+    end
+  end
+
+  def test_same_byte_manifest_inode_replacement_never_dispatches
+    seal_fixture do |initial, descriptor, manifest, make, gate, _events, _clock, dispatched, _verify|
+      assert_raises(S::Refused) do
+        S.seal!(descriptor['path'], descriptor['sha256'], manifest['path'], manifest['sha256'], collect_fresh: lambda { |_prepared|
+          replacement = make.call('manifest-replacement.json', File.binread(manifest['path']))
+          File.rename(replacement['path'], manifest['path'])
+          make.call('fresh.json', initial.merge('gateObservation' => make.call('new-gate.json', gate.call(200_000))))
+        })
+      end
+      assert_empty dispatched
+    end
+  end
+
+  def test_standalone_stale_seal_and_changed_local_source_still_refuse
+    seal_fixture do |initial, descriptor, manifest, _make, _gate, _events, clock, dispatched, _verify|
+      C.stub(:verify, lambda { |request|
+        C.validate_gate!(request['nativeRequest'], C.parse_json(File.binread(initial['gateObservation']['path'])), now_ms: (clock[0].to_r * 1000).to_i)
+      }) do
+        assert_raises(C::Refusal) { S.seal!(descriptor['path'], descriptor['sha256'], manifest['path'], manifest['sha256']) }
+      end
+      assert_empty dispatched
+    end
+    commands = Object.new; commands.define_singleton_method(:run) { |*_arguments| 'different' }
+    assert_raises(S::Refused) { S.local_source_generation!({ 'productCommit' => 'a' * 40, 'productTree' => 'b' * 40 }, commands) }
+  end
 end

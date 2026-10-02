@@ -206,7 +206,53 @@ module BelugaMicrophoneV9Supervisor
     true
   end
 
-  def self.seal!(coordinator_path, coordinator_sha, manifest_path, manifest_sha)
+  def self.manifest_identity_fence!(manifest)
+    records = manifest.fetch('sources').values + manifest.fetch('tools').values + manifest.fetch('sealedInputs').values +
+      %w[swiftCompiler rustCompiler sdkSettings].map { |key| manifest.fetch(key) }
+    records.each do |record|
+      path = record.fetch('path'); expected = record.fetch('identity')
+      require!(File.realpath(path) == path && Build.identity(File.lstat(path)) == expected, 'prepared build input identity changed')
+      File.open(path, File::RDONLY | File::NOFOLLOW) { |file| require!(Build.identity(file.stat) == expected, 'prepared build input changed at reopen') }
+      require!(Build.identity(File.lstat(path)) == expected, 'prepared build input path changed')
+    end
+  end
+
+  def self.local_source_generation!(manifest, commands)
+    [[Build::PRODUCT, 'productCommit', 'productTree'], [Build::ROOT, 'guardToolingCommit', 'guardToolingTree']].each do |root, commit, tree|
+      git = ['/usr/bin/git', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+             '-c', 'core.untrackedCache=false', '-c', 'core.ignoreStat=false', '-C', root]
+      require!(commands.run(*git, 'rev-parse', 'HEAD', 'HEAD^{tree}') == manifest.fetch(commit) + "\n" + manifest.fetch(tree) + "\n" &&
+               commands.run(*git, 'status', '--porcelain=v1', '--untracked-files=all').empty?, 'prepared local source generation changed')
+      flags = commands.run(*git, 'ls-files', '-v', '-z').split("\0")
+      require!(!flags.empty? && flags.all? { |entry| entry.start_with?('H ') }, 'prepared source index flags changed')
+      next unless root == Build::ROOT
+      require!(commands.run(*git, 'symbolic-ref', '--short', 'HEAD') == Build::BRANCH + "\n" &&
+               commands.run(*git, 'rev-parse', '@{u}') == manifest.fetch(commit) + "\n" &&
+               commands.run(*git, 'remote', 'get-url', '--all', 'origin') == Build::REMOTE + "\n" &&
+               commands.run(*git, 'remote', 'get-url', '--push', '--all', 'origin') == Build::REMOTE + "\n", 'prepared local tooling provenance changed')
+    end
+  end
+
+  def self.fresh_gate_fence!(coordinator, verification)
+    bytes, identity = Contract.read_file!(coordinator.fetch('gateObservation'), mode: 0600, maximum: Contract::MAX_JSON)
+    require!(identity == verification.fetch('gateObservation'), 'final gate file changed')
+    Contract.validate_gate!(coordinator.fetch('nativeRequest'), Contract.parse_json(bytes), now_ms: (Time.now.to_r * 1000).to_i)
+  end
+
+  def self.persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, native)
+    native_path = File.join(evidence, 'native-request.txt'); native_bytes = Contract.native_text(native)
+    request_sha = Digest::SHA256.hexdigest(native_bytes)
+    File.open(native_path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(native_bytes); file.flush; file.fsync }
+    require!(Build.file_record(native_path, digest: request_sha)['sha256'] == request_sha, 'derived native request differs')
+    preparation = { 'schema' => 'opensteamer.microphone-v9-dispatch-inputs.v1',
+      'coordinator' => descriptor, 'buildManifest' => { 'path' => manifest_path, 'sha256' => manifest_sha },
+      'nativeRequest' => { 'path' => native_path, 'sha256' => request_sha } }
+    File.open(File.join(evidence, 'dispatch-inputs.json'), File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.generate(preparation) + "\n"); file.flush; file.fsync }
+    File.open(evidence, File::RDONLY | File::NOFOLLOW) { |directory| directory.fsync }
+    [native_path, request_sha]
+  end
+
+  def self.seal!(coordinator_path, coordinator_sha, manifest_path, manifest_sha, collect_fresh: nil)
     original_uid!
     descriptor = { 'path' => coordinator_path, 'sha256' => coordinator_sha }
     bytes, identity = Contract.read_file!(descriptor, mode: 0600, maximum: Contract::MAX_JSON)
@@ -214,21 +260,45 @@ module BelugaMicrophoneV9Supervisor
     Contract.validate_request!(coordinator)
     evidence = Dir.mktmpdir('beluga-microphone-v9-supervisor.', '/Volumes/t7'); File.chmod(0700, evidence)
     command_directory = File.join(evidence, 'audit-commands'); Dir.mkdir(command_directory, 0700)
-    manifest = Build.audit_build!(manifest_path, manifest_sha, Build::Commands.new(command_directory))
-    verification = Contract.verify(coordinator)
+    commands = Build::Commands.new(command_directory)
+    manifest_record = Build.file_record(manifest_path, digest: manifest_sha)
+    manifest = Build.audit_build!(manifest_path, manifest_sha, commands)
+    require!(Build.file_record(manifest_path, digest: manifest_sha) == manifest_record, 'build manifest changed during audit')
+    manifest_bindings!(coordinator.fetch('nativeRequest'), coordinator, manifest)
+    native_path = request_sha = nil
+    if collect_fresh
+      require!(collect_fresh.respond_to?(:call), 'fresh collector is not callable')
+      original_descriptor, original_identity = descriptor, identity
+      verification = Contract.verify_with_fresh_collection(coordinator) do |prepared|
+        fresh_descriptor = collect_fresh.call(prepared)
+        Contract.descriptor!(fresh_descriptor)
+        require!(fresh_descriptor.fetch('path') != original_descriptor.fetch('path'), 'fresh collection reused the prior coordinator file')
+        fresh_bytes, fresh_identity = Contract.read_file!(fresh_descriptor, mode: 0600, maximum: Contract::MAX_JSON)
+        descriptor, identity = fresh_descriptor, fresh_identity
+        coordinator = Contract.parse_json(fresh_bytes)
+        Contract.validate_request!(coordinator)
+        require!(coordinator.reject { |key, _| key == 'gateObservation' } == prepared.reject { |key, _| key == 'gateObservation' }, 'fresh collection changed prepared inputs')
+        require!(Contract.read_file!(original_descriptor, mode: 0600, maximum: Contract::MAX_JSON)[1] == original_identity, 'initial coordinator changed during collection')
+        manifest_identity_fence!(manifest)
+        local_source_generation!(manifest, commands)
+        require!(Build.file_record(manifest_path, digest: manifest_sha) == manifest_record, 'prepared build manifest changed')
+        native_path, request_sha = persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, coordinator.fetch('nativeRequest'))
+        # Contract's prepared artifact/receipt/tool fences and actual five-second
+        # gate check run after this continuation, including all private fsyncs.
+        coordinator
+      end
+    else
+      verification = Contract.verify(coordinator)
+      native_path, request_sha = persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, coordinator.fetch('nativeRequest'))
+    end
     require!(Contract.read_file!(descriptor, mode: 0600, maximum: Contract::MAX_JSON)[1] == identity, 'coordinator changed before dispatch')
     native = coordinator.fetch('nativeRequest')
-    manifest_bindings!(native, coordinator, manifest)
-    native_path = File.join(evidence, 'native-request.txt')
-    File.open(native_path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(verification.fetch('nativeRequest')); file.flush; file.fsync }
-    request_sha = verification.fetch('nativeRequestSha256')
-    require!(Build.file_record(native_path, digest: request_sha)['sha256'] == request_sha, 'derived native request differs')
-    preparation = { 'schema' => 'opensteamer.microphone-v9-dispatch-inputs.v1',
-      'coordinator' => descriptor, 'buildManifest' => { 'path' => manifest_path, 'sha256' => manifest_sha },
-      'nativeRequest' => { 'path' => native_path, 'sha256' => request_sha } }
-    File.open(File.join(evidence, 'dispatch-inputs.json'), File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.generate(preparation) + "\n"); file.flush; file.fsync }
+    require!(request_sha == verification.fetch('nativeRequestSha256') && File.binread(native_path) == verification.fetch('nativeRequest'), 'prepared native projection differs')
     script = bootstrap_script(native, native_path, request_sha, manifest_path, manifest_sha, manifest.fetch('tools').fetch('worker').fetch('path'))
     session = OwnedSession.new(evidence, seconds: 45, recovery_seconds: 45)
+    manifest_identity_fence!(manifest) if collect_fresh
+    require!(Build.file_record(manifest_path, digest: manifest_sha) == manifest_record, 'build manifest changed before dispatch')
+    fresh_gate_fence!(coordinator, verification)
     stdout, stderr, status = with_signal_abort(session) { session.run(['/usr/bin/sudo', '-n', '--', '/bin/sh', '-c', script]) }
     fields = flat(stdout, SEAL_KEYS)
     require!(status.success? && stderr.empty? && session.abort_reason.nil? && fields['schema'] == SEAL_SCHEMA &&
