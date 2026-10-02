@@ -17,12 +17,18 @@ const DRIVER_HOST_EXE:&str="/System/Library/Frameworks/CoreAudio.framework/Versi
 const DRIVER_HOST_DISPLAY:&str="Core Audio Driver (OpensteamerVirtualMicrophone.driver)";
 const DRIVER_HOST_LSOF:&str="Core Audio Driver (OpensteamerV";
 pub(super) const RECONCILE_011_WORKER:&str="/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker";
+const CONTINUE_011_WORKER:&str="/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-001/worker";
 const FAILED_011_NAMESPACE:&str="driver-microphone-v9-151f574a1c3c354b";
 const FAILED_011_NONCE:&str="0c6553bf7c2322bc87fc0b1580b739e2db7820fd8405ad4b8c9e33f6d0f8f0d5";
 const FAILED_011_REQUEST:&str="18c655bff4dd81a3fd9435aae9940fbc15fd92d6b6975a5fdb4245e3e7507178";
 const FAILED_011_AUTHORITY:&str="afebc8d84640a8ac3155a70f51d8bc06c24b4f40ec0488ad2998cfa4bba560c7";
 const FAILED_011_WORKER:&str="d91091c850d22ec315cc08ca4add458efb5dfb3e29b26080ba0665dea9af5613";
 const FAILURE_TERMINAL:&str="FAILED_NO_EFFECTS_RECONCILED";
+const CONTINUATION_TERMINAL:&str="FAILED_NO_EFFECTS_RECONCILED_CONTINUATION_001";
+const CONSUMED_011_RECONCILER:&str="86423d013e9d0790d09d715e6052ec0cf6dc2451d0827eb310a82d1540cfc983";
+const HISTORICAL_011_FENCE:&str="7dade8d5ab2eaa0681cff8886e6702f9118ed65b27608ed1536e9d89b602d0e6";
+const HISTORICAL_011_APPENDS:&[&str]=&["child-active-002","child-clean-002"];
+const CONTINUATION_011_APPENDS:&[&str]=&["child-active-003","child-clean-003","gate-metadata-003.txt","gate-metadata-004.txt","continuation-001-host-before.txt","continuation-001-host-after.txt"];
 const FAILED_011_TOP:&[&str]=&["SEALING_COMPLETE","SEALING_INCOMPLETE","authority.txt","build-manifest.json","candidate.driver","child-active-001","child-clean-001","core-baseline.txt","driver-host-baseline.txt","failed","gate-metadata-001.txt","gate-metadata-002.txt","guardian-1.events","host-baseline.txt","journal","prior","probes","recovery-refusal.txt","request.txt"];
 const RECONCILIATION_APPENDS:&[&str]=&["child-active-002","child-clean-002","gate-metadata-003.txt","gate-metadata-004.txt","reconciliation-host-before.txt","reconciliation-host-after.txt"];
 const FAILED_011_PINS:&[(&str,&str)]=&[
@@ -34,6 +40,7 @@ const FAILED_011_PINS:&[(&str,&str)]=&[
     ("gate-metadata-002.txt","176132c4a84ee3f5d932f0adc1f832942d3528893f595f9ee73aadb5d149e720"),("recovery-refusal.txt","ccd9cd0d1eca61d6195aa829c47da5941574778a6cb27ce2fc174f7ad0e7ab6b"),
     ("guardian-1.events","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),("journal/journal-001","514a6dfc6fdd8e6cea34a3a8fea3ecc4e9ea3d6374fe985d93b5eadff9e55fec")];
 const FAILURE_TERMINAL_FIELDS:&[&str]=&["schema","terminal","namespace","nonce","request_sha256","authority_sha256","original_worker_sha256","reconciler_worker_sha256","original_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256","observed_at_unix_ms","normal_restarts","rollback_restarts","original_cause","original_guardian_teardown","guardian_coverage_proven","deployment_verified","pcm_verified"];
+const CONTINUATION_TERMINAL_FIELDS:&[&str]=&["schema","terminal","namespace","nonce","request_sha256","authority_sha256","original_worker_sha256","consumed_reconciler_worker_sha256","reconciler_worker_sha256","original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","original_child_fence_sha256","historical_child_fence_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256","observed_at_unix_ms","normal_restarts","rollback_restarts","original_cause","original_guardian_teardown","guardian_coverage_proven","deployment_verified","pcm_verified"];
 const HOST_EXE:&str="/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer";
 const HOST_FRAMEWORK:&str="/Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC";
 const HOST_INFO:&str="/Applications/opensteamer Host.app/Contents/Info.plist";
@@ -416,6 +423,13 @@ fn prepared_only_reconciliation_journal(bytes:&[u8],request:&Request)->Result<()
 impl ReconciliationInventory{
     fn capture(state:&Path,extras:&[&str],owner:u32,group:u32)->Result<Self>{
         if extras.iter().any(|name|!RECONCILIATION_APPENDS.contains(name)&&*name!=FAILURE_TERMINAL){return Err("failure reconciliation append role refused".into());}
+        Self::capture_exact(state,extras,owner,group)
+    }
+    fn capture_continuation(state:&Path,extras:&[&str],owner:u32,group:u32)->Result<Self>{
+        if extras.iter().any(|name|!HISTORICAL_011_APPENDS.contains(name)&&!CONTINUATION_011_APPENDS.contains(name)&&*name!=CONTINUATION_TERMINAL){return Err("exact 011 continuation append role refused".into());}
+        Self::capture_exact(state,extras,owner,group)
+    }
+    fn capture_exact(state:&Path,extras:&[&str],owner:u32,group:u32)->Result<Self>{
         let top=FAILED_011_TOP.iter().chain(extras).map(|name|name.to_string()).collect::<Vec<_>>();exact_reconciliation_names(state,&top)?;
         reconciliation_layout(state)?;
         let mut nodes=BTreeMap::new();
@@ -435,6 +449,15 @@ impl ReconciliationInventory{
     fn digest(&self,original:bool)->String{
         let bytes=self.nodes.iter().filter(|(name,_)|name.as_str()!=FAILURE_TERMINAL&&(!original||!RECONCILIATION_APPENDS.contains(&name.as_str()))).map(|(name,node)|format!("{name}\0{:?}\0{}\0",node.identity,node.digest)).collect::<String>();sha256(bytes.as_bytes())
     }
+    fn continuation_digest(&self,projection:ContinuationProjection)->String{
+        let bytes=self.nodes.iter().filter(|(name,_)|{
+            name.as_str()!=CONTINUATION_TERMINAL&&match projection{
+                ContinuationProjection::Original=>!HISTORICAL_011_APPENDS.contains(&name.as_str())&&!CONTINUATION_011_APPENDS.contains(&name.as_str()),
+                ContinuationProjection::Input=>!CONTINUATION_011_APPENDS.contains(&name.as_str()),
+                ContinuationProjection::Final=>true,
+            }
+        }).map(|(name,node)|format!("{name}\0{:?}\0{}\0",node.identity,node.digest)).collect::<String>();sha256(bytes.as_bytes())
+    }
     fn bytes(&self,name:&str)->Result<Vec<u8>>{self.nodes.get(name).ok_or("failure reconciliation exact record missing")?.bytes()}
     fn verify_original(&self,request:&Request)->Result<()>{
         failed_011_request(request)?;
@@ -444,6 +467,14 @@ impl ReconciliationInventory{
         if self.bytes("child-active-001")?!=self.bytes("child-clean-001")?{return Err("failure reconciliation original child containment differs".into());}
         self.revalidate()
     }
+}
+#[derive(Clone,Copy)]
+enum ContinuationProjection{Original,Input,Final}
+fn historical_011_containment(inventory:&ReconciliationInventory,request:&Request)->Result<()>{
+    let active=inventory.bytes("child-active-002")?;let clean=inventory.bytes("child-clean-002")?;
+    if active!=clean||sha256(&active)!=HISTORICAL_011_FENCE{return Err("exact 011 historical finalized containment byte pin differs".into());}
+    child_fence_validate(&active,request,2)?;let fields=strict_flat(&active,CHILD_FENCE_FIELDS,8192)?;
+    if fields["owner_pid"]!="61441"{return Err("exact 011 historical native owner differs".into());}Ok(())
 }
 
 fn failure_terminal_validate(bytes:&[u8],request:&Request)->Result<BTreeMap<String,String>>{
@@ -486,9 +517,14 @@ fn failed_011_mapping_fence(output:Result<os::Captured>,checked:Result<()>)->Res
 }
 fn failed_011_absence(owners:&[u32],old_worker:&os::SealedExecutable,helpers:[&os::SealedExecutable;3],reconciler:Option<&os::SealedExecutable>)->Result<()>{
     if !matches!((owners.len(),reconciler.is_some()),(1,false)|(2,true)){return Err("failed 011 owner/image role set differs".into());}
+    failed_011_absence_roles(owners,old_worker,helpers,reconciler,None)
+}
+fn failed_011_absence_roles(owners:&[u32],old_worker:&os::SealedExecutable,helpers:[&os::SealedExecutable;3],reconciler:Option<&os::SealedExecutable>,continuation:Option<&os::SealedExecutable>)->Result<()>{
+    failed_011_absence_role_count(owners.len(),reconciler.is_some(),continuation.is_some())?;
     use os::Failed011ExecutableRole as Role;
     let mut images=vec![(old_worker,Role::OriginalWorker),(helpers[0],Role::IdleHelper),(helpers[1],Role::BothOrderProbe),(helpers[2],Role::RouteGuardian)];
     if let Some(reconciler)=reconciler{images.push((reconciler,Role::ConsumedReconciler));}
+    if let Some(continuation)=continuation{images.push((continuation,Role::ContinuationReconciler));}
     // Fixed held-inode searches do not require reconstructing unrelated live
     // executable paths. Two finite sweeps are observations, not atomic absence.
     for _ in 0..2{
@@ -503,6 +539,9 @@ fn failed_011_absence(owners:&[u32],old_worker:&os::SealedExecutable,helpers:[&o
         os::failed_011_processes_unchanged(&before,&after)?;
         for(image,_)in &images{image.reconcile_revalidate()?;}
     }Ok(())
+}
+fn failed_011_absence_role_count(owners:usize,consumed:bool,continuation:bool)->Result<()>{
+    if !matches!((owners,consumed,continuation),(1,false,false)|(2,true,false)|(3,true,true)){return Err("failed 011 exact continuation owner/image role set differs".into());}Ok(())
 }
 fn failure_reconciliation_record(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<Vec<u8>>{
     let mut fields=BTreeMap::new();
@@ -539,7 +578,51 @@ fn validate_reconciliation_crosslinks(inventory:&ReconciliationInventory,request
 fn validate_reconciled_inventory(inventory:&ReconciliationInventory,request:&Request)->Result<BTreeMap<String,String>>{
     validate_reconciliation_evidence(inventory,request,&inventory.bytes(FAILURE_TERMINAL)?)
 }
+fn continuation_terminal_validate(bytes:&[u8],request:&Request)->Result<BTreeMap<String,String>>{
+    failed_011_request(request)?;let fields=strict_flat(bytes,CONTINUATION_TERMINAL_FIELDS,MAX_REQUEST)?;
+    for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v2"),("terminal",CONTINUATION_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("consumed_reconciler_worker_sha256",CONSUMED_011_RECONCILER),("original_child_fence_sha256",FAILED_011_PINS.iter().find(|(name,_)|*name=="child-clean-001").unwrap().1),("historical_child_fence_sha256",HISTORICAL_011_FENCE),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{if fields[key]!=value{return Err("exact 011 continuation terminal identity/authority/unknown-cause policy differs".into());}}
+    for key in ["reconciler_worker_sha256","original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256"]{if !hex(&fields[key],64){return Err("exact 011 continuation terminal digest role differs".into());}}
+    if [FAILED_011_WORKER,CONSUMED_011_RECONCILER].contains(&fields["reconciler_worker_sha256"].as_str()){return Err("continuation worker cannot relabel an original/consumed image".into());}positive(&fields["observed_at_unix_ms"])?;Ok(fields)
+}
+fn continuation_reconciliation_record(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<Vec<u8>>{
+    let mut fields=BTreeMap::new();
+    for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v2"),("terminal",CONTINUATION_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("consumed_reconciler_worker_sha256",CONSUMED_011_RECONCILER),("reconciler_worker_sha256",worker_sha),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{fields.insert(key,value.to_string());}
+    fields.insert("original_inventory_sha256",original.continuation_digest(ContinuationProjection::Original));fields.insert("input_inventory_sha256",original.continuation_digest(ContinuationProjection::Input));fields.insert("final_inventory_sha256",final_inventory.continuation_digest(ContinuationProjection::Final));fields.insert("observed_at_unix_ms",observed.to_string());
+    for(key,name)in [("original_child_fence_sha256","child-clean-001"),("historical_child_fence_sha256","child-clean-002"),("reconciliation_child_fence_sha256","child-clean-003"),("gate_before_sha256","gate-metadata-003.txt"),("gate_after_sha256","gate-metadata-004.txt"),("host_before_sha256","continuation-001-host-before.txt"),("host_after_sha256","continuation-001-host-after.txt"),("core_generation_sha256","core-baseline.txt"),("driver_host_generation_sha256","driver-host-baseline.txt")]{fields.insert(key,sha256(&final_inventory.bytes(name)?));}
+    let bytes=CONTINUATION_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[key])).collect::<String>().into_bytes();continuation_terminal_validate(&bytes,request)?;Ok(bytes)
+}
+fn validate_continuation_evidence(inventory:&ReconciliationInventory,request:&Request,bytes:&[u8])->Result<BTreeMap<String,String>>{
+    inventory.verify_original(request)?;historical_011_containment(inventory,request)?;let fields=continuation_terminal_validate(bytes,request)?;
+    validate_continuation_crosslinks(inventory,request,&fields)?;Ok(fields)
+}
+fn validate_continuation_crosslinks(inventory:&ReconciliationInventory,request:&Request,fields:&BTreeMap<String,String>)->Result<()>{
+    inventory.revalidate()?;historical_011_containment(inventory,request)?;
+    for(key,projection)in [("original_inventory_sha256",ContinuationProjection::Original),("input_inventory_sha256",ContinuationProjection::Input),("final_inventory_sha256",ContinuationProjection::Final)]{if fields[key]!=inventory.continuation_digest(projection){return Err("exact 011 continuation whole-inventory crosslink differs".into());}}
+    for(sequence,key)in [(1,"original_child_fence_sha256"),(2,"historical_child_fence_sha256"),(3,"reconciliation_child_fence_sha256")]{
+        let active=inventory.bytes(&format!("child-active-{sequence:03}"))?;let clean=inventory.bytes(&format!("child-clean-{sequence:03}"))?;child_fence_validate(&active,request,sequence)?;
+        if active!=clean||fields[key]!=sha256(&clean){return Err("exact 011 continuation containment is not fully finalized/crosslinked".into());}
+    }
+    let baseline=failure_host_gate(&inventory.bytes("host-baseline.txt")?,request)?;
+    for(key,name)in [("gate_before_sha256","gate-metadata-003.txt"),("gate_after_sha256","gate-metadata-004.txt"),("host_before_sha256","continuation-001-host-before.txt"),("host_after_sha256","continuation-001-host-after.txt"),("core_generation_sha256","core-baseline.txt"),("driver_host_generation_sha256","driver-host-baseline.txt")]{if fields[key]!=sha256(&inventory.bytes(name)?){return Err("exact 011 continuation observation byte crosslink differs".into());}}
+    let mut last_observed=positive(&baseline.fields["observed_at_unix_ms"])?;let mut prior=baseline;
+    for(index,name)in ["continuation-001-host-before.txt","continuation-001-host-after.txt"].iter().enumerate(){
+        let gate=failure_host_gate(&inventory.bytes(name)?,request)?;
+        for key in ["host_launchd_runs","host_executable_sha256","host_framework_sha256","host_info_plist_sha256","host_launch_plist_sha256","input_uid","output_uid","system_output_uid","routes_identity_sha256","manager_generation","session_log_device","session_log_inode","session_log_reset_offset"]{if gate.fields[key]!=prior.fields[key]{return Err("continuation host/session/display/default routes changed".into());}}
+        if positive(&gate.fields["session_log_size"])?<positive(&prior.fields["session_log_size"])?{return Err("continuation session log regressed".into());}
+        let previous=last_observed;let observed=positive(&gate.fields["observed_at_unix_ms"])?;if observed<previous{return Err("continuation host observations regressed".into());}last_observed=observed;
+        let metadata=validate_gate_metadata(&inventory.bytes(&format!("gate-metadata-{:03}.txt",index+3))?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",index+3,Some("candidate-present"))?;
+        let metadata_time=positive(&metadata["observed_at_unix_ms"])?;if metadata_time<previous||metadata_time>observed||observed-metadata_time>20000{return Err("continuation host proof is not bound to imminent metadata observation".into());}prior=gate;
+    }
+    let observed=positive(&fields["observed_at_unix_ms"])?;if observed<last_observed||observed-last_observed>5000{return Err("continuation terminal is not bound to a fresh final observation".into());}Ok(())
+}
 fn failed_011_terminal_clear(state:&Path,request:&Request)->Result<()>{
+    match fs::symlink_metadata(state.join(CONTINUATION_TERMINAL)){
+        Ok(_)=>failed_011_continuation_terminal_clear(state,request),
+        Err(error)if error.kind()==std::io::ErrorKind::NotFound=>failed_011_v1_terminal_clear(state,request),
+        Err(_)=>Err("exact 011 continuation terminal presence unproved".into()),
+    }
+}
+fn failed_011_v1_terminal_clear(state:&Path,request:&Request)->Result<()>{
     failed_011_request(request)?;let ancestry=sealed_fs::root_ancestry(request)?;
     let extras=RECONCILIATION_APPENDS.iter().copied().chain([FAILURE_TERMINAL]).collect::<Vec<_>>();let inventory=ReconciliationInventory::capture(state,&extras,0,0)?;let fields=validate_reconciled_inventory(&inventory,request)?;
     let exec=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);let exec_ancestry=sealed_fs::root_ancestry_path(&exec,0o711)?;
@@ -556,6 +639,25 @@ fn failed_011_terminal_clear(state:&Path,request:&Request)->Result<()>{
     let old_owner=strict_flat(&inventory.bytes("child-active-001")?,CHILD_FENCE_FIELDS,8192)?;let new_owner=strict_flat(&inventory.bytes("child-active-002")?,CHILD_FENCE_FIELDS,8192)?;
     failed_011_absence(&[positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"old owner PID overflow")?,positive(&new_owner["owner_pid"])?.try_into().map_err(|_|"reconciler owner PID overflow")?],&old_worker,[&helpers[0],&helpers[1],&helpers[2]],Some(&reconciler))?;
     old_worker.reconcile_revalidate()?;reconciler.reconcile_revalidate()?;reconciler_directory.revalidate()?;for helper in &helpers{helper.reconcile_revalidate()?;}for held in ancestry.iter().chain(exec_ancestry.iter()).chain(reconciler_ancestry.iter()){held.revalidate()?;}inventory.revalidate()
+}
+fn failed_011_continuation_terminal_clear(state:&Path,request:&Request)->Result<()>{
+    failed_011_request(request)?;let ancestry=sealed_fs::root_ancestry(request)?;
+    let extras=HISTORICAL_011_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().chain([CONTINUATION_TERMINAL]).collect::<Vec<_>>();
+    let inventory=ReconciliationInventory::capture_continuation(state,&extras,0,0)?;let fields=validate_continuation_evidence(&inventory,request,&inventory.bytes(CONTINUATION_TERMINAL)?)?;
+    let exec=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);let exec_ancestry=sealed_fs::root_ancestry_path(&exec,0o711)?;
+    let authority=strict_flat(&inventory.bytes("authority.txt")?,AUTHORITY_FIELDS,MAX_REQUEST)?;
+    for key in ["namespace","nonce","guard_tooling_commit","guard_tooling_tree","worker_sha256","idle_helper_sha256","both_order_probe_sha256","route_guardian_sha256"]{if authority[key]!=request.get(key){return Err("continued historical authority crosslink changed".into());}}
+    let candidate=verify_bundle(&state.join("candidate.driver"),request.get("driver_tree_sha256"),request.get("driver_executable_sha256"),0)?;
+    if candidate.0.device!=positive(&authority["candidate_root_device"])?||candidate.0.inode!=positive(&authority["candidate_root_inode"])?||candidate.1.inode!=positive(&authority["candidate_executable_inode"])?{return Err("continued original staged candidate inode changed".into());}
+    read_pinned(&exec.join("tools/gate_inputs.txt"),&authority["gate_inputs_sha256"],0,0o444,MAX_REQUEST)?;read_pinned(&exec.join("tools/opensteamer-microphone-v9-host-gate.rb"),&authority["host_gate_sha256"],0,0o444,MAX_REQUEST)?;
+    let helpers=[("idle-helper","idle_helper_sha256"),("both-order-probe","both_order_probe_sha256"),("route-guardian","route_guardian_sha256")].iter().map(|(role,pin)|os::SealedExecutable::open(&exec.join(role),request.get(pin))).collect::<Result<Vec<_>>>()?;
+    let old_worker=os::SealedExecutable::open(&exec.join("worker"),FAILED_011_WORKER)?;
+    let consumed_ancestry=sealed_fs::root_ancestry_path(Path::new(RECONCILE_011_WORKER).parent().unwrap(),0o711)?;let consumed_directory=GateDirectory::capture(Path::new(RECONCILE_011_WORKER).parent().unwrap())?;let consumed=os::SealedExecutable::open(Path::new(RECONCILE_011_WORKER),CONSUMED_011_RECONCILER)?;
+    let continuation_ancestry=sealed_fs::root_ancestry_path(Path::new(CONTINUE_011_WORKER).parent().unwrap(),0o711)?;let continuation_directory=GateDirectory::capture(Path::new(CONTINUE_011_WORKER).parent().unwrap())?;let continuation=os::SealedExecutable::open(Path::new(CONTINUE_011_WORKER),&fields["reconciler_worker_sha256"])?;
+    let owners=[1,2,3].iter().map(|sequence|{let fields=strict_flat(&inventory.bytes(&format!("child-active-{sequence:03}"))?,CHILD_FENCE_FIELDS,8192)?;positive(&fields["owner_pid"])?.try_into().map_err(|_|"continued owner PID overflow".into())}).collect::<Result<Vec<u32>>>()?;
+    failed_011_absence_roles(&owners,&old_worker,[&helpers[0],&helpers[1],&helpers[2]],Some(&consumed),Some(&continuation))?;
+    old_worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;continuation.reconcile_revalidate()?;consumed_directory.revalidate()?;continuation_directory.revalidate()?;for helper in &helpers{helper.reconcile_revalidate()?;}
+    for held in ancestry.iter().chain(exec_ancestry.iter()).chain(consumed_ancestry.iter()).chain(continuation_ancestry.iter()){held.revalidate()?;}inventory.revalidate()
 }
 
 pub(super) fn reconcile_failed_no_effects_011(request:&Request,worker_sha:&str)->Result<String>{
@@ -587,6 +689,36 @@ pub(super) fn reconcile_failed_no_effects_011(request:&Request,worker_sha:&str)-
     let extras=RECONCILIATION_APPENDS.iter().copied().chain([FAILURE_TERMINAL]).collect::<Vec<_>>();let completed=ReconciliationInventory::capture(&context.state,&extras,0,0)?;validate_reconciled_inventory(&completed,request)?;
     original.revalidate_nodes()?;final_inventory.revalidate_nodes()?;context.revalidate()?;worker.reconcile_revalidate()?;worker_directory.revalidate()?;old_worker.reconcile_revalidate()?;for held in &worker_ancestry{held.revalidate()?;}
     Ok(format!("schema=opensteamer.microphone-v9-failure-reconciliation-outcome.v1\nnamespace={}\nnonce={}\nrequest_sha256={}\nauthority_sha256={}\noriginal_worker_sha256={}\nreconciler_worker_sha256={}\nterminal={}\nnormal_restarts=0\nrollback_restarts=0\noriginal_cause=UNKNOWN\noriginal_guardian_teardown=UNKNOWN\nguardian_coverage_proven=false\ndeployment_verified=false\npcm_verified=false\nreconciliation_record_sha256={}\nreason=FAILED_ATTEMPT_ONLY_NOT_DEPLOYMENT_AUTHORITY\n",FAILED_011_NAMESPACE,FAILED_011_NONCE,FAILED_011_REQUEST,FAILED_011_AUTHORITY,FAILED_011_WORKER,worker_sha,FAILURE_TERMINAL,sha256(&bytes)))
+}
+pub(super) fn reconcile_failed_no_effects_011_continuation_001(request:&Request,worker_sha:&str)->Result<String>{
+    if !os::OwnedChild::root_identity()||!hex(worker_sha,64)||[FAILED_011_WORKER,CONSUMED_011_RECONCILER].contains(&worker_sha)||env::current_exe().map_err(|_|"continuation image path unavailable")?!=Path::new(CONTINUE_011_WORKER){return Err("exact 011 continuation root image role/pin differs".into());}
+    let worker_ancestry=sealed_fs::root_ancestry_path(Path::new(CONTINUE_011_WORKER).parent().unwrap(),0o711)?;let worker_directory=GateDirectory::capture(Path::new(CONTINUE_011_WORKER).parent().unwrap())?;let worker=os::SealedExecutable::open(Path::new(CONTINUE_011_WORKER),worker_sha)?;
+    let consumed_ancestry=sealed_fs::root_ancestry_path(Path::new(RECONCILE_011_WORKER).parent().unwrap(),0o711)?;let consumed_directory=GateDirectory::capture(Path::new(RECONCILE_011_WORKER).parent().unwrap())?;let consumed=os::SealedExecutable::open(Path::new(RECONCILE_011_WORKER),CONSUMED_011_RECONCILER)?;
+    worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;let(mut context,original,old_worker)=RootContext::open_failed_011_continuation(request)?;old_worker.reconcile_revalidate()?;
+    let old_owner=strict_flat(&original.bytes("child-active-001")?,CHILD_FENCE_FIELDS,8192)?;let old_pid=positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"original owner PID overflow")?;
+    let event=original.nodes.get("guardian-1.events").ok_or("original guardian event descriptor missing")?;
+    let absence=||->Result<()>{failed_011_absence_roles(&[old_pid,61441],&old_worker,[&context.idle,&context.probe,&context.guardian],Some(&consumed),None)?;let output=inspector_capture("failed_011_event_owner",os::OwnedChild::failed_011_event_owners()?,65536)?;failure_event_owner(&output,std::process::id(),event.file.as_raw_fd(),&event.identity,&event.path)?;event.revalidate()};
+    // Fresh owned003 covers only new passive observations. Neither002 nor the
+    // orphan guardian event is rewritten or retrospectively called clean.
+    absence()?;let before=context.gate("--candidate-present")?;context.record("continuation-001-host-before.txt",&before.bytes)?;
+    let core=context.core_record("core-baseline.txt")?.ok_or("original CoreAudio baseline missing")?;let host=context.driver_host_record("driver-host-baseline.txt")?.ok_or("original driver host baseline missing")?;
+    let images=context.image_paths()?;let prior=context.prior_identity()?;
+    if read_core()?!=core||context.bound_driver_host(&core)?!=(host.clone(),LoadedDriver::Prior){return Err("continuation does not match original loaded V8/CoreAudio/helper generation".into());}
+    original.revalidate_nodes()?;old_worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;absence()?;
+    let after=context.gate("--candidate-present")?;context.record("continuation-001-host-after.txt",&after.bytes)?;
+    if read_core()?!=core||context.bound_driver_host(&core)?!=(host,LoadedDriver::Prior)||context.image_paths()?!=images||context.prior_identity()?!=prior{return Err("continuation loaded/installed original V8 generation changed".into());}
+    absence()?;context.revalidate()?;original.revalidate_nodes()?;old_worker.reconcile_revalidate()?;worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;worker_directory.revalidate()?;consumed_directory.revalidate()?;for held in worker_ancestry.iter().chain(consumed_ancestry.iter()){held.revalidate()?;}
+    let authority=Authority::load(request,&context.state,&context.executables)?;if authority.fields!=context.authority.fields||authority.candidate_root!=context.authority.candidate_root||authority.candidate_executable!=context.authority.candidate_executable{return Err("original sealed candidate/authority changed during continuation".into());}
+    context.close_child_fence()?;
+    let extras=HISTORICAL_011_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();let final_inventory=ReconciliationInventory::capture_continuation(&context.state,&extras,0,0)?;final_inventory.verify_original(request)?;historical_011_containment(&final_inventory,request)?;
+    if final_inventory.continuation_digest(ContinuationProjection::Input)!=original.continuation_digest(ContinuationProjection::Input){return Err("continuation changed immutable original19/historical002 input inventory".into());}
+    let observed:u64=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"continuation clock unavailable")?.as_millis().try_into().map_err(|_|"continuation clock overflow")?;
+    let bytes=continuation_reconciliation_record(request,worker_sha,&original,&final_inventory,observed)?;validate_continuation_evidence(&final_inventory,request,&bytes)?;
+    final_inventory.revalidate()?;original.revalidate_nodes()?;worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;worker_directory.revalidate()?;consumed_directory.revalidate()?;
+    context.record(CONTINUATION_TERMINAL,&bytes)?;
+    let extras=extras.into_iter().chain([CONTINUATION_TERMINAL]).collect::<Vec<_>>();let completed=ReconciliationInventory::capture_continuation(&context.state,&extras,0,0)?;validate_continuation_evidence(&completed,request,&completed.bytes(CONTINUATION_TERMINAL)?)?;
+    original.revalidate_nodes()?;final_inventory.revalidate_nodes()?;context.revalidate()?;old_worker.reconcile_revalidate()?;worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;worker_directory.revalidate()?;consumed_directory.revalidate()?;for held in worker_ancestry.iter().chain(consumed_ancestry.iter()){held.revalidate()?;}
+    Ok(format!("schema=opensteamer.microphone-v9-failure-reconciliation-outcome.v2\nnamespace={}\nnonce={}\nrequest_sha256={}\nauthority_sha256={}\noriginal_worker_sha256={}\nconsumed_reconciler_worker_sha256={}\nreconciler_worker_sha256={}\nhistorical_child_fence_sha256={}\nterminal={}\nnormal_restarts=0\nrollback_restarts=0\noriginal_cause=UNKNOWN\noriginal_guardian_teardown=UNKNOWN\nguardian_coverage_proven=false\ndeployment_verified=false\npcm_verified=false\nreconciliation_record_sha256={}\nreason=FAILED_ATTEMPT_ONLY_NOT_DEPLOYMENT_AUTHORITY\n",FAILED_011_NAMESPACE,FAILED_011_NONCE,FAILED_011_REQUEST,FAILED_011_AUTHORITY,FAILED_011_WORKER,CONSUMED_011_RECONCILER,worker_sha,HISTORICAL_011_FENCE,CONTINUATION_TERMINAL,sha256(&bytes)))
 }
 
 pub(super) struct RootContext{
@@ -645,13 +777,21 @@ impl HostGate{
 }
 impl RootContext{
     fn open_failed_011(request:&Request)->Result<(Self,ReconciliationInventory,os::SealedExecutable)>{
+        Self::open_failed_011_exact(request,false)
+    }
+    fn open_failed_011_continuation(request:&Request)->Result<(Self,ReconciliationInventory,os::SealedExecutable)>{
+        Self::open_failed_011_exact(request,true)
+    }
+    fn open_failed_011_exact(request:&Request,continuation:bool)->Result<(Self,ReconciliationInventory,os::SealedExecutable)>{
         // A separate read-only constructor: never adopt the old worker, call
         // normal admission/resume, repair an orphan slot or create a namespace.
         failed_011_request(request)?;let state=PathBuf::from(request.root_path());let executables=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);
         let state_ancestry=sealed_fs::root_ancestry(request)?;let exec_ancestry=sealed_fs::root_ancestry_path(&executables,0o711)?;let hal_ancestry=sealed_fs::root_ancestry_path(Path::new("/Library/Audio/Plug-Ins/HAL"),0o755)?;
         let lock_parent=sealed_fs::HeldDirectory::capture(Path::new(ROOT_TRANSACTIONS),0,0,0o700)?;let controller_lock=sealed_fs::RootLock::acquire(&lock_parent)?;
-        let original=ReconciliationInventory::capture(&state,&[],0,0)?;original.verify_original(request)?;
-        if next_child_fence(&state,request)?!=2{return Err("reconciliation accepts only original finalized child fence 001".into());}
+        let original=if continuation{ReconciliationInventory::capture_continuation(&state,HISTORICAL_011_APPENDS,0,0)?}else{ReconciliationInventory::capture(&state,&[],0,0)?};original.verify_original(request)?;
+        if continuation{historical_011_containment(&original,request)?;}
+        let child_sequence=if continuation{3}else{2};
+        if next_child_fence(&state,request)?!=child_sequence{return Err(if continuation{"reconciliation exact original/historical finalized child sequence differs"}else{"reconciliation accepts only original finalized child fence 001"}.into());}
         for(sequence,name)in [(1,"gate-metadata-001.txt"),(2,"gate-metadata-002.txt")]{validate_gate_metadata(&original.bytes(name)?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",sequence,Some("candidate-present"))?;}
         let authority=Authority::load(request,&state,&executables)?;let old_worker=os::SealedExecutable::open(&executables.join("worker"),FAILED_011_WORKER)?;
         let idle=os::SealedExecutable::open(&executables.join("idle-helper"),request.get("idle_helper_sha256"))?;let probe=os::SealedExecutable::open(&executables.join("both-order-probe"),request.get("both_order_probe_sha256"))?;let guardian=os::SealedExecutable::open(&executables.join("route-guardian"),request.get("route_guardian_sha256"))?;
@@ -659,8 +799,8 @@ impl RootContext{
         let log_file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open("/var/tmp/opensteamer-worldwide-host.log").map_err(|_|"reconciliation fixed session log descriptor unavailable")?;let stat=log_file.metadata().map_err(|_|"reconciliation session log metadata unavailable")?;
         if !stat.is_file()||stat.uid()!=501||stat.nlink()!=1{return Err("reconciliation session log owner/type/links differ".into());}
         original.revalidate()?;controller_lock.revalidate()?;
-        let child_sequence=2;let child_fence=child_fence_bytes(request,child_sequence)?;
-        state_ancestry.last().unwrap().write_record("child-active-002",&child_fence,0o400)?;
+        let child_fence=child_fence_bytes(request,child_sequence)?;
+        state_ancestry.last().unwrap().write_record(&format!("child-active-{child_sequence:03}"),&child_fence,0o400)?;
         let context=Self{request:request.clone(),state,executables,state_ancestry,exec_ancestry,hal_ancestry,authority,idle,probe,guardian,request_file,log_file,controller_lock,child_fence,child_sequence,child_clean:false};
         context.revalidate()?;original.revalidate_nodes()?;Ok((context,original,old_worker))
     }
@@ -1700,7 +1840,7 @@ impl Backend for OsBackend{
     fn remove_reconciliation_fixture(path:&Path){
         // Exact exclusively-created fixture paths, never production or evidence.
         for(_,_,relative)in NODES.iter().rev().filter(|(_,_,relative)|*relative!="."){let node=path.join("candidate.driver").join(relative);if node.is_dir(){fs::remove_dir(node).unwrap();}else{fs::remove_file(node).unwrap();}}
-        fs::remove_file(path.join("journal/journal-001")).unwrap();for name in RECONCILIATION_APPENDS.iter().copied().chain([FAILURE_TERMINAL]){if path.join(name).exists(){fs::remove_file(path.join(name)).unwrap();}}
+        fs::remove_file(path.join("journal/journal-001")).unwrap();for name in RECONCILIATION_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().chain([FAILURE_TERMINAL,CONTINUATION_TERMINAL]){if path.join(name).exists(){fs::remove_file(path.join(name)).unwrap();}}
         for name in FAILED_011_TOP{let node=path.join(name);if node.is_dir(){fs::remove_dir(node).unwrap();}else{fs::remove_file(node).unwrap();}}fs::remove_dir(path).unwrap();
     }
     #[test]fn failure_reconciliation_inventory_holds_every_original_node_across_only_fixed_appends(){
@@ -1741,6 +1881,67 @@ impl Backend for OsBackend{
     }
     fn reconciliation_crosslink_fixture_fields(inventory:&ReconciliationInventory,request:&Request)->BTreeMap<String,String>{
         let bytes=failure_reconciliation_record(request,&"b".repeat(64),inventory,inventory,1_790_000_000_300).unwrap();failure_terminal_validate(&bytes,request).unwrap()
+    }
+    fn continuation_fixture_fence(request:&Request,sequence:usize,owner:u32)->Vec<u8>{
+        String::from_utf8(child_fence_bytes(request,sequence).unwrap()).unwrap().replace(&format!("owner_pid={}",std::process::id()),&format!("owner_pid={owner}")).into_bytes()
+    }
+    fn continuation_input_fixture(label:&str)->(PathBuf,sealed_fs::HeldDirectory,u32,u32,Request){
+        let(path,held,owner,group)=reconciliation_inventory_fixture(label);let request=failed_011_fixture_request();
+        let original=continuation_fixture_fence(&request,1,4982);assert_eq!(sha256(&original),FAILED_011_PINS.iter().find(|(name,_)|*name=="child-active-001").unwrap().1);
+        for name in ["child-active-001","child-clean-001"]{replace_reconciliation_fixture_record(&path,&held,name,&original);}
+        let historical=continuation_fixture_fence(&request,2,61441);assert_eq!(sha256(&historical),HISTORICAL_011_FENCE);for name in HISTORICAL_011_APPENDS{held.write_record(name,&historical,0o400).unwrap();}
+        let(_,host)=gate_fixture("candidate-present");let mut fields=strict_flat(&host,GATE_FIELDS,MAX_REQUEST).unwrap();fields.insert("namespace".into(),FAILED_011_NAMESPACE.into());fields.insert("nonce".into(),FAILED_011_NONCE.into());fields.insert("observed_at_unix_ms".into(),"1790000000000".into());let baseline=GATE_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>().into_bytes();replace_reconciliation_fixture_record(&path,&held,"host-baseline.txt",&baseline);
+        (path,held,owner,group,request)
+    }
+    fn append_continuation_fixture(path:&Path,held:&sealed_fs::HeldDirectory,request:&Request){
+        let(_,host)=gate_fixture("candidate-present");let mut fields=strict_flat(&host,GATE_FIELDS,MAX_REQUEST).unwrap();fields.insert("namespace".into(),request.get("namespace").into());fields.insert("nonce".into(),request.get("nonce").into());
+        for(offset,name)in [(100,"continuation-001-host-before.txt"),(200,"continuation-001-host-after.txt")]{fields.insert("observed_at_unix_ms".into(),(1_790_000_000_000u64+offset).to_string());let bytes=GATE_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>().into_bytes();replace_reconciliation_fixture_record(path,held,name,&bytes);}
+        let fence=continuation_fixture_fence(request,3,70505);for name in ["child-active-003","child-clean-003"]{held.write_record(name,&fence,0o400).unwrap();}
+        for(sequence,offset)in [(3,50),(4,150)]{let bytes=gate_metadata_bytes(request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87","candidate-present",1_790_000_000_000+offset,sequence,&gate_metadata_identities()).unwrap();held.write_record(&format!("gate-metadata-{sequence:03}.txt"),&bytes,0o400).unwrap();}
+    }
+    fn continuation_fixture_fields(input:&ReconciliationInventory,final_inventory:&ReconciliationInventory,request:&Request)->BTreeMap<String,String>{
+        let bytes=continuation_reconciliation_record(request,&"b".repeat(64),input,final_inventory,1_790_000_000_300).unwrap();continuation_terminal_validate(&bytes,request).unwrap()
+    }
+    #[test]fn exact_continuation_input_pins_finalized002_and_never_replays_original_v1(){
+        let(path,held,owner,group,request)=continuation_input_fixture("continuation-input");let input=ReconciliationInventory::capture_continuation(&path,HISTORICAL_011_APPENDS,owner,group).unwrap();assert_eq!(input.nodes.len(),32);historical_011_containment(&input,&request).unwrap();
+        assert!(ReconciliationInventory::capture(&path,&[],owner,group).is_err());assert_eq!(next_child_fence_owned(&path,&request,owner,group).unwrap(),3);
+        let original=input.continuation_digest(ContinuationProjection::Original);let input_digest=input.continuation_digest(ContinuationProjection::Input);assert_ne!(original,input_digest);
+        for name in ["child-active-003","UNRESOLVED_CHILD",FAILURE_TERMINAL,"continuation-001-host-before.txt"]{held.write_record(name,b"unapproved partial state",0o400).unwrap();assert!(ReconciliationInventory::capture_continuation(&path,HISTORICAL_011_APPENDS,owner,group).is_err());fs::remove_file(path.join(name)).unwrap();}
+        let historical=input.bytes("child-clean-002").unwrap();drop(input);
+        for mutant in [continuation_fixture_fence(&request,2,61442),continuation_fixture_fence(&request,3,61441),b"unknown finalized fence".to_vec()]{replace_reconciliation_fixture_record(&path,&held,"child-clean-002",&mutant);let bad=ReconciliationInventory::capture_continuation(&path,HISTORICAL_011_APPENDS,owner,group).unwrap();assert!(historical_011_containment(&bad,&request).is_err());drop(bad);}
+        replace_reconciliation_fixture_record(&path,&held,"child-clean-002",&historical);fs::remove_file(path.join("child-clean-002")).unwrap();assert!(ReconciliationInventory::capture_continuation(&path,HISTORICAL_011_APPENDS,owner,group).is_err());held.write_record("child-clean-002",&historical,0o400).unwrap();drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn continuation_terminal_has_closed_v2_schema_and_never_relabels_consumed_worker(){
+        let(path,held,owner,group,request)=continuation_input_fixture("continuation-schema");
+        let input=ReconciliationInventory::capture_continuation(&path,HISTORICAL_011_APPENDS,owner,group).unwrap();append_continuation_fixture(&path,&held,&request);
+        let extras=HISTORICAL_011_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();let final_inventory=ReconciliationInventory::capture_continuation(&path,&extras,owner,group).unwrap();let fields=continuation_fixture_fields(&input,&final_inventory,&request);let text=CONTINUATION_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>();assert_eq!(fields.len(),29);
+        input.revalidate_nodes().unwrap();assert_eq!(input.continuation_digest(ContinuationProjection::Input),final_inventory.continuation_digest(ContinuationProjection::Input));validate_continuation_crosslinks(&final_inventory,&request,&fields).unwrap();
+        for key in CONTINUATION_TERMINAL_FIELDS{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();for mutant in [text.replace(&format!("{line}\n"),""),text.clone()+&format!("{line}\n"),text.replace(line,&format!("{key}=wrong"))]{assert!(continuation_terminal_validate(mutant.as_bytes(),&request).is_err(),"accepted {key}");}}
+        for(key,value)in [("reconciler_worker_sha256",CONSUMED_011_RECONCILER),("reconciler_worker_sha256",FAILED_011_WORKER),("deployment_verified","true"),("guardian_coverage_proven","true"),("original_guardian_teardown","CLEAN"),("normal_restarts","1")]{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();assert!(continuation_terminal_validate(text.replace(line,&format!("{key}={value}")).as_bytes(),&request).is_err());}
+        assert!(failure_terminal_validate(text.as_bytes(),&request).is_err());assert!(continuation_terminal_validate(&failure_terminal_fixture(&request),&request).is_err());assert!(ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).is_err());assert!(final_inventory.verify_original(&request).is_err(),"synthetic original records are never original011 authority");
+        drop(final_inventory);drop(input);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn continuation_consumer_crosslinks_all_projections_fences_and_immutable_observations(){
+        let(path,held,owner,group,request)=continuation_input_fixture("continuation-crosslinks");append_continuation_fixture(&path,&held,&request);
+        let extras=HISTORICAL_011_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();let inventory=ReconciliationInventory::capture_continuation(&path,&extras,owner,group).unwrap();let fields=continuation_fixture_fields(&inventory,&inventory,&request);validate_continuation_crosslinks(&inventory,&request,&fields).unwrap();assert_eq!(inventory.nodes.len(),38);
+        for key in ["original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","original_child_fence_sha256","historical_child_fence_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256"]{let mut mutant=fields.clone();mutant.insert(key.into(),"0".repeat(64));assert!(validate_continuation_crosslinks(&inventory,&request,&mutant).is_err(),"accepted {key}");}
+        assert_ne!(fields["original_inventory_sha256"],fields["input_inventory_sha256"]);assert_ne!(fields["input_inventory_sha256"],fields["final_inventory_sha256"]);assert!(inventory.verify_original(&request).is_err());
+        let terminal=CONTINUATION_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>();held.write_record(CONTINUATION_TERMINAL,terminal.as_bytes(),0o400).unwrap();assert!(held.write_record(CONTINUATION_TERMINAL,b"overwrite",0o400).is_err());let full=extras.iter().copied().chain([CONTINUATION_TERMINAL]).collect::<Vec<_>>();let completed=ReconciliationInventory::capture_continuation(&path,&full,owner,group).unwrap();assert_eq!(completed.continuation_digest(ContinuationProjection::Final),fields["final_inventory_sha256"]);assert!(validate_continuation_evidence(&completed,&request,terminal.as_bytes()).is_err(),"original pin validation remains first and unconditional");drop(completed);fs::remove_file(path.join(CONTINUATION_TERMINAL)).unwrap();
+        fs::remove_file(path.join("child-clean-003")).unwrap();assert!(validate_continuation_crosslinks(&inventory,&request,&fields).is_err());drop(inventory);
+        held.write_record("child-clean-003",&continuation_fixture_fence(&request,3,70506),0o400).unwrap();let bad=ReconciliationInventory::capture_continuation(&path,&extras,owner,group).unwrap();let fields=continuation_fixture_fields(&bad,&bad,&request);assert!(validate_continuation_crosslinks(&bad,&request,&fields).is_err());drop(bad);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn continuation_consumer_rejects_structured_host_display_and_metadata_mutants(){
+        let(path,held,owner,group,request)=continuation_input_fixture("continuation-receipts");append_continuation_fixture(&path,&held,&request);let extras=HISTORICAL_011_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();
+        for name in ["gate-metadata-003.txt","gate-metadata-004.txt","continuation-001-host-before.txt","continuation-001-host-after.txt"]{
+            let bytes=fs::read(path.join(name)).unwrap();let text=String::from_utf8(bytes.clone()).unwrap();let metadata=name.starts_with("gate-metadata");
+            let keys=if metadata{vec![("sequence","2".into()),("request_sha256","0".repeat(64)),("worker_sha256",CONSUMED_011_RECONCILER.into()),("observed_at_unix_ms","1790000000201".into())]}else{vec![("session_log_inode","3".into()),("manager_generation","1".into()),("host_display_identity_sha256","0".repeat(64)),("input_uid","unexpected".into()),("observed_at_unix_ms","1789999999999".into())]};
+            for(key,value)in keys{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();let mutant=text.replace(line,&format!("{key}={value}"));assert_ne!(mutant,text);replace_reconciliation_fixture_record(&path,&held,name,mutant.as_bytes());let inventory=ReconciliationInventory::capture_continuation(&path,&extras,owner,group).unwrap();let fields=continuation_fixture_fields(&inventory,&inventory,&request);assert!(validate_continuation_crosslinks(&inventory,&request,&fields).is_err(),"accepted {name} {key}");drop(inventory);}
+            replace_reconciliation_fixture_record(&path,&held,name,&bytes);
+        }
+        drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn continuation_absence_requires_exact_owner_and_held_image_role_counts(){
+        for owners in 0..=4{for consumed in [false,true]{for continuation in [false,true]{let expected=matches!((owners,consumed,continuation),(1,false,false)|(2,true,false)|(3,true,true));assert_eq!(failed_011_absence_role_count(owners,consumed,continuation).is_ok(),expected);}}}
     }
     #[test]fn failure_reconciliation_consumer_rejects_valid_hex_crosslink_and_finalized_containment_mutants(){
         let(path,held,owner,group,request)=reconciliation_crosslink_fixture("reconcile-crosslinks");let inventory=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();let fields=reconciliation_crosslink_fixture_fields(&inventory,&request);validate_reconciliation_crosslinks(&inventory,&request,&fields).unwrap();
