@@ -915,6 +915,17 @@ fn sha256(input: &[u8]) -> String {
 
 fn cli(arguments: &[String]) -> i32 {
     #[cfg(target_os="macos")]
+    if arguments.first().map(String::as_str)==Some("--reconcile-failed-no-effects-011"){
+        if arguments.len()!=4||!os::OwnedChild::root_identity(){eprintln!("failure-only reconciliation requires exact four arguments and real/effective root identity");return 64;}
+        let result=(||->Result<String>{
+            if arguments[1]!="/Library/Application Support/opensteamer/microphone-v9-transactions/driver-microphone-v9-151f574a1c3c354b/request.txt"||arguments[2]!="18c655bff4dd81a3fd9435aae9940fbc15fd92d6b6975a5fdb4245e3e7507178"||!hex(&arguments[3],64){return Err("failure-only reconciliation original request/image pins differ".into());}
+            let bytes=read_pinned(Path::new(&arguments[1]),&arguments[2],0,0o400,MAX_REQUEST)?;let request=Request::parse(&bytes,&arguments[2])?;
+            os::begin_supervision(180)?;
+            backend::reconcile_failed_no_effects_011(&request,&arguments[3])
+        })();
+        return match result{Ok(output)=>{print!("{output}");0},Err(error)=>{eprintln!("failure-only reconciliation unresolved: {error}");78}};
+    }
+    #[cfg(target_os="macos")]
     if arguments.first().map(String::as_str)==Some("--seal-authorized-v9-inputs"){
         if arguments.len()!=6||!os::OwnedChild::root_identity(){eprintln!("sealed v9 staging requires exact six arguments and real/effective root identity");return 64;}
         // Source activation is not runtime consent: the exact root bootstrap,
@@ -1003,6 +1014,13 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(target_os="macos")]
+    #[test]fn failure_only_reconciliation_cli_never_admits_original_uid_or_normal_modes(){
+        assert!(!os::OwnedChild::root_identity(),"offline reconciliation CLI fixture must be original UID");
+        let args=["--reconcile-failed-no-effects-011","/Library/Application Support/opensteamer/microphone-v9-transactions/driver-microphone-v9-151f574a1c3c354b/request.txt","18c655bff4dd81a3fd9435aae9940fbc15fd92d6b6975a5fdb4245e3e7507178","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"].map(str::to_string);
+        assert_eq!(cli(&args),64);assert_eq!(cli(&args[..3]),64);assert_eq!(cli(&["--reconcile-failed-no-effects-other".into()]),64);
+    }
 
     #[test]fn staging_manifest_role_is_exact_and_not_the_artifact_role(){
         assert!(guard_build_proof_path("/private/tmp/beluga-microphone-v9-guards.abCD12/build-proof.json"));

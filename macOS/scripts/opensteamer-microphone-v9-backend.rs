@@ -16,6 +16,24 @@ const DRIVER_HOST_BUNDLE:&str="/System/Library/Frameworks/CoreAudio.framework/Ve
 const DRIVER_HOST_EXE:&str="/System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc/Contents/MacOS/com.apple.audio.Core-Audio-Driver-Service.helper";
 const DRIVER_HOST_DISPLAY:&str="Core Audio Driver (OpensteamerVirtualMicrophone.driver)";
 const DRIVER_HOST_LSOF:&str="Core Audio Driver (OpensteamerV";
+pub(super) const RECONCILE_011_WORKER:&str="/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker";
+const FAILED_011_NAMESPACE:&str="driver-microphone-v9-151f574a1c3c354b";
+const FAILED_011_NONCE:&str="0c6553bf7c2322bc87fc0b1580b739e2db7820fd8405ad4b8c9e33f6d0f8f0d5";
+const FAILED_011_REQUEST:&str="18c655bff4dd81a3fd9435aae9940fbc15fd92d6b6975a5fdb4245e3e7507178";
+const FAILED_011_AUTHORITY:&str="afebc8d84640a8ac3155a70f51d8bc06c24b4f40ec0488ad2998cfa4bba560c7";
+const FAILED_011_WORKER:&str="d91091c850d22ec315cc08ca4add458efb5dfb3e29b26080ba0665dea9af5613";
+const FAILURE_TERMINAL:&str="FAILED_NO_EFFECTS_RECONCILED";
+const FAILED_011_TOP:&[&str]=&["SEALING_COMPLETE","SEALING_INCOMPLETE","authority.txt","build-manifest.json","candidate.driver","child-active-001","child-clean-001","core-baseline.txt","driver-host-baseline.txt","failed","gate-metadata-001.txt","gate-metadata-002.txt","guardian-1.events","host-baseline.txt","journal","prior","probes","recovery-refusal.txt","request.txt"];
+const RECONCILIATION_APPENDS:&[&str]=&["child-active-002","child-clean-002","gate-metadata-003.txt","gate-metadata-004.txt","reconciliation-host-before.txt","reconciliation-host-after.txt"];
+const FAILED_011_PINS:&[(&str,&str)]=&[
+    ("request.txt",FAILED_011_REQUEST),("authority.txt",FAILED_011_AUTHORITY),("build-manifest.json","ee5509a4aee0ecf18934091124b5ab499ddc7902e3e5f5b17eb1baa76648059d"),
+    ("SEALING_COMPLETE","4b5bfcaa5e441d1067c86e9b176b00e937cd34393e2f6ba90ccc816a547d43d9"),("SEALING_INCOMPLETE","4b5bfcaa5e441d1067c86e9b176b00e937cd34393e2f6ba90ccc816a547d43d9"),
+    ("child-active-001","dfda4cfedfba2e7b06a291e2e21c07e79a542fa2be75e880ddcb98352c76cc92"),("child-clean-001","dfda4cfedfba2e7b06a291e2e21c07e79a542fa2be75e880ddcb98352c76cc92"),
+    ("core-baseline.txt","3a201dc331b2a2f4b9daaa152739aaa8f481baa426489517c3b893ed40d87e4a"),("driver-host-baseline.txt","c073cf4c8795f04736241a197a860f645d6360057b7c4c507dd0bfcb962a2128"),
+    ("host-baseline.txt","fa1d6bf9a46ffe1bcac28b48918b1c7049bfeeeade02f4e990addcee7a3cc91b"),("gate-metadata-001.txt","5c262d8143c1fc958fd4c7524387b5486c88107a72bf427b95eae1420d6afdb3"),
+    ("gate-metadata-002.txt","176132c4a84ee3f5d932f0adc1f832942d3528893f595f9ee73aadb5d149e720"),("recovery-refusal.txt","ccd9cd0d1eca61d6195aa829c47da5941574778a6cb27ce2fc174f7ad0e7ab6b"),
+    ("guardian-1.events","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),("journal/journal-001","514a6dfc6fdd8e6cea34a3a8fea3ecc4e9ea3d6374fe985d93b5eadff9e55fec")];
+const FAILURE_TERMINAL_FIELDS:&[&str]=&["schema","terminal","namespace","nonce","request_sha256","authority_sha256","original_worker_sha256","reconciler_worker_sha256","original_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256","observed_at_unix_ms","normal_restarts","rollback_restarts","original_cause","original_guardian_teardown","guardian_coverage_proven","deployment_verified","pcm_verified"];
 const HOST_EXE:&str="/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer";
 const HOST_FRAMEWORK:&str="/Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC";
 const HOST_INFO:&str="/Applications/opensteamer Host.app/Contents/Info.plist";
@@ -206,7 +224,10 @@ fn cross_namespace_clear(root:&Path,current:&Request,owner:u32,group:u32)->Resul
         sequences.sort();if sequences!=(1..=sequences.len()).collect::<Vec<_>>(){return Err("other journal sequence gap refused".into());}
         if !sequences.is_empty(){
             let last=journal.load_journal(&prior,sequences.len())?.last().ok_or("other namespace journal lacks terminal")?;
-            if !matches!(last,State::Committed|State::RolledBack){return Err("another namespace has an incomplete/unverified transaction outcome".into());}
+            if !matches!(last,State::Committed|State::RolledBack){
+                if owner!=0||group!=0||name!=FAILED_011_NAMESPACE||sequences.len()!=1||last!=State::Prepared{return Err("another namespace has an incomplete/unverified transaction outcome".into());}
+                failed_011_terminal_clear(&entry.path(),&prior)?;
+            }
         }
         namespace.revalidate()?;journal.revalidate()?;
     }
@@ -349,6 +370,193 @@ fn load_pre_effect_empty_journal(request:&Request)->Result<Journal>{
     empty_pre_effect_journal(&held,&root,request)
 }
 
+fn failed_011_request(request:&Request)->Result<()>{
+    if request.get("namespace")!=FAILED_011_NAMESPACE||request.get("nonce")!=FAILED_011_NONCE||request.sha256!=FAILED_011_REQUEST||request.get("worker_sha256")!=FAILED_011_WORKER{return Err("failure reconciliation accepts only the exact consumed 011 request".into());}Ok(())
+}
+fn exact_reconciliation_names(path:&Path,expected:&[String])->Result<()>{
+    let mut names=Vec::new();for(count,entry)in fs::read_dir(path).map_err(|_|"failure reconciliation directory inventory unavailable")?.enumerate(){
+        if count>=64{return Err("failure reconciliation directory inventory exceeds bound".into());}
+        names.push(entry.map_err(|_|"failure reconciliation directory entry unavailable")?.file_name().into_string().map_err(|_|"failure reconciliation name encoding differs")?);
+    }let mut expected=expected.to_vec();names.sort();expected.sort();if names!=expected{return Err("failure reconciliation exact directory roles differ; no pending/unknown adoption".into());}Ok(())
+}
+struct ReconciliationNode{file:File,path:PathBuf,identity:Identity,digest:String,directory:bool}
+impl ReconciliationNode{
+    fn capture(path:&Path,owner:u32,group:u32,mode:u32,directory:bool)->Result<Self>{
+        if fs::canonicalize(path).map_err(|_|"failure reconciliation canonical node unavailable")?!=path{return Err("failure reconciliation node alias refused".into());}
+        let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(|_|"failure reconciliation nofollow node unavailable")?;
+        let metadata=file.metadata().map_err(|_|"failure reconciliation node metadata unavailable")?;
+        if metadata.uid()!=owner||metadata.gid()!=group||metadata.mode()&0o7777!=mode||metadata.is_dir()!=directory||(!directory&&(!metadata.is_file()||metadata.nlink()!=1||metadata.len()>16*1024*1024)){return Err("failure reconciliation node owner/type/mode/links/extent differs".into());}
+        let mut node=Self{file,path:path.to_path_buf(),identity:Identity::of(&metadata),digest:String::new(),directory};
+        if !directory{node.digest=sha256(&node.bytes()?);}node.revalidate()?;Ok(node)
+    }
+    fn bytes(&self)->Result<Vec<u8>>{
+        if self.directory||self.identity.size>16*1024*1024{return Err("failure reconciliation file role/extent differs".into());}
+        let mut bytes=vec![0u8;self.identity.size as usize+1];let mut count=0;
+        while count<bytes.len(){let read=self.file.read_at(&mut bytes[count..],count as u64).map_err(|_|"failure reconciliation bounded descriptor read failed")?;if read==0{break;}count+=read;}
+        if count as u64!=self.identity.size{return Err("failure reconciliation descriptor extent changed".into());}bytes.truncate(count);Ok(bytes)
+    }
+    fn revalidate(&self)->Result<()>{
+        if Identity::of(&self.file.metadata().map_err(|_|"failure reconciliation held stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"failure reconciliation path disappeared")?)!=self.identity{return Err("failure reconciliation full node identity changed".into());}
+        sealed_fs::clean_gate_metadata(&self.file)?;
+        if !self.directory&&sha256(&self.bytes()?)!=self.digest{return Err("failure reconciliation immutable file bytes changed".into());}
+        if Identity::of(&self.file.metadata().map_err(|_|"failure reconciliation after-stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"failure reconciliation path disappeared after read")?)!=self.identity{return Err("failure reconciliation node changed during inspection".into());}Ok(())
+    }
+}
+struct ReconciliationInventory{state:PathBuf,nodes:BTreeMap<String,ReconciliationNode>,extras:Vec<String>}
+fn reconciliation_layout(state:&Path)->Result<()>{
+    for name in ["prior","probes","failed"]{exact_reconciliation_names(&state.join(name),&[])?;}exact_reconciliation_names(&state.join("journal"),&["journal-001".into()])?;
+    for(_,_,relative)in NODES.iter().filter(|(kind,_,_)|*kind=="Directory"){
+        let directory=if *relative=="."{state.join("candidate.driver")}else{state.join("candidate.driver").join(relative)};
+        let children=NODES.iter().filter_map(|(_,_,name)|{if *name=="."{return None;}let path=Path::new(name);let parent=path.parent()?.to_str()?;let parent=if parent.is_empty(){"."}else{parent};(parent==*relative).then(||path.file_name().unwrap().to_str().unwrap().to_string())}).collect::<Vec<_>>();exact_reconciliation_names(&directory,&children)?;
+    }Ok(())
+}
+fn prepared_only_reconciliation_journal(bytes:&[u8],request:&Request)->Result<()>{
+    let journal=Journal::parse(bytes,request)?;if journal.records.len()!=1||journal.last()!=Some(State::Prepared){return Err("failure reconciliation requires only the original PREPARED journal".into());}Ok(())
+}
+impl ReconciliationInventory{
+    fn capture(state:&Path,extras:&[&str],owner:u32,group:u32)->Result<Self>{
+        if extras.iter().any(|name|!RECONCILIATION_APPENDS.contains(name)&&*name!=FAILURE_TERMINAL){return Err("failure reconciliation append role refused".into());}
+        let top=FAILED_011_TOP.iter().chain(extras).map(|name|name.to_string()).collect::<Vec<_>>();exact_reconciliation_names(state,&top)?;
+        reconciliation_layout(state)?;
+        let mut nodes=BTreeMap::new();
+        for name in &top{os::supervisor_check()?;let directory=["candidate.driver","journal","prior","probes","failed"].contains(&name.as_str());let mode=if name=="candidate.driver"{0o755}else if directory{0o700}else if name=="guardian-1.events"{0o600}else{0o400};nodes.insert(name.clone(),ReconciliationNode::capture(&state.join(name),owner,group,mode,directory)?);}
+        for(kind,mode,relative)in NODES.iter().filter(|(_,_,relative)|*relative!="."){let name=format!("candidate.driver/{relative}");nodes.insert(name.clone(),ReconciliationNode::capture(&state.join(&name),owner,group,*mode,*kind=="Directory")?);}
+        nodes.insert("journal/journal-001".into(),ReconciliationNode::capture(&state.join("journal/journal-001"),owner,group,0o400,false)?);
+        let inventory=Self{state:state.to_path_buf(),nodes,extras:extras.iter().map(|name|name.to_string()).collect()};inventory.revalidate()?;Ok(inventory)
+    }
+    fn revalidate(&self)->Result<()>{
+        let expected=FAILED_011_TOP.iter().map(|name|name.to_string()).chain(self.extras.clone()).collect::<Vec<_>>();exact_reconciliation_names(&self.state,&expected)?;
+        self.revalidate_nodes()
+    }
+    fn revalidate_nodes(&self)->Result<()>{
+        reconciliation_layout(&self.state)?;
+        for node in self.nodes.values(){os::supervisor_check()?;node.revalidate()?;}reconciliation_layout(&self.state)
+    }
+    fn digest(&self,original:bool)->String{
+        let bytes=self.nodes.iter().filter(|(name,_)|name.as_str()!=FAILURE_TERMINAL&&(!original||!RECONCILIATION_APPENDS.contains(&name.as_str()))).map(|(name,node)|format!("{name}\0{:?}\0{}\0",node.identity,node.digest)).collect::<String>();sha256(bytes.as_bytes())
+    }
+    fn bytes(&self,name:&str)->Result<Vec<u8>>{self.nodes.get(name).ok_or("failure reconciliation exact record missing")?.bytes()}
+    fn verify_original(&self,request:&Request)->Result<()>{
+        failed_011_request(request)?;
+        for(name,pin)in FAILED_011_PINS{if self.nodes.get(*name).ok_or("failure reconciliation original role missing")?.digest!=*pin{return Err(format!("failure reconciliation original {name} byte pin differs"));}}
+        prepared_only_reconciliation_journal(&self.bytes("journal/journal-001")?,request)?;
+        child_fence_validate(&self.bytes("child-active-001")?,request,1)?;
+        if self.bytes("child-active-001")?!=self.bytes("child-clean-001")?{return Err("failure reconciliation original child containment differs".into());}
+        self.revalidate()
+    }
+}
+
+fn failure_terminal_validate(bytes:&[u8],request:&Request)->Result<BTreeMap<String,String>>{
+    failed_011_request(request)?;let fields=strict_flat(bytes,FAILURE_TERMINAL_FIELDS,MAX_REQUEST)?;
+    for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v1"),("terminal",FAILURE_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{if fields[key]!=value{return Err("failure-only terminal identity/authority/unknown-cause policy differs".into());}}
+    for key in ["reconciler_worker_sha256","original_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256"]{if !hex(&fields[key],64){return Err("failure-only terminal digest role differs".into());}}positive(&fields["observed_at_unix_ms"])?;Ok(fields)
+}
+fn failure_host_gate(bytes:&[u8],request:&Request)->Result<HostGate>{
+    let gate=HostGate::validate_baseline(bytes,request)?;
+    for key in ["host_launchd_runs","host_executable_sha256","host_framework_sha256","host_info_plist_sha256","host_launch_plist_sha256","input_uid","output_uid","system_output_uid"]{if gate.fields[key]!=request.get(key){return Err("failure reconciliation historical host source/routes differ".into());}}
+    for(key,value)in [("host_present","true"),("readiness","true"),("display_headless","false")]{if gate.fields[key]!=value{return Err("failure reconciliation historical host admission differs".into());}}
+    let routes=sha256(format!("{}\0{}\0{}",request.get("input_uid"),request.get("output_uid"),request.get("system_output_uid")).as_bytes());
+    if gate.fields["routes_identity_sha256"]!=routes||!hex(&gate.fields["session_log_tail_sha256"],64){return Err("failure reconciliation historical route/tail digests differ".into());}
+    positive(&gate.fields["observed_at_unix_ms"])?;if gate.fields["manager_generation"]!="0"{positive(&gate.fields["manager_generation"])?;}
+    let reset=if gate.fields["session_log_reset_offset"]=="0"{0}else{positive(&gate.fields["session_log_reset_offset"])?};if reset>=positive(&gate.fields["session_log_size"])?{return Err("failure reconciliation historical session reset differs".into());}Ok(gate)
+}
+fn failure_event_owner(output:&os::Captured,pid:u32,fd:i32,identity:&Identity,path:&Path)->Result<()>{
+    if output.code!=0||!output.stderr.is_empty()||output.stdout.is_empty()||output.stdout.len()>65536||!output.stdout.ends_with(b"\0\n"){return Err(inspector_summary("failed_011_event_owner",output));}
+    let rows=output.stdout.split(|byte|*byte==b'\n').collect::<Vec<_>>();if rows.len()!=3||!rows[2].is_empty(){return Err("failed guardian event has other live owners or malformed rows".into());}
+    let parse=|row:&[u8],keys:&[u8]|->Result<BTreeMap<u8,String>>{
+        if !row.ends_with(&[0]){return Err("failed guardian event row lacks NUL framing".into());}let mut fields=BTreeMap::new();
+        for field in row[..row.len()-1].split(|byte|*byte==0){if field.len()<2||!keys.contains(&field[0]){return Err("failed guardian event unknown/empty field".into());}let value=std::str::from_utf8(&field[1..]).map_err(|_|"failed guardian event encoding differs")?;if value.bytes().any(|byte|byte<32||byte==127)||fields.insert(field[0],value.to_string()).is_some(){return Err("failed guardian event duplicate/control field".into());}}
+        if fields.len()!=keys.len(){return Err("failed guardian event field set differs".into());}Ok(fields)
+    };
+    if rows[0].first()!=Some(&b'p')||rows[1].first()!=Some(&b'f'){return Err("failed guardian event process/file ordering differs".into());}
+    let process=parse(rows[0],b"pc")?;let file=parse(rows[1],b"fDain")?;
+    if positive(&process[&b'p'])?!=pid as u64||process[&b'c'].len()>256||file[&b'f']!=fd.to_string()||file[&b'a']!="r"||file[&b'D']!=format!("0x{:x}",identity.device)||positive(&file[&b'i'])?!=identity.inode||file[&b'n']!=path.to_str().ok_or("failed event path encoding differs")?{return Err("failed guardian event is not exclusively this held read-only inspection descriptor".into());}Ok(())
+}
+fn failure_reconciliation_record(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<Vec<u8>>{
+    let mut fields=BTreeMap::new();
+    for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v1"),("terminal",FAILURE_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("reconciler_worker_sha256",worker_sha),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{fields.insert(key,value.to_string());}
+    fields.insert("original_inventory_sha256",original.digest(true));fields.insert("final_inventory_sha256",final_inventory.digest(false));fields.insert("observed_at_unix_ms",observed.to_string());
+    for(key,name)in [("reconciliation_child_fence_sha256","child-clean-002"),("host_before_sha256","reconciliation-host-before.txt"),("host_after_sha256","reconciliation-host-after.txt"),("core_generation_sha256","core-baseline.txt"),("driver_host_generation_sha256","driver-host-baseline.txt")]{fields.insert(key,sha256(&final_inventory.bytes(name)?));}
+    let bytes=FAILURE_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[key])).collect::<String>().into_bytes();failure_terminal_validate(&bytes,request)?;Ok(bytes)
+}
+fn validate_reconciliation_evidence(inventory:&ReconciliationInventory,request:&Request,bytes:&[u8])->Result<BTreeMap<String,String>>{
+    inventory.verify_original(request)?;let fields=failure_terminal_validate(bytes,request)?;
+    validate_reconciliation_crosslinks(inventory,request,&fields)?;Ok(fields)
+}
+fn validate_reconciliation_crosslinks(inventory:&ReconciliationInventory,request:&Request,fields:&BTreeMap<String,String>)->Result<()>{
+    // Production reaches this only after immutable original011 pins and the
+    // exact failure terminal schema. The private seam permits finite synthetic
+    // offline evidence mutants without pretending they are original authority.
+    inventory.revalidate()?;
+    if fields["original_inventory_sha256"]!=inventory.digest(true)||fields["final_inventory_sha256"]!=inventory.digest(false){return Err("reconciled immutable whole-inventory identities/bytes differ".into());}
+    child_fence_validate(&inventory.bytes("child-active-002")?,request,2)?;
+    if inventory.bytes("child-active-002")?!=inventory.bytes("child-clean-002")?||fields["reconciliation_child_fence_sha256"]!=sha256(&inventory.bytes("child-clean-002")?){return Err("reconciliation containment is not exactly finalized".into());}
+    let baseline=failure_host_gate(&inventory.bytes("host-baseline.txt")?,request)?;
+    for(key,name)in [("host_before_sha256","reconciliation-host-before.txt"),("host_after_sha256","reconciliation-host-after.txt"),("core_generation_sha256","core-baseline.txt"),("driver_host_generation_sha256","driver-host-baseline.txt")]{if fields[key]!=sha256(&inventory.bytes(name)?){return Err("failure reconciliation evidence byte crosslink differs".into());}}
+    let mut last_observed=positive(&baseline.fields["observed_at_unix_ms"])?;let mut prior=baseline;
+    for(index,name)in ["reconciliation-host-before.txt","reconciliation-host-after.txt"].iter().enumerate(){
+        let gate=failure_host_gate(&inventory.bytes(name)?,request)?;
+        for key in ["host_launchd_runs","host_executable_sha256","host_framework_sha256","host_info_plist_sha256","host_launch_plist_sha256","input_uid","output_uid","system_output_uid","routes_identity_sha256","manager_generation","session_log_device","session_log_inode","session_log_reset_offset"]{if gate.fields[key]!=prior.fields[key]{return Err("reconciliation host/session/display/default routes changed".into());}}
+        if positive(&gate.fields["session_log_size"])?<positive(&prior.fields["session_log_size"])?{return Err("reconciliation session log regressed".into());}
+        let previous_observed=last_observed;let observed=positive(&gate.fields["observed_at_unix_ms"])?;if observed<previous_observed{return Err("reconciliation host observations regressed".into());}last_observed=observed;
+        let metadata=validate_gate_metadata(&inventory.bytes(&format!("gate-metadata-{:03}.txt",index+3))?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",index+3,Some("candidate-present"))?;
+        let metadata_time=positive(&metadata["observed_at_unix_ms"])?;if metadata_time<previous_observed||metadata_time>observed||observed-metadata_time>20000{return Err("reconciliation host proof is not bound to its imminent metadata observation".into());}prior=gate;
+    }
+    let terminal_time=positive(&fields["observed_at_unix_ms"])?;if terminal_time<last_observed||terminal_time-last_observed>5000{return Err("reconciliation terminal was not bound to a fresh final observation".into());}Ok(())
+}
+fn validate_reconciled_inventory(inventory:&ReconciliationInventory,request:&Request)->Result<BTreeMap<String,String>>{
+    validate_reconciliation_evidence(inventory,request,&inventory.bytes(FAILURE_TERMINAL)?)
+}
+fn failed_011_terminal_clear(state:&Path,request:&Request)->Result<()>{
+    failed_011_request(request)?;let ancestry=sealed_fs::root_ancestry(request)?;
+    let extras=RECONCILIATION_APPENDS.iter().copied().chain([FAILURE_TERMINAL]).collect::<Vec<_>>();let inventory=ReconciliationInventory::capture(state,&extras,0,0)?;let fields=validate_reconciled_inventory(&inventory,request)?;
+    let exec=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);let exec_ancestry=sealed_fs::root_ancestry_path(&exec,0o711)?;
+    // Historical terminal admission does not reinterpret another attempt's
+    // installed image as 011's candidate; only its unchanged staged inode.
+    let authority=strict_flat(&inventory.bytes("authority.txt")?,AUTHORITY_FIELDS,MAX_REQUEST)?;
+    for key in ["namespace","nonce","guard_tooling_commit","guard_tooling_tree","worker_sha256","idle_helper_sha256","both_order_probe_sha256","route_guardian_sha256"]{if authority[key]!=request.get(key){return Err("reconciled historical authority crosslink changed".into());}}
+    let candidate=verify_bundle(&state.join("candidate.driver"),request.get("driver_tree_sha256"),request.get("driver_executable_sha256"),0)?;
+    if candidate.0.device!=positive(&authority["candidate_root_device"])?||candidate.0.inode!=positive(&authority["candidate_root_inode"])?||candidate.1.inode!=positive(&authority["candidate_executable_inode"])?{return Err("reconciled original staged candidate inode changed".into());}
+    read_pinned(&exec.join("tools/gate_inputs.txt"),&authority["gate_inputs_sha256"],0,0o444,MAX_REQUEST)?;read_pinned(&exec.join("tools/opensteamer-microphone-v9-host-gate.rb"),&authority["host_gate_sha256"],0,0o444,MAX_REQUEST)?;
+    let helpers=[("idle-helper","idle_helper_sha256"),("both-order-probe","both_order_probe_sha256"),("route-guardian","route_guardian_sha256")].iter().map(|(role,pin)|os::SealedExecutable::open(&exec.join(role),request.get(pin))).collect::<Result<Vec<_>>>()?;
+    let old_worker=os::SealedExecutable::open(&exec.join("worker"),FAILED_011_WORKER)?;
+    let reconciler_ancestry=sealed_fs::root_ancestry_path(Path::new(RECONCILE_011_WORKER).parent().unwrap(),0o711)?;let reconciler_directory=GateDirectory::capture(Path::new(RECONCILE_011_WORKER).parent().unwrap())?;let reconciler=os::SealedExecutable::open(Path::new(RECONCILE_011_WORKER),&fields["reconciler_worker_sha256"])?;
+    let old_owner=strict_flat(&inventory.bytes("child-active-001")?,CHILD_FENCE_FIELDS,8192)?;let new_owner=strict_flat(&inventory.bytes("child-active-002")?,CHILD_FENCE_FIELDS,8192)?;
+    os::failed_011_processes_absent(&[positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"old owner PID overflow")?,positive(&new_owner["owner_pid"])?.try_into().map_err(|_|"reconciler owner PID overflow")?])?;
+    old_worker.reconcile_revalidate()?;reconciler.reconcile_revalidate()?;reconciler_directory.revalidate()?;for helper in &helpers{helper.reconcile_revalidate()?;}for held in ancestry.iter().chain(exec_ancestry.iter()).chain(reconciler_ancestry.iter()){held.revalidate()?;}inventory.revalidate()
+}
+
+pub(super) fn reconcile_failed_no_effects_011(request:&Request,worker_sha:&str)->Result<String>{
+    if !os::OwnedChild::root_identity()||!hex(worker_sha,64)||env::current_exe().map_err(|_|"reconciler image path unavailable")?!=Path::new(RECONCILE_011_WORKER){return Err("failure-only reconciler exact root image role differs".into());}
+    let worker_ancestry=sealed_fs::root_ancestry_path(Path::new(RECONCILE_011_WORKER).parent().unwrap(),0o711)?;let worker_directory=GateDirectory::capture(Path::new(RECONCILE_011_WORKER).parent().unwrap())?;let worker=os::SealedExecutable::open(Path::new(RECONCILE_011_WORKER),worker_sha)?;
+    worker.reconcile_revalidate()?;let(mut context,original,old_worker)=RootContext::open_failed_011(request)?;old_worker.reconcile_revalidate()?;
+    let old_owner=strict_flat(&original.bytes("child-active-001")?,CHILD_FENCE_FIELDS,8192)?;let old_pid=positive(&old_owner["owner_pid"])?.try_into().map_err(|_|"original owner PID overflow")?;
+    let event=original.nodes.get("guardian-1.events").ok_or("original guardian event descriptor missing")?;
+    let absence=||->Result<()>{os::failed_011_processes_absent(&[old_pid])?;let output=inspector_capture("failed_011_event_owner",os::OwnedChild::failed_011_event_owners()?,65536)?;failure_event_owner(&output,std::process::id(),event.file.as_raw_fd(),&event.identity,&event.path)?;event.revalidate()};
+    // Every passive inspector is covered by fresh child-active-002. This is
+    // absence now, never a retrospective guardian teardown/coverage proof.
+    absence()?;let before=context.gate("--candidate-present")?;context.record("reconciliation-host-before.txt",&before.bytes)?;
+    let core=context.core_record("core-baseline.txt")?.ok_or("original CoreAudio baseline missing")?;let host=context.driver_host_record("driver-host-baseline.txt")?.ok_or("original driver host baseline missing")?;
+    let images=context.image_paths()?;let prior=context.prior_identity()?;
+    if read_core()?!=core||context.bound_driver_host(&core)?!=(host.clone(),LoadedDriver::Prior){return Err("failure reconciliation does not match original loaded V8/CoreAudio/helper generation".into());}
+    original.revalidate_nodes()?;old_worker.reconcile_revalidate()?;absence()?;
+    let after=context.gate("--candidate-present")?;context.record("reconciliation-host-after.txt",&after.bytes)?;
+    if read_core()?!=core||context.bound_driver_host(&core)?!=(host,LoadedDriver::Prior)||context.image_paths()?!=images||context.prior_identity()?!=prior{return Err("failure reconciliation loaded/installed original V8 generation changed".into());}
+    absence()?;context.revalidate()?;original.revalidate_nodes()?;old_worker.reconcile_revalidate()?;worker.reconcile_revalidate()?;for held in &worker_ancestry{held.revalidate()?;}
+    let authority=Authority::load(request,&context.state,&context.executables)?;if authority.fields!=context.authority.fields||authority.candidate_root!=context.authority.candidate_root||authority.candidate_executable!=context.authority.candidate_executable{return Err("original sealed candidate/authority changed during reconciliation".into());}
+    context.close_child_fence()?;
+    let final_inventory=ReconciliationInventory::capture(&context.state,RECONCILIATION_APPENDS,0,0)?;final_inventory.verify_original(request)?;
+    if final_inventory.digest(true)!=original.digest(true){return Err("reconciliation changed original held inventory".into());}
+    let observed:u64=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"reconciliation clock unavailable")?.as_millis().try_into().map_err(|_|"reconciliation clock overflow")?;
+    let last_observed=positive(&after.fields["observed_at_unix_ms"])?;if observed<last_observed||observed-last_observed>5000{return Err("reconciliation final host observation stale/future".into());}
+    let bytes=failure_reconciliation_record(request,worker_sha,&original,&final_inventory,observed)?;
+    validate_reconciliation_evidence(&final_inventory,request,&bytes)?;final_inventory.revalidate()?;original.revalidate_nodes()?;worker_directory.revalidate()?;
+    context.record(FAILURE_TERMINAL,&bytes)?;
+    let extras=RECONCILIATION_APPENDS.iter().copied().chain([FAILURE_TERMINAL]).collect::<Vec<_>>();let completed=ReconciliationInventory::capture(&context.state,&extras,0,0)?;validate_reconciled_inventory(&completed,request)?;
+    original.revalidate_nodes()?;final_inventory.revalidate_nodes()?;context.revalidate()?;worker.reconcile_revalidate()?;worker_directory.revalidate()?;old_worker.reconcile_revalidate()?;for held in &worker_ancestry{held.revalidate()?;}
+    Ok(format!("schema=opensteamer.microphone-v9-failure-reconciliation-outcome.v1\nnamespace={}\nnonce={}\nrequest_sha256={}\nauthority_sha256={}\noriginal_worker_sha256={}\nreconciler_worker_sha256={}\nterminal={}\nnormal_restarts=0\nrollback_restarts=0\noriginal_cause=UNKNOWN\noriginal_guardian_teardown=UNKNOWN\nguardian_coverage_proven=false\ndeployment_verified=false\npcm_verified=false\nreconciliation_record_sha256={}\nreason=FAILED_ATTEMPT_ONLY_NOT_DEPLOYMENT_AUTHORITY\n",FAILED_011_NAMESPACE,FAILED_011_NONCE,FAILED_011_REQUEST,FAILED_011_AUTHORITY,FAILED_011_WORKER,worker_sha,FAILURE_TERMINAL,sha256(&bytes)))
+}
+
 pub(super) struct RootContext{
     request:Request, state:PathBuf, executables:PathBuf,
     state_ancestry:Vec<sealed_fs::HeldDirectory>,exec_ancestry:Vec<sealed_fs::HeldDirectory>,hal_ancestry:Vec<sealed_fs::HeldDirectory>,
@@ -404,6 +612,26 @@ impl HostGate{
     }
 }
 impl RootContext{
+    fn open_failed_011(request:&Request)->Result<(Self,ReconciliationInventory,os::SealedExecutable)>{
+        // A separate read-only constructor: never adopt the old worker, call
+        // normal admission/resume, repair an orphan slot or create a namespace.
+        failed_011_request(request)?;let state=PathBuf::from(request.root_path());let executables=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);
+        let state_ancestry=sealed_fs::root_ancestry(request)?;let exec_ancestry=sealed_fs::root_ancestry_path(&executables,0o711)?;let hal_ancestry=sealed_fs::root_ancestry_path(Path::new("/Library/Audio/Plug-Ins/HAL"),0o755)?;
+        let lock_parent=sealed_fs::HeldDirectory::capture(Path::new(ROOT_TRANSACTIONS),0,0,0o700)?;let controller_lock=sealed_fs::RootLock::acquire(&lock_parent)?;
+        let original=ReconciliationInventory::capture(&state,&[],0,0)?;original.verify_original(request)?;
+        if next_child_fence(&state,request)?!=2{return Err("reconciliation accepts only original finalized child fence 001".into());}
+        for(sequence,name)in [(1,"gate-metadata-001.txt"),(2,"gate-metadata-002.txt")]{validate_gate_metadata(&original.bytes(name)?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",sequence,Some("candidate-present"))?;}
+        let authority=Authority::load(request,&state,&executables)?;let old_worker=os::SealedExecutable::open(&executables.join("worker"),FAILED_011_WORKER)?;
+        let idle=os::SealedExecutable::open(&executables.join("idle-helper"),request.get("idle_helper_sha256"))?;let probe=os::SealedExecutable::open(&executables.join("both-order-probe"),request.get("both_order_probe_sha256"))?;let guardian=os::SealedExecutable::open(&executables.join("route-guardian"),request.get("route_guardian_sha256"))?;
+        let request_file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(state.join("request.txt")).map_err(|_|"reconciliation sealed request descriptor unavailable")?;
+        let log_file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open("/var/tmp/opensteamer-worldwide-host.log").map_err(|_|"reconciliation fixed session log descriptor unavailable")?;let stat=log_file.metadata().map_err(|_|"reconciliation session log metadata unavailable")?;
+        if !stat.is_file()||stat.uid()!=501||stat.nlink()!=1{return Err("reconciliation session log owner/type/links differ".into());}
+        original.revalidate()?;controller_lock.revalidate()?;
+        let child_sequence=2;let child_fence=child_fence_bytes(request,child_sequence)?;
+        state_ancestry.last().unwrap().write_record("child-active-002",&child_fence,0o400)?;
+        let context=Self{request:request.clone(),state,executables,state_ancestry,exec_ancestry,hal_ancestry,authority,idle,probe,guardian,request_file,log_file,controller_lock,child_fence,child_sequence,child_clean:false};
+        context.revalidate()?;original.revalidate_nodes()?;Ok((context,original,old_worker))
+    }
     pub(super) fn open(request:&Request)->Result<Self>{
         let state=PathBuf::from(request.root_path());let executables=PathBuf::from(EXECUTABLES).join(request.get("namespace"));
         let state_ancestry=sealed_fs::root_ancestry(request)?;let exec_ancestry=sealed_fs::root_ancestry_path(&executables,0o711)?;
@@ -680,7 +908,7 @@ fn core_launch(bytes:&[u8])->Result<(u32,u64)>{
     let pid=positive(fields.get("pid").ok_or("CoreAudio PID missing")?)?;let runs=positive(fields.get("runs").ok_or("CoreAudio runs missing")?)?;
     if !closed||depth!=0||pid>i32::MAX as u64{return Err("CoreAudio launch extent/PID differs".into());}Ok((pid as u32,runs))
 }
-const INSPECTOR_ROLES:&[&str]=&["core_launch_before","core_process","core_pids","core_start","core_launch_after","driver_selector_before","driver_process_before","driver_procinfo_before","driver_mappings","driver_owners_prior","driver_owners_candidate","driver_process_after","driver_procinfo_after","driver_selector_after"];
+const INSPECTOR_ROLES:&[&str]=&["core_launch_before","core_process","core_pids","core_start","core_launch_after","driver_selector_before","driver_process_before","driver_procinfo_before","driver_mappings","driver_owners_prior","driver_owners_candidate","driver_process_after","driver_procinfo_after","driver_selector_after","failed_011_event_owner"];
 fn inspector_role(role:&str)->&str{if INSPECTOR_ROLES.contains(&role){role}else{"unknown_inspector"}}
 fn inspector_summary(role:&str,captured:&os::Captured)->String{
     format!("trusted OS identity inspector refused role={} code={} stdout_bytes={} stdout_sha256={} stderr_bytes={} stderr_sha256={}",inspector_role(role),captured.code,captured.stdout.len(),sha256(&captured.stdout),captured.stderr.len(),sha256(&captured.stderr))
@@ -1412,6 +1640,101 @@ impl Backend for OsBackend{
 
 #[cfg(test)]mod tests{
     use super::*;
+    fn failed_011_fixture_request()->Request{
+        let mut request=super::super::tests::request();request.fields.insert("namespace".into(),FAILED_011_NAMESPACE.into());request.fields.insert("nonce".into(),FAILED_011_NONCE.into());request.fields.insert("worker_sha256".into(),FAILED_011_WORKER.into());request.sha256=FAILED_011_REQUEST.into();request
+    }
+    fn failure_terminal_fixture(request:&Request)->Vec<u8>{
+        let mut fields=FAILURE_TERMINAL_FIELDS.iter().map(|key|(*key,"a".repeat(64))).collect::<BTreeMap<_,_>>();
+        for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v1"),("terminal",FAILURE_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false"),("observed_at_unix_ms","1790000000000")]{fields.insert(key,value.into());}
+        let bytes=FAILURE_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[key])).collect::<String>().into_bytes();failure_terminal_validate(&bytes,request).unwrap();bytes
+    }
+    #[test]fn failure_terminal_is_exact_011_unknown_cause_and_never_deployment_authority(){
+        let request=failed_011_fixture_request();let bytes=failure_terminal_fixture(&request);let text=String::from_utf8(bytes).unwrap();
+        for key in FAILURE_TERMINAL_FIELDS{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();for mutant in [text.replace(&format!("{line}\n"),""),text.clone()+&format!("{line}\n"),text.replace(line,&format!("{key}=wrong"))]{assert!(failure_terminal_validate(mutant.as_bytes(),&request).is_err(),"accepted {key}");}}
+        for(key,value)in [("terminal","COMMITTED_V9"),("original_cause","CONFIRMED"),("original_guardian_teardown","CLEAN"),("guardian_coverage_proven","true"),("deployment_verified","true"),("pcm_verified","true"),("normal_restarts","1"),("rollback_restarts","1")]{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();assert!(failure_terminal_validate(text.replace(line,&format!("{key}={value}")).as_bytes(),&request).is_err());}
+        assert!(failure_terminal_validate((text.clone()+"deployment_authority=true\n").as_bytes(),&request).is_err());assert!(failure_terminal_validate(text.trim_end().as_bytes(),&request).is_err());
+        for key in ["namespace","nonce","worker_sha256"]{let mut mutant=request.clone();mutant.fields.insert(key.into(),"0".into());assert!(failure_terminal_validate(text.as_bytes(),&mutant).is_err());}let mut mutant=request;mutant.sha256="0".repeat(64);assert!(failure_terminal_validate(text.as_bytes(),&mutant).is_err());
+    }
+    fn reconciliation_inventory_fixture(label:&str)->(PathBuf,sealed_fs::HeldDirectory,u32,u32){
+        let(path,held,owner,group)=pre_effect_directory_fixture(label);
+        for name in FAILED_011_TOP{
+            if ["candidate.driver","journal","prior","probes","failed"].contains(name){fs::create_dir(path.join(name)).unwrap();fs::set_permissions(path.join(name),fs::Permissions::from_mode(if *name=="candidate.driver"{0o755}else{0o700})).unwrap();}
+            else if *name=="guardian-1.events"{OpenOptions::new().write(true).create_new(true).mode(0o600).open(path.join(name)).unwrap();}
+            else{held.write_record(name,b"fixture immutable original",0o400).unwrap();}
+        }
+        for(kind,mode,relative)in NODES.iter().filter(|(_,_,relative)|*relative!="."){let node=path.join("candidate.driver").join(relative);if *kind=="Directory"{fs::create_dir(&node).unwrap();}else{fs::write(&node,b"fixture candidate bytes").unwrap();}fs::set_permissions(node,fs::Permissions::from_mode(*mode)).unwrap();}
+        fs::write(path.join("journal/journal-001"),Journal::new(&failed_011_fixture_request()).appended(State::Prepared).unwrap().bytes()).unwrap();fs::set_permissions(path.join("journal/journal-001"),fs::Permissions::from_mode(0o400)).unwrap();(path,held,owner,group)
+    }
+    fn remove_reconciliation_fixture(path:&Path){
+        // Exact exclusively-created fixture paths, never production or evidence.
+        for(_,_,relative)in NODES.iter().rev().filter(|(_,_,relative)|*relative!="."){let node=path.join("candidate.driver").join(relative);if node.is_dir(){fs::remove_dir(node).unwrap();}else{fs::remove_file(node).unwrap();}}
+        fs::remove_file(path.join("journal/journal-001")).unwrap();for name in RECONCILIATION_APPENDS.iter().copied().chain([FAILURE_TERMINAL]){if path.join(name).exists(){fs::remove_file(path.join(name)).unwrap();}}
+        for name in FAILED_011_TOP{let node=path.join(name);if node.is_dir(){fs::remove_dir(node).unwrap();}else{fs::remove_file(node).unwrap();}}fs::remove_dir(path).unwrap();
+    }
+    #[test]fn failure_reconciliation_inventory_holds_every_original_node_across_only_fixed_appends(){
+        let(path,held,owner,group)=reconciliation_inventory_fixture("reconcile-append");let original=ReconciliationInventory::capture(&path,&[],owner,group).unwrap();assert_eq!(original.nodes.len(),30);let digest=original.digest(true);
+        for name in RECONCILIATION_APPENDS{held.write_record(name,b"fixture immutable observation",0o400).unwrap();}
+        assert!(original.revalidate().is_err(),"initial19-node admission cannot be replayed after an append");original.revalidate_nodes().unwrap();let final_inventory=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();assert_eq!(final_inventory.digest(true),digest);
+        held.write_record(FAILURE_TERMINAL,b"fixture failure-only terminal",0o400).unwrap();assert!(held.write_record(FAILURE_TERMINAL,b"replacement",0o400).is_err());assert_eq!(fs::read(path.join(FAILURE_TERMINAL)).unwrap(),b"fixture failure-only terminal");original.revalidate_nodes().unwrap();final_inventory.revalidate_nodes().unwrap();
+        assert!(ReconciliationInventory::capture(&path,&[],owner,group).is_err());assert!(ReconciliationInventory::capture(&path,&["public-proof.json"],owner,group).is_err());drop(final_inventory);drop(original);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn failure_reconciliation_inventory_refuses_unknown_pending_effect_and_inode_drift(){
+        let(path,held,owner,group)=reconciliation_inventory_fixture("reconcile-mutants");let original=ReconciliationInventory::capture(&path,&[],owner,group).unwrap();
+        for name in ["UNRESOLVED_CHILD","normal-restart-intent.txt","guardian-1.proof","child-active-003","unknown"]{held.write_record(name,b"must block",0o400).unwrap();assert!(ReconciliationInventory::capture(&path,&[],owner,group).is_err());fs::remove_file(path.join(name)).unwrap();}
+        for directory in ["prior","probes","failed","journal","candidate.driver/Contents"]{let extra=path.join(directory).join("extra-empty");fs::create_dir(&extra).unwrap();assert!(original.revalidate_nodes().is_err());fs::remove_dir(extra).unwrap();}
+        let pending=path.join("journal/pending-002");fs::write(&pending,b"pending").unwrap();assert!(ReconciliationInventory::capture(&path,&[],owner,group).is_err());fs::remove_file(pending).unwrap();
+        let old=path.join("guardian-1.events");let retained=path.join("retained-fixture-event");fs::rename(&old,&retained).unwrap();fs::write(&old,b"").unwrap();fs::set_permissions(&old,fs::Permissions::from_mode(0o600)).unwrap();assert!(original.revalidate_nodes().is_err());fs::remove_file(old).unwrap();fs::rename(retained,path.join("guardian-1.events")).unwrap();
+        drop(original);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn failure_reconciliation_prepared_only_never_adopts_resume_or_restart_journal(){
+        let request=failed_011_fixture_request();let empty=Journal::new(&request);let prepared=empty.appended(State::Prepared).unwrap();prepared_only_reconciliation_journal(&prepared.bytes(),&request).unwrap();assert!(prepared_only_reconciliation_journal(&empty.bytes(),&request).is_err());
+        for next in [State::Sealed,State::RollbackIntent]{assert!(prepared_only_reconciliation_journal(&prepared.appended(next).unwrap().bytes(),&request).is_err());}
+        let mut mutant=prepared.bytes();mutant.extend_from_slice(b"unknown effect\n");assert!(prepared_only_reconciliation_journal(&mutant,&request).is_err());
+    }
+    #[test]fn failure_reconciliation_record_brackets_all_eleven_metadata_fields_and_nofollow(){
+        let(path,held,owner,group)=pre_effect_directory_fixture("reconcile-stat");held.write_record("record",b"exact bytes",0o400).unwrap();let mut node=ReconciliationNode::capture(&path.join("record"),owner,group,0o400,false).unwrap();let identity=node.identity.clone();
+        for index in 0..11{let mut changed=identity.clone();match index{0=>changed.device+=1,1=>changed.inode+=1,2=>changed.uid+=1,3=>changed.gid+=1,4=>changed.mode+=1,5=>changed.links+=1,6=>changed.size+=1,7=>changed.mtime+=1,8=>changed.mtime_nsec+=1,9=>changed.ctime+=1,_=>changed.ctime_nsec+=1};node.identity=changed;assert!(node.revalidate().is_err(),"accepted metadata field {index}");}node.identity=identity;node.revalidate().unwrap();
+        std::os::unix::fs::symlink(path.join("record"),path.join("alias")).unwrap();assert!(ReconciliationNode::capture(&path.join("alias"),owner,group,0o400,false).is_err());assert!(ReconciliationNode::capture(&path.join("record"),owner+1,group,0o400,false).is_err());assert!(ReconciliationNode::capture(&path.join("record"),owner,group,0o600,false).is_err());
+        drop(node);drop(held);fs::remove_file(path.join("alias")).unwrap();fs::remove_file(path.join("record")).unwrap();fs::remove_dir(path).unwrap();
+    }
+    fn replace_reconciliation_fixture_record(path:&Path,held:&sealed_fs::HeldDirectory,name:&str,bytes:&[u8]){
+        // Only our exclusive synthetic fixture; never the retained original011.
+        if path.join(name).exists(){fs::remove_file(path.join(name)).unwrap();}held.write_record(name,bytes,0o400).unwrap();
+    }
+    fn reconciliation_crosslink_fixture(label:&str)->(PathBuf,sealed_fs::HeldDirectory,u32,u32,Request){
+        let(path,held,owner,group)=reconciliation_inventory_fixture(label);let request=failed_011_fixture_request();let(_,host)=gate_fixture("candidate-present");let mut fields=strict_flat(&host,GATE_FIELDS,MAX_REQUEST).unwrap();fields.insert("namespace".into(),request.get("namespace").into());fields.insert("nonce".into(),request.get("nonce").into());
+        for(offset,name)in [(0,"host-baseline.txt"),(100,"reconciliation-host-before.txt"),(200,"reconciliation-host-after.txt")]{fields.insert("observed_at_unix_ms".into(),(1_790_000_000_000u64+offset).to_string());let bytes=GATE_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>().into_bytes();replace_reconciliation_fixture_record(&path,&held,name,&bytes);}
+        let fence=child_fence_bytes(&request,2).unwrap();for name in ["child-active-002","child-clean-002"]{held.write_record(name,&fence,0o400).unwrap();}
+        for(sequence,offset)in [(3,50),(4,150)]{let bytes=gate_metadata_bytes(&request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87","candidate-present",1_790_000_000_000+offset,sequence,&gate_metadata_identities()).unwrap();held.write_record(&format!("gate-metadata-{sequence:03}.txt"),&bytes,0o400).unwrap();}(path,held,owner,group,request)
+    }
+    fn reconciliation_crosslink_fixture_fields(inventory:&ReconciliationInventory,request:&Request)->BTreeMap<String,String>{
+        let bytes=failure_reconciliation_record(request,&"b".repeat(64),inventory,inventory,1_790_000_000_300).unwrap();failure_terminal_validate(&bytes,request).unwrap()
+    }
+    #[test]fn failure_reconciliation_consumer_rejects_valid_hex_crosslink_and_finalized_containment_mutants(){
+        let(path,held,owner,group,request)=reconciliation_crosslink_fixture("reconcile-crosslinks");let inventory=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();let fields=reconciliation_crosslink_fixture_fields(&inventory,&request);validate_reconciliation_crosslinks(&inventory,&request,&fields).unwrap();
+        // This positive fixture proves the production post-original seam only;
+        // it never satisfies/short-circuits the real immutable original pin gate.
+        assert!(inventory.verify_original(&request).is_err());
+        for key in ["original_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256"]{let mut mutant=fields.clone();mutant.insert(key.into(),"0".repeat(64));assert!(validate_reconciliation_crosslinks(&inventory,&request,&mutant).is_err(),"accepted {key}");}
+        fs::remove_file(path.join("child-clean-002")).unwrap();assert!(validate_reconciliation_crosslinks(&inventory,&request,&fields).is_err());assert!(ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).is_err());drop(inventory);
+        let text=String::from_utf8(child_fence_bytes(&request,2).unwrap()).unwrap().replace("sequence=2","sequence=3");held.write_record("child-clean-002",text.as_bytes(),0o400).unwrap();let mutant=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();let fields=reconciliation_crosslink_fixture_fields(&mutant,&request);assert!(validate_reconciliation_crosslinks(&mutant,&request,&fields).is_err());drop(mutant);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn failure_reconciliation_consumer_structured_host_and_metadata_crosslinks_are_exact(){
+        let(path,held,owner,group,request)=reconciliation_crosslink_fixture("reconcile-receipts");
+        for name in ["gate-metadata-003.txt","gate-metadata-004.txt","reconciliation-host-before.txt","reconciliation-host-after.txt"]{
+            let bytes=fs::read(path.join(name)).unwrap();let text=String::from_utf8(bytes.clone()).unwrap();let metadata=name.starts_with("gate-metadata");
+            let mutants=if metadata{vec![text.replace("sequence=3","sequence=4").replace("sequence=4","sequence=2"),text.replace(&format!("request_sha256={FAILED_011_REQUEST}"),&format!("request_sha256={}","0".repeat(64))),text.replace("observed_at_unix_ms=1790000000050","observed_at_unix_ms=1790000000201").replace("observed_at_unix_ms=1790000000150","observed_at_unix_ms=1790000000201"),text.replace("observed_at_unix_ms=1790000000050","observed_at_unix_ms=1789999900000").replace("observed_at_unix_ms=1790000000150","observed_at_unix_ms=1789999900000")]}else{vec![text.replace("session_log_inode=2","session_log_inode=3"),text.replace("session_log_reset_offset=0","session_log_reset_offset=1"),text.replace("input_uid=BlackHole2ch_UID","input_uid=unexpected"),text.replace("manager_generation=0","manager_generation=1"),text.replace("observed_at_unix_ms=1790000000100","observed_at_unix_ms=1789999999999").replace("observed_at_unix_ms=1790000000200","observed_at_unix_ms=1790000000099")]};
+            for mutant in mutants{assert_ne!(mutant,text,"fixture mutant must change {name}");replace_reconciliation_fixture_record(&path,&held,name,mutant.as_bytes());let inventory=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();let fields=reconciliation_crosslink_fixture_fields(&inventory,&request);assert!(validate_reconciliation_crosslinks(&inventory,&request,&fields).is_err(),"accepted {name} mutant");drop(inventory);}
+            replace_reconciliation_fixture_record(&path,&held,name,&bytes);
+        }
+        let inventory=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();let mut fields=reconciliation_crosslink_fixture_fields(&inventory,&request);fields.insert("observed_at_unix_ms".into(),"1790000010000".into());assert!(validate_reconciliation_crosslinks(&inventory,&request,&fields).is_err());fields.insert("observed_at_unix_ms".into(),"1790000000199".into());assert!(validate_reconciliation_crosslinks(&inventory,&request,&fields).is_err());drop(inventory);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn failed_guardian_event_owner_requires_exact_single_held_readonly_fd_and_complete_nul_rows(){
+        let identity=Identity{device:0x1000010,inode:123,uid:0,gid:0,mode:0o100600,links:1,size:0,mtime:1,mtime_nsec:2,ctime:3,ctime_nsec:4};let path=Path::new("/private/tmp/exclusive-fixture-event");
+        let bytes=b"p456\0cworker\0\nf37\0ar\0D0x1000010\0i123\0n/private/tmp/exclusive-fixture-event\0\n".to_vec();let output=|code,stdout,stderr|os::Captured{code,stdout,stderr};failure_event_owner(&output(0,bytes.clone(),vec![]),456,37,&identity,path).unwrap();
+        let text=String::from_utf8(bytes.clone()).unwrap();for mutant in [text.replace("p456","p457"),text.replace("f37","f38"),text.replace("ar\0","aw\0"),text.replace("i123","i124"),text.replace("D0x1000010","D0x1000011"),text.replace("exclusive-fixture-event","other-event"),text.replace("f37\0","f37\0f37\0"),text.replace("\0", ""),text.replace("ar\0", ""),text.clone()+"p999\0cunknown\0\nf40\0ar\0D0x1000010\0i123\0n/private/tmp/exclusive-fixture-event\0\n",text.clone()+"f38\0ar\0D0x1000010\0i123\0n/private/tmp/exclusive-fixture-event\0\n"]{assert!(failure_event_owner(&output(0,mutant.into_bytes(),vec![]),456,37,&identity,path).is_err());}
+        for(code,stdout,stderr)in [(1,bytes.clone(),vec![]),(1,vec![],vec![]),(0,vec![],vec![]),(0,bytes,vec![b'!'])]{assert!(failure_event_owner(&output(code,stdout,stderr),456,37,&identity,path).is_err());}
+    }
     fn gate_metadata_identities()->Vec<Identity>{
         (1..=5).map(|inode|Identity{device:2,inode,uid:0,gid:0,mode:0o40711,links:1,size:128,mtime:10,mtime_nsec:1,ctime:20,ctime_nsec:2}).collect()
     }

@@ -30,6 +30,7 @@ unsafe extern "C" {
     fn waitid(kind:i32,pid:u32,info:*mut SigInfo,options:i32)->i32;
     fn proc_listpids(kind:u32,group:u32,buffer:*mut std::ffi::c_void,size:i32)->i32;
     fn proc_pidinfo(pid:i32,flavor:i32,arg:u64,buffer:*mut std::ffi::c_void,size:i32)->i32;
+    fn proc_pidpath(pid:i32,buffer:*mut std::ffi::c_void,size:u32)->i32;
     fn signal(number:i32,handler:usize)->usize;
 }
 
@@ -94,6 +95,40 @@ pub(super) fn supervisor_check()->Result<()>{supervision_poll(false)}
 pub(super) fn unresolved_cleanup()->Result<Option<(u32,u32,String)>>{
     CLEANUP_UNRESOLVED.get().map(|failure|failure.lock().map(|value|value.clone()).map_err(|_|"owned cleanup latch poisoned".into())).unwrap_or(Ok(None))
 }
+fn absent_original_process(pid:u32,parent:u32,group:u32,path:&str,owners:&[u32],forbidden:&[String])->Result<()>{
+    if pid<=1||owners.iter().any(|owner|*owner<=1)||owners.contains(&pid)||owners.contains(&parent)||owners.contains(&group)||forbidden.iter().any(|role|role==path){return Err("failed attempt still has a live owner/descendant/group/sealed helper".into());}Ok(())
+}
+fn failed_process_ids()->Result<Vec<i32>>{
+    supervisor_check()?;let mut ids=[0i32;4096];let extent=unsafe{proc_listpids(1,0,ids.as_mut_ptr().cast(),std::mem::size_of_val(&ids) as i32)};
+    if extent<=0||extent as usize>=std::mem::size_of_val(&ids)||extent%4!=0{return Err("failed 011 process inventory unavailable/truncated".into());}
+    let ids=ids[..extent as usize/4].iter().copied().filter(|pid|*pid>1).collect::<Vec<_>>();let unique=ids.iter().copied().collect::<std::collections::BTreeSet<_>>();
+    if ids.is_empty()||unique.len()!=ids.len(){return Err("failed 011 process inventory empty/duplicates".into());}Ok(ids)
+}
+fn departed_process(pid:i32,mut inventory:impl FnMut()->Result<Vec<i32>>)->Result<()>{
+    // A syscall failure is not absence. Only two new complete inventories
+    // omitting this exact PID can explain a process that exited mid-inspection.
+    for _ in 0..2{if inventory()?.contains(&pid){return Err("failed 011 unreadable process is still live".into());}}Ok(())
+}
+pub(super) fn failed_011_processes_absent(owners:&[u32])->Result<()>{
+    if !OwnedChild::root_identity()||owners.is_empty()||owners.len()>2{return Err("failed 011 absence inspector authority/bounds differ".into());}
+    let prefix="/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b";
+    let mut forbidden=["worker","idle-helper","both-order-probe","route-guardian"].iter().map(|name|format!("{prefix}/{name}")).collect::<Vec<_>>();
+    if owners.len()==2{forbidden.push(super::backend::RECONCILE_011_WORKER.into());}
+    for _ in 0..2{
+        for pid in failed_process_ids()?{
+            supervisor_check()?;
+            let mut info=ShortProcess::default();if unsafe{proc_pidinfo(pid,13,0,(&mut info as *mut ShortProcess).cast(),std::mem::size_of::<ShortProcess>() as i32)}!=std::mem::size_of::<ShortProcess>() as i32{departed_process(pid,failed_process_ids)?;continue;}if info.pid!=pid as u32{return Err("failed 011 process PID differs".into());}
+            let mut path=[0u8;4096];let count=unsafe{proc_pidpath(pid,path.as_mut_ptr().cast(),path.len() as u32)};
+            if count<=0{departed_process(pid,failed_process_ids)?;continue;}if count as usize>=path.len(){return Err("failed 011 executable identity truncated".into());}
+            let end=path.iter().position(|byte|*byte==0).ok_or("failed 011 executable path framing unavailable")?;
+            let path=std::str::from_utf8(&path[..end]).map_err(|_|"failed 011 executable path encoding differs")?;
+            if !super::canonical_path(path){return Err("failed 011 executable path is not canonical".into());}absent_original_process(info.pid,info.parent,info.group,path,owners,&forbidden)?;
+            let mut after=ShortProcess::default();if unsafe{proc_pidinfo(pid,13,0,(&mut after as *mut ShortProcess).cast(),std::mem::size_of::<ShortProcess>() as i32)}!=std::mem::size_of::<ShortProcess>() as i32{departed_process(pid,failed_process_ids)?;continue;}
+            let mut after_path=[0u8;4096];let after_count=unsafe{proc_pidpath(pid,after_path.as_mut_ptr().cast(),after_path.len() as u32)};if after_count<=0{departed_process(pid,failed_process_ids)?;continue;}
+            if after_count as usize>=after_path.len()||&after_path[..end+1]!=path.as_bytes().iter().copied().chain([0]).collect::<Vec<_>>().as_slice()||(after.pid,after.parent,after.group,after.uid,after.gid,after.ruid,after.rgid)!=(info.pid,info.parent,info.group,info.uid,info.gid,info.ruid,info.rgid){return Err("failed 011 process identity changed during absence inspection".into());}
+        }
+    }Ok(())
+}
 pub(super) fn enter_recovery()->Result<()>{
     let channel=SUPERVISOR.get().ok_or("native recovery lacks owned supervisor")?;let mut state=channel.lock().map_err(|_|"supervisor channel lock poisoned")?;
     if state.recovery{return Err("duplicate bounded recovery phase refused".into());}
@@ -131,12 +166,15 @@ impl SealedExecutable {
         }
         Ok(Self{file,identity,digest:expected.into(),path:path.to_path_buf()})
     }
-    fn revalidate(&self)->Result<()> {
+    pub(super) fn revalidate(&self)->Result<()> {
         if Identity::of(&self.file.metadata().map_err(|_|"held executable stat failed")?)!=self.identity ||
             Identity::of(&std::fs::symlink_metadata(&self.path).map_err(|_|"held executable path disappeared")?)!=self.identity || !hex(&self.digest,64) {
             return Err("held executable changed".into());
         }
         Ok(())
+    }
+    pub(super) fn reconcile_revalidate(&self)->Result<()>{
+        self.revalidate()?;super::sealed_fs::clean_gate_metadata(&self.file)?;self.revalidate()
     }
 }
 
@@ -249,6 +287,9 @@ impl OwnedChild {
         // One search item: empty0 (found FD filtered by -a -d txt) and empty1
         // are considered only with BOTH channels byte-empty, never partials.
         let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-d","txt","-F0pcDfin","--"]).arg(path);Self::root_inspector(command)
+    }
+    pub(super) fn failed_011_event_owners()->Result<Self>{
+        let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-F0pcDafin","--","/Library/Application Support/opensteamer/microphone-v9-transactions/driver-microphone-v9-151f574a1c3c354b/guardian-1.events"]);Self::root_inspector(command)
     }
     fn root_inspector(mut command:Command)->Result<Self>{
         if unsafe{getuid()}!=0||unsafe{geteuid()}!=0{return Err("root OS inspector admission differs".into());}
@@ -442,6 +483,16 @@ impl Drop for OwnedChild{fn drop(&mut self){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn failed_attempt_process_absence_never_uses_display_name_as_authority(){
+        let forbidden=vec!["/fixed/sealed/route-guardian".into(),"/fixed/sealed/worker".into()];absent_original_process(12,1,12,"/usr/bin/true",&[456],&forbidden).unwrap();
+        for(pid,parent,group,path)in [(456,1,456,"/usr/bin/true"),(12,456,12,"/usr/bin/true"),(12,1,456,"/usr/bin/true"),(12,1,12,"/fixed/sealed/route-guardian"),(12,1,12,"/fixed/sealed/worker")]{assert!(absent_original_process(pid,parent,group,path,&[456],&forbidden).is_err());}
+        assert!(absent_original_process(12,1,12,"/usr/bin/true",&[0],&forbidden).is_err());assert!(absent_original_process(1,1,1,"/usr/bin/true",&[456],&forbidden).is_err());
+    }
+    #[test]fn disappearing_process_requires_two_complete_fresh_absence_inventories(){
+        let mut calls=0;departed_process(42,||{calls+=1;Ok(vec![12,13])}).unwrap();assert_eq!(calls,2);
+        for inventories in [vec![vec![42],vec![]],vec![vec![],vec![42]]]{let mut rows=inventories.into_iter();assert!(departed_process(42,||Ok(rows.next().unwrap())).is_err());}
+        assert!(departed_process(42,||Err("inventory unavailable".into())).is_err());
+    }
     use std::os::unix::fs::PermissionsExt;
     #[test]fn global_single_image_inspector_accepts_only_fixed_canonical_role_paths(){
         let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::DRIVER);fixed_driver_image_path(Path::new(&canonical)).unwrap();
