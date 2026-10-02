@@ -1,6 +1,6 @@
 // Native process containment for the microphone-v9 transaction. No CLI, no
 // generic command-as-root surface, and no live invocation from offline tests.
-use super::{hex, sha256, Identity, Result, NOFOLLOW};
+use super::{hex, sha256, Identity, Result, NOFOLLOW, MAX_REQUEST};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::os::fd::{AsRawFd, RawFd};
@@ -162,6 +162,14 @@ fn collect<T:Read>(pipe:&mut T, bytes:&mut Vec<u8>, limit:usize)->Result<bool> {
     }
 }
 
+fn inherited_channels(inherit:&[(RawFd,RawFd)],ruby_metadata:bool)->Result<()>{
+    let mut targets=std::collections::BTreeSet::new();
+    for(source,target)in inherit{
+        if *source<32||(!(3..=5).contains(target)&&!(ruby_metadata&&*target==6))||!targets.insert(*target){return Err("owned inherited proof channel map refused".into());}
+    }
+    if ruby_metadata&&(!targets.contains(&3)||!targets.contains(&6)){return Err("Ruby requires request and root metadata proof channels".into());}Ok(())
+}
+
 pub(super) struct OwnedChild {
     child:Child, stdin:Option<ChildStdin>, stdout:ChildStdout, stderr:ChildStderr,
     output:Vec<u8>, errors:Vec<u8>, stdout_eof:bool, stderr_eof:bool, reaped:bool, expected_uid:u32, guardian:bool,
@@ -174,17 +182,20 @@ impl OwnedChild {
         if fd<32{return Err("owned inherited descriptor duplication failed".into());}
         Ok(unsafe{File::from_raw_fd(fd)})
     }
-    pub(super) fn ruby_gate(script:&Path,mode:&str,request_sha:&str,request:&File,baseline:Option<&File>,ready:Option<&File>)->Result<Self>{
-        if !matches!(mode,"--candidate-present"|"--host-absent"|"--host-ready")||!hex(request_sha,64){return Err("gate mode/request digest refused".into());}
+    pub(super) fn ruby_gate(script:&Path,mode:&str,request_sha:&str,request:&File,baseline:Option<&File>,ready:Option<&File>,metadata:&File,metadata_sha:&str)->Result<Self>{
+        if !matches!(mode,"--candidate-present"|"--host-absent"|"--host-ready")||!hex(request_sha,64)||!hex(metadata_sha,64){return Err("gate mode/request/metadata digest refused".into());}
         if mode=="--candidate-present"&&ready.is_some(){return Err("candidate-present may not use a replacement ready generation".into());}
-        let mut request_copy=Self::inherited(request)?;let mut baseline_copy=baseline.map(Self::inherited).transpose()?;let mut ready_copy=ready.map(Self::inherited).transpose()?;
+        let proof=metadata.metadata().map_err(|_|"root metadata proof channel stat unavailable")?;let access=unsafe{fcntl(metadata.as_raw_fd(),3)};
+        if !proof.is_file()||proof.uid()!=0||proof.gid()!=0||proof.mode()!=0o100400||proof.nlink()!=1||proof.len()==0||proof.len()>MAX_REQUEST as u64||access<0||access&3!=0{return Err("root metadata proof channel owner/type/mode/links/extent/access refused".into());}
+        let mut request_copy=Self::inherited(request)?;let mut baseline_copy=baseline.map(Self::inherited).transpose()?;let mut ready_copy=ready.map(Self::inherited).transpose()?;let mut metadata_copy=Self::inherited(metadata)?;
         // dup/fcntl descriptors share file offsets on Darwin. These calls are
         // strictly serial; rewind the held proof channels before each child.
         request_copy.seek(SeekFrom::Start(0)).map_err(|_|"request proof channel rewind failed")?;
         for file in [&mut baseline_copy,&mut ready_copy].into_iter().flatten(){file.seek(SeekFrom::Start(0)).map_err(|_|"historical proof channel rewind failed")?;}
-        let mut mappings=vec![(request_copy.as_raw_fd(),3)];if let Some(file)=&baseline_copy{mappings.push((file.as_raw_fd(),4));}if let Some(file)=&ready_copy{mappings.push((file.as_raw_fd(),5));}
-        let mut command=Command::new("/usr/bin/ruby");command.arg(script).args([mode,"/dev/fd/3",request_sha]);
-        Self::dropped(command,None,&mappings)
+        metadata_copy.seek(SeekFrom::Start(0)).map_err(|_|"root metadata proof channel rewind failed")?;
+        let mut mappings=vec![(request_copy.as_raw_fd(),3)];if let Some(file)=&baseline_copy{mappings.push((file.as_raw_fd(),4));}if let Some(file)=&ready_copy{mappings.push((file.as_raw_fd(),5));}mappings.push((metadata_copy.as_raw_fd(),6));
+        let mut command=Command::new("/usr/bin/ruby");command.arg(script).args([mode,"/dev/fd/3",request_sha,metadata_sha]);
+        Self::dropped_channels(command,None,&mappings,true)
     }
     pub(super) fn stop_host()->Result<Self>{
         let mut command=Command::new("/bin/launchctl");command.args(["bootout","gui/501/org.example.opensteamer.worldwide"]);Self::dropped(command,None,&[])
@@ -246,14 +257,18 @@ impl OwnedChild {
         command.current_dir("/").env_clear().env("LC_ALL","C").env("PATH","/usr/bin:/bin:/usr/sbin:/sbin")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);Self::spawn(command,0)
     }
-    fn dropped(mut command:Command,directory:Option<&File>,inherit:&[(RawFd,RawFd)])->Result<Self>{
+    fn dropped(command:Command,directory:Option<&File>,inherit:&[(RawFd,RawFd)])->Result<Self>{
+        Self::dropped_channels(command,directory,inherit,false)
+    }
+    fn dropped_channels(mut command:Command,directory:Option<&File>,inherit:&[(RawFd,RawFd)],ruby_metadata:bool)->Result<Self>{
         if unsafe{getuid()}!=0||unsafe{geteuid()}!=0{return Err("UID501 dispatcher requires sealed root context".into());}
+        inherited_channels(inherit,ruby_metadata)?;
         let directory_fd=directory.map(AsRawFd::as_raw_fd);let inherited=inherit.to_vec();
         command.current_dir("/").env_clear().env("LC_ALL","C").env("PATH","/usr/bin:/bin:/usr/sbin:/sbin")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
         unsafe{command.pre_exec(move||{
             umask(0o077);
-            for(source,target)in &inherited{if !(3..=5).contains(target)||*source<32||dup2(*source,*target)!=*target{return Err(std::io::Error::last_os_error());}}
+            for(source,target)in &inherited{if (!(3..=5).contains(target)&&!(ruby_metadata&&*target==6))||*source<32||dup2(*source,*target)!=*target{return Err(std::io::Error::last_os_error());}}
             if let Some(fd)=directory_fd{if fchdir(fd)!=0{return Err(std::io::Error::last_os_error());}}
             if setgroups(0,std::ptr::null())!=0||setgid(20)!=0||setuid(501)!=0||getuid()!=501||geteuid()!=501||getgid()!=20||getegid()!=20{return Err(std::io::Error::last_os_error());}Ok(())
         });}
@@ -412,6 +427,12 @@ impl Drop for OwnedChild{fn drop(&mut self){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn metadata_fd6_is_ruby_only_mandatory_and_duplicate_targets_are_refused(){
+        inherited_channels(&[(32,3),(33,6)],true).unwrap();inherited_channels(&[(32,3),(33,4),(34,5),(35,6)],true).unwrap();
+        inherited_channels(&[(32,3),(33,4),(34,5)],false).unwrap();
+        for map in [vec![(32,3),(33,6)],vec![(32,6)]]{assert!(inherited_channels(&map,false).is_err());}
+        for map in [vec![(32,3)],vec![(32,6)],vec![(31,3),(33,6)],vec![(32,3),(33,6),(34,6)],vec![(32,3),(33,3),(34,6)],vec![(32,3),(33,6),(34,7)],vec![(32,2),(33,6)]]{assert!(inherited_channels(&map,true).is_err());}
+    }
     fn fixture(program:&str,args:&[&str])->OwnedChild{
         let mut command=Command::new(program);command.args(args).env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
         OwnedChild::spawn(command,unsafe{geteuid()}).unwrap()

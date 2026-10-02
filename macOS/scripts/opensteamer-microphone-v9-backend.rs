@@ -2,6 +2,8 @@
 //! until the complete transaction and independent whole-path review pass.
 use super::*;
 use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
@@ -31,6 +33,111 @@ const AUTHORITY_FIELDS:&[&str]=&["schema","namespace","nonce","request_sha256","
     "build_manifest_sha256","candidate_root_device","candidate_root_inode","candidate_executable_inode"];
 const CLEANUP_FIELDS:&[&str]=&["schema","namespace","nonce","request_sha256","group","uid","reason","detail_sha256"];
 const CHILD_FENCE_FIELDS:&[&str]=&["schema","namespace","nonce","request_sha256","sequence","owner_pid"];
+const GATE_METADATA_SCHEMA:&str="opensteamer.microphone-v9-root-gate-metadata.v1";
+const GATE_METADATA_ROLES:&[&str]=&["prefix_identity","namespace_identity","tools_identity","product_identity","observers_identity"];
+const GATE_METADATA_FIELDS:&[&str]=&["schema","namespace","nonce","request_sha256","worker_sha256","host_gate_sha256","mode","observed_at_unix_ms","sequence","acl_absent","xattrs_empty","prefix_identity","namespace_identity","tools_identity","product_identity","observers_identity"];
+
+fn gate_identity_text(identity:&Identity)->Result<String>{
+    if identity.device==0||identity.inode==0||identity.uid!=0||identity.gid!=0||identity.mode!=0o40711||identity.links==0||
+        identity.mtime<0||identity.ctime<0||!(0..1_000_000_000).contains(&identity.mtime_nsec)||!(0..1_000_000_000).contains(&identity.ctime_nsec){return Err("gate directory full identity policy differs".into());}
+    Ok(format!("{},{},{},{},{},{},{},{},{},{},{}",identity.device,identity.inode,identity.uid,identity.gid,identity.mode,identity.links,identity.size,identity.mtime,identity.mtime_nsec,identity.ctime,identity.ctime_nsec))
+}
+fn gate_identity_parse(value:&str)->Result<Identity>{
+    let values=value.split(',').map(|value|if value=="0"{Ok(0)}else{positive(value)}).collect::<Result<Vec<_>>>()?;
+    if values.len()!=11{return Err("gate directory identity field extent differs".into());}
+    let identity=Identity{device:values[0],inode:values[1],uid:values[2].try_into().map_err(|_|"gate identity UID overflow")?,gid:values[3].try_into().map_err(|_|"gate identity GID overflow")?,mode:values[4].try_into().map_err(|_|"gate identity mode overflow")?,links:values[5],size:values[6],
+        mtime:values[7].try_into().map_err(|_|"gate identity timestamp overflow")?,mtime_nsec:values[8].try_into().map_err(|_|"gate identity nanosecond overflow")?,ctime:values[9].try_into().map_err(|_|"gate identity timestamp overflow")?,ctime_nsec:values[10].try_into().map_err(|_|"gate identity nanosecond overflow")?};
+    if gate_identity_text(&identity)?!=value{return Err("gate directory identity is not canonical".into());}Ok(identity)
+}
+fn validate_gate_metadata(bytes:&[u8],request:&Request,host_gate_sha:&str,sequence:usize,mode:Option<&str>)->Result<BTreeMap<String,String>>{
+    let fields=strict_flat(bytes,GATE_METADATA_FIELDS,MAX_REQUEST)?;
+    if !(1..=64).contains(&sequence)||!hex(host_gate_sha,64)||fields["schema"]!=GATE_METADATA_SCHEMA||fields["namespace"]!=request.get("namespace")||fields["nonce"]!=request.get("nonce")||fields["request_sha256"]!=request.sha256||fields["worker_sha256"]!=request.get("worker_sha256")||fields["host_gate_sha256"]!=host_gate_sha||
+        positive(&fields["sequence"])?!=sequence as u64||fields["acl_absent"]!="true"||fields["xattrs_empty"]!="true"||!matches!(fields["mode"].as_str(),"candidate-present"|"host-absent"|"host-ready")||mode.is_some_and(|mode|fields["mode"]!=mode){return Err("root gate metadata crosslinks differ".into());}
+    positive(&fields["observed_at_unix_ms"])?;
+    let identities=GATE_METADATA_ROLES.iter().map(|role|gate_identity_parse(&fields[*role])).collect::<Result<Vec<_>>>()?;
+    if identities.iter().any(|identity|identity.device!=identities[0].device)||identities.iter().enumerate().any(|(index,identity)|identities[..index].iter().any(|prior|(prior.device,prior.inode)==(identity.device,identity.inode))){return Err("root gate metadata directory roles alias or cross volumes".into());}
+    Ok(fields)
+}
+fn gate_metadata_bytes(request:&Request,host_gate_sha:&str,mode:&str,observed:u64,sequence:usize,identities:&[Identity])->Result<Vec<u8>>{
+    if identities.len()!=5{return Err("root gate metadata exact role count differs".into());}
+    let mut fields=BTreeMap::new();
+    for(key,value)in [("schema",GATE_METADATA_SCHEMA),("namespace",request.get("namespace")),("nonce",request.get("nonce")),("request_sha256",request.sha256.as_str()),("worker_sha256",request.get("worker_sha256")),("host_gate_sha256",host_gate_sha),("mode",mode),("acl_absent","true"),("xattrs_empty","true")]{fields.insert(key,value.to_string());}
+    fields.insert("observed_at_unix_ms",observed.to_string());fields.insert("sequence",sequence.to_string());
+    for(role,identity)in GATE_METADATA_ROLES.iter().zip(identities){fields.insert(role,gate_identity_text(identity)?);}
+    let bytes=GATE_METADATA_FIELDS.iter().map(|key|format!("{key}={}\n",fields[key])).collect::<String>().into_bytes();
+    validate_gate_metadata(&bytes,request,host_gate_sha,sequence,Some(mode))?;Ok(bytes)
+}
+fn gate_metadata_paths(namespace:&str)->[PathBuf;5]{
+    let prefix=PathBuf::from(EXECUTABLES);let attempt=prefix.join(namespace);let tools=attempt.join("tools");
+    [prefix,attempt,tools.clone(),tools.join("product"),tools.join("observers")]
+}
+struct GateDirectory{file:File,path:PathBuf,identity:Identity}
+impl GateDirectory{
+    fn capture(path:&Path)->Result<Self>{Self::capture_owned(path,0,0)}
+    fn capture_owned(path:&Path,owner:u32,group:u32)->Result<Self>{
+        if fs::canonicalize(path).map_err(|_|"gate directory canonical path unavailable")?!=path{return Err("gate directory alias refused".into());}
+        let before=fs::symlink_metadata(path).map_err(|_|"gate directory path stat unavailable")?;
+        if !before.is_dir()||before.uid()!=owner||before.gid()!=group||before.mode()!=0o40711{return Err("gate directory owner/type/mode refused".into());}
+        let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW|0x0010_0000).open(path).map_err(|_|"gate directory nofollow descriptor unavailable")?;
+        let identity=Identity::of(&before);let held=Self{file,path:path.to_path_buf(),identity};held.revalidate()?;Ok(held)
+    }
+    fn revalidate(&self)->Result<()>{
+        if fs::canonicalize(&self.path).map_err(|_|"gate directory canonical path disappeared")?!=self.path||Identity::of(&self.file.metadata().map_err(|_|"gate directory descriptor stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"gate directory path disappeared")?)!=self.identity{return Err("gate directory full descriptor/path identity changed".into());}
+        sealed_fs::clean_gate_metadata(&self.file)?;
+        if Identity::of(&self.file.metadata().map_err(|_|"gate directory descriptor after-stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"gate directory after-path disappeared")?)!=self.identity{return Err("gate directory changed during clean metadata inspection".into());}Ok(())
+    }
+}
+struct GateMetadataFile{file:File,path:PathBuf,identity:Identity,bytes:Vec<u8>,digest:String}
+impl GateMetadataFile{
+    fn open(path:&Path,bytes:&[u8])->Result<Self>{Self::open_owned(path,bytes,0,0)}
+    fn open_owned(path:&Path,bytes:&[u8],owner:u32,group:u32)->Result<Self>{
+        if bytes.is_empty()||bytes.len()>MAX_REQUEST||fs::canonicalize(path).map_err(|_|"gate metadata proof canonical path unavailable")?!=path{return Err("gate metadata proof path/extent refused".into());}
+        let before=fs::symlink_metadata(path).map_err(|_|"gate metadata proof path stat unavailable")?;
+        if !before.is_file()||before.uid()!=owner||before.gid()!=group||before.mode()!=0o100400||before.nlink()!=1||before.len()!=bytes.len() as u64{return Err("gate metadata proof owner/type/mode/links/extent refused".into());}
+        let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(|_|"gate metadata proof nofollow read-only open unavailable")?;
+        let proof=Self{file,path:path.to_path_buf(),identity:Identity::of(&before),bytes:bytes.to_vec(),digest:sha256(bytes)};proof.revalidate()?;Ok(proof)
+    }
+    fn revalidate(&self)->Result<()>{
+        unsafe extern "C"{fn fcntl(fd:i32,command:i32,...)->i32;}
+        let flags=unsafe{fcntl(self.file.as_raw_fd(),3)};
+        if flags<0||flags&3!=0||Identity::of(&self.file.metadata().map_err(|_|"gate metadata proof descriptor stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"gate metadata proof path disappeared")?)!=self.identity{return Err("gate metadata proof descriptor/path/access changed".into());}
+        sealed_fs::clean_gate_metadata(&self.file)?;
+        let mut actual=vec![0u8;self.bytes.len()+1];let count=self.file.read_at(&mut actual,0).map_err(|_|"gate metadata proof bounded read failed")?;
+        if actual[..count]!=self.bytes||sha256(&actual[..count])!=self.digest||Identity::of(&self.file.metadata().map_err(|_|"gate metadata proof after-stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"gate metadata proof after-path disappeared")?)!=self.identity{return Err("gate metadata proof exact bytes/full identity changed".into());}Ok(())
+    }
+}
+struct RootGateMetadata{directories:Vec<GateDirectory>,proof:GateMetadataFile}
+impl RootGateMetadata{
+    fn revalidate(&self)->Result<()>{
+        // Attempt every retained check, including on a failed/aborted child.
+        let mut errors=Vec::new();for directory in &self.directories{if let Err(error)=directory.revalidate(){errors.push(error);}}
+        if let Err(error)=self.proof.revalidate(){errors.push(error);}if errors.is_empty(){Ok(())}else{Err(errors.join("; "))}
+    }
+}
+fn gate_metadata_sequence(name:&str)->Result<Option<usize>>{
+    if !name.starts_with("gate-metadata"){return Ok(None);}
+    let number=name.strip_prefix("gate-metadata-").and_then(|number|number.strip_suffix(".txt")).ok_or("gate metadata proof filename malformed")?;
+    if number.len()!=3||!number.bytes().all(|byte|byte.is_ascii_digit()){return Err("gate metadata proof filename sequence malformed".into());}
+    let sequence=number.parse::<usize>().map_err(|_|"gate metadata proof sequence overflow")?;if !(1..=64).contains(&sequence){return Err("gate metadata proof sequence bound exceeded".into());}Ok(Some(sequence))
+}
+fn next_gate_metadata(path:&Path,request:&Request,host_gate_sha:&str)->Result<usize>{
+    next_gate_metadata_owned(path,request,host_gate_sha,0,0)
+}
+fn next_gate_metadata_owned(path:&Path,request:&Request,host_gate_sha:&str,owner:u32,group:u32)->Result<usize>{
+    let mut sequences=Vec::new();
+    for(count,entry)in fs::read_dir(path).map_err(|_|"gate metadata proof inventory unavailable")?.enumerate(){
+        if count>=256{return Err("gate metadata proof inventory bound exceeded".into());}let entry=entry.map_err(|_|"gate metadata proof inventory entry unavailable")?;let name=entry.file_name().into_string().map_err(|_|"gate metadata proof filename encoding differs")?;
+        if let Some(sequence)=gate_metadata_sequence(&name)?{let bytes=read_owned(&entry.path(),owner,group,0o400,MAX_REQUEST)?;let proof=GateMetadataFile::open_owned(&entry.path(),&bytes,owner,group)?;validate_gate_metadata(&proof.bytes,request,host_gate_sha,sequence,None)?;sequences.push(sequence);}
+    }
+    sequences.sort();if sequences!=(1..=sequences.len()).collect::<Vec<_>>()||sequences.len()>=64{return Err("gate metadata proof sequence gap/exhaustion refused".into());}Ok(sequences.len()+1)
+}
+fn validate_initial_gate_metadata(name:&str,bytes:&[u8],request:&Request,host_gate_sha:&str)->Result<()>{
+    if gate_metadata_sequence(name)?!=Some(1){return Err("pre-effect refusal has later gate metadata observations".into());}
+    validate_gate_metadata(bytes,request,host_gate_sha,1,Some("candidate-present"))?;Ok(())
+}
+fn gate_metadata_result<T>(child:Result<T>,metadata:Result<()>)->Result<T>{
+    match(child,metadata){(Ok(value),Ok(()))=>Ok(value),(Err(reason),Ok(()))=>Err(reason),(Ok(_),Err(error))=>Err(error),(Err(reason),Err(error))=>Err(format!("{reason}; gate metadata post-check refused: {error}"))}
+}
 
 fn child_fence_bytes(request:&Request,sequence:usize)->Result<Vec<u8>>{
     if !(1..=64).contains(&sequence){return Err("child containment fence bound exceeded".into());}
@@ -352,6 +459,17 @@ impl RootContext{
         read_pinned(Path::new(HOST_PLIST),self.request.get("host_launch_plist_sha256"),501,0o600,MAX_REQUEST)?;
         self.revalidate()
     }
+    fn gate_metadata(&self,mode:&str)->Result<RootGateMetadata>{
+        self.revalidate()?;
+        let mode=mode.strip_prefix("--").filter(|mode|matches!(*mode,"candidate-present"|"host-absent"|"host-ready")).ok_or("root gate metadata mode refused")?;
+        let sequence=next_gate_metadata(&self.state,&self.request,self.authority.get("host_gate_sha256"))?;
+        let mut directories=Vec::new();for path in gate_metadata_paths(self.request.get("namespace")){os::supervisor_check()?;directories.push(GateDirectory::capture(&path)?);}
+        let identities=directories.iter().map(|directory|directory.identity.clone()).collect::<Vec<_>>();
+        let observed=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"gate metadata clock unavailable")?.as_millis().try_into().map_err(|_|"gate metadata clock overflow")?;
+        let bytes=gate_metadata_bytes(&self.request,self.authority.get("host_gate_sha256"),mode,observed,sequence,&identities)?;
+        let name=format!("gate-metadata-{sequence:03}.txt");self.record(&name,&bytes)?;
+        let metadata=RootGateMetadata{directories,proof:GateMetadataFile::open(&self.state.join(name),&bytes)?};metadata.revalidate()?;Ok(metadata)
+    }
     pub(super) fn gate(&self,mode:&str)->Result<HostGate>{
         self.host_bytes()?;
         let baseline_path=self.state.join("host-baseline.txt");
@@ -365,8 +483,12 @@ impl RootContext{
         let ready=ready_name.map(|name|OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(self.state.join(name)).map_err(|_|"ready generation descriptor unavailable")).transpose()?;
         let script=self.executables.join("tools/opensteamer-microphone-v9-host-gate.rb");
         read_pinned(&script,self.authority.get("host_gate_sha256"),0,0o444,MAX_REQUEST)?;
-        let captured=os::OwnedChild::ruby_gate(&script,mode,&self.request.sha256,&self.request_file,baseline.as_ref(),ready.as_ref())?.finish(Duration::from_secs(20),MAX_REQUEST)?;
-        if captured.code!=0||!captured.stderr.is_empty(){return Err(host_gate_failure(captured.code,&captured.stdout,&captured.stderr));}
+        // Initial absent-host admission fails above (no baseline), without
+        // creating a proof. Only an actual imminent Ruby child gets one.
+        let metadata=self.gate_metadata(mode)?;
+        let captured=(||{let captured=os::OwnedChild::ruby_gate(&script,mode,&self.request.sha256,&self.request_file,baseline.as_ref(),ready.as_ref(),&metadata.proof.file,&metadata.proof.digest)?.finish(Duration::from_secs(20),MAX_REQUEST)?;
+            if captured.code!=0||!captured.stderr.is_empty(){return Err(host_gate_failure(captured.code,&captured.stdout,&captured.stderr));}Ok(captured)})();
+        let captured=gate_metadata_result(captured,metadata.revalidate())?;
         let gate=HostGate::validate(&captured.stdout,&self.request,mode)?;self.host_bytes()?;self.log_prefix(&gate)?;
         if let Some(bytes)=self.optional_record("host-baseline.txt")?{
             let original=HostGate::validate_baseline(&bytes,&self.request)?;self.log_prefix(&original)?;
@@ -920,6 +1042,10 @@ impl OsBackend{
         refusal_journal_empty(&self.journal,&durable,self.resumed,self.context.child_sequence)?;
         for(count,entry)in fs::read_dir(&self.context.state).map_err(|_|"pre-effect state inventory unavailable")?.enumerate(){
             if count>=64{return Err("pre-effect state inventory bound exceeded".into());}let entry=entry.map_err(|_|"pre-effect state entry unavailable")?;let name=entry.file_name().into_string().map_err(|_|"pre-effect state name differs")?;
+            if gate_metadata_sequence(&name)?.is_some(){
+                let bytes=read_owned(&entry.path(),0,0,0o400,MAX_REQUEST)?;let proof=GateMetadataFile::open(&entry.path(),&bytes)?;
+                validate_initial_gate_metadata(&name,&proof.bytes,&self.context.request,self.context.authority.get("host_gate_sha256"))?;continue;
+            }
             if !PRE_EFFECT_RECORDS.contains(&name.as_str()){return Err("pre-effect refusal has effect/baseline/unknown durable evidence".into());}
             if ["prior","failed","probes","journal"].contains(&name.as_str())&&fs::read_dir(entry.path()).map_err(|_|"pre-effect directory inventory unavailable")?.next().is_some(){return Err("pre-effect refusal contains retained effect/pending evidence".into());}
         }Ok(())
@@ -1134,6 +1260,85 @@ impl Backend for OsBackend{
 
 #[cfg(test)]mod tests{
     use super::*;
+    fn gate_metadata_identities()->Vec<Identity>{
+        (1..=5).map(|inode|Identity{device:2,inode,uid:0,gid:0,mode:0o40711,links:1,size:128,mtime:10,mtime_nsec:1,ctime:20,ctime_nsec:2}).collect()
+    }
+    fn gate_metadata_fixture_bytes(sequence:usize,mode:&str)->Vec<u8>{
+        gate_metadata_bytes(&super::super::tests::request(),&"e".repeat(64),mode,1_790_000_000_000,sequence,&gate_metadata_identities()).unwrap()
+    }
+    #[test]fn root_gate_metadata_exact_schema_crosslinks_and_full_role_identities(){
+        let request=super::super::tests::request();let pin="e".repeat(64);let bytes=gate_metadata_fixture_bytes(1,"candidate-present");
+        validate_gate_metadata(&bytes,&request,&pin,1,Some("candidate-present")).unwrap();
+        let text=String::from_utf8(bytes.clone()).unwrap();
+        for key in GATE_METADATA_FIELDS{
+            let original=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();
+            for mutant in [text.replace(&format!("{original}\n"),""),text.clone()+&format!("{original}\n"),text.replace(original,&format!("{key}=wrong"))]{assert!(validate_gate_metadata(mutant.as_bytes(),&request,&pin,1,None).is_err(),"accepted {key}");}
+        }
+        assert!(validate_gate_metadata((text.clone()+"unknown=true\n").as_bytes(),&request,&pin,1,None).is_err());
+        assert!(validate_gate_metadata(&bytes,&request,&"f".repeat(64),1,None).is_err());assert!(validate_gate_metadata(&bytes,&request,&pin,2,None).is_err());assert!(validate_gate_metadata(&bytes,&request,&pin,1,Some("host-absent")).is_err());
+        let identity=gate_metadata_identities()[0].clone();let original=gate_identity_text(&identity).unwrap();
+        for value in [original.clone()+",0",original.replacen("2,","02,",1),original.replace(",0,0,",",501,0,"),original.replace(&format!(",{},",identity.mode),",16877,"),original.replace(",10,1,20,2",",10,1000000000,20,2"),original.replace(",10,1,20,2",",-10,1,20,2")]{assert!(gate_identity_parse(&value).is_err());}
+        assert_eq!(gate_identity_parse(&original).unwrap(),identity);
+        let mut identities=gate_metadata_identities();identities[1]=identities[0].clone();assert!(gate_metadata_bytes(&request,&pin,"candidate-present",1,1,&identities).is_err());
+        let mut identities=gate_metadata_identities();identities[1].device=3;assert!(gate_metadata_bytes(&request,&pin,"candidate-present",1,1,&identities).is_err());
+        assert!(gate_metadata_bytes(&request,&pin,"candidate-present",1,1,&identities[..4]).is_err());
+    }
+    #[test]fn gate_metadata_initial_observation_is_only_exact_001_candidate_present(){
+        let request=super::super::tests::request();let pin="e".repeat(64);let bytes=gate_metadata_fixture_bytes(1,"candidate-present");
+        validate_initial_gate_metadata("gate-metadata-001.txt",&bytes,&request,&pin).unwrap();
+        for name in ["gate-metadata-000.txt","gate-metadata-002.txt","gate-metadata-065.txt","gate-metadata-01.txt","gate-metadata-001","gate-metadata-001.txt.extra","gate-metadata-alias"]{assert!(validate_initial_gate_metadata(name,&bytes,&request,&pin).is_err());}
+        for mode in ["host-absent","host-ready"]{assert!(validate_initial_gate_metadata("gate-metadata-001.txt",&gate_metadata_fixture_bytes(1,mode),&request,&pin).is_err());}
+        assert_eq!(gate_metadata_sequence("request.txt").unwrap(),None);assert_eq!(gate_metadata_sequence("gate-metadata-064.txt").unwrap(),Some(64));
+        for name in ["core-baseline.txt","normal-restart-intent.txt","pending-001","recovery-refusal.txt"]{assert!(!PRE_EFFECT_RECORDS.contains(&name));}
+    }
+    #[test]fn private_directory_fd_xattrs_flags_and_full_snapshot_are_required(){
+        unsafe extern "C"{fn fsetxattr(fd:i32,name:*const std::ffi::c_char,value:*const std::ffi::c_void,size:usize,position:u32,options:i32)->i32;fn fremovexattr(fd:i32,name:*const std::ffi::c_char,options:i32)->i32;fn fchflags(fd:i32,flags:u32)->i32;}
+        let(path,base,owner,group)=pre_effect_directory_fixture("gate-directory");let child=path.join("owned");fs::create_dir(&child).unwrap();fs::set_permissions(&child,fs::Permissions::from_mode(0o711)).unwrap();
+        let held=GateDirectory::capture_owned(&child,owner,group).unwrap();held.revalidate().unwrap();assert!(GateDirectory::capture(&child).is_err());
+        let attribute=std::ffi::CString::new("com.opensteamer.microphone-v9.fixture").unwrap();
+        assert_eq!(unsafe{fsetxattr(held.file.as_raw_fd(),attribute.as_ptr(),b"1".as_ptr().cast(),1,0,0)},0);
+        assert!(sealed_fs::clean_gate_metadata(&held.file).is_err());assert!(held.revalidate().is_err());assert_eq!(unsafe{fremovexattr(held.file.as_raw_fd(),attribute.as_ptr(),0)},0);
+        assert_eq!(unsafe{fchflags(held.file.as_raw_fd(),1)},0);assert!(sealed_fs::clean_gate_metadata(&held.file).is_err());assert_eq!(unsafe{fchflags(held.file.as_raw_fd(),0)},0);
+        drop(held);let held=GateDirectory::capture_owned(&child,owner,group).unwrap();
+        fs::write(child.join("extent-change"),b"fixture").unwrap();assert!(held.revalidate().is_err());fs::remove_file(child.join("extent-change")).unwrap();drop(held);
+        let held=GateDirectory::capture_owned(&child,owner,group).unwrap();fs::set_permissions(&child,fs::Permissions::from_mode(0o755)).unwrap();assert!(held.revalidate().is_err());fs::set_permissions(&child,fs::Permissions::from_mode(0o711)).unwrap();drop(held);
+        let held=GateDirectory::capture_owned(&child,owner,group).unwrap();let retained=path.join("retained");fs::rename(&child,&retained).unwrap();fs::create_dir(&child).unwrap();fs::set_permissions(&child,fs::Permissions::from_mode(0o711)).unwrap();assert!(held.revalidate().is_err());drop(held);
+        fs::remove_dir(child).unwrap();fs::remove_dir(retained).unwrap();drop(base);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn gate_directory_snapshot_rejects_every_split_stat_field_drift(){
+        let(path,base,owner,group)=pre_effect_directory_fixture("gate-stat");let child=path.join("owned");fs::create_dir(&child).unwrap();fs::set_permissions(&child,fs::Permissions::from_mode(0o711)).unwrap();
+        let mut held=GateDirectory::capture_owned(&child,owner,group).unwrap();let original=held.identity.clone();
+        for index in 0..11{let mut changed=original.clone();match index{0=>changed.device+=1,1=>changed.inode+=1,2=>changed.uid+=1,3=>changed.gid+=1,4=>changed.mode+=1,5=>changed.links+=1,6=>changed.size+=1,7=>changed.mtime+=1,8=>changed.mtime_nsec+=1,9=>changed.ctime+=1,_=>changed.ctime_nsec+=1};held.identity=changed;assert!(held.revalidate().is_err(),"accepted stat field {index}");}
+        held.identity=original;held.revalidate().unwrap();drop(held);fs::remove_dir(child).unwrap();drop(base);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn gate_metadata_proof_file_is_immutable_nofollow_readonly_and_exact_bytes(){
+        let(path,base,owner,group)=pre_effect_directory_fixture("gate-proof");let bytes=gate_metadata_fixture_bytes(1,"candidate-present");let file=path.join("gate-metadata-001.txt");base.write_record("gate-metadata-001.txt",&bytes,0o400).unwrap();
+        assert!(GateMetadataFile::open(&file,&bytes).is_err());let mut proof=GateMetadataFile::open_owned(&file,&bytes,owner,group).unwrap();proof.revalidate().unwrap();
+        proof.bytes[0]=b'x';assert!(proof.revalidate().is_err());proof.bytes=bytes.clone();proof.revalidate().unwrap();
+        let second=path.join("alias");fs::hard_link(&file,&second).unwrap();assert!(proof.revalidate().is_err());assert!(GateMetadataFile::open_owned(&file,&bytes,owner,group).is_err());fs::remove_file(second).unwrap();drop(proof);
+        let mut proof=GateMetadataFile::open_owned(&file,&bytes,owner,group).unwrap();fs::set_permissions(&file,fs::Permissions::from_mode(0o600)).unwrap();let writable=OpenOptions::new().read(true).write(true).open(&file).unwrap();fs::set_permissions(&file,fs::Permissions::from_mode(0o400)).unwrap();proof.identity=Identity::of(&fs::metadata(&file).unwrap());proof.file=writable;assert!(proof.revalidate().is_err());drop(proof);
+        let proof=GateMetadataFile::open_owned(&file,&bytes,owner,group).unwrap();let retained=path.join("old");fs::rename(&file,&retained).unwrap();base.write_record("gate-metadata-001.txt",&bytes,0o400).unwrap();assert!(proof.revalidate().is_err());drop(proof);
+        fs::remove_file(&file).unwrap();std::os::unix::fs::symlink(&retained,&file).unwrap();assert!(GateMetadataFile::open_owned(&file,&bytes,owner,group).is_err());fs::remove_file(file).unwrap();fs::remove_file(retained).unwrap();drop(base);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn gate_metadata_inventory_is_contiguous_bounded_and_never_resets_on_resume(){
+        let request=super::super::tests::request();let pin="e".repeat(64);let(path,held,owner,group)=pre_effect_directory_fixture("gate-inventory");
+        assert_eq!(next_gate_metadata_owned(&path,&request,&pin,owner,group).unwrap(),1);
+        held.write_record("gate-metadata-002.txt",&gate_metadata_fixture_bytes(2,"host-absent"),0o400).unwrap();assert!(next_gate_metadata_owned(&path,&request,&pin,owner,group).is_err());fs::remove_file(path.join("gate-metadata-002.txt")).unwrap();
+        for sequence in 1..=64{held.write_record(&format!("gate-metadata-{sequence:03}.txt"),&gate_metadata_fixture_bytes(sequence,if sequence==1{"candidate-present"}else{"host-absent"}),0o400).unwrap();if matches!(sequence,1|63){assert_eq!(next_gate_metadata_owned(&path,&request,&pin,owner,group).unwrap(),sequence+1);}}
+        assert!(next_gate_metadata_owned(&path,&request,&pin,owner,group).is_err());
+        for sequence in 1..=64{fs::remove_file(path.join(format!("gate-metadata-{sequence:03}.txt"))).unwrap();}
+        held.write_record("gate-metadata-001.txt",&gate_metadata_fixture_bytes(2,"candidate-present"),0o400).unwrap();assert!(next_gate_metadata_owned(&path,&request,&pin,owner,group).is_err());fs::remove_file(path.join("gate-metadata-001.txt")).unwrap();
+        held.write_record("gate-metadata-alias",b"unknown",0o400).unwrap();assert!(next_gate_metadata_owned(&path,&request,&pin,owner,group).is_err());fs::remove_file(path.join("gate-metadata-alias")).unwrap();drop(held);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn root_metadata_postcheck_is_attempted_for_all_roles_even_after_child_refusal(){
+        let(path,held,owner,group)=pre_effect_directory_fixture("gate-post");let mut directories=Vec::new();
+        for index in 0..5{let directory=path.join(format!("role-{index}"));fs::create_dir(&directory).unwrap();fs::set_permissions(&directory,fs::Permissions::from_mode(0o711)).unwrap();directories.push(GateDirectory::capture_owned(&directory,owner,group).unwrap());}
+        held.write_record("proof",b"fixture",0o400).unwrap();let proof=GateMetadataFile::open_owned(&path.join("proof"),b"fixture",owner,group).unwrap();let metadata=RootGateMetadata{directories,proof};metadata.revalidate().unwrap();
+        fs::write(path.join("role-0/changed"),b"fixture").unwrap();fs::set_permissions(path.join("proof"),fs::Permissions::from_mode(0o600)).unwrap();
+        let error=gate_metadata_result::<u8>(Err("original child refusal".into()),metadata.revalidate()).unwrap_err();assert!(error.contains("original child refusal"));assert!(error.contains("gate directory full descriptor/path identity changed"));assert!(error.contains("gate metadata proof descriptor/path/access changed"));
+        assert_eq!(gate_metadata_result(Ok(7),Ok(())).unwrap(),7);assert!(gate_metadata_result(Ok(7),Err("metadata refused".into())).is_err());
+        drop(metadata);fs::remove_file(path.join("role-0/changed")).unwrap();for index in 0..5{fs::remove_dir(path.join(format!("role-{index}"))).unwrap();}fs::remove_file(path.join("proof")).unwrap();drop(held);fs::remove_dir(path).unwrap();
+    }
     // Literal retained read-only inspection; no runtime query in these tests.
     const DRIVER_PROCINFO_FIXTURE:&str=r#"program path = /System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc/Contents/MacOS/com.apple.audio.Core-Audio-Driver-Service.helper
 Could not print Mach info for pid 309: 0x5

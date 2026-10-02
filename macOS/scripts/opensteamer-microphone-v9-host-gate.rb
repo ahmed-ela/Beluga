@@ -54,7 +54,10 @@ module BelugaMicrophoneV9HostGate
   # Pinned macOS SDK sys/stat.h: SF_NOUNLINK (rename/delete protection).
   # Only the canonical /Library ancestor carries this exact system flag.
   LIBRARY_FLAGS = "1048576\n".freeze
-  CLI_STAGES = %w[caller request sealed_sources product_contract baseline observe source_recheck output unknown].freeze
+  ROOT_METADATA_SCHEMA = 'opensteamer.microphone-v9-root-gate-metadata.v1'
+  ROOT_METADATA_KEYS = %w[schema namespace nonce request_sha256 worker_sha256 host_gate_sha256 mode observed_at_unix_ms sequence acl_absent xattrs_empty prefix_identity namespace_identity tools_identity product_identity observers_identity].freeze
+  ROOT_METADATA_IDENTITY_KEYS = %w[prefix_identity namespace_identity tools_identity product_identity observers_identity].freeze
+  CLI_STAGES = %w[caller request root_metadata sealed_sources product_contract baseline observe source_recheck output unknown].freeze
   MAX_DIAGNOSTIC_BYTES = 2 * 1024 * 1024
   SAFE_ENV = { 'HOME' => '/Users/ahmed', 'USER' => 'ahmed', 'LOGNAME' => 'ahmed',
                'PATH' => '/usr/bin:/bin:/usr/sbin:/sbin', 'LC_ALL' => 'C', 'TMPDIR' => '/private/tmp' }.freeze
@@ -141,6 +144,56 @@ module BelugaMicrophoneV9HostGate
     raise Refused, 'root-held input unavailable', cause: nil
   end
 
+  def self.root_metadata_paths(namespace)
+    assert!(namespace.is_a?(String) && NAMESPACE.match?(namespace) && namespace.bytesize <= 64, 'root metadata namespace refused')
+    directory = PREFIX + '/' + namespace
+    ROOT_METADATA_IDENTITY_KEYS.zip([PREFIX, directory, directory + '/tools', directory + '/tools/product', directory + '/tools/observers']).to_h.freeze
+  end
+
+  def self.root_metadata_identity!(value)
+    assert!(value.is_a?(String), 'root metadata identity refused')
+    fields = value.split(',', -1)
+    assert!(fields.length == 11, 'root metadata identity extent refused')
+    fields.each { |field| number!(field, zero: true) }
+    tuple = fields.map(&:to_i)
+    assert!(tuple[0] > 0 && tuple[1] > 0 && tuple[2] == 0 && tuple[3] == 0 && tuple[4] == 040711 && tuple[5] > 0 &&
+      tuple[7] <= 9_223_372_036_854_775_807 && tuple[9] <= 9_223_372_036_854_775_807 &&
+      tuple[8] < 1_000_000_000 && tuple[10] < 1_000_000_000, 'root metadata identity policy refused')
+    tuple.freeze
+  end
+
+  def self.root_metadata!(bytes, expected, request, request_sha:, mode:)
+    sha!(expected); sha!(request_sha)
+    assert!(Digest::SHA256.hexdigest(bytes) == expected, 'root metadata bytes differ')
+    value = parse_flat(bytes, ROOT_METADATA_KEYS)
+    assert!(value['schema'] == ROOT_METADATA_SCHEMA && MODES.include?(mode) && value['mode'] == mode &&
+      value['namespace'] == request['namespace'] && value['nonce'] == request['nonce'] &&
+      value['request_sha256'] == request_sha && value['worker_sha256'] == request['worker_sha256'] &&
+      value['acl_absent'] == 'true' && value['xattrs_empty'] == 'true', 'root metadata binding refused')
+    %w[nonce request_sha256 worker_sha256 host_gate_sha256].each { |key| sha!(value[key]) }
+    number!(value['observed_at_unix_ms']); number!(value['sequence'])
+    assert!(value['sequence'].to_i <= 64, 'root metadata sequence refused')
+    age = (Time.now.to_r * 1000).to_i - value['observed_at_unix_ms'].to_i
+    assert!(age.between?(0, 5000), 'root metadata freshness refused')
+    # The native owner pins this exact sealed script independently. The proof
+    # cannot bind a different Ruby generation merely by supplying its digest.
+    read_file!(__FILE__, value['host_gate_sha256'], owner: 0, modes: [0444])
+    root_metadata_paths(request['namespace']).to_h do |key, path|
+      [path, root_metadata_identity!(value.fetch(key))]
+    end.freeze
+  end
+
+  def self.read_root_metadata_fd!(expected, request, request_sha:, mode:)
+    root_metadata!(read_fd!(6), expected, request, request_sha: request_sha, mode: mode)
+  ensure
+    # This authority channel is never inherited by observer grandchildren.
+    begin
+      IO.for_fd(6, autoclose: false).close
+    rescue SystemCallError, IOError
+      nil
+    end
+  end
+
   def self.read_file!(path, sha, owner:, modes:)
     path!(path); sha!(sha); assert!(File.realpath(path) == path, 'file alias refused')
     before = File.lstat(path)
@@ -211,8 +264,26 @@ module BelugaMicrophoneV9HostGate
 
   class Commands
     attr_reader :deadline
-    def initialize(tools)
-      @tools = tools; @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+    def initialize(tools, root_metadata: nil)
+      @tools = tools; @root_metadata = root_metadata; @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+      namespace = File.basename(File.dirname(tools))
+      @root_metadata_paths = tools == PREFIX + '/' + namespace + '/tools' ?
+        BelugaMicrophoneV9HostGate.root_metadata_paths(namespace).values.freeze : [].freeze
+    end
+
+    def root_metadata_identity!(path)
+      gate = BelugaMicrophoneV9HostGate
+      gate.assert!(@root_metadata.is_a?(Hash) && @root_metadata.frozen? &&
+        @root_metadata.keys.sort == @root_metadata_paths.sort && @root_metadata.key?(path), 'root metadata proof missing')
+      stat = File.lstat(path)
+      gate.assert!(File.realpath(path) == path && stat.directory? && stat.uid == 0 && stat.gid == 0 &&
+        (stat.mode & 07777) == 0711 && gate.identity(stat) == @root_metadata.fetch(path), 'root metadata directory identity changed')
+      @root_metadata.fetch(path)
+    end
+
+    def sealed_root_metadata!
+      BelugaMicrophoneV9HostGate.assert!(@root_metadata_paths.length == 5, 'root metadata tools role refused')
+      @root_metadata_paths.each { |path| root_metadata_identity!(path) }
     end
 
     def allowed!(argv)
@@ -252,6 +323,7 @@ module BelugaMicrophoneV9HostGate
 
     def clean_metadata!(path)
       library = nil
+      protected_identity = root_metadata_identity!(path) if @root_metadata_paths.include?(path)
       expected_flags = "0\n"
       if path == '/Library'
         library = File.lstat(path)
@@ -261,14 +333,17 @@ module BelugaMicrophoneV9HostGate
       end
       out, _err, status = run('/bin/ls', '-lde', path)
       BelugaMicrophoneV9HostGate.assert!(status.success? && !out.lines.first.to_s.split.first.to_s.include?('+'), 'sealed node ACL refused')
-      out, err, status = run('/usr/bin/xattr', path)
-      BelugaMicrophoneV9HostGate.assert!(status.success? && out.empty? && err.empty?, 'sealed node xattrs refused')
+      unless protected_identity
+        out, err, status = run('/usr/bin/xattr', path)
+        BelugaMicrophoneV9HostGate.assert!(status.success? && out.empty? && err.empty?, 'sealed node xattrs refused')
+      end
       out, _err, status = run('/usr/bin/stat', '-f', '%f', path)
       BelugaMicrophoneV9HostGate.assert!(status.success? && out == expected_flags, 'sealed node flags refused')
       if library
         BelugaMicrophoneV9HostGate.assert!(File.realpath(path) == path &&
           BelugaMicrophoneV9HostGate.identity(File.lstat(path)) == BelugaMicrophoneV9HostGate.identity(library), 'sealed Library identity changed')
       end
+      root_metadata_identity!(path) if protected_identity
     end
 
     def run(*argv, stdin_data: nil, **options)
@@ -314,6 +389,7 @@ module BelugaMicrophoneV9HostGate
 
   def self.sealed_sources!(tools, namespace, commands:)
     assert!(tools == PREFIX + '/' + namespace + '/tools' && File.realpath(__FILE__) == tools + '/opensteamer-microphone-v9-host-gate.rb', 'unsealed adapter location refused')
+    commands.sealed_root_metadata!
     paths = []; current = tools
     until current == '/'
       paths << current; current = File.dirname(current)
@@ -614,11 +690,13 @@ module BelugaMicrophoneV9HostGate
     stage = 'caller'
     assert!(Process.uid == 501 && Process.euid == 501, 'host gate requires original UID501')
     assert!(ENV.keys.none? { |key| key.match?(/\A(?:RUBY|GEM|BUNDLE|DYLD_|LD_)/) }, 'interpreter loader refused')
-    assert!(argv.size == 3 && MODES.any? { |mode| argv[0] == '--' + mode } && argv[1] == '/dev/fd/3', 'usage: sealed host gate --candidate-present|--host-absent|--host-ready /dev/fd/3 SHA')
+    assert!(argv.size == 4 && MODES.any? { |mode| argv[0] == '--' + mode } && argv[1] == '/dev/fd/3', 'usage: sealed host gate --candidate-present|--host-absent|--host-ready /dev/fd/3 SHA ROOT_METADATA_SHA')
     stage = 'request'
     request = request!(read_fd!(3), argv[2]); mode = argv[0].delete_prefix('--')
+    stage = 'root_metadata'
+    root_metadata = read_root_metadata_fd!(argv[3], request, request_sha: argv[2], mode: mode)
     tools = PREFIX + '/' + request['namespace'] + '/tools'
-    commands = Commands.new(tools)
+    commands = Commands.new(tools, root_metadata: root_metadata)
     stage = 'sealed_sources'
     sources = sealed_sources!(tools, request['namespace'], commands: commands)
     stage = 'product_contract'

@@ -432,18 +432,162 @@ class MicrophoneV9HostGateTests < Minitest::Test
       size: 128, mtime: Time.at(10), ctime: Time.at(20), kind: :directory }.merge(changes))
   end
 
+  def root_metadata_fixture(mode: 'candidate-present', now_ms: 1_790_928_000_000)
+    req = request
+    value = { 'schema' => Gate::ROOT_METADATA_SCHEMA, 'namespace' => req['namespace'], 'nonce' => req['nonce'],
+      'request_sha256' => Digest::SHA256.hexdigest(text(req)), 'worker_sha256' => req['worker_sha256'],
+      'host_gate_sha256' => 'e' * 64, 'mode' => mode, 'observed_at_unix_ms' => now_ms.to_s,
+      'sequence' => '1', 'acl_absent' => 'true', 'xattrs_empty' => 'true' }
+    Gate::ROOT_METADATA_IDENTITY_KEYS.each_with_index do |key, index|
+      value[key] = Gate.identity(metadata_stat(ino: 3 + index, mode: 040711)).join(',')
+    end
+    value
+  end
+
+  def root_metadata_text(value)
+    value.map { |key, item| "#{key}=#{item}\n" }.join
+  end
+
+  def root_metadata_source_stub
+    lambda do |path, sha, owner:, modes:|
+      Gate.assert!(File.expand_path(path) == File.expand_path('opensteamer-microphone-v9-host-gate.rb', __dir__) &&
+        sha == 'e' * 64 && owner == 0 && modes == [0444], 'root metadata sealed script bytes differ')
+      ['offline sealed script', Gate.identity(metadata_stat(kind: :file, mode: 0100444))]
+    end
+  end
+
+  def parse_root_metadata(value = root_metadata_fixture, expected: nil, mode: 'candidate-present', now_ms: 1_790_928_000_000)
+    bytes = value.is_a?(Hash) ? root_metadata_text(value) : value
+    Time.stub(:now, Time.at(Rational(now_ms, 1000))) do
+      Gate.stub(:read_file!, root_metadata_source_stub) do
+        Gate.root_metadata!(bytes, expected || Digest::SHA256.hexdigest(bytes), request,
+          request_sha: Digest::SHA256.hexdigest(text(request)), mode: mode)
+      end
+    end
+  end
+
+  def test_root_metadata_wire_binds_every_field_and_exact_five_identities
+    value = root_metadata_fixture; accepted = parse_root_metadata(value)
+    assert accepted.frozen?
+    assert_equal Gate.root_metadata_paths(request['namespace']).values.sort, accepted.keys.sort
+    assert accepted.values.all?(&:frozen?)
+    Gate::MODES.each do |mode|
+      assert_equal accepted, parse_root_metadata(root_metadata_fixture(mode: mode), mode: mode)
+    end
+    Gate::ROOT_METADATA_KEYS.each do |key|
+      assert_raises(Gate::Refused) { parse_root_metadata(value.reject { |field, _| field == key }) }
+      assert_raises(Gate::Refused) { parse_root_metadata(value.merge(key => 'wrong')) }
+    end
+    bytes = root_metadata_text(value)
+    [bytes + "unknown=1\n", bytes + "sequence=1\n", bytes + "path=#{Gate::PREFIX}\n", bytes.delete_suffix("\n"),
+     bytes.sub("\n", "\r\n"), bytes.sub('schema=', 'schema=extra='), bytes.sub('namespace=', "namespace=é")].each do |mutant|
+      assert_raises(Gate::Refused) { parse_root_metadata(mutant) }
+    end
+    assert_raises(Gate::Refused) { parse_root_metadata(value, expected: 'f' * 64) }
+    assert_raises(Gate::Refused) { parse_root_metadata(value, mode: 'host-ready') }
+    %w[nonce request_sha256 worker_sha256 host_gate_sha256].each do |key|
+      assert_raises(Gate::Refused) { parse_root_metadata(value.merge(key => 'f' * 64)) }
+    end
+    %w[false TRUE 1].each do |mutant|
+      %w[acl_absent xattrs_empty].each { |key| assert_raises(Gate::Refused) { parse_root_metadata(value.merge(key => mutant)) } }
+    end
+  end
+
+  def test_root_metadata_identity_and_freshness_are_canonical_bounded_and_not_replayable
+    value = root_metadata_fixture
+    %w[0 01 65 18446744073709551616].each do |sequence|
+      assert_raises(Gate::Refused) { parse_root_metadata(value.merge('sequence' => sequence)) }
+    end
+    assert_equal parse_root_metadata(value), parse_root_metadata(value.merge('sequence' => '64'))
+    assert parse_root_metadata(value, now_ms: value['observed_at_unix_ms'].to_i + 5000)
+    [-1, 5001].each do |age|
+      assert_raises(Gate::Refused) { parse_root_metadata(value, now_ms: value['observed_at_unix_ms'].to_i + age) }
+    end
+    ['0', '01', '-1', '18446744073709551616'].each do |timestamp|
+      assert_raises(Gate::Refused) { parse_root_metadata(value.merge('observed_at_unix_ms' => timestamp)) }
+    end
+    Gate::ROOT_METADATA_IDENTITY_KEYS.each do |key|
+      tuple = value[key].split(',')
+      { 0 => '0', 1 => '0', 2 => '501', 3 => '80', 4 => '16877', 5 => '0',
+        7 => '9223372036854775808', 8 => '1000000000', 9 => '9223372036854775808', 10 => '1000000000' }.each do |index, item|
+        mutant = tuple.dup; mutant[index] = item
+        assert_raises(Gate::Refused) { parse_root_metadata(value.merge(key => mutant.join(','))) }
+      end
+      [tuple.drop(1).join(','), (tuple + ['1']).join(','), tuple.join(',') + ',',
+       tuple.join(',').sub('2,', '02,'), tuple.join(',').sub('2,', '-2,'),
+       tuple.join(',').sub('2,', '18446744073709551616,')].each do |mutant|
+        assert_raises(Gate::Refused) { parse_root_metadata(value.merge(key => mutant)) }
+      end
+    end
+  end
+
+  MetadataFD = Struct.new(:before, :after, :bytes, :access, :closed, :stat_reads, keyword_init: true) do
+    def stat
+      self.stat_reads = stat_reads.to_i + 1
+      stat_reads == 1 ? before : (after || before)
+    end
+    def fcntl(_operation); access end
+    def pread(count, _offset); bytes.byteslice(0, count) end
+    def close; self.closed = true end
+  end
+
+  def metadata_channel(value = root_metadata_fixture, **changes)
+    bytes = root_metadata_text(value)
+    MetadataFD.new(**{ before: metadata_stat(kind: :file, mode: 0100400, size: bytes.bytesize),
+      bytes: bytes, access: Fcntl::O_RDONLY, closed: false }.merge(changes))
+  end
+
+  def consume_metadata_channel(channel, expected: Digest::SHA256.hexdigest(channel.bytes))
+    Time.stub(:now, Time.at(Rational(1_790_928_000_000, 1000))) do
+      Gate.stub(:read_file!, root_metadata_source_stub) do
+        IO.stub(:for_fd, ->(fd, **options) { assert_equal 6, fd; assert_equal false, options[:autoclose]; channel }) do
+          Gate.read_root_metadata_fd!(expected, request, request_sha: Digest::SHA256.hexdigest(text(request)), mode: 'candidate-present')
+        end
+      end
+    end
+  end
+
+  def test_root_metadata_channel_is_mandatory_immutable_readonly_and_always_closed
+    channel = metadata_channel
+    assert_equal parse_root_metadata, consume_metadata_channel(channel)
+    assert channel.closed
+    base = channel.before
+    [metadata_stat(kind: :directory, mode: 040400, size: base.size), metadata_stat(uid: 501, kind: :file, mode: 0100400, size: base.size),
+     metadata_stat(gid: 20, kind: :file, mode: 0100400, size: base.size), metadata_stat(nlink: 2, kind: :file, mode: 0100400, size: base.size),
+     metadata_stat(kind: :file, mode: 0100600, size: base.size), metadata_stat(kind: :file, mode: 0100400, size: 0),
+     metadata_stat(kind: :file, mode: 0100400, size: Gate::MAX_BYTES + 1)].each do |stat|
+      mutant = metadata_channel(before: stat)
+      assert_raises(Gate::Refused) { consume_metadata_channel(mutant) }
+      assert mutant.closed
+    end
+    [Fcntl::O_WRONLY, Fcntl::O_RDWR].each do |access|
+      mutant = metadata_channel(access: access)
+      assert_raises(Gate::Refused) { consume_metadata_channel(mutant) }
+      assert mutant.closed
+    end
+    [metadata_channel(after: metadata_stat(kind: :file, mode: 0100400, size: base.size, ino: 99)),
+     metadata_channel(bytes: channel.bytes.byteslice(0, channel.bytes.bytesize - 1))].each do |mutant|
+      assert_raises(Gate::Refused) { consume_metadata_channel(mutant) }
+      assert mutant.closed
+    end
+    mutant = metadata_channel
+    assert_raises(Gate::Refused) { consume_metadata_channel(mutant, expected: 'f' * 64) }
+    assert mutant.closed
+    assert_raises(Gate::Refused) { Gate.read_fd!(100_000) }
+  end
+
   # This exercises production policy and dispatch with no process or system-node IO.
   def clean_metadata_fixture(path: '/Library', before: metadata_stat, after: before,
       canonical: path, final_canonical: canonical, flags: "1048576\n", flags_ok: true,
-      acl: "drwxr-xr-x 1 root wheel 128 fixture\n", xattrs: '', xattr_errors: '')
+      acl: "drwxr-xr-x 1 root wheel 128 fixture\n", xattrs: '', xattr_errors: '', xattr_ok: true, root_metadata: nil)
     tools = Gate::PREFIX + '/driver-microphone-v9-fixture/tools'
-    commands = Gate::Commands.new(tools); calls = []
+    commands = Gate::Commands.new(tools, root_metadata: root_metadata); calls = []
     stats = [before, after]; canonical_paths = [canonical, final_canonical]
     runner = lambda do |*argv|
       commands.allowed!(argv); calls << argv
       case argv.first
       when '/bin/ls' then [acl, '', MetadataStatus.new(true)]
-      when '/usr/bin/xattr' then [xattrs, xattr_errors, MetadataStatus.new(true)]
+      when '/usr/bin/xattr' then [xattrs, xattr_errors, MetadataStatus.new(xattr_ok)]
       when '/usr/bin/stat' then [flags, '', MetadataStatus.new(flags_ok)]
       else flunk 'unexpected metadata command'
       end
@@ -482,7 +626,71 @@ class MicrophoneV9HostGateTests < Minitest::Test
      '/Library/', '/Library/.', '/private/Library', '//Library', '/'].each do |path|
       assert_raises(Gate::Refused) { clean_metadata_fixture(path: path) }
     end
-    assert_equal 3, clean_metadata_fixture(path: tools, flags: "0\n").size
+    assert_raises(Gate::Refused) { clean_metadata_fixture(path: tools, flags: "0\n") }
+  end
+
+  def test_only_exact_attested_0711_directories_delegate_xattrs_and_retain_acl_flags_and_identity
+    proof = parse_root_metadata
+    proof.each do |path, tuple|
+      stat = metadata_stat(ino: tuple[1], mode: 040711)
+      calls = clean_metadata_fixture(path: path, before: stat, flags: "0\n", root_metadata: proof,
+        xattr_ok: false, xattr_errors: 'EACCES')
+      assert_equal [['/bin/ls', '-lde', path], ['/usr/bin/stat', '-f', '%f', path]], calls
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, flags: "0\n", xattr_ok: false, xattr_errors: 'EACCES') }
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, flags: "1\n", root_metadata: proof) }
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, flags: "0\n", root_metadata: proof,
+        acl: "drwx--x--x+ 1 root wheel 128 fixture\n") }
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, flags: "0\n", root_metadata: proof, canonical: '/private/alias') }
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, flags: "0\n", root_metadata: proof,
+        after: metadata_stat(ino: tuple[1], mode: 040711, ctime: Time.at(21))) }
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: metadata_stat(ino: tuple[1]), flags: "0\n", root_metadata: proof) }
+    end
+    path = Gate::PREFIX + '/driver-microphone-v9-fixture/tools/product/readable.rb'
+    assert_equal 3, clean_metadata_fixture(path: path, before: metadata_stat(kind: :file, mode: 0100444), flags: "0\n", root_metadata: proof).size
+    assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, flags: "0\n", root_metadata: proof, xattr_ok: false, xattr_errors: 'EACCES') }
+    assert_raises(Gate::Refused) { clean_metadata_fixture(path: '/Library/Application Support', flags: "0\n", root_metadata: proof, xattrs: 'com.example.fixture') }
+    tools = Gate::PREFIX + '/driver-microphone-v9-fixture/tools'
+    [proof.dup, proof.reject { |path, _| path == tools }.freeze, proof.merge(tools + '/extra' => proof.fetch(tools)).freeze].each do |mutant|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: tools, before: metadata_stat(ino: proof.fetch(tools)[1], mode: 040711), flags: "0\n", root_metadata: mutant) }
+    end
+  end
+
+  def test_attested_directory_all_identity_fields_are_rechecked_and_not_only_inode_and_mode
+    proof = parse_root_metadata; path = Gate::PREFIX + '/driver-microphone-v9-fixture/tools'
+    stat = metadata_stat(ino: proof.fetch(path)[1], mode: 040711)
+    { dev: 4, ino: 99, uid: 501, gid: 80, mode: 040755, nlink: 2, size: 129,
+      mtime: Time.at(11), ctime: Time.at(21) }.each do |field, item|
+      changed = metadata_stat(ino: stat.ino, mode: stat.mode, **{ field => item })
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: changed, flags: "0\n", root_metadata: proof) }
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, after: changed, flags: "0\n", root_metadata: proof) }
+    end
+    [metadata_stat(ino: stat.ino, mode: stat.mode, mtime: Time.at(10, 1, :nsec)),
+     metadata_stat(ino: stat.ino, mode: stat.mode, ctime: Time.at(20, 1, :nsec))].each do |changed|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, after: changed, flags: "0\n", root_metadata: proof) }
+    end
+    assert_raises(Gate::Refused) { clean_metadata_fixture(path: path, before: stat, flags: "0\n", root_metadata: proof, final_canonical: '/private/alias') }
+  end
+
+  def test_sealed_sources_requires_all_five_bound_directory_identities_before_source_reads
+    proof = parse_root_metadata; namespace = request['namespace']; tools = Gate::PREFIX + '/' + namespace + '/tools'
+    adapter = File.expand_path('opensteamer-microphone-v9-host-gate.rb', __dir__)
+    stats = proof.to_h { |path, tuple| [path, metadata_stat(ino: tuple[1], mode: 040711)] }
+    active_stats = stats
+    File.stub(:realpath, ->(path) { path == adapter ? tools + '/opensteamer-microphone-v9-host-gate.rb' : path }) do
+      File.stub(:lstat, ->(path) { active_stats.fetch(path) }) do
+        assert_raises(Gate::Refused) { Gate.sealed_sources!(tools, namespace, commands: Gate::Commands.new(tools)) }
+        proof.keys.each do |path|
+          active_stats = stats.merge(path => metadata_stat(ino: 99, mode: 040711))
+          reached = false
+          Gate.stub(:read_file!, ->(*_args, **_options) { reached = true; raise 'source read must not run' }) do
+            commands = Gate::Commands.new(tools, root_metadata: proof)
+            assert_raises(Gate::Refused) { Gate.sealed_sources!(tools, namespace, commands: commands) }
+          end
+          refute reached
+        end
+        active_stats = stats
+      end
+    end
   end
 
   def test_library_full_identity_is_retained_across_metadata_reads
@@ -499,6 +707,7 @@ class MicrophoneV9HostGateTests < Minitest::Test
     namespace = 'driver-microphone-v9-fixture'; tools = Gate::PREFIX + '/' + namespace + '/tools'
     adapter = File.expand_path('opensteamer-microphone-v9-host-gate.rb', __dir__)
     seen = []; commands = Object.new
+    commands.define_singleton_method(:sealed_root_metadata!) { true }
     commands.define_singleton_method(:clean_metadata!) { |path| seen << path }
     stat = lambda do |path|
       path == adapter ? metadata_stat(kind: :file, mode: 0100444) :
@@ -554,8 +763,10 @@ class MicrophoneV9HostGateTests < Minitest::Test
         Process.stub(:euid, 501) do
           ENV.stub(:keys, []) do
             Gate.stub(:read_fd!, bytes) do
-              Gate.stub(:sealed_sources!, ->(*_args, **_options) { raise Gate::Refused, reason }) do
-                code = Gate.cli!(['--candidate-present', '/dev/fd/3', Digest::SHA256.hexdigest(bytes)])
+              Gate.stub(:read_root_metadata_fd!, parse_root_metadata) do
+                Gate.stub(:sealed_sources!, ->(*_args, **_options) { raise Gate::Refused, reason }) do
+                  code = Gate.cli!(['--candidate-present', '/dev/fd/3', Digest::SHA256.hexdigest(bytes), 'e' * 64])
+                end
               end
             end
           end
@@ -566,5 +777,27 @@ class MicrophoneV9HostGateTests < Minitest::Test
     assert_empty stdout
     assert_equal Gate.refusal_diagnostic('sealed_sources', Gate::Refused.new(reason)) + "\n", stderr
     refute_includes stderr, reason
+  end
+
+  def test_cli_missing_or_refused_metadata_never_reaches_sealed_sources_or_observers
+    bytes = text(request); request_sha = Digest::SHA256.hexdigest(bytes)
+    [ ['--candidate-present', '/dev/fd/3', request_sha],
+      ['--candidate-present', '/dev/fd/3', request_sha, 'e' * 64] ].each do |argv|
+      code = nil; reached = false
+      stdout, stderr = capture_io do
+        Process.stub(:uid, 501) do
+          Process.stub(:euid, 501) do
+            ENV.stub(:keys, []) do
+              reader = ->(fd) { fd == 3 ? bytes : raise(Gate::Refused, 'root-held input unavailable') }
+              Gate.stub(:read_fd!, reader) do
+                Gate.stub(:sealed_sources!, ->(*_args, **_options) { reached = true; raise 'must not run' }) { code = Gate.cli!(argv) }
+              end
+            end
+          end
+        end
+      end
+      assert_equal 78, code; refute reached; assert_empty stdout
+      assert_includes stderr, argv.size == 3 ? 'stage=caller' : 'stage=root_metadata'
+    end
   end
 end

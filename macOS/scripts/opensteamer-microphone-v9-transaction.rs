@@ -581,6 +581,8 @@ mod sealed_fs {
         fn acl_get_entry(acl: *mut std::ffi::c_void, entry_id: i32, entry: *mut *mut std::ffi::c_void) -> i32;
         fn acl_free(value: *mut std::ffi::c_void) -> i32;
         fn __error() -> *mut i32;
+        fn flistxattr(fd:i32,names:*mut std::ffi::c_char,size:usize,options:i32)->isize;
+        fn fgetattrlist(fd:i32,attributes:*mut std::ffi::c_void,buffer:*mut std::ffi::c_void,size:usize,options:u32)->i32;
     }
 
     fn name(value: &str) -> Result<CString> {
@@ -599,6 +601,47 @@ mod sealed_fs {
         let count = unsafe { acl_get_entry(acl, 0, &mut entry) };
         let released = unsafe { acl_free(acl) };
         Err(format!("non-null extended ACL refused: status={count} release={released}"))
+    }
+
+    #[repr(C)]
+    struct GateAttrList{bitmapcount:u16,reserved:u16,commonattr:u32,volattr:u32,dirattr:u32,fileattr:u32,forkattr:u32}
+    #[repr(C)]
+    struct GateFlags{length:u32,flags:u32}
+    // A fixed descriptor-only inspection, not a request-selectable root query.
+    // Exact zero is required: errors and any attribute/flag are not absence.
+    fn gate_xattrs_empty(fd:i32)->Result<()>{
+        if unsafe{flistxattr(fd,std::ptr::null_mut(),0,0)}!=0{return Err("gate metadata xattr absence unproved".into());}Ok(())
+    }
+    fn gate_flags_empty(fd:i32)->Result<()>{
+        let mut attributes=GateAttrList{bitmapcount:5,reserved:0,commonattr:0x0004_0000,volattr:0,dirattr:0,fileattr:0,forkattr:0};
+        let mut result=GateFlags{length:0,flags:u32::MAX};
+        if unsafe{fgetattrlist(fd,(&mut attributes as *mut GateAttrList).cast(),(&mut result as *mut GateFlags).cast(),std::mem::size_of::<GateFlags>(),0)}!=0||result.length!=8||result.flags!=0{
+            return Err("gate metadata flags absence unproved".into());
+        }Ok(())
+    }
+    pub(super) fn clean_gate_metadata(file:&File)->Result<()>{
+        clean_gate_metadata_with(file,no_acl,|file|gate_xattrs_empty(file.as_raw_fd()),|file|gate_flags_empty(file.as_raw_fd()))
+    }
+    fn clean_gate_metadata_with(file:&File,acl:impl FnOnce(&File)->Result<()>,xattrs:impl FnOnce(&File)->Result<()>,flags:impl FnOnce(&File)->Result<()>)->Result<()>{
+        let before=Identity::of(&file.metadata().map_err(|_|"gate metadata descriptor stat unavailable")?);
+        acl(file)?;xattrs(file)?;flags(file)?;
+        if Identity::of(&file.metadata().map_err(|_|"gate metadata descriptor after-stat unavailable")?)!=before{return Err("gate metadata changed during inspection".into());}
+        Ok(())
+    }
+
+    #[cfg(test)]mod gate_metadata_tests{
+        use super::*;
+        #[test]fn descriptor_metadata_errors_and_acl_failure_never_imply_absence(){
+            assert!(gate_xattrs_empty(-1).is_err());assert!(gate_flags_empty(-1).is_err());
+            let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+            let path=std::env::temp_dir().join(format!("beluga-v9-metadata-fd-{}-{stamp}",std::process::id()));
+            let file=OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path).unwrap();assert_ne!(file.metadata().unwrap().uid(),0,"metadata fixtures must never run as root");
+            clean_gate_metadata(&file).unwrap();
+            assert_eq!(clean_gate_metadata_with(&file,|_|Err("injected ACL refusal".into()),|_|panic!("ACL failure may not imply xattr absence"),|_|panic!("ACL failure may not imply flags absence")).unwrap_err(),"injected ACL refusal");
+            assert!(clean_gate_metadata_with(&file,no_acl,|_|Err("injected xattr error".into()),|_|panic!("xattr error may not imply flags absence")).is_err());
+            assert!(clean_gate_metadata_with(&file,no_acl,|_|Ok(()),|_|Err("injected flags error".into())).is_err());
+            drop(file);fs::remove_file(path).unwrap();
+        }
     }
 
     fn node_equal(left: &Identity, right: &Identity) -> bool {
