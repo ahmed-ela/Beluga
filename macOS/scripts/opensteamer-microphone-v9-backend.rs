@@ -905,6 +905,41 @@ fn retain_admission_before_pre_effect(request:&Request,reason:&str,prior:Option<
     else{retain(&bytes)?;}
     pre_effect()
 }
+fn failure_bytes(request:&Request,schema:&str,stage:&str,reason:&str)->Result<Vec<u8>>{
+    if !["opensteamer.microphone-v9-forward-failure.v1","opensteamer.microphone-v9-guardian-start-failure.v1"].contains(&schema)||stage.is_empty()||stage.len()>48||!stage.bytes().all(|byte|byte.is_ascii_lowercase()||byte==b'_')||reason.is_empty()||reason.len()>2048{return Err("primary failure diagnostic bounds differ".into());}
+    let encoded=reason.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+    Ok(format!("schema={schema}\nnamespace={}\nnonce={}\nrequest_sha256={}\nstage={stage}\nreason_bytes={}\nreason_sha256={}\nreason_utf8_hex={encoded}\n",request.get("namespace"),request.get("nonce"),request.sha256,reason.len(),sha256(reason.as_bytes())).into_bytes())
+}
+fn retain_first_failure(bytes:&[u8],prior:Option<&[u8]>,retain:impl FnOnce(&[u8])->Result<()>)->Result<()>{
+    if let Some(prior)=prior{if prior!=bytes{return Err("first failure diagnostic is immutable; secondary failure cannot replace it".into());}Ok(())}else{retain(bytes)}
+}
+enum FailureRecord{Forward,GuardianStart(u8)}
+impl FailureRecord{
+    fn name(&self)->Result<String>{match self{Self::Forward=>Ok("forward-failure.txt".into()),Self::GuardianStart(index)if (1..=5).contains(index)=>Ok(format!("guardian-{index}-start-failure.txt")),Self::GuardianStart(_)=>Err("guardian failure diagnostic index refused".into())}}
+}
+fn supervised_record(check:impl FnOnce()->Result<()>,write:impl FnOnce()->Result<()>)->Result<()>{check()?;write()}
+fn retain_failure_storage(role:FailureRecord,bytes:&[u8],state:&Path,held:&sealed_fs::HeldDirectory,owner:u32,group:u32,guard:impl Fn()->Result<()>)->Result<()>{
+    let name=role.name()?;
+    if bytes.is_empty()||bytes.len()>16384{return Err("failure storage diagnostic extent refused".into());}
+    guard()?;
+    let stored=(||{
+        let path=state.join(&name);
+        let prior=match fs::symlink_metadata(&path){Ok(_)=>Some(read_owned(&path,owner,group,0o400,16384)?),Err(error)if error.kind()==std::io::ErrorKind::NotFound=>None,Err(_)=>return Err("failure storage record metadata unavailable".into())};
+        retain_first_failure(bytes,prior.as_deref(),|bytes|held.write_record(&name,bytes,0o400))?;
+        if read_owned(&path,owner,group,0o400,16384)?!=bytes{return Err("failure storage immutable readback differs".into());}Ok(())
+    })();
+    let after=guard();
+    match(stored,after){(Ok(()),Ok(()))=>Ok(()),(Err(reason),Ok(()))=>Err(reason),(Ok(()),Err(reason))=>Err(reason),(Err(reason),Err(after))=>Err(format!("{reason}; failure_storage_postcheck_sha256={}",sha256(after.as_bytes())))}
+}
+fn primary_retention_result(reason:&str,retained:Result<()>)->Result<()>{
+    retained.map_err(|retention|format!("{reason}; primary_retention_error_sha256={}",sha256(retention.as_bytes())))
+}
+fn guardian_slot_absent(state:&Path,index:u8)->Result<()>{
+    if !(1..=5).contains(&index){return Err("guardian segment count exceeds restart/recovery bound".into());}
+    for name in [format!("guardian-{index}.events"),format!("guardian-{index}.proof"),format!("guardian-{index}-start-failure.txt")]{
+        match fs::symlink_metadata(state.join(name)){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>{},Err(_)=>return Err("guardian slot inventory unavailable; never retry".into()),Ok(_)=>return Err("existing unproved guardian slot is immutable; no automatic retry".into())}
+    }Ok(())
+}
 const PRE_EFFECT_RECORDS:&[&str]=&["request.txt","build-manifest.json","authority.txt","SEALING_INCOMPLETE","SEALING_COMPLETE","candidate.driver","journal","prior","failed","probes","host-baseline.txt","admission-refusal.txt","child-active-001","child-clean-001"];
 fn refusal_journal_empty(memory:&Journal,durable:&Journal,resumed:bool,sequence:usize)->Result<()>{
     if memory.last().is_some()||durable.last().is_some()||resumed||sequence!=1{return Err("pre-effect refusal has durable/recovered transaction effects".into());}Ok(())
@@ -914,7 +949,23 @@ fn refusal_containment_finalized(clean:bool,resumed:bool,sequence:usize)->Result
 }
 
 impl RootContext{
-    fn record(&self,name:&str,bytes:&[u8])->Result<()>{self.revalidate()?;self.state_ancestry.last().unwrap().write_record(name,bytes,0o400)}
+    fn record(&self,name:&str,bytes:&[u8])->Result<()>{supervised_record(||self.revalidate(),||self.state_ancestry.last().unwrap().write_record(name,bytes,0o400))}
+    fn retain_failure(&self,role:FailureRecord,bytes:&[u8])->Result<()>{
+        // This storage-only path may preserve the original cause after an
+        // abort/failed child cleanup. It never polls, clears or bypasses those
+        // latches for admission, effects, recovery or successful outcomes.
+        retain_failure_storage(role,bytes,&self.state,self.state_ancestry.last().ok_or("failure storage held state missing")?,0,0,||{
+            for held in self.state_ancestry.iter().chain(self.exec_ancestry.iter()).chain(self.hal_ancestry.iter()){held.revalidate()?;}
+            self.controller_lock.revalidate()?;
+            let path=self.state.join("request.txt");let before=Identity::of(&self.request_file.metadata().map_err(|_|"failure storage held request stat unavailable")?);
+            if before!=Identity::of(&fs::symlink_metadata(&path).map_err(|_|"failure storage request path unavailable")?){return Err("failure storage held request identity differs".into());}
+            sealed_fs::no_acl(&self.request_file)?;
+            if sha256(&read_owned(&path,0,0,0o400,MAX_REQUEST)?)!=self.request.sha256{return Err("failure storage request byte pin differs".into());}
+            if before!=Identity::of(&self.request_file.metadata().map_err(|_|"failure storage held request restat unavailable")?)||before!=Identity::of(&fs::symlink_metadata(&path).map_err(|_|"failure storage request path disappeared")?){return Err("failure storage held request changed during read".into());}
+            if strict_flat(&read_owned(&self.state.join("authority.txt"),0,0,0o400,MAX_REQUEST)?,AUTHORITY_FIELDS,MAX_REQUEST)?!=self.authority.fields{return Err("failure storage sealed authority changed".into());}
+            if sha256(&read_owned(&self.executables.join("tools/gate_inputs.txt"),0,0,0o444,MAX_REQUEST)?)!=self.authority.get("gate_inputs_sha256"){return Err("failure storage gate inputs byte pin differs".into());}Ok(())
+        })
+    }
     fn optional_record(&self,name:&str)->Result<Option<Vec<u8>>>{
         match fs::symlink_metadata(self.state.join(name)){Ok(_)=>read_owned(&self.state.join(name),0,0,0o400,2*1024*1024).map(Some),Err(error)if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),Err(_)=>Err("root record metadata unavailable".into())}
     }
@@ -1019,18 +1070,35 @@ impl RootContext{
 struct GuardianSegment{child:os::OwnedChild,event:File,index:u8,ready:Vec<u8>}
 impl GuardianSegment{
     fn arm(context:&RootContext,index:u8)->Result<Self>{
-        if !(1..=5).contains(&index){return Err("guardian segment count exceeds restart/recovery bound".into());}context.revalidate()?;
-        let path=context.state.join(format!("guardian-{index}.events"));
-        let event=OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).custom_flags(NOFOLLOW).open(&path).map_err(|_|"guardian event exclusive creation failed")?;
-        let metadata=event.metadata().map_err(|_|"guardian event stat unavailable")?;
-        if !metadata.is_file()||metadata.uid()!=0||metadata.gid()!=0||metadata.mode()&0o7777!=0o600||metadata.nlink()!=1||metadata.len()!=0{return Err("guardian root event ownership/mode differs".into());}
-        sealed_fs::no_acl(&event)?;event.sync_all().map_err(|_|"guardian event sync failed")?;
-        let inherited=os::OwnedChild::inherited(&event)?;
-        let args=vec!["/dev/fd/5".into(),context.request.get("input_uid").into(),context.request.get("output_uid").into(),context.request.get("system_output_uid").into()];
-        use std::os::fd::AsRawFd;
-        let mut child=os::OwnedChild::native(&context.guardian,&args,None,&[(inherited.as_raw_fd(),5)])?;
+        if !(1..=5).contains(&index){return Err("guardian segment count exceeds restart/recovery bound".into());}
+        let mut stage="context";let mut child=None;
         let ready=format!("READY input={} output={} system={}\n",context.request.get("input_uid"),context.request.get("output_uid"),context.request.get("system_output_uid")).into_bytes();
-        child.ready(&ready,Duration::from_secs(20))?;context.revalidate()?;Ok(Self{child,event,index,ready})
+        let attempt=(||->Result<File>{
+            context.revalidate()?;stage="slot";guardian_slot_absent(&context.state,index)?;
+            stage="event_create";let path=context.state.join(format!("guardian-{index}.events"));
+            let event=OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).custom_flags(NOFOLLOW).open(&path).map_err(|_|"guardian event exclusive creation failed")?;
+            stage="event_metadata";let metadata=event.metadata().map_err(|_|"guardian event stat unavailable")?;
+            if !metadata.is_file()||metadata.uid()!=0||metadata.gid()!=0||metadata.mode()&0o7777!=0o600||metadata.nlink()!=1||metadata.len()!=0{return Err("guardian root event ownership/mode differs".into());}
+            sealed_fs::no_acl(&event)?;stage="event_sync";event.sync_all().map_err(|_|"guardian event sync failed")?;
+            stage="descriptor";let inherited=os::OwnedChild::inherited(&event)?;
+            let args=vec!["/dev/fd/5".into(),context.request.get("input_uid").into(),context.request.get("output_uid").into(),context.request.get("system_output_uid").into()];
+            stage="spawn";child=Some(os::OwnedChild::native(&context.guardian,&args,None,&[(inherited.as_raw_fd(),5)])?);
+            stage="ready";child.as_mut().unwrap().ready(&ready,Duration::from_secs(20))?;
+            stage="postcheck";context.revalidate()?;Ok(event)
+        })();
+        match attempt{
+            Ok(event)=>Ok(Self{child:child.take().unwrap(),event,index,ready}),
+            Err(reason)=>{
+                let retained=(||{
+                    let mut bytes=failure_bytes(&context.request,"opensteamer.microphone-v9-guardian-start-failure.v1",stage,&reason)?;
+                    bytes.extend_from_slice(format!("guardian_index={index}\nexpected_ready_sha256={}\nchild_owned={}\n",sha256(&ready),child.is_some()).as_bytes());
+                    if let Some(child)=&child{bytes.extend_from_slice(child.failure_diagnostics().as_bytes());}
+                    context.retain_failure(FailureRecord::GuardianStart(index),&bytes)
+                })();
+                primary_retention_result(&reason,retained)?;
+                Err(reason)
+            }
+        }
     }
     fn healthy(&mut self)->Result<()>{
         let metadata=self.event.metadata().map_err(|_|"held guardian event stat unavailable")?;
@@ -1055,7 +1123,7 @@ impl GuardianSegment{
 pub(super) struct OsBackend{
     context:RootContext,journal:Journal,guardian:Option<GuardianSegment>,next_guardian:u8,
     clean_segments:u8,public:Option<proof::PublicProofReceipt>,idle:Option<proof::IdleReceipt>,
-    candidate_instance:Option<u64>,rollback_bootstrap:Option<proof::IdleReceipt>,resumed:bool,
+    candidate_instance:Option<u64>,rollback_bootstrap:Option<proof::IdleReceipt>,resumed:bool,primary_failure_unretained:bool,
 }
 impl Drop for OsBackend{
     fn drop(&mut self){
@@ -1072,7 +1140,7 @@ impl OsBackend{
         // adopting any durable pending journal generation.
         context.controller_lock.revalidate()?;
         let journal=if resume{load_durable_journal(request)?}else{Journal::new(request)};
-        let mut backend=Self{context,journal,guardian:None,next_guardian:1,clean_segments:0,public:None,idle:None,candidate_instance:None,rollback_bootstrap:None,resumed:resume};
+        let mut backend=Self{context,journal,guardian:None,next_guardian:1,clean_segments:0,public:None,idle:None,candidate_instance:None,rollback_bootstrap:None,resumed:resume,primary_failure_unretained:false};
         if let Some(bytes)=backend.context.optional_record("candidate-bootstrap.json")?{
             let receipt=proof::verify_idle(&bytes,proof::IdleExpected{phase:"after-reload",schema:2,nonce:request.get("nonce"),instance:None,exit_code:75})?;
             if receipt.progress!=proof::IdleProgress::BootstrapRequiresFreshIdleAndPublicProbe{return Err("saved candidate bootstrap progress differs".into());}backend.candidate_instance=Some(receipt.instance);
@@ -1136,6 +1204,8 @@ impl OsBackend{
         // This is called once by the still-owning worker after an interrupted
         // forward attempt. It does not authorize recovery from an unknown
         // external controller or an orphaned monitor.
+        if self.primary_failure_unretained{return Err("primary forward failure persistence unproved; no automatic recovery".into());}
+        if self.guardian.is_none(){guardian_slot_absent(&self.context.state,self.next_guardian)?;}
         os::enter_recovery()?;self.context.revalidate()?;
         self.journal=load_durable_journal(&self.context.request)?;
         self.prepare_resume_observers()?;Ok(self.journal.clone())
@@ -1289,6 +1359,10 @@ impl Backend for OsBackend{
     // Admission was explicitly enabled only after whole-path source review;
     // actual execution still requires every sealed and fresh runtime predicate.
     fn live_admission(&self)->bool{LIVE_ADMISSION}
+    fn retain_forward_failure(&mut self,stage:&str,reason:&str)->Result<()>{
+        let retained=(||{let bytes=failure_bytes(&self.context.request,"opensteamer.microphone-v9-forward-failure.v1",stage,reason)?;self.context.retain_failure(FailureRecord::Forward,&bytes)})();
+        if retained.is_err(){self.primary_failure_unretained=true;}primary_retention_result(reason,retained)
+    }
     fn retain_admission_refusal(&mut self,reason:&str)->Result<()>{
         let prior=self.context.optional_record("admission-refusal.txt")?;
         retain_admission_before_pre_effect(&self.context.request,reason,prior.as_deref(),
@@ -1737,6 +1811,68 @@ pid/178/com.apple.audio.Core-Audio-Driver-Service.helper.5E2741F7-BA88-4661-B3F2
         fs::create_dir(&path).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o700)).unwrap();
         let path=fs::canonicalize(path).unwrap();let metadata=fs::metadata(&path).unwrap();let(owner,group)=(metadata.uid(),metadata.gid());
         let held=sealed_fs::HeldDirectory::capture(&path,owner,group,0o700).unwrap();(path,held,owner,group)
+    }
+    #[test]fn primary_failure_record_is_request_stage_bound_and_immutable_across_secondary_errors(){
+        let request=super::super::tests::request();let(path,held,owner,group)=pre_effect_directory_fixture("primary-failure");
+        let first=failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1","seal_guardian","first ready failure\nactual bounded detail").unwrap();
+        retain_first_failure(&first,None,|bytes|held.write_record("forward-failure.txt",bytes,0o400)).unwrap();let file=path.join("forward-failure.txt");let original=read_owned(&file,owner,group,0o400,8192).unwrap();let identity=Identity::of(&fs::symlink_metadata(&file).unwrap());
+        retain_first_failure(&first,Some(&original),|_|panic!("same first record rewritten")).unwrap();
+        let second=failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1","stop_host","secondary exclusive event creation failed").unwrap();assert!(retain_first_failure(&second,Some(&original),|_|panic!("secondary replaced original")).is_err());
+        assert_eq!(read_owned(&file,owner,group,0o400,8192).unwrap(),first);assert_eq!(Identity::of(&fs::symlink_metadata(&file).unwrap()),identity);
+        let text=String::from_utf8(first).unwrap();assert!(text.contains(&format!("namespace={}\nnonce={}\nrequest_sha256={}\nstage=seal_guardian\n",request.get("namespace"),request.get("nonce"),request.sha256)));assert!(!text.contains("actual bounded detail"));
+        for(stage,reason)in [("bad\nstage","reason"),("ready","")]{assert!(failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1",stage,reason).is_err());}
+        assert!(failure_bytes(&request,"wrong","ready","reason").is_err());assert!(failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1","ready",&"x".repeat(2049)).is_err());
+        fs::remove_file(file).unwrap();drop(held);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn fixed_failure_storage_survives_isolated_poison_without_admitting_ordinary_records(){
+        let request=super::super::tests::request();
+        for poison in ["OWNED_CLEANUP_UNRESOLVED","SUPERVISOR_ABORT"]{
+            let(path,held,owner,group)=pre_effect_directory_fixture("failure-poison");let lock=sealed_fs::RootLock::acquire_fixture(&held).unwrap();
+            let poisoned=std::cell::Cell::new(true);let checks=std::cell::Cell::new(0);
+            let guard=||{checks.set(checks.get()+1);held.revalidate()?;lock.revalidate()};
+            let supervision=||if poisoned.get(){Err(poison.to_string())}else{Ok(())};
+            for name in ["admission-refusal.txt","guardian-1.proof","normal-restart-intent.txt","child-clean-001"]{
+                assert_eq!(supervised_record(supervision,||held.write_record(name,b"never authorized",0o400)).unwrap_err(),poison);assert!(!path.join(name).exists());
+            }
+            let first=failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1","seal_guardian","first ready cause").unwrap();
+            retain_failure_storage(FailureRecord::Forward,&first,&path,&held,owner,group,guard).unwrap();assert_eq!(checks.get(),2);
+            let file=path.join("forward-failure.txt");let original=Identity::of(&fs::symlink_metadata(&file).unwrap());
+            retain_failure_storage(FailureRecord::Forward,&first,&path,&held,owner,group,guard).unwrap();assert_eq!(checks.get(),4);assert_eq!(Identity::of(&fs::symlink_metadata(&file).unwrap()),original);
+            let second=failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1","stop_host","secondary failure").unwrap();
+            assert!(retain_failure_storage(FailureRecord::Forward,&second,&path,&held,owner,group,guard).is_err());assert_eq!(checks.get(),6);assert_eq!(read_owned(&file,owner,group,0o400,16384).unwrap(),first);
+            let guardian=failure_bytes(&request,"opensteamer.microphone-v9-guardian-start-failure.v1","ready","first guardian cause").unwrap();
+            retain_failure_storage(FailureRecord::GuardianStart(1),&guardian,&path,&held,owner,group,guard).unwrap();assert_eq!(checks.get(),8);assert!(guardian_slot_absent(&path,1).is_err());
+            for index in [0,6]{assert!(retain_failure_storage(FailureRecord::GuardianStart(index),&guardian,&path,&held,owner,group,guard).is_err());}assert_eq!(checks.get(),8);
+            assert!(poisoned.get());assert_eq!(supervised_record(supervision,||panic!("poisoned recovery/effect storage ran")).unwrap_err(),poison);
+            for name in ["forward-failure.txt","guardian-1-start-failure.txt"]{assert!(!PRE_EFFECT_RECORDS.contains(&name));fs::remove_file(path.join(name)).unwrap();}
+            drop(lock);fs::remove_file(path.join(".controller.lock")).unwrap();drop(held);fs::remove_dir(path).unwrap();
+        }
+    }
+    #[test]fn failure_storage_guards_unsafe_nodes_and_retention_errors_preserve_original_reason(){
+        let request=super::super::tests::request();let(path,held,owner,group)=pre_effect_directory_fixture("failure-guards");
+        let bytes=failure_bytes(&request,"opensteamer.microphone-v9-forward-failure.v1","seal_guardian","original primary cause").unwrap();let file=path.join("forward-failure.txt");
+        assert!(retain_failure_storage(FailureRecord::Forward,&bytes,&path,&held,owner,group,||Err("held guard failed".into())).is_err());assert!(!file.exists());
+        for malformed in [b"".as_slice(),&vec![b'x';16385]]{assert!(retain_failure_storage(FailureRecord::Forward,malformed,&path,&held,owner,group,||panic!("extent refusal must precede storage")).is_err());}
+        std::os::unix::fs::symlink(path.join("missing"),&file).unwrap();
+        let error=retain_failure_storage(FailureRecord::Forward,&bytes,&path,&held,owner,group,||held.revalidate()).unwrap_err();
+        assert!(fs::symlink_metadata(&file).unwrap().file_type().is_symlink());assert_eq!(primary_retention_result("original primary cause",Err(error.clone())).unwrap_err(),format!("original primary cause; primary_retention_error_sha256={}",sha256(error.as_bytes())));fs::remove_file(&file).unwrap();
+        held.write_record("forward-failure.txt",b"unsafe mode",0o600).unwrap();let unsafe_identity=Identity::of(&fs::symlink_metadata(&file).unwrap());
+        assert!(retain_failure_storage(FailureRecord::Forward,&bytes,&path,&held,owner,group,||held.revalidate()).is_err());assert_eq!(Identity::of(&fs::symlink_metadata(&file).unwrap()),unsafe_identity);fs::remove_file(&file).unwrap();
+        let checks=std::cell::Cell::new(0);
+        assert!(retain_failure_storage(FailureRecord::Forward,&bytes,&path,&held,owner,group,||{checks.set(checks.get()+1);held.revalidate()?;if checks.get()==2{Err("post-storage guard failed".into())}else{Ok(())}}).is_err());
+        assert_eq!(checks.get(),2);assert_eq!(read_owned(&file,owner,group,0o400,16384).unwrap(),bytes);
+        let original="x".repeat(2049);let retained=failure_bytes(&request,"opensteamer.microphone-v9-guardian-start-failure.v1","ready",&original).map(|_|());
+        assert!(primary_retention_result(&original,retained).unwrap_err().starts_with(&format!("{original}; primary_retention_error_sha256=")));
+        fs::remove_file(file).unwrap();drop(held);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn unproved_guardian_slot_is_never_retried_removed_or_permission_repaired(){
+        let(path,held,owner,group)=pre_effect_directory_fixture("guardian-slot");guardian_slot_absent(&path,1).unwrap();
+        for name in ["guardian-1.events","guardian-1.proof","guardian-1-start-failure.txt"]{
+            held.write_record(name,b"retained",if name.ends_with("events"){0o600}else{0o400}).unwrap();let before=Identity::of(&fs::symlink_metadata(path.join(name)).unwrap());
+            assert!(guardian_slot_absent(&path,1).is_err());assert_eq!(Identity::of(&fs::symlink_metadata(path.join(name)).unwrap()),before);assert_eq!(read_owned(&path.join(name),owner,group,if name.ends_with("events"){0o600}else{0o400},8192).unwrap(),b"retained");fs::remove_file(path.join(name)).unwrap();
+        }
+        std::os::unix::fs::symlink(path.join("missing"),path.join("guardian-1.events")).unwrap();assert!(guardian_slot_absent(&path,1).is_err());fs::remove_file(path.join("guardian-1.events")).unwrap();
+        for index in [0,6]{assert!(guardian_slot_absent(&path,index).is_err());}guardian_slot_absent(&path,1).unwrap();drop(held);fs::remove_dir(path).unwrap();
     }
     #[test]fn actual_empty_held_journal_allows_only_pre_effect_proof_not_resume(){
         let request=super::super::tests::request();let(path,held,_,_)=pre_effect_directory_fixture("empty");

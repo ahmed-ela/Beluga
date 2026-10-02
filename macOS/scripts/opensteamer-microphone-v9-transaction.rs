@@ -366,6 +366,7 @@ trait Backend {
     fn persist(&mut self, journal: &Journal) -> Result<()>;
     fn effect(&mut self, effect: Effect) -> Result<()>;
     fn retain_admission_refusal(&mut self, _reason: &str) -> Result<()> { Ok(()) }
+    fn retain_forward_failure(&mut self, _stage: &str, _reason: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -440,30 +441,44 @@ impl<'a, B: Backend> Transaction<'a, B> {
             !facts.host_present || !facts.host_ready_exact || facts.normal_restarts != 0 || facts.rollback_restarts != 0 || facts.route_notifications != 0 {
             return if self.backend.retain_admission_refusal("initial admission predicates differ").is_ok() { Terminal::Refused } else { Terminal::RecoveryRequired };
         }
+        let mut stage="prepared_journal";
         let attempt = (|| -> Result<()> {
             self.record(State::Prepared)?;
+            stage="seal_guardian";
             self.backend.effect(Effect::Seal)?;
+            stage="sealed_journal";
             self.record(State::Sealed)?;
+            stage="stop_host";
             self.step(State::StopIntent, Effect::StopHost, State::HostStopped)?;
+            stage="retain_prior";
             self.step(State::RetainIntent, Effect::RetainPrior, State::PriorRetained)?;
+            stage="publish";
             self.step(State::PublishIntent, Effect::Publish, State::CandidatePublished)?;
+            stage="normal_restart";
             self.step(State::RestartIntent, Effect::NormalRestart, State::Reloaded)?;
+            stage="public_probe";
             self.guard_effect(Effect::PublicProbe)?;
             self.backend.effect(Effect::PublicProbe)?;
             self.record(State::PublicProof)?;
+            stage="idle_probe";
             self.guard_effect(Effect::IdleProbe)?;
             self.backend.effect(Effect::IdleProbe)?;
             self.record(State::IdleProof)?;
+            stage="start_host";
             self.step(State::HostStartIntent, Effect::StartHost, State::HostReady)?;
+            stage="precommit_audit";
             self.backend.effect(Effect::Audit)?;
             if !self.backend.observe()?.committed() { return Err("precommit facts incomplete".into()); }
+            stage="commit_intent";
             self.record(State::CommitIntent)?;
+            stage="irreversible_journal";
             self.record(State::Irreversible)?;
             Ok(())
         })();
-        if attempt.is_err() {
+        if let Err(reason)=attempt {
             // A failed durable append can have committed its bytes. Only a reloaded
             // root journal, not this stale in-memory prefix, can authorize recovery.
+            if self.backend.retain_forward_failure(stage,&reason).is_err(){return Terminal::RecoveryRequired;}
             return Terminal::RecoveryRequired;
         }
         self.finish_committed()
@@ -1018,10 +1033,10 @@ mod tests {
 
     #[derive(Clone)]
     struct Model { facts: Facts, durable: Vec<u8>, effects: Vec<Effect>, fail_effect: Option<(Effect,bool)>, fail_persist: Option<(State,bool)>, enabled: bool,
-        fail_observe: Option<String>, refuse_diagnostic: bool, refusals: Vec<String> }
+        fail_observe: Option<String>, refuse_diagnostic: bool, refusals: Vec<String>, forward_failures: Vec<(String,String)> }
     impl Model {
         fn new() -> Self { Self { facts: Facts { identity_exact:true,fresh_gate:true,root_sealed:false,host_present:true,host_ready_exact:true,driver:DriverLocation::PriorCanonical,prior_retained_exact:false,loaded:LoadedDriver::Prior,normal_restarts:0,rollback_restarts:0,public_nonce_both_orders:false,complete_v2_idle_with_history:false,route_notifications:0,route_teardown_clean:false }, durable:Vec::new(), effects:Vec::new(), fail_effect:None, fail_persist:None, enabled:true,
-            fail_observe:None, refuse_diagnostic:false, refusals:Vec::new() } }
+            fail_observe:None, refuse_diagnostic:false, refusals:Vec::new(),forward_failures:Vec::new() } }
     }
     impl Backend for Model {
         fn live_admission(&self) -> bool { self.enabled }
@@ -1029,6 +1044,10 @@ mod tests {
         fn retain_admission_refusal(&mut self, reason: &str) -> Result<()> {
             self.refusals.push(reason.to_string());
             if self.refuse_diagnostic { Err("refusal diagnostic persistence failed".into()) } else { Ok(()) }
+        }
+        fn retain_forward_failure(&mut self,stage:&str,reason:&str)->Result<()>{
+            if self.forward_failures.is_empty(){self.forward_failures.push((stage.into(),reason.into()));}
+            if self.refuse_diagnostic{Err("primary diagnostic persistence failed".into())}else{Ok(())}
         }
         fn persist(&mut self, journal: &Journal) -> Result<()> {
             let fail = self.fail_persist.filter(|(state,_)| Some(*state) == journal.last());
@@ -1078,6 +1097,14 @@ mod tests {
         model.refuse_diagnostic=true;
         assert_eq!(run(&mut model,&req),Terminal::RecoveryRequired);
         assert!(model.effects.is_empty()&&model.durable.is_empty());
+    }
+    #[test]fn first_forward_failure_is_retained_before_recovery_without_green_or_new_effect(){
+        let req=request();let mut model=Model::new();model.fail_effect=Some((Effect::Seal,false));
+        assert_eq!(run(&mut model,&req),Terminal::RecoveryRequired);assert_eq!(model.forward_failures,vec![("seal_guardian".into(),"before effect".into())]);
+        assert_eq!(Journal::parse(&model.durable,&req).unwrap().last(),Some(State::Prepared));assert!(model.effects.is_empty());assert_eq!((model.facts.normal_restarts,model.facts.rollback_restarts),(0,0));
+        model.fail_observe=Some("secondary recovery observer failure".into());assert_eq!(resume(&mut model,&req),Terminal::RecoveryRequired);
+        assert_eq!(model.forward_failures,vec![("seal_guardian".into(),"before effect".into())]);assert!(model.effects.is_empty());
+        let mut model=Model::new();model.fail_effect=Some((Effect::Seal,false));model.refuse_diagnostic=true;assert_eq!(run(&mut model,&req),Terminal::RecoveryRequired);assert!(model.effects.is_empty());
     }
     #[test] fn restart_report_finalizes_containment_even_when_counts_are_unproved() {
         let mut finalized=false;

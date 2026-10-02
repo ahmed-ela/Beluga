@@ -7,9 +7,9 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::os::fd::FromRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::unix::fs::FileTypeExt;
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt,ExitStatusExt};
 use std::path::{Path,PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use std::sync::{Mutex,OnceLock};
 use std::sync::atomic::{AtomicBool,Ordering};
@@ -183,7 +183,7 @@ fn fixed_driver_image_path(path:&Path)->Result<()>{
 
 pub(super) struct OwnedChild {
     child:Child, stdin:Option<ChildStdin>, stdout:ChildStdout, stderr:ChildStderr,
-    output:Vec<u8>, errors:Vec<u8>, stdout_eof:bool, stderr_eof:bool, reaped:bool, expected_uid:u32, guardian:bool,
+    output:Vec<u8>, errors:Vec<u8>, stdout_eof:bool, stderr_eof:bool, reaped:bool, status:Option<ExitStatus>, expected_uid:u32, guardian:bool,
 }
 
 impl OwnedChild {
@@ -292,7 +292,7 @@ impl OwnedChild {
         supervisor_check()?;
         let mut child=command.spawn().map_err(|_|"owned child spawn failed")?;
         let stdin=child.stdin.take();let stdout=child.stdout.take().ok_or("owned stdout missing")?;let stderr=child.stderr.take().ok_or("owned stderr missing")?;
-        let mut owned=Self{child,stdin,stdout,stderr,output:Vec::new(),errors:Vec::new(),stdout_eof:false,stderr_eof:false,reaped:false,expected_uid,guardian:false};
+        let mut owned=Self{child,stdin,stdout,stderr,output:Vec::new(),errors:Vec::new(),stdout_eof:false,stderr_eof:false,reaped:false,status:None,expected_uid,guardian:false};
         if nonblocking(owned.stdout.as_raw_fd()).is_err() || nonblocking(owned.stderr.as_raw_fd()).is_err(){owned.terminate()?;return Err("owned channel setup failed".into());}
         Ok(owned)
     }
@@ -341,16 +341,27 @@ impl OwnedChild {
         if !self.stderr_eof{self.stderr_eof=collect(&mut self.stderr,&mut self.errors,limit)?;}
         Ok(())
     }
+    pub(super) fn failure_diagnostics(&self)->String{
+        fn detail(bytes:&[u8])->String{if bytes.len()<=512{bytes.iter().map(|byte|format!("{byte:02x}")).collect()}else{"not-inlined-over-512-bytes".into()}}
+        // Captured prefixes at the failing readiness boundary, not a promise
+        // that cleanup retained all later pipe bytes or completed teardown.
+        format!("child_pid={}\nchild_reaped={}\nstatus_scope=post-containment-reap-when-known\nexit_code={}\nexit_signal={}\nchannel_scope=captured-prefix-only\nstdout_captured_bytes={}\nstdout_captured_sha256={}\nstdout_captured_hex={}\nstderr_captured_bytes={}\nstderr_captured_sha256={}\nstderr_captured_hex={}\n",self.child.id(),self.reaped,self.status.as_ref().and_then(|status|status.code()).map(|value|value.to_string()).unwrap_or("unknown".into()),self.status.as_ref().and_then(|status|status.signal()).map(|value|value.to_string()).unwrap_or("unknown".into()),self.output.len(),sha256(&self.output),detail(&self.output),self.errors.len(),sha256(&self.errors),detail(&self.errors))
+    }
+    fn ready_refusal(&mut self,reason:&str)->String{
+        // Preserve the primary failure even if owned containment also fails.
+        match self.terminate(){Ok(())=>reason.to_string(),Err(cleanup)=>format!("{reason}; cleanup_error_sha256={}",sha256(cleanup.as_bytes()))}
+    }
     pub(super) fn ready(&mut self,line:&[u8],duration:Duration)->Result<()> {
         if duration>Duration::from_secs(20){return Err("guardian ready deadline exceeds bound".into());}
         let deadline=Instant::now()+duration;
         loop {
-            if let Err(error)=supervisor_check(){self.terminate()?;return Err(error);}
-            if self.drain(8192).is_err(){self.terminate()?;return Err("guardian ready channel failed".into());}
+            if let Err(error)=supervisor_check(){return Err(self.ready_refusal(&error));}
+            if let Err(error)=self.drain(8192){return Err(self.ready_refusal(&format!("guardian ready channel failed reason_sha256={}",sha256(error.as_bytes()))));}
+            let exited=match self.exit_pending(){Ok(value)=>value,Err(error)=>return Err(self.ready_refusal(&error))};
+            if exited{return Err(self.ready_refusal("guardian terminated before ready acceptance"));}
             if self.output==line && self.errors.is_empty(){self.guardian=true;return Ok(());}
-            if !self.errors.is_empty() || self.output.len()>line.len() || Instant::now()>=deadline || self.exit_pending()?{
-                self.terminate()?;return Err("guardian ready proof differs or child terminated".into());
-            }
+            let reason=if !self.errors.is_empty(){Some("guardian ready stderr differs")}else if self.output.len()>line.len()||(self.output.ends_with(b"\n")&&self.output!=line){Some("guardian ready stdout differs")}else if Instant::now()>=deadline{Some("guardian ready monotonic deadline exceeded")}else{None};
+            if let Some(reason)=reason{return Err(self.ready_refusal(reason));}
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -367,7 +378,7 @@ impl OwnedChild {
                     // A native helper may not leave descendants holding pipes.
                     self.drain(maximum)?;
                     if !self.stdout_eof || !self.stderr_eof || !self.members()?.is_empty(){self.terminate()?;return Err("owned child pipes/descendants outlived its process".into());}
-                    let status=self.child.wait().map_err(|_|"owned child final reap failed")?;self.reaped=true;
+                    let status=self.child.wait().map_err(|_|"owned child final reap failed")?;self.reaped=true;self.status=Some(status);
                     let code=status.code().ok_or("owned child terminated by signal")?;
                     return Ok(Captured{code,stdout:std::mem::take(&mut self.output),stderr:std::mem::take(&mut self.errors)});
                 },
@@ -411,7 +422,7 @@ impl OwnedChild {
         fn discard<T:Read>(pipe:&mut T)->Result<bool>{let mut bytes=0;let mut buffer=[0u8;4096];loop{match pipe.read(&mut buffer){Ok(0)=>return Ok(true),Ok(count)=>{bytes+=count;if bytes>8*MAX_OUTPUT{return Err("cleanup pipe extent exceeds bound".into());}},Err(error)if error.kind()==std::io::ErrorKind::WouldBlock=>return Ok(false),Err(error)if error.kind()==std::io::ErrorKind::Interrupted=>{},Err(_)=>return Err("cleanup pipe read failed".into())}}}
         if !self.stdout_eof{self.stdout_eof=discard(&mut self.stdout)?;}if !self.stderr_eof{self.stderr_eof=discard(&mut self.stderr)?;}
         if !self.stdout_eof||!self.stderr_eof||!self.members()?.is_empty()||!self.exit_pending()?{return Err("owned cleanup pipes/group are not completely closed".into());}
-        self.child.wait().map_err(|_|"owned contained leader reap failed")?;self.reaped=true;Ok(())
+        let status=self.child.wait().map_err(|_|"owned contained leader reap failed")?;self.reaped=true;self.status=Some(status);Ok(())
     }
 }
 impl Drop for OwnedChild{fn drop(&mut self){
@@ -473,6 +484,16 @@ mod tests{
     #[test]fn real_owned_child_preserves_direct_nonzero_exit_status(){
         assert!(!OwnedChild::root_identity(),"direct status fixtures must never run as root");
         for(code,script)in [(1,"exit 1"),(37,"exit 37"),(78,"exit 78")]{let output=fixture("/bin/sh",&["-c",script]).finish(Duration::from_secs(1),8192).unwrap();assert_eq!(output.code,code);assert!(output.stdout.is_empty());assert!(output.stderr.is_empty());}
+    }
+    #[test]fn private_guardian_ready_failures_retain_bounded_channels_and_actual_status(){
+        assert!(!OwnedChild::root_identity(),"ready diagnostics fixtures must never run as root");
+        for(script,stdout,stderr)in [("printf 'WRONG\\n'; /bin/sleep 1",b"WRONG\n".as_slice(),b"".as_slice()),("printf 'ready stderr\\n' >&2; /bin/sleep 1",b"",b"ready stderr\n"),("exit 37",b"",b""),("/bin/sleep 1",b"",b"")]{
+            let mut child=fixture("/bin/sh",&["-c",script]);let reason=child.ready(b"READY\n",Duration::from_millis(40)).unwrap_err();assert!(reason.len()<2048);assert!(!child.guardian);
+            let diagnostic=child.failure_diagnostics();assert!(diagnostic.contains("status_scope=post-containment-reap-when-known"));assert!(diagnostic.contains("channel_scope=captured-prefix-only"));assert!(diagnostic.contains(&format!("stdout_captured_bytes={}\nstdout_captured_sha256={}",stdout.len(),sha256(stdout))));assert!(diagnostic.contains(&format!("stderr_captured_bytes={}\nstderr_captured_sha256={}",stderr.len(),sha256(stderr))));assert!(!diagnostic.contains("ready stderr\n"));assert!(child.reaped);
+            if script=="exit 37"{assert!(diagnostic.contains("exit_code=37\n"));}else{assert!(diagnostic.contains("exit_signal=15\n")||diagnostic.contains("exit_code=0\n"));}
+        }
+        let mut child=fixture("/bin/sh",&["-c","printf 'READY\\n'; exit 37"]);let deadline=Instant::now()+Duration::from_secs(1);while !child.exit_pending().unwrap(){assert!(Instant::now()<deadline);std::thread::sleep(Duration::from_millis(10));}assert!(child.ready(b"READY\n",Duration::from_millis(40)).is_err());assert!(!child.guardian);assert!(child.failure_diagnostics().contains("exit_code=37\n"));
+        let mut child=fixture("/bin/sleep",&["1"]);let diagnostic=child.failure_diagnostics();assert!(diagnostic.contains("child_reaped=false\n")&&diagnostic.contains("exit_code=unknown\n")&&diagnostic.contains("exit_signal=unknown\n"));child.errors=vec![b'x';513];assert!(child.failure_diagnostics().contains("stderr_captured_hex=not-inlined-over-512-bytes"));child.terminate().unwrap();
     }
     #[test]fn private_held_read_fd_can_make_txt_and_selector_successfully_empty(){
         assert!(!OwnedChild::root_identity(),"held-file selector fixtures must never run as root");
