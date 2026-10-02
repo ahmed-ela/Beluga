@@ -218,6 +218,29 @@ fn load_durable_journal(request:&Request)->Result<Journal>{
     let root=PathBuf::from(request.root_path()).join("journal");let held=sealed_fs::HeldDirectory::capture(&root,0,0,0o700)?;
     held.reconcile_journal(request)
 }
+fn empty_pre_effect_journal(held:&sealed_fs::HeldDirectory,path:&Path,request:&Request)->Result<Journal>{
+    held.revalidate()?;
+    let before=Identity::of(&held.descriptor().metadata().map_err(|_|"pre-effect journal descriptor metadata unavailable")?);
+    if fs::canonicalize(path).map_err(|_|"pre-effect journal canonical path unavailable")?!=path||
+        Identity::of(&fs::symlink_metadata(path).map_err(|_|"pre-effect journal path unavailable")?)!=before{
+        return Err("pre-effect journal descriptor/path differs".into());
+    }
+    // Do not reconcile or adopt pending generations: any entry is an effect
+    // boundary, while resume still requires an actual durable journal.
+    if fs::read_dir(path).map_err(|_|"pre-effect journal inventory unavailable")?.next().is_some(){
+        return Err("pre-effect refusal has durable/pending/unknown journal evidence".into());
+    }
+    held.revalidate()?;
+    if Identity::of(&held.descriptor().metadata().map_err(|_|"pre-effect journal after-stat unavailable")?)!=before||
+        Identity::of(&fs::symlink_metadata(path).map_err(|_|"pre-effect journal path disappeared")?)!=before{
+        return Err("pre-effect journal changed during empty inventory".into());
+    }
+    Ok(Journal::new(request))
+}
+fn load_pre_effect_empty_journal(request:&Request)->Result<Journal>{
+    let root=PathBuf::from(request.root_path()).join("journal");let held=sealed_fs::HeldDirectory::capture(&root,0,0,0o700)?;
+    empty_pre_effect_journal(&held,&root,request)
+}
 
 pub(super) struct RootContext{
     request:Request, state:PathBuf, executables:PathBuf,
@@ -681,6 +704,13 @@ fn validate_admission_refusal(bytes:&[u8],request:&Request)->Result<()>{
     let reason=(0..encoded.len()).step_by(2).map(|i|u8::from_str_radix(&encoded[i..i+2],16).map_err(|_|"refusal hex malformed")).collect::<std::result::Result<Vec<_>,_>>()?;
     let text=std::str::from_utf8(&reason).map_err(|_|"admission refusal UTF-8 differs")?;if admission_refusal_bytes(request,text)?!=bytes{return Err("admission refusal canonical reason/hash differs".into());}Ok(())
 }
+fn retain_admission_before_pre_effect(request:&Request,reason:&str,prior:Option<&[u8]>,
+    retain:impl FnOnce(&[u8])->Result<()>,pre_effect:impl FnOnce()->Result<()>)->Result<()>{
+    let bytes=admission_refusal_bytes(request,reason)?;
+    if let Some(prior)=prior{if prior!=bytes.as_slice(){return Err("first admission refusal is immutable".into());}validate_admission_refusal(prior,request)?;}
+    else{retain(&bytes)?;}
+    pre_effect()
+}
 const PRE_EFFECT_RECORDS:&[&str]=&["request.txt","build-manifest.json","authority.txt","SEALING_INCOMPLETE","SEALING_COMPLETE","candidate.driver","journal","prior","failed","probes","host-baseline.txt","admission-refusal.txt","child-active-001","child-clean-001"];
 fn refusal_journal_empty(memory:&Journal,durable:&Journal,resumed:bool,sequence:usize)->Result<()>{
     if memory.last().is_some()||durable.last().is_some()||resumed||sequence!=1{return Err("pre-effect refusal has durable/recovered transaction effects".into());}Ok(())
@@ -886,7 +916,7 @@ impl OsBackend{
         completed_restart_budget(base.as_ref(),ni.as_ref(),nd.as_ref(),ri.as_ref(),rd.as_ref())
     }
     fn pre_effect_empty(&self)->Result<()>{
-        self.context.controller_lock.revalidate()?;let durable=load_durable_journal(&self.context.request)?;
+        self.context.controller_lock.revalidate()?;let durable=load_pre_effect_empty_journal(&self.context.request)?;
         refusal_journal_empty(&self.journal,&durable,self.resumed,self.context.child_sequence)?;
         for(count,entry)in fs::read_dir(&self.context.state).map_err(|_|"pre-effect state inventory unavailable")?.enumerate(){
             if count>=64{return Err("pre-effect state inventory bound exceeded".into());}let entry=entry.map_err(|_|"pre-effect state entry unavailable")?;let name=entry.file_name().into_string().map_err(|_|"pre-effect state name differs")?;
@@ -1056,8 +1086,9 @@ impl Backend for OsBackend{
     // actual execution still requires every sealed and fresh runtime predicate.
     fn live_admission(&self)->bool{LIVE_ADMISSION}
     fn retain_admission_refusal(&mut self,reason:&str)->Result<()>{
-        self.pre_effect_empty()?;let bytes=admission_refusal_bytes(&self.context.request,reason)?;
-        if let Some(prior)=self.context.optional_record("admission-refusal.txt")?{if prior!=bytes{return Err("first admission refusal is immutable".into());}validate_admission_refusal(&prior,&self.context.request)}else{self.context.record("admission-refusal.txt",&bytes)}
+        let prior=self.context.optional_record("admission-refusal.txt")?;
+        retain_admission_before_pre_effect(&self.context.request,reason,prior.as_deref(),
+            |bytes|self.context.record("admission-refusal.txt",bytes),||self.pre_effect_empty())
     }
     fn persist(&mut self,journal:&Journal)->Result<()>{
         self.context.revalidate()?;let parent=sealed_fs::HeldDirectory::capture(&self.context.state.join("journal"),0,0,0o700)?;parent.persist(journal)?;self.journal=journal.clone();Ok(())
@@ -1331,6 +1362,76 @@ pid/178/com.apple.audio.Core-Audio-Driver-Service.helper.5E2741F7-BA88-4661-B3F2
         assert!(PRE_EFFECT_RECORDS.contains(&"host-baseline.txt"));for name in ["core-baseline.txt","driver-host-baseline.txt","normal-restart-intent.txt","normal-restart-complete.txt","normal-driver-host-complete.txt","normal-reload-unproved.txt","rollback-restart-intent.txt","recovery-refusal.txt","unknown-effect"]{assert!(!PRE_EFFECT_RECORDS.contains(&name));}
         let bytes=admission_refusal_bytes(&request,"original cause = bounded\nprivate UTF-8 ✓").unwrap();validate_admission_refusal(&bytes,&request).unwrap();
         let text=String::from_utf8(bytes).unwrap();for mutant in [text.replace("namespace=","namespace=0"),text.replace("reason_sha256=","reason_sha256=0"),text.replace("reason_utf8_hex=","reason_utf8_hex=00"),text.clone()+"reason_sha256=duplicate\n"]{assert!(validate_admission_refusal(mutant.as_bytes(),&request).is_err());}assert!(admission_refusal_bytes(&request,&"x".repeat(2049)).is_err());
+    }
+    fn pre_effect_directory_fixture(label:&str)->(PathBuf,sealed_fs::HeldDirectory,u32,u32){
+        assert!(!os::OwnedChild::root_identity(),"pre-effect fixtures must never run as root");
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let path=std::env::temp_dir().join(format!("beluga-v9-pre-effect-{label}-{}-{stamp}",std::process::id()));
+        fs::create_dir(&path).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o700)).unwrap();
+        let path=fs::canonicalize(path).unwrap();let metadata=fs::metadata(&path).unwrap();let(owner,group)=(metadata.uid(),metadata.gid());
+        let held=sealed_fs::HeldDirectory::capture(&path,owner,group,0o700).unwrap();(path,held,owner,group)
+    }
+    #[test]fn actual_empty_held_journal_allows_only_pre_effect_proof_not_resume(){
+        let request=super::super::tests::request();let(path,held,_,_)=pre_effect_directory_fixture("empty");
+        let before=Identity::of(&fs::symlink_metadata(&path).unwrap());
+        let empty=empty_pre_effect_journal(&held,&path,&request).unwrap();assert!(empty.last().is_none());
+        refusal_journal_empty(&Journal::new(&request),&empty,false,1).unwrap();
+        assert_eq!(held.reconcile_journal(&request).unwrap_err(),"resume requires an actual durable journal");
+        assert!(fs::read_dir(&path).unwrap().next().is_none());assert_eq!(Identity::of(&fs::symlink_metadata(&path).unwrap()),before);
+        drop(held);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn pre_effect_held_journal_never_adopts_pending_published_or_unknown_entries(){
+        let request=super::super::tests::request();let prepared=Journal::new(&request).appended(State::Prepared).unwrap().bytes();
+        for kind in ["pending","published","torn","unknown","directory","symlink","hardlink"]{
+            let(path,held,owner,group)=pre_effect_directory_fixture(kind);
+            let name=if kind=="published"{"journal-001"}else if kind=="unknown"{"unknown-effect"}else{"pending-001"};let target=path.join(name);
+            if kind=="directory"{fs::create_dir(&target).unwrap();}
+            else if kind=="symlink"{std::os::unix::fs::symlink(path.join("missing-target"),&target).unwrap();}
+            else{held.write_record(name,if kind=="torn"{b"torn"}else{&prepared},0o400).unwrap();}
+            if kind=="hardlink"{fs::hard_link(&target,path.join("second-link")).unwrap();}
+            let before=Identity::of(&fs::symlink_metadata(&target).unwrap());
+            let original=if matches!(kind,"pending"|"published"|"torn"|"unknown"){Some(read_owned(&target,owner,group,0o400,MAX_REQUEST).unwrap())}else{None};
+            for _ in 0..2{assert!(empty_pre_effect_journal(&held,&path,&request).is_err());}
+            assert_eq!(Identity::of(&fs::symlink_metadata(&target).unwrap()),before);
+            if let Some(bytes)=original{assert_eq!(read_owned(&target,owner,group,0o400,MAX_REQUEST).unwrap(),bytes);}
+            if kind!="published"{assert!(!path.join("journal-001").exists());}
+            if kind=="hardlink"{fs::remove_file(path.join("second-link")).unwrap();}
+            if kind=="directory"{fs::remove_dir(target).unwrap();}else{fs::remove_file(target).unwrap();}
+            drop(held);fs::remove_dir(path).unwrap();
+        }
+    }
+    #[test]fn pre_effect_empty_inventory_refuses_replaced_held_directory(){
+        let request=super::super::tests::request();let(path,held,_,_)=pre_effect_directory_fixture("replaced");
+        let retained=path.with_extension("retained");assert!(!retained.exists());fs::rename(&path,&retained).unwrap();
+        fs::create_dir(&path).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(empty_pre_effect_journal(&held,&path,&request).is_err());assert!(fs::read_dir(&path).unwrap().next().is_none());
+        drop(held);fs::remove_dir(path).unwrap();fs::remove_dir(retained).unwrap();
+    }
+    #[test]fn first_admission_diagnostic_survives_real_pending_failure_and_is_immutable(){
+        let request=super::super::tests::request();let(state,held,owner,group)=pre_effect_directory_fixture("reason");
+        let journal_path=state.join("journal");fs::create_dir(&journal_path).unwrap();fs::set_permissions(&journal_path,fs::Permissions::from_mode(0o700)).unwrap();
+        let journal=sealed_fs::HeldDirectory::capture(&journal_path,owner,group,0o700).unwrap();
+        let reason=host_gate_failure(78,b"","host-gate: REFUSED original cause ✓\n".as_bytes());
+        retain_admission_before_pre_effect(&request,&reason,None,|bytes|held.write_record("admission-refusal.txt",bytes,0o400),
+            ||empty_pre_effect_journal(&journal,&journal_path,&request).map(|_|())).unwrap();
+        let path=state.join("admission-refusal.txt");let first=read_owned(&path,owner,group,0o400,8192).unwrap();let before=Identity::of(&fs::symlink_metadata(&path).unwrap());
+        assert_eq!(first,admission_refusal_bytes(&request,&reason).unwrap());validate_admission_refusal(&first,&request).unwrap();
+        retain_admission_before_pre_effect(&request,&reason,Some(&first),|_|panic!("same reason must not rewrite"),
+            ||empty_pre_effect_journal(&journal,&journal_path,&request).map(|_|())).unwrap();
+        assert_eq!(Identity::of(&fs::symlink_metadata(&path).unwrap()),before);assert_eq!(read_owned(&path,owner,group,0o400,8192).unwrap(),first);
+        let checked=std::cell::Cell::new(false);
+        assert!(retain_admission_before_pre_effect(&request,"later masked cause",Some(&first),|_|panic!("first reason must never overwrite"),
+            ||{checked.set(true);Ok(())}).is_err());assert!(!checked.get());
+        fs::remove_file(&path).unwrap();let pending=Journal::new(&request).appended(State::Prepared).unwrap().bytes();journal.write_record("pending-001",&pending,0o400).unwrap();
+        assert!(retain_admission_before_pre_effect(&request,&reason,None,|bytes|held.write_record("admission-refusal.txt",bytes,0o400),
+            ||empty_pre_effect_journal(&journal,&journal_path,&request).map(|_|())).is_err());
+        assert_eq!(read_owned(&path,owner,group,0o400,8192).unwrap(),first);validate_admission_refusal(&first,&request).unwrap();
+        assert_eq!(read_owned(&journal_path.join("pending-001"),owner,group,0o400,MAX_REQUEST).unwrap(),pending);assert!(!journal_path.join("journal-001").exists());
+        let retained=Identity::of(&fs::symlink_metadata(&path).unwrap());
+        assert!(retain_admission_before_pre_effect(&request,&reason,Some(&first),|_|panic!("pending failure must not rewrite"),
+            ||empty_pre_effect_journal(&journal,&journal_path,&request).map(|_|())).is_err());
+        assert_eq!(Identity::of(&fs::symlink_metadata(&path).unwrap()),retained);
+        fs::remove_file(path).unwrap();fs::remove_file(journal_path.join("pending-001")).unwrap();drop(journal);fs::remove_dir(journal_path).unwrap();drop(held);fs::remove_dir(state).unwrap();
     }
     #[test]fn fatal_host_gate_error_retains_exact_code_stderr_without_silent_truncation(){
         let stderr=b"host-gate: REFUSED exact source refusal\n";let reason=host_gate_failure(78,b"",stderr);assert!(reason.contains("code=78"));assert!(reason.contains(&format!("stderr_sha256={}",sha256(stderr))));assert!(reason.contains("stderr_hex=686f73742d67617465"));
