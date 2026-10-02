@@ -4,6 +4,15 @@ Beluga uses the following directly distributed runtime components. Their terms r
 independent of the Beluga project license. Keep this file with source and binary
 distributions that contain the corresponding component.
 
+## Android build tooling and preview boundary
+
+The pinned Gradle9.3.1 wrapper is distributed under its embedded Apache2.0
+license, also retained at `android/gradle/wrapper/LICENSE`. The Kotlin/Compose
+Android preview's exact build/runtime dependency graph and checksums are recorded
+under `android/`; these dependencies are not added to the Mac app. A complete
+notice inventory for the actual Android release APK remains a distribution gate.
+The current debug format-check preview is not a published Android release.
+
 ## Sparkle updater
 
 Mac menu-bar client builds use Sparkle 2.10.0, pinned in `Package.resolved`.

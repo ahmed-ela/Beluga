@@ -1,15 +1,18 @@
-# Native Android client — protocol foundation, app not implemented
+# Native Android client — format-check preview, pairing/media not implemented
 
 Requested on 2026-10-02 as part of the active Mac menu-bar client goal. This
-checkout has no Android application/module, Gradle wrapper, manifest, Kotlin or
-Java app source. `android/protocol` now contains a dependency-free JVM invitation
-parser checked against shared test-only fixtures; it is not an application or
-complete pairing implementation. The browser `/v3/audio-share` receiver is a separate listen-only
+checkout now includes an independently packaged Kotlin/Compose preview under
+`android/`: explicit QR/manual input with stale/duplicate/timeout fencing, strict
+invitation parsing, and no app camera/microphone/Internet permission. Its UI only
+checks format and explicitly reports **not paired**. Stable identity, saved Macs,
+authenticated pairing/reconnect, media and controls are not implemented.
+`android/protocol` is still independently JVM-testable. The browser `/v3/audio-share` receiver is a separate listen-only
 bearer-link feature and must not be relabeled as a paired Android client.
 
 ## First vertical slice
 
 1. A native client shell with explicit QR-camera use and manual invitation entry.
+   Source/build tests pass; real scanner/device behavior remains unverified.
 2. A stable device identity and encrypted device-local saved-Mac catalog; do not
    rotate identity or delete another Mac when adding/forgetting a record.
 3. Crash-safe durable pairing, availability and authenticated reconnect to one
@@ -80,11 +83,29 @@ Migration must precede all legacy writers; catalog presence is authoritative,
 including after forgetting every phone. Runtime integration and preventing
 catalog-unaware downgrade remain mandatory before enabling the new path.
 
+## Native preview evidence — 2026-10-02
+
+- AGP9.1.1, built-in Kotlin/Compose compiler2.2.10, Gradle9.3.1, JDK17,
+  API36/Build Tools36.0.0 are pinned. Existing SDK/JDK reused; no device or
+  system SDK changes. Gradle distribution and wrapper official SHA-256 match.
+- Debug APK builds; 19 model tests pass with zero skips/failures/errors and
+  three shared protocol vectors pass 79 assertions. Strict offline forced-task
+  repeat produces identical APK bytes. Repository-layout build also passes,
+  using the one `shared/ProtocolFixtures` directory rather than copied fixtures.
+- Application, protocol and plugin/buildscript graphs are locked. Independent
+  provenance audit covers 786 exact files: all match declared SHA-256 and
+  official repository sidecars (386 SHA-256, 400 explicitly weaker SHA-1 fallback).
+  No dynamic/SNAPSHOT pins, missing hashes or verification bypasses were found.
+- Actual debug APK signature verifies. Package permissions exclude CAMERA,
+  RECORD_AUDIO and INTERNET; network-state and signature-scoped receiver
+  permissions remain. Backup/transfer are disabled. No package installation,
+  Android runtime/scanner proof, release signing or distribution is claimed.
+
 ## Evidence required before support/distribution claims
 
 - Android project/toolchain and dependency provenance pinned; reproducible unit
-  tests and signed package validation. No Android SDK installation/build has
-  been performed for this scope yet.
+  tests and signed package validation. The debug preview evidence above is not
+  a signed release, dependency-license inventory for distribution, or device proof.
 - Cross-language pairing/encryption vectors, bad payloads, interrupted commits,
   replay rejection, reconnect, Mac switching and per-device removal.
 - Existing iPhone remains paired after adding/removing Android; no live-session

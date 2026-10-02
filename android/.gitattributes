@@ -1,0 +1,2 @@
+# Preserve the generated Windows wrapper's CRLF lines.
+gradlew.bat whitespace=cr-at-eol
