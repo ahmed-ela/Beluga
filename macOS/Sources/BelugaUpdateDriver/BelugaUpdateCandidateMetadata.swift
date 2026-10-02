@@ -10,7 +10,9 @@ package enum BelugaUpdateCandidateMetadata {
         case inconsistentItem, invalidSchema, invalidAlgorithm, invalidDigest
     }
 
-    static let schema = "beluga.update-candidate.v1"
+    // v2 requires the signed producer's host phone-catalog schema1 contract.
+    // Require it even before migration: a higher build never implies storage compatibility.
+    static let schema = "beluga.update-candidate.v2"
     static let treeAlgorithm = BelugaUpdateBundleTree.algorithm
     static let customKeys: Set<String> = [
         "beluga:artifactSchema", "beluga:executableSHA256",
@@ -93,7 +95,7 @@ package enum BelugaUpdateCandidateMetadata {
         guard isCanonicalDigest(executable), isCanonicalDigest(tree) else {
             throw Failure.invalidDigest
         }
-        // v1 deliberately binds the full app tree, including all bundled code/resources.
+        // The full app tree binds the sealed catalog version alongside all code/resources.
         return try BelugaUpdateOperation.ArtifactIdentity(version: version, build: build,
             executableSHA256: executable, dependencyClosureSHA256: tree)
     }

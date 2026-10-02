@@ -75,6 +75,66 @@ class BelugaMacClientContractTests < Minitest::Test
     assert C.updater_source_contract!
   end
 
+  def catalog_sources
+    {
+      'macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift' =>
+        'store.phoneCatalog.loadOrMigrate(for: identity) snapshot.selectedRecord publishPresentation(.unselected) startAvailabilityLoop()',
+      'macOS/Sources/CaptureServer/WorldwidePairingStore.swift' =>
+        'WorldwidePairedPhoneCatalogStore.catalogAccount throw WorldwidePairingStoreError.catalogIsAuthoritative try requireLegacyNamespace() try requireLegacyNamespace() try requireLegacyNamespace()',
+      'macOS/Sources/CaptureServer/WorldwidePairingBootstrap.swift' =>
+        'try checkpoint.add(pending) try checkpoint.update(record)',
+      'macOS/Sources/CaptureServer/WorldwidePairingCatalogCheckpoint.swift' =>
+        'catalog.addPairedPhone( catalog.updatePairedPhone('
+    }
+  end
+
+  def test_catalog_producer_requires_migration_checkpoint_routing_and_legacy_account_fence
+    assert C.catalog_source_contract!(catalog_sources)
+    catalog_sources.each_key do |path|
+      assert_raises(C::Refusal, path) { C.catalog_source_contract!(catalog_sources.reject { |key, _| key == path }) }
+    end
+    coordinator = 'macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift'
+    [
+      catalog_sources[coordinator].sub('store.phoneCatalog.loadOrMigrate(for: identity)', ''),
+      'startAvailabilityLoop() ' + catalog_sources[coordinator],
+      catalog_sources[coordinator].sub('snapshot.selectedRecord', ''),
+      catalog_sources[coordinator].sub('publishPresentation(.unselected)', ''),
+      catalog_sources[coordinator] + ' store.savePairedViewer(record, for: identity)'
+    ].each do |source|
+      assert_raises(C::Refusal) { C.catalog_source_contract!(catalog_sources.merge(coordinator => source)) }
+    end
+    store = 'macOS/Sources/CaptureServer/WorldwidePairingStore.swift'
+    ['WorldwidePairedPhoneCatalogStore.catalogAccount',
+     'throw WorldwidePairingStoreError.catalogIsAuthoritative', 'try requireLegacyNamespace()'].each do |text|
+      changed = catalog_sources[store].sub(text, '')
+      assert_raises(C::Refusal) { C.catalog_source_contract!(catalog_sources.merge(store => changed)) }
+    end
+    bootstrap = 'macOS/Sources/CaptureServer/WorldwidePairingBootstrap.swift'
+    ['try checkpoint.add(pending)', 'try checkpoint.update(record)'].each do |text|
+      changed = catalog_sources[bootstrap].sub(text, '')
+      assert_raises(C::Refusal) { C.catalog_source_contract!(catalog_sources.merge(bootstrap => changed)) }
+    end
+    assert_raises(C::Refusal) do
+      C.catalog_source_contract!(catalog_sources.merge(bootstrap => catalog_sources[bootstrap] + ' store.savePairedViewer(record)'))
+    end
+    checkpoint = 'macOS/Sources/CaptureServer/WorldwidePairingCatalogCheckpoint.swift'
+    ['catalog.addPairedPhone(', 'catalog.updatePairedPhone('].each do |text|
+      changed = catalog_sources[checkpoint].sub(text, '')
+      assert_raises(C::Refusal) { C.catalog_source_contract!(catalog_sources.merge(checkpoint => changed)) }
+    end
+    assert C.catalog_source_contract!
+  end
+
+  def test_catalog_marker_is_exact_integer_not_boolean_string_float_missing_or_future_version
+    assert C.paired_phone_catalog_info!('BelugaPairedPhoneCatalogVersion' => 1)
+    [nil, [], {}, { 'BelugaPairedPhoneCatalogVersion' => nil }].each do |value|
+      assert_raises(C::Refusal) { C.paired_phone_catalog_info!(value) }
+    end
+    [true, false, '1', 0, 2, -1, 1.0, 1.5, [1]].each do |value|
+      assert_raises(C::Refusal) { C.paired_phone_catalog_info!('BelugaPairedPhoneCatalogVersion' => value) }
+    end
+  end
+
   def test_paths_refuse_symlink_ancestors_shared_or_nonempty_directories_and_hardlinks
     assert_equal @directory, C.empty_owned_directory!(@directory)
     path = File.join(@directory, 'record')
@@ -232,7 +292,8 @@ class BelugaMacClientContractTests < Minitest::Test
     end
     %w[AppIcon.icns BuildSource.json Release.json Sparkle-LICENSE.txt ThirdPartyNotices.md org.example.opensteamer.media.json].each { |name| File.write(File.join(app, 'Contents/Resources', name), '{}', perm: 0o644) }
     %w[BuildSource.json Release.json Sparkle-LICENSE.txt].each { |name| File.write(File.join(app, C::BROKER, 'Contents/Resources', name), '{}', perm: 0o644) }
-    File.write(File.join(app, 'Contents/Info.plist'), '{}', perm: 0o644)
+    File.write(File.join(app, 'Contents/Info.plist'),
+      '<plist version="1.0"><dict><key>BelugaPairedPhoneCatalogVersion</key><integer>1</integer></dict></plist>', perm: 0o644)
     File.write(File.join(app, C::BROKER, 'Contents/Info.plist'), '{}', perm: 0o644)
     File.write(File.join(app, "#{C::LIVEKIT}/Versions/A/Versions/A/Resources/PrivacyInfo.xcprivacy"), '{}', perm: 0o644)
     C::ALIASES.each { |relative, destination| File.symlink(destination, File.join(app, relative)) }
@@ -380,6 +441,44 @@ class BelugaMacClientContractTests < Minitest::Test
     end
   end
 
+  def test_candidate_identity_cannot_stamp_v2_onto_an_app_with_old_or_missing_catalog_marker
+    app = fake_app
+    info = File.join(app, 'Contents/Info.plist')
+    [
+      '<plist version="1.0"><dict></dict></plist>',
+      '<plist version="1.0"><dict><key>BelugaPairedPhoneCatalogVersion</key><integer>2</integer></dict></plist>',
+      '<plist version="1.0"><dict><key>BelugaPairedPhoneCatalogVersion</key><true/></dict></plist>',
+      '<plist version="1.0"><dict><key>BelugaPairedPhoneCatalogVersion</key><string>1</string></dict></plist>',
+      '<plist version="1.0"><dict><key>BelugaPairedPhoneCatalogVersion</key><real>1.0</real></dict></plist>'
+    ].each do |bytes|
+      %w[xml1 binary1].each do |format|
+        File.write(info, bytes, perm: 0o644)
+        C.run('/usr/bin/plutil', '-convert', format, info)
+        assert_raises(C::Refusal) do
+          C.candidate_identity_for_app!(app, config: config, expected_tree_sha256: C.tree_digest(app))
+        end
+      end
+    end
+  end
+
+  def test_producer_admits_only_v2_catalog_contract_even_for_high_build_candidate
+    high = config.merge('build' => 1_000_000)
+    identity = candidate_identity.merge('build' => high['build'])
+    assert_equal 'beluga.update-candidate.v2', C.candidate_identity!(identity, config: high)['schema']
+    ['beluga.update-candidate.v1', 'beluga.update-candidate.v3'].each do |schema|
+      assert_raises(C::Refusal) { C.candidate_identity!(identity.merge('schema' => schema), config: high) }
+    end
+    source = File.read(File.join(C::ROOT, 'macOS/scripts/build-beluga-mac-client-contract.rb'))
+    source_body = source.split('def self.source!', 2).last.split('def self.updater_source_contract!', 2).first
+    assert_includes source_body, 'catalog_source_contract!'
+    builder = File.read(File.join(C::ROOT, 'macOS/scripts/build-beluga-mac-client.rb'))
+    verifier = File.read(File.join(C::ROOT, 'macOS/scripts/verify-beluga-mac-client.rb'))
+    assert_includes builder, "'BelugaPairedPhoneCatalogVersion' => C::PAIRED_PHONE_CATALOG_VERSION"
+    assert_includes verifier, "'BelugaPairedPhoneCatalogVersion' => PAIRED_PHONE_CATALOG_VERSION"
+    assert_operator verifier.index("paired_phone_catalog_plist!(File.join(app, 'Contents/Info.plist'))"), :<,
+                    verifier.index('candidate_identity = candidate_identity_for_app!')
+  end
+
   def test_candidate_identity_rejects_wrong_schema_unknown_missing_or_malformed_fields
     assert_equal candidate_identity, C.candidate_identity!(candidate_identity, config: config)
     [nil, [], 'identity', candidate_identity.merge('unreviewed' => true),
@@ -388,7 +487,7 @@ class BelugaMacClientContractTests < Minitest::Test
       assert_raises(C::Refusal) { C.candidate_identity!(value, config: config) }
     end
     mutations = {
-      'schema' => [nil, '', 'beluga.update-candidate.v2'],
+      'schema' => [nil, '', 'beluga.update-candidate.v1', 'beluga.update-candidate.v3'],
       'version' => [nil, 2, '0.2.1', '00.2.0', "0.2.0\n", '4294967296.2.0'],
       'build' => [nil, true, 0, -1, '100', 100.0, 101, 2**63],
       'executableSHA256' => [nil, 3, '', 'a' * 63, 'A' * 64, 'a' * 64 + "\n"],

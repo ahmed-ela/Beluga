@@ -417,6 +417,41 @@ final class BelugaUpdateSparkleSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testSignedHighBuildSingleViewerCandidateIsRejectedBeforeBindingOrInstall() throws {
+        for rawBuild in ["1000000", String(UInt64.max)] {
+            let harness = Harness()
+            // Pure signature-positive metadata fixture; no real SDK or feed is started.
+            harness.candidateInput = .init(
+                signingStatus: SPUAppcastSigningValidationStatus.succeeded.rawValue,
+                installationType: "application", isDelta: false,
+                versionString: rawBuild, displayVersionString: "0.2.1",
+                properties: ["sparkle:version": rawBuild, "sparkle:shortVersionString": "0.2.1",
+                    "enclosure": ["beluga:artifactSchema": "beluga.update-candidate.v1",
+                        "beluga:executableSHA256": String(repeating: "c", count: 64),
+                        "beluga:bundleTreeSHA256": String(repeating: "d", count: 64),
+                        "beluga:bundleTreeAlgorithm": "beluga.bundle-tree-json-v1"]])
+            let session = harness.makeSession()
+            try session.startManualCheck()
+            try session.admitCheck(from: harness.engine.identity, check: .updates)
+            let item = SUAppcastItem.empty()
+            XCTAssertThrowsError(try session.admitUpdate(from: harness.engine.identity,
+                                                         item: item, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateCandidateMetadata.Failure, .invalidSchema)
+            }
+            let driver = try XCTUnwrap(harness.engine.userDriver)
+            let state = try XCTUnwrap(SPUUserUpdateState(coder: FixtureCoder(stage: 0)))
+            var choices = [SPUUserUpdateChoice]()
+            driver.showUpdateFound(with: item, state: state) { choices.append($0) }
+            harness.ui.foundReply?(.install)
+            XCTAssertEqual(choices, [.dismiss])
+            XCTAssertTrue(harness.boundCandidates.isEmpty)
+            XCTAssertTrue(harness.installRequests.isEmpty)
+            XCTAssertEqual(harness.terminationRequests, 0)
+            XCTAssertTrue(harness.retained)
+        }
+    }
+
+    @MainActor
     func testBindingFailureOrOwnershipLossCannotForwardInstall() throws {
         for revoke in [false, true] {
             let harness = Harness()
@@ -1226,6 +1261,7 @@ private final class Harness {
     var boundCandidates = [BelugaUpdateOperation.ArtifactIdentity]()
     var candidateError: Error?
     var candidateOverride: BelugaUpdateOperation.ArtifactIdentity?
+    var candidateInput: BelugaUpdateCandidateMetadata.Input?
     var bindingError: Error?
     var onBind: (() -> Void)?
     var allowTermination = true
@@ -1307,6 +1343,7 @@ private final class Harness {
             return engine
         }, candidate: { [self] _ in
             if let candidateError { throw candidateError }
+            if let candidateInput { return try BelugaUpdateCandidateMetadata.parse(candidateInput) }
             if let candidateOverride { return candidateOverride }
             return try .init(version: "0.2.1", build: 101,
                 executableSHA256: String(repeating: "c", count: 64),

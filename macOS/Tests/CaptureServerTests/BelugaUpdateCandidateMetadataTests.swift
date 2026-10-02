@@ -97,7 +97,7 @@ final class BelugaUpdateCandidateMetadataTests: XCTestCase {
     }
 
     func testSchemaAndAlgorithmAreExactNotVersionGuessed() {
-        for schema in ["", "beluga.update-candidate.v2", "beluga.update-candidate.v1 "] {
+        for schema in ["", "beluga.update-candidate.v1", "beluga.update-candidate.v3", "beluga.update-candidate.v2 "] {
             var values = enclosure()
             values["beluga:artifactSchema"] = schema
             rejects(input(enclosure: values), .invalidSchema)
@@ -106,6 +106,24 @@ final class BelugaUpdateCandidateMetadataTests: XCTestCase {
             var values = enclosure()
             values["beluga:bundleTreeAlgorithm"] = algorithm
             rejects(input(enclosure: values), .invalidAlgorithm)
+        }
+    }
+
+    func testSignedSingleViewerSchemaIsRejectedEvenWithAHigherOrMaximumBuild() throws {
+        for rawBuild in ["1000000", String(UInt64.max)] {
+            var properties = self.properties()
+            properties["sparkle:version"] = rawBuild
+            var old = enclosure()
+            old["beluga:artifactSchema"] = "beluga.update-candidate.v1"
+            properties["enclosure"] = old
+            var fixture = input(properties: properties)
+            fixture.versionString = rawBuild
+            rejects(fixture, .invalidSchema)
+
+            old["beluga:artifactSchema"] = "beluga.update-candidate.v2"
+            properties["enclosure"] = old
+            fixture.properties = properties
+            XCTAssertEqual(try Metadata.parse(fixture).build, try XCTUnwrap(UInt64(rawBuild)))
         }
     }
 

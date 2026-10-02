@@ -165,6 +165,14 @@ package enum BelugaUpdateInstalledArtifact {
               CFGetTypeID(integration) != CFBooleanGetTypeID(), integration.stringValue == "1" else {
             throw Failure.invalidProductMetadata
         }
+        // The signed v2 producer requires catalog1; neither updater ownership nor
+        // a high build number proves that an app can preserve migrated phone records.
+        guard let catalog = info["BelugaPairedPhoneCatalogVersion"] as? NSNumber,
+              CFGetTypeID(catalog) != CFBooleanGetTypeID(),
+              ["c", "C", "s", "S", "i", "I", "l", "L", "q", "Q"]
+                .contains(String(cString: catalog.objCType)), catalog.stringValue == "1" else {
+            throw Failure.invalidProductMetadata
+        }
         let limits = ["CFBundleShortVersionString": 64, "CFBundleVersion": 20,
                       "SUFeedURL": 2_048, "SUPublicEDKey": 44]
         guard limits.allSatisfy({ key, limit in

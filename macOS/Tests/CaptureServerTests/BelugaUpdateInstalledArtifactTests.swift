@@ -29,6 +29,7 @@ final class BelugaUpdateInstalledArtifactTests: XCTestCase {
          "CFBundleDisplayName": "Beluga Host", "CFBundleIconFile": "AppIcon.icns",
          "CFBundlePackageType": "APPL", "LSMinimumSystemVersion": "14.0",
          "LSUIElement": true, "OpensteamerMediaIntegrationVersion": 1,
+         "BelugaPairedPhoneCatalogVersion": 1,
          "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "100",
          "SUFeedURL": "https://updates.example.org/appcast.xml",
          "SUPublicEDKey": Data(repeating: 7, count: 32).base64EncodedString(),
@@ -138,6 +139,41 @@ final class BelugaUpdateInstalledArtifactTests: XCTestCase {
             XCTAssertThrowsError(try Reader.readbackFixture(context: f.context) { _ in changed }) {
                 XCTAssertEqual($0 as? Reader.Failure, .invalidProductMetadata)
             }
+        }
+    }
+
+    func testCatalogVersionMustBePresentExactIntegerNotInferredFromOwnershipOrHighBuild() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        var evidence = f.evidence()
+        evidence.securedInfo["BelugaUpdateOwnershipProtocol"] = 1
+        evidence.securedInfo["CFBundleVersion"] = "1000000"
+        XCTAssertEqual(try read(f, evidence: evidence).build, 1_000_000)
+        evidence.securedInfo.removeValue(forKey: "BelugaPairedPhoneCatalogVersion")
+        XCTAssertThrowsError(try read(f, evidence: evidence)) {
+            XCTAssertEqual($0 as? Reader.Failure, .invalidProductMetadata)
+        }
+        let invalidValues: [Any] = [true, false, "1", 0, 2, -1, 1.0, Float(1), 1.5, [1], NSNull()]
+        for invalid in invalidValues {
+            evidence.securedInfo["BelugaPairedPhoneCatalogVersion"] = invalid
+            XCTAssertThrowsError(try read(f, evidence: evidence)) {
+                XCTAssertEqual($0 as? Reader.Failure, .invalidProductMetadata)
+            }
+        }
+    }
+
+    func testCatalogMarkerIsCoveredByFullTreeAndTamperingCannotVerifyCandidate() throws {
+        let f = try fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+        let expected = try read(f)
+        var changed = f.info
+        changed["BelugaPairedPhoneCatalogVersion"] = 2
+        try PropertyListSerialization.data(fromPropertyList: changed, format: .xml, options: 0)
+            .write(to: f.app.appendingPathComponent("Contents/Info.plist"))
+        XCTAssertNotEqual(try BelugaUpdateBundleTree.inspect(bundleURL: f.app).bundleTreeSHA256,
+                          expected.dependencyClosureSHA256)
+        var evidence = f.evidence()
+        evidence.securedInfo = changed
+        XCTAssertThrowsError(try read(f, expected: expected, evidence: evidence)) {
+            XCTAssertEqual($0 as? Reader.Failure, .invalidProductMetadata)
         }
     }
 

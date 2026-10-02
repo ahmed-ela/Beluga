@@ -107,7 +107,7 @@ nested and staged broker rather than allowing arbitrary extra executable files.
 For this unsandboxed broker, the pinned SDK's existing in-process launcher does
 not require extra top-level XPC copies or enabling additional services.
 
-The producer now derives strict `beluga.update-candidate.v1` metadata from the
+The producer now derives strict `beluga.update-candidate.v2` metadata from the
 verified signed app, compares it with the final read-only mounted DMG, and adds
 its four enclosure attributes before whole-feed signing. Version/build, executable
 SHA-256 and the full signed app-tree SHA-256 are bound; the tree algorithm is
@@ -116,6 +116,17 @@ The reader consumes the public `SUAppcastItem.propertiesDictionary` only with
 positive `signingValidationStatus` success, rejecting deltas, packages, missing
 fields and fallback version locations. This is expected release identity, not
 installed-byte proof. No signed distribution has yet been produced with it.
+
+The v2 contract requires phone-catalog schema1 even before a phone is added.
+The signed main-app plist carries exact integer `BelugaPairedPhoneCatalogVersion=1`;
+native readback and packaging verify its type and value. Packaging checks the
+original plist before JSON conversion, which otherwise coerces real1 to integer1.
+The full signed tree binds that marker. The producer also rejects the former
+single-viewer source composition; this source guard is regression evidence, not
+runtime proof. Signature-positive v1 candidates are refused before durable binding
+or install authority even at the maximum build number. This does not retrofit
+manual rollback safety into an old binary: do not install a catalog-unaware host
+after migration through an out-of-band deployment path.
 
 Archived Sparkle items retain signing status without re-verifying a feed. The
 session therefore requires this manual cycle's exact item from the fresh

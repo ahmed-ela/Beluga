@@ -7,6 +7,7 @@ module BelugaMacClient
     canonical!(app)
     before = tree_digest(app)
     aliases_and_tree!(app)
+    paired_phone_catalog_plist!(File.join(app, 'Contents/Info.plist'))
     info = plist(File.join(app, 'Contents/Info.plist'))
     expected = {
       'CFBundleIdentifier' => BUNDLE_ID, 'CFBundleExecutable' => 'CaptureServer',
@@ -19,6 +20,7 @@ module BelugaMacClient
       'SUVerifyUpdateBeforeExtraction' => true, 'SURequireSignedFeed' => true,
       'SUAllowsAutomaticUpdates' => false,
       'BelugaUpdateOwnershipProtocol' => 1,
+      'BelugaPairedPhoneCatalogVersion' => PAIRED_PHONE_CATALOG_VERSION,
       'BelugaRendezvousURL' => rendezvous!(plist(File.join(ROOT, 'macOS/BelugaHost/Info.plist'))['BelugaRendezvousURL']),
       'NSAppleEventsUsageDescription' => 'Beluga reads playback information and controls Chrome and Music when you enable media integration.'
     }

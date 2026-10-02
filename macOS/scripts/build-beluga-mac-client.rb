@@ -93,7 +93,8 @@ begin
     'CFBundleShortVersionString' => config['version'], 'CFBundleVersion' => config['build'].to_s,
     'SUFeedURL' => config['feedURL'], 'SUPublicEDKey' => config['publicEDKey'],
     'SUVerifyUpdateBeforeExtraction' => true, 'SURequireSignedFeed' => true,
-    'SUAllowsAutomaticUpdates' => false, 'BelugaUpdateOwnershipProtocol' => 1
+    'SUAllowsAutomaticUpdates' => false, 'BelugaUpdateOwnershipProtocol' => 1,
+    'BelugaPairedPhoneCatalogVersion' => C::PAIRED_PHONE_CATALOG_VERSION
   }.each { |key, value| C.plist_set(info, key, value) }
   broker_info = File.join(app, C::BROKER, 'Contents/Info.plist')
   FileUtils.cp(File.join(C::ROOT, 'macOS/BelugaUpdater/Info.plist'), broker_info)

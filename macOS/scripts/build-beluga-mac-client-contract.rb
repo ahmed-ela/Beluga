@@ -24,7 +24,10 @@ module BelugaMacClient
   PRE_UPDATER_SOURCE = '168036d74e08e7b49aad37907cf9b84b5dcc8456'
   STABLE_FEED_URL = "https://github.com/ahmed-ela/Beluga/releases/download/#{STABLE_FEED_RELEASE_TAG}/appcast.xml".freeze
   CANDIDATE_XML_NAMESPACE = 'https://github.com/ahmed-ela/Beluga/ns/update'
-  CANDIDATE_IDENTITY_SCHEMA = 'beluga.update-candidate.v1'
+  # v2 promises host phone-catalog schema1 support. Do not relabel an old artifact:
+  # source composition and the actual sealed main-app marker must both pass.
+  CANDIDATE_IDENTITY_SCHEMA = 'beluga.update-candidate.v2'
+  PAIRED_PHONE_CATALOG_VERSION = 1
   BUNDLE_TREE_ALGORITHM = 'beluga.bundle-tree-json-v1'
   CANDIDATE_IDENTITY_KEYS = %w[schema version build executableSHA256 bundleTreeSHA256 bundleTreeAlgorithm].sort.freeze
   HOST_RPATH = '@executable_path/../Frameworks'
@@ -295,6 +298,7 @@ module BelugaMacClient
     baseline = run('/usr/bin/git', '-C', ROOT, 'show', "#{PRE_UPDATER_SOURCE}:Package.swift")
     require!(!baseline.include?('Sparkle'), 'pre-updater lineage baseline differs')
     updater_source_contract!
+    catalog_source_contract!
     { 'commit' => commit, 'tree' => tree }
   end
 
@@ -319,6 +323,51 @@ module BelugaMacClient
   def self.plist(path)
     regular!(path)
     JSON.parse(run('/usr/bin/plutil', '-convert', 'json', '-o', '-', path))
+  end
+
+  # Source regression guard only; focused catalog/runtime tests remain required.
+  # It prevents this producer stamping v2 onto the former single-viewer composition.
+  def self.catalog_source_contract!(sources = nil)
+    sources ||= Dir.glob(File.join(ROOT, 'macOS/Sources/CaptureServer/**/*.swift')).to_h do |path|
+      [path.delete_prefix("#{ROOT}/"), File.read(path)]
+    end
+    coordinator = sources['macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift']
+    store = sources['macOS/Sources/CaptureServer/WorldwidePairingStore.swift']
+    bootstrap = sources['macOS/Sources/CaptureServer/WorldwidePairingBootstrap.swift']
+    checkpoint = sources['macOS/Sources/CaptureServer/WorldwidePairingCatalogCheckpoint.swift']
+    migration = coordinator && coordinator.index('store.phoneCatalog.loadOrMigrate(for: identity)')
+    availability = coordinator && coordinator.index('startAvailabilityLoop()')
+    legacy_calls = /\b(?:loadPairedViewer|savePairedViewer|resetPairedViewer)\s*\(/
+    require!(migration && availability && migration < availability &&
+             coordinator.include?('snapshot.selectedRecord') &&
+             coordinator.include?('publishPresentation(.unselected)') &&
+             !coordinator.match?(legacy_calls), 'catalog-aware host composition missing')
+    require!(store && store.include?('WorldwidePairedPhoneCatalogStore.catalogAccount') &&
+             store.include?('throw WorldwidePairingStoreError.catalogIsAuthoritative') &&
+             store.scan(/\btry requireLegacyNamespace\(\)/).length == 3,
+             'single-viewer account is not fenced after catalog migration')
+    require!(bootstrap && bootstrap.include?('try checkpoint.add(pending)') &&
+             bootstrap.include?('try checkpoint.update(record)') && !bootstrap.match?(legacy_calls) &&
+             checkpoint && checkpoint.include?('catalog.addPairedPhone(') &&
+             checkpoint.include?('catalog.updatePairedPhone('), 'pairing checkpoints are not catalog-aware')
+    true
+  end
+
+  def self.paired_phone_catalog_info!(info)
+    require!(info.is_a?(Hash) && info['BelugaPairedPhoneCatalogVersion'].is_a?(Integer) &&
+             info['BelugaPairedPhoneCatalogVersion'] == PAIRED_PHONE_CATALOG_VERSION,
+             'signed app does not declare exact paired-phone catalog version1')
+    true
+  end
+
+  def self.paired_phone_catalog_plist!(path)
+    regular!(path)
+    # JSON serialization can erase the difference between plist real1 and integer1.
+    marker = run('/usr/bin/plutil', '-extract', 'BelugaPairedPhoneCatalogVersion',
+                 'raw', '-expect', 'integer', '-n', path)
+    require!(marker == PAIRED_PHONE_CATALOG_VERSION.to_s,
+             'signed app does not declare exact paired-phone catalog version1')
+    paired_phone_catalog_info!(plist(path))
   end
 
   def self.plist_set(path, key, value)
@@ -584,6 +633,7 @@ module BelugaMacClient
   def self.candidate_identity_for_app!(app, config:, expected_tree_sha256:)
     canonical!(app)
     require!(expected_tree_sha256.is_a?(String) && /\A[0-9a-f]{64}\z/.match?(expected_tree_sha256), 'missing verified app tree digest')
+    paired_phone_catalog_plist!(File.join(app, 'Contents/Info.plist'))
     executable = File.join(app, 'Contents/MacOS/CaptureServer')
     regular!(executable)
     executable_sha256 = Digest::SHA256.file(executable).hexdigest
