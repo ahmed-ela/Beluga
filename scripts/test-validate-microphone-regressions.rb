@@ -369,6 +369,11 @@ class MicrophoneRegressionGateTests < Minitest::Test
       result = shared_log.dup.force_encoding(encoding).freeze
       assert_equal @shared_methods, Gate.validate_shared_signaling(result, @shared_methods)
       assert_equal encoding, result.encoding
+      mac = (mac_log + "◇ Test run started.\n✔ Test run with 0 tests passed after 0.001 seconds.\n").force_encoding(encoding).freeze
+      assert_equal @mac_methods, Gate.validate_mac_log(mac, @mac_methods)
+      assert_equal encoding, mac.encoding
+      mac_discovery = ("# π\n" + @mac_methods.join("\n")).force_encoding(encoding)
+      assert_equal @mac_methods, Gate.mac_inventory(mac_discovery)
       discovery = ("# π\n" + @shared_methods.join("\n")).force_encoding(encoding)
       assert_equal @shared_methods, Gate.shared_signaling_inventory(discovery)
       producer = ("# π\n" + producer_log).force_encoding(encoding)
@@ -376,9 +381,21 @@ class MicrophoneRegressionGateTests < Minitest::Test
     end
     rejects('is not text') { Gate.utf8_text(nil, 'fixture') }
     invalid = "\xFF".b
+    rejects('not valid UTF-8') { Gate.mac_inventory(invalid) }
+    rejects('not valid UTF-8') { Gate.validate_mac_log(mac_log.b + invalid, @mac_methods) }
     rejects('not valid UTF-8') { Gate.shared_signaling_inventory(invalid) }
     rejects('not valid UTF-8') { Gate.validate_shared_signaling(shared_log.b + invalid, @shared_methods) }
     rejects('not valid UTF-8') { Gate.validate_mac_producer_harness(producer_log.b + invalid, @producer_methods) }
+  end
+
+  def test_simulator_source_inventory_requires_valid_utf8_without_locale_transcoding
+    path = File.join(@root, 'iOS/opensteamer/Tests/AudioTests.swift')
+    source = "// π 🦈\n".b + File.binread(path)
+    File.binwrite(path, source)
+    assert_equal @sim_methods, Gate.simulator_inventory(@root)
+    assert_equal source, File.binread(path)
+    File.binwrite(path, source + "\xFF".b)
+    rejects('not valid UTF-8') { Gate.simulator_inventory(@root) }
   end
 
   def test_mac_producer_source_inventory_requires_valid_utf8_without_locale_transcoding
