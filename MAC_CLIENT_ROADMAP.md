@@ -25,9 +25,10 @@ goal; they are not completed features or a second duplicate goal.
 - Add a native **Android paired client**, not just Android access to browser
   audio links. Reuse the same one-use QR and durable pairing protocol, retain
   multiple saved Macs, and connect one selected Mac with explicit capabilities.
-- Preserve existing iPhone trust when Android is paired. The current Mac has a
-  single saved-viewer slot, so this requires a bounded multi-phone catalog and
-  per-pair availability handling. Start with **one active phone session**; this
+- Preserve existing iPhone trust when Android is paired. The host source now
+  migrates its single saved-viewer slot to a bounded multi-phone catalog; its
+  installed-runtime and compatibility proof remain outstanding. Keep
+  **one active phone session**; this
   request does not authorize eviction of a current viewer or promise simultaneous
   iPhone/Android sessions. Forgetting one phone must not erase another.
 - Android audio, screen, microphone, control, background behavior, and the new
@@ -97,6 +98,42 @@ The browser protocol must not change deployed /v1/rendezvous or /v2/availability
 
 ## Implementation evidence — 2026-10-02
 
+- The existing mandatory release runner now includes the catalog/menu/lock and
+  updater suites plus named packaging-contract and shared-signaling phases; no
+  second release pipeline was added. All 27 current shared tests are required,
+  including when both discovery and result logs omit the same case. Gate
+  self-tests pass 53 cases/763 assertions. The actual selected Mac run passes
+  413 cases with no skips/failures, and replay validates the real 27 shared and
+  35 packaging cases. Both release hooks and product identity checks pass.
+  These focused results are not the final 26-phase source-bound receipt.
+- Catalog-aware updates require candidate schema v2 and a sealed exact-integer
+  catalog1 marker, bound by the signed full-app tree. A signature-positive v1
+  candidate is rejected before binding/install even with the maximum build number.
+  83 focused Swift cases and 35 producer cases/602 assertions pass. A negative
+  fixture caught plist-to-JSON coercion of real1 to integer1; original plist type
+  checks now reject it in both XML and binary form. No signed native update trial
+  has been performed. An old binary installed outside this updater is not made
+  catalog-safe by this change.
+- The host catalog is now wired through bootstrap, reconnect and the menu's
+  explicit pair/select/confirmed-forget actions. The menu receives bounded labels,
+  phone IDs and exact revision/selection tickets, not trust keys. Stale dialogs,
+  capacity exhaustion, late completion and missing owner authority cannot replace
+  a current pairing. Existing SwiftUI content and the narrow AppKit shell remain.
+  Phone changes wait for primary-session quiescence and exact old transport close;
+  independent audio shares are not stopped. No installed pairing has been changed.
+- `mac-phone-catalog-integration-4-restored.log`: 89 XCTest and 27 shared signaling
+  tests pass. Removing the concurrent-close joins made five exact delayed-close
+  regressions fail; the corrected files were restored to their original hashes
+  and the affected integrated suite passed again. The first attempt's two test
+  calls to an internal cross-module initializer failed compilation and were fixed
+  to use the public canonical wire initializer; that failure log is preserved.
+- Fresh signed Simulator audio run `beluga-catalog-simulator.gaZ7Pu`: 429 passes,
+  zero failures, and the exact same 22 enumerated physical-only skips. Independent
+  xcresult and app signature checks pass. This is not physical microphone, pairing,
+  two-Mac behavior, or the complete source-bound release receipt.
+- Native Android format-check preview is committed separately: 19 model tests and
+  79 shared protocol assertions pass, including a strict offline repeat. This is
+  not authenticated Android pairing/media; see `ANDROID_CLIENT_PLAN.md`.
 - Fresh initial feed-fetch/parse failure now has a guarded completion path after
   the exact one-shot native error acknowledgement, matching abort/idle-finish
   callbacks, no candidate admission or installation activity, continuous

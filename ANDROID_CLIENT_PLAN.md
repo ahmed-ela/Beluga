@@ -67,21 +67,30 @@ remain outstanding. Host-JVM results are not Android SDK or device proof.
 
 ## Mac-side prerequisite: preserve multiple phones
 
-`macOS/Sources/CaptureServer/WorldwidePairingStore.swift` currently stores one
-`worldwide-paired-viewer-v1` record, and `WorldwideHostCoordinator` owns one paired
-record. Simply pairing Android through that path would replace the iPhone record.
+The host source now routes every pairing/reconnect checkpoint through the bounded
+phone catalog. Startup migrates the original single-viewer item once without
+rewriting its bytes or host identity; catalog presence then blocks legacy reads
+and writes, including after every phone is forgotten. This is source integration,
+not a migration of Ahmed's installed host or protected pairing service.
 
-Add a bounded host phone catalog and pair-scoped availability routing with an
-atomic migration preserving the current identity and record. Maintain one active
-media-session owner initially; a new phone must not evict a connected viewer.
-Explicit per-phone forgetting/revocation must preserve other records. Do not
-read, migrate, or modify the protected legacy pairing service.
+The Mac menu has explicit pair/select/forget actions. New pairing preserves
+existing selection; forgetting clears only the exact requested record and never
+chooses a replacement. One primary phone media owner remains the policy. Actions
+require actual retained process ownership, a live service lifetime and a fresh
+protocol-quiescent primary-session boundary, and drain the old transport before
+mutation. An active viewer is not evicted. Independent browser shares retain
+their separate lifetime; LAN and test-sidecar coexistence deny catalog actions.
 
-The new `WorldwidePairedPhoneCatalogStore` foundation now has 21 passing
-in-memory tests, but production still uses its original single-viewer store.
-Migration must precede all legacy writers; catalog presence is authoritative,
-including after forgetting every phone. Runtime integration and preventing
-catalog-unaware downgrade remain mandatory before enabling the new path.
+The integrated focused run passes 89 XCTest cases plus 27 shared signaling tests,
+including the 21 in-memory catalog and 19 menu cases. The signed Simulator audio
+suites pass 429 tests with the same 22 explicit physical-only skips. Neither
+result proves physical iPhone-plus-Android pairing or actual Android transport.
+The updater source now requires signed candidate schema v2 and an exact sealed
+integer catalog1 marker before binding/install authority; even a higher-build
+v1 candidate is refused. Packaging checks original plist types before lossy JSON
+conversion. Focused coverage passes 83 Swift tests and 35 producer tests with
+602 assertions. This is not a signed native update trial or installed migration;
+those and real-device compatibility remain release gates.
 
 ## Native preview evidence — 2026-10-02
 
