@@ -838,17 +838,21 @@ fn selected_hal_owners(bytes:&[u8],selected:&Path,identity:&Identity)->Result<()
     }
     if process.is_none()||files==0||total==0{return Err("selected HAL owner inventory has no complete mapping".into());}Ok(())
 }
-fn selected_owner_output(role:&str,captured:&os::Captured,path:&Path,identity:&Identity)->Result<()>{
+#[derive(Debug,PartialEq,Eq)]
+enum SelectedOwnerInventory{Positive,Empty}
+fn selected_owner_output(role:&str,captured:&os::Captured,path:&Path,identity:&Identity)->Result<SelectedOwnerInventory>{
     if !captured.stderr.is_empty(){return Err(inspector_summary(role,captured));}
     match captured.code{
-        1 if captured.stdout.is_empty()=>Ok(()),
-        0 if !captured.stdout.is_empty()=>selected_hal_owners(&captured.stdout,path,identity).map_err(|reason|format!("{} parse_error_sha256={}",inspector_summary(role,captured),sha256(reason.as_bytes()))),
+        // -a -d txt may filter a found, held read FD from display. Empty0
+        // and empty1 are equivalent only here; neither proves an owner.
+        0|1 if captured.stdout.is_empty()=>Ok(SelectedOwnerInventory::Empty),
+        0=>selected_hal_owners(&captured.stdout,path,identity).map(|()|SelectedOwnerInventory::Positive).map_err(|reason|format!("{} parse_error_sha256={}",inspector_summary(role,captured),sha256(reason.as_bytes()))),
         _=>Err(inspector_summary(role,captured)),
     }
 }
 fn global_hal_owner(prior_output:&os::Captured,candidate_output:&os::Captured,prior_path:&Path,prior:&Identity,candidate_path:&Path,candidate:&Identity,pid:u32,loaded:LoadedDriver)->Result<()>{
-    selected_owner_output("driver_owners_prior",prior_output,prior_path,prior)?;selected_owner_output("driver_owners_candidate",candidate_output,candidate_path,candidate)?;
-    let selected=match(loaded,prior_output.code,candidate_output.code){(LoadedDriver::Prior,0,1)=>Some((prior_output,prior)),(LoadedDriver::Candidate,1,0)=>Some((candidate_output,candidate)),_=>None};
+    let prior_inventory=selected_owner_output("driver_owners_prior",prior_output,prior_path,prior)?;let candidate_inventory=selected_owner_output("driver_owners_candidate",candidate_output,candidate_path,candidate)?;
+    let selected=match(loaded,prior_inventory,candidate_inventory){(LoadedDriver::Prior,SelectedOwnerInventory::Positive,SelectedOwnerInventory::Empty)=>Some((prior_output,prior)),(LoadedDriver::Candidate,SelectedOwnerInventory::Empty,SelectedOwnerInventory::Positive)=>Some((candidate_output,candidate)),_=>None};
     let Some((output,identity))=selected else{return Err(format!("global HAL owner pair/loaded agreement refused; {}; {}",inspector_summary("driver_owners_prior",prior_output),inspector_summary("driver_owners_candidate",candidate_output)));};
     unique_hal_owner(&output.stdout,pid,identity.device,identity.inode).map_err(|reason|format!("{} owner_error_sha256={}",inspector_summary(if loaded==LoadedDriver::Prior{"driver_owners_prior"}else{"driver_owners_candidate"},output),sha256(reason.as_bytes())))
 }
@@ -1629,9 +1633,14 @@ pid/178/com.apple.audio.Core-Audio-Driver-Service.helper.5E2741F7-BA88-4661-B3F2
     #[test]fn single_image_expected_positive_and_empty_negative_preserve_global_owner(){
         assert_eq!(sha256(SINGLE_PRIOR_OWNER_FIXTURE),"82a9f7432868d986bfc58a757bbf8f36643d5d91877e1b59960edf2f6af52835");
         let(prior_path,candidate_path)=owner_paths();let prior=identity(16777232,29974734);let candidate=identity(16777232,29974735);
-        let prior_positive=owner_output(0,SINGLE_PRIOR_OWNER_FIXTURE,b"");let negative=owner_output(1,b"",b"");let candidate_positive=owner_output(0,&owner_mapping(309,candidate.inode,&candidate_path),b"");
-        global_hal_owner(&prior_positive,&negative,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Prior).unwrap();
-        global_hal_owner(&negative,&candidate_positive,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Candidate).unwrap();
+        let prior_positive=owner_output(0,SINGLE_PRIOR_OWNER_FIXTURE,b"");let negative=owner_output(1,b"",b"");let filtered_empty=owner_output(0,b"",b"");let candidate_positive=owner_output(0,&owner_mapping(309,candidate.inode,&candidate_path),b"");
+        for empty in [&negative,&filtered_empty]{
+            assert_eq!(selected_owner_output("driver_owners_prior",empty,&prior_path,&prior).unwrap(),SelectedOwnerInventory::Empty);
+            global_hal_owner(&prior_positive,empty,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Prior).unwrap();
+            global_hal_owner(empty,&candidate_positive,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Candidate).unwrap();
+            for other_empty in [&negative,&filtered_empty]{assert!(global_hal_owner(empty,other_empty,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Prior).is_err());assert!(global_hal_owner(empty,other_empty,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Candidate).is_err());}
+        }
+        assert_eq!(selected_owner_output("driver_owners_prior",&prior_positive,&prior_path,&prior).unwrap(),SelectedOwnerInventory::Positive);
         // The actual dual-file partial1 is NEVER a valid single-image negative.
         assert!(selected_owner_output("driver_owners_prior",&owner_output(1,SINGLE_PRIOR_OWNER_FIXTURE,b""),&prior_path,&prior).is_err());
         for(first,second,loaded)in [(&prior_positive,&candidate_positive,LoadedDriver::Prior),(&negative,&negative,LoadedDriver::Prior),(&prior_positive,&negative,LoadedDriver::Candidate),(&prior_positive,&negative,LoadedDriver::Unknown)]{
@@ -1643,8 +1652,11 @@ pid/178/com.apple.audio.Core-Audio-Driver-Service.helper.5E2741F7-BA88-4661-B3F2
     }
     #[test]fn single_image_exit_stderr_and_arbitrary_failures_are_not_absence(){
         let(path,_)=owner_paths();let prior=identity(16777232,29974734);
-        for(code,stdout,stderr)in [(0,b"".as_slice(),b"".as_slice()),(1,SINGLE_PRIOR_OWNER_FIXTURE,b""),(0,SINGLE_PRIOR_OWNER_FIXTURE,b"warning"),(1,b"",b"permission denied"),(2,b"",b""),(75,b"",b""),(78,b"",b""),(-1,b"",b"")]{
+        for(code,stdout,stderr)in [(1,SINGLE_PRIOR_OWNER_FIXTURE,b"".as_slice()),(0,SINGLE_PRIOR_OWNER_FIXTURE,b"warning"),(0,b"",b"permission denied"),(1,b"",b"permission denied"),(2,b"",b""),(75,b"",b""),(78,b"",b""),(-1,b"",b"")]{
             assert!(selected_owner_output("driver_owners_prior",&owner_output(code,stdout,stderr),&path,&prior).is_err(),"accepted status {code}");
+        }
+        for bytes in [b" ".as_slice(),b"\n",b"\0",b"\0\n",b"p309\0",b"p309\0\n",b"ftxt\0D0x1000010\0i29974734\0",b"partial"]{
+            for code in [0,1]{assert!(selected_owner_output("driver_owners_prior",&owner_output(code,bytes,b""),&path,&prior).is_err(),"accepted nonempty malformed output with status {code}");}
         }
         // Other trusted inspectors still require strict exit0, even empty1.
         assert!(clean_captured("driver_procinfo_before",owner_output(1,b"",b"")).is_err());

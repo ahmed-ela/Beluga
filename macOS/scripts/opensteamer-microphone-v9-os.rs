@@ -246,8 +246,8 @@ impl OwnedChild {
         // Fixed HAL roles only, derived from verified root bundle locations;
         // never an arbitrary request-selected root command or pathname.
         fixed_driver_image_path(path)?;
-        // One search item: exit1 can only be considered by the backend when
-        // BOTH output channels are exactly empty, never partial results.
+        // One search item: empty0 (found FD filtered by -a -d txt) and empty1
+        // are considered only with BOTH channels byte-empty, never partials.
         let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-d","txt","-F0pcDfin","--"]).arg(path);Self::root_inspector(command)
     }
     fn root_inspector(mut command:Command)->Result<Self>{
@@ -431,6 +431,7 @@ impl Drop for OwnedChild{fn drop(&mut self){
 #[cfg(test)]
 mod tests{
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     #[test]fn global_single_image_inspector_accepts_only_fixed_canonical_role_paths(){
         let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::DRIVER);fixed_driver_image_path(Path::new(&canonical)).unwrap();
         let namespace="driver-microphone-v9-fixture";let prefix=format!("{}/{namespace}",super::super::ROOT_TRANSACTIONS);
@@ -468,6 +469,20 @@ mod tests{
     #[test]fn real_bounded_child_exit_and_deadline(){
         let output=fixture("/usr/bin/true",&[]).finish(Duration::from_secs(1),8192).unwrap();assert_eq!(output.code,0);assert!(output.stdout.is_empty());
         let start=Instant::now();assert!(fixture("/bin/sleep",&["30"]).finish(Duration::from_millis(30),8192).is_err());assert!(start.elapsed()<Duration::from_secs(2));
+    }
+    #[test]fn real_owned_child_preserves_direct_nonzero_exit_status(){
+        assert!(!OwnedChild::root_identity(),"direct status fixtures must never run as root");
+        for(code,script)in [(1,"exit 1"),(37,"exit 37"),(78,"exit 78")]{let output=fixture("/bin/sh",&["-c",script]).finish(Duration::from_secs(1),8192).unwrap();assert_eq!(output.code,code);assert!(output.stdout.is_empty());assert!(output.stderr.is_empty());}
+    }
+    #[test]fn private_held_read_fd_can_make_txt_and_selector_successfully_empty(){
+        assert!(!OwnedChild::root_identity(),"held-file selector fixtures must never run as root");
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();let directory=std::env::temp_dir().join(format!("beluga-v9-held-lsof-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&directory).unwrap();std::fs::set_permissions(&directory,std::fs::Permissions::from_mode(0o700)).unwrap();let directory=std::fs::canonicalize(directory).unwrap();let path=directory.join("unmapped-fixture");
+        let mut writer=OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(NOFOLLOW).open(&path).unwrap();writer.write_all(b"private offline unmapped text fixture\n").unwrap();writer.sync_all().unwrap();drop(writer);
+        let held=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&path).unwrap();let before=Identity::of(&held.metadata().unwrap());assert_eq!(before.uid,unsafe{geteuid()});
+        let output=fixture("/usr/sbin/lsof",&["-n","-P","-a","-d","txt","-F0pcDfin","--",path.to_str().unwrap()]).finish(Duration::from_secs(5),8192).unwrap();
+        assert_eq!(output.code,0);assert!(output.stdout.is_empty());assert!(output.stderr.is_empty());assert_eq!(Identity::of(&held.metadata().unwrap()),before);assert_eq!(Identity::of(&std::fs::symlink_metadata(&path).unwrap()),before);
+        drop(held);std::fs::remove_file(path).unwrap();std::fs::remove_dir(directory).unwrap();
     }
     #[test]fn real_child_input_is_closed_and_arbitrary_guardian_write_refused(){
         let mut child=fixture("/bin/cat",&[]);assert!(child.write_line(b"arbitrary\n").is_err());child.write_line(b"STOP\n").unwrap();let output=child.finish(Duration::from_secs(1),8192).unwrap();assert_eq!(output.stdout,b"STOP\n");
