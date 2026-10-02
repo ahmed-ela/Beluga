@@ -27,6 +27,12 @@ class BelugaMicrophoneV9InputStagingTest < Minitest::Test
     Staging.record!(path)
   end
 
+  # Match the real unchanged Contract oracle, not the stager's 11-field shape.
+  def contract_fixture_file(path, bytes = "offline input\n", mode = 0644)
+    file = fixture_file(path, bytes, mode)
+    file.merge('identity' => Contract.stat_identity(File.lstat(path)))
+  end
+
   def with_capsule
     with_directory do |root|
       original = fixture_file(root + '/original', "offline bytes\0\xff\n".b, 0755)
@@ -74,10 +80,10 @@ class BelugaMicrophoneV9InputStagingTest < Minitest::Test
         [role, fixture_file(root + "/originals/dependency-#{index}", "offline #{role}\n", index >= 5 ? 0755 : 0644)]
       end
       artifacts = Contract::ARTIFACT_FILES.each_key.with_index.to_h do |name, index|
-        [name, fixture_file(root + "/originals/producer-#{index}", "offline #{name}\n")]
+        [name, contract_fixture_file(root + "/originals/producer-#{index}", "offline #{name}\n")]
       end
       artifacts['bundle'] = Contract::BUNDLE_NODES.select { |type, _, _| type == 'Regular File' }.each_with_index.to_h do |(_, mode, relative), index|
-        [relative, fixture_file(root + "/originals/candidate-#{index}", "offline #{relative}\n", mode)]
+        [relative, contract_fixture_file(root + "/originals/candidate-#{index}", "offline #{relative}\n", mode)]
       end
       Contract.stub(:verify_artifacts!, [artifacts, nil]) do
         Contract.stub(:verify_bundle_bytes!, true) { yield root, dependencies, artifacts }
@@ -274,8 +280,52 @@ class BelugaMicrophoneV9InputStagingTest < Minitest::Test
     end
   end
 
+  def test_contract_nine_field_adapter_is_lossless_and_matches_actual_bounded_record
+    with_directory do |root|
+      original = contract_fixture_file(root + '/original')
+      before = Marshal.load(Marshal.dump(original))
+      assert_equal 9, original.fetch('identity').size
+      projected = Staging.contract_record!(original)
+      assert_equal 11, projected.fetch('identity').size
+      assert_equal original.fetch('path'), projected.fetch('path')
+      assert_equal original.fetch('sha256'), projected.fetch('sha256')
+      assert_equal original.fetch('identity').first(7), projected.fetch('identity').first(7)
+      assert_equal original.fetch('identity')[7], projected.fetch('identity')[7] * 1_000_000_000 + projected.fetch('identity')[8]
+      assert_equal original.fetch('identity')[8], projected.fetch('identity')[9] * 1_000_000_000 + projected.fetch('identity')[10]
+      assert_equal projected, Staging.record!(original.fetch('path'))
+      assert_equal before, original
+      assert_equal original.fetch('identity'), Contract.stat_identity(File.lstat(original.fetch('path')))
+    end
+  end
+
+  def test_contract_nine_field_adapter_refuses_timestamp_owner_inode_and_byte_drift
+    with_directory do |root|
+      original = contract_fixture_file(root + '/original')
+      mutations = [
+        ->(value) { value['identity'][7] += 1 },
+        ->(value) { value['identity'][8] += 1 },
+        ->(value) { value['identity'][2] = 502 },
+        ->(value) { value['identity'][1] += 1 },
+        ->(value) { value['sha256'] = 'b' * 64 },
+        ->(value) { value['identity'][7] = 'nanoseconds' },
+        ->(value) { value['identity'] << 0 },
+        ->(value) { value['extra'] = false }
+      ]
+      mutations.each do |mutation|
+        changed = Marshal.load(Marshal.dump(original)); mutation.call(changed)
+        assert_raises(Staging::Refused) { Staging.contract_record!(changed) }
+      end
+      assert_equal original.fetch('identity'), Contract.stat_identity(File.lstat(original.fetch('path')))
+      assert_equal original.fetch('sha256'), Digest::SHA256.file(original.fetch('path')).hexdigest
+    end
+  end
+
   def test_stage_and_audit_keep_originals_distinct_and_preserve_exact_candidate_layout
-    with_staged_fixture do |root, dependencies, _, originals, sealed, release|
+    with_staged_fixture do |root, dependencies, artifacts, originals, sealed, release|
+      assert dependencies.values.all? { |file| file.fetch('identity').size == 11 }
+      assert Contract::ARTIFACT_FILES.keys.all? { |name| artifacts.fetch(name).fetch('identity').size == 9 }
+      assert artifacts.fetch('bundle').values.all? { |file| file.fetch('identity').size == 9 }
+      assert originals.values.all? { |file| file.fetch('identity').size == 11 }
       assert_equal (Staging::DEPENDENCY_ROLES + Staging::RELEASE_ROLES).sort, originals.keys.sort
       assert_equal (Staging::DEPENDENCY_ROLES + ['tools/gate_inputs.txt']).sort, sealed.keys.sort
       assert_equal Staging::RELEASE_ROLES.sort, release.keys.sort

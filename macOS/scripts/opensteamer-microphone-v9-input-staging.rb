@@ -180,15 +180,34 @@ module BelugaMicrophoneV9InputStaging
     end
   end
 
+  # The unchanged producer oracle uses two packed nanosecond timestamps (9
+  # fields). Manifest v2 uses split seconds/nanoseconds (11 fields). Retain all
+  # original values losslessly, then verify the projection against the actual
+  # bounded FD/path/SHA record; this is not a metadata rebind or permission fix.
+  def self.contract_record!(original, deadline: self.deadline)
+    require!(original.is_a?(Hash) && original.keys.sort == %w[identity path sha256] &&
+      original['identity'].is_a?(Array) && original['identity'].size == 9 &&
+      original['identity'].all? { |value| value.is_a?(Integer) } && original['sha256'].is_a?(String) &&
+      original['sha256'].match?(/\A[0-9a-f]{64}\z/), 'contract file record shape differs')
+    identity = original.fetch('identity')
+    projected = identity.first(7) + identity[7].divmod(1_000_000_000) + identity[8].divmod(1_000_000_000)
+    roundtrip = projected.first(7) + [projected[7] * 1_000_000_000 + projected[8], projected[9] * 1_000_000_000 + projected[10]]
+    require!(roundtrip == identity, 'contract timestamp projection is not lossless')
+    converted = { 'path' => original.fetch('path'), 'sha256' => original.fetch('sha256'), 'identity' => projected }
+    record!(converted.fetch('path'), expected: converted, deadline: deadline)
+  rescue KeyError, TypeError, NoMethodError
+    raise Refused, 'contract file record refused'
+  end
+
   def self.original_records!(dependencies, deadline: self.deadline)
     check_deadline!(deadline)
     require!(Process.uid == 501 && Process.euid == 501, 'original input audit UID refused')
     require!(dependencies.is_a?(Hash) && dependencies.keys.sort == DEPENDENCY_ROLES.sort, 'dependency role set differs')
     artifacts, = Contract.verify_artifacts!(deadline: deadline)
     records = dependencies.dup
-    Contract::ARTIFACT_FILES.each_key { |name| records['producer/' + name] = artifacts.fetch(name) }
+    Contract::ARTIFACT_FILES.each_key { |name| records['producer/' + name] = contract_record!(artifacts.fetch(name), deadline: deadline) }
     Contract::BUNDLE_NODES.select { |type, _, _| type == 'Regular File' }.each do |_, _, name|
-      records['candidate/' + name] = artifacts.fetch('bundle').fetch(name)
+      records['candidate/' + name] = contract_record!(artifacts.fetch('bundle').fetch(name), deadline: deadline)
     end
     records.each_value { |record| record!(record.fetch('path'), expected: record, deadline: deadline) }
     records
