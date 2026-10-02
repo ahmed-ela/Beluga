@@ -150,8 +150,11 @@ fn failed_inventory_unchanged(before:&std::collections::BTreeMap<u32,Failed011Pr
     for(pid,identity)in before{if let Some(next)=after.get(pid){if identity!=next{return Err(format!("failed 011 surviving PID={pid} BSD birth/ownership identity changed"));}}}Ok(())
 }
 fn failed_process_snapshot(owners:&[u32],current:u32,mut inventory:impl FnMut()->Result<Vec<i32>>,mut inspect:impl FnMut(i32)->Result<Failed011ProcessIdentity>)->Result<Failed011ProcessInventory>{
+    failed_process_snapshot_with_bound(owners,current,3,&mut inventory,&mut inspect)
+}
+fn failed_process_snapshot_with_bound(owners:&[u32],current:u32,maximum:usize,mut inventory:impl FnMut()->Result<Vec<i32>>,mut inspect:impl FnMut(i32)->Result<Failed011ProcessIdentity>)->Result<Failed011ProcessInventory>{
     let unique=owners.iter().copied().collect::<std::collections::BTreeSet<_>>();
-    if current<=1||current>i32::MAX as u32||owners.is_empty()||owners.len()>3||owners.iter().any(|pid|*pid<=1||*pid>i32::MAX as u32||*pid==current)||unique.len()!=owners.len(){return Err("failed 011 PID ownership/current bounds differ".into());}
+    if !matches!(maximum,3|4)||current<=1||current>i32::MAX as u32||owners.is_empty()||owners.len()>maximum||owners.iter().any(|pid|*pid<=1||*pid>i32::MAX as u32||*pid==current)||unique.len()!=owners.len(){return Err("failed 011 PID ownership/current bounds differ".into());}
     let first=inspect(current as i32)?;failed_process_ownership(&first,owners,current)?;let mut previous=std::collections::BTreeMap::new();
     // Complete bounded inventories, not a frozen global PID set. Birth tuples
     // fence surviving PIDs; new/departed unrelated processes may differ. This
@@ -166,6 +169,10 @@ fn failed_process_snapshot(owners:&[u32],current:u32,mut inventory:impl FnMut()-
 pub(super) fn failed_011_process_inventory(owners:&[u32])->Result<Failed011ProcessInventory>{
     if !OwnedChild::root_identity(){return Err("failed 011 process inspector requires root identity".into());}
     failed_process_snapshot(owners,std::process::id(),failed_process_ids,read_failed_process)
+}
+pub(super) fn failed_011_continuation_002_process_inventory(owners:&[u32])->Result<Failed011ProcessInventory>{
+    if !OwnedChild::root_identity()||!matches!(owners.len(),3|4){return Err("continuation002 process inspector exact root/history roles differ".into());}
+    failed_process_snapshot_with_bound(owners,std::process::id(),4,failed_process_ids,read_failed_process)
 }
 pub(super) fn failed_011_processes_unchanged(before:&Failed011ProcessInventory,after:&Failed011ProcessInventory)->Result<()>{
     if before.current!=after.current{return Err("failed 011 current reconciler BSD birth/ownership identity changed across mapped sweeps".into());}failed_inventory_unchanged(&before.processes,&after.processes)
@@ -232,7 +239,7 @@ impl SealedExecutable {
 }
 
 #[derive(Clone,Copy,Debug)]
-pub(super) enum Failed011ExecutableRole{OriginalWorker,IdleHelper,BothOrderProbe,RouteGuardian,ConsumedReconciler,ContinuationReconciler}
+pub(super) enum Failed011ExecutableRole{OriginalWorker,IdleHelper,BothOrderProbe,RouteGuardian,ConsumedReconciler,ContinuationReconciler,Continuation002Reconciler}
 impl Failed011ExecutableRole{
     fn path(self)->&'static str{match self{
         Self::OriginalWorker=>"/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b/worker",
@@ -241,6 +248,7 @@ impl Failed011ExecutableRole{
         Self::RouteGuardian=>"/Library/Application Support/opensteamer/microphone-v9-executables/driver-microphone-v9-151f574a1c3c354b/route-guardian",
         Self::ConsumedReconciler=>"/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker",
         Self::ContinuationReconciler=>"/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-001/worker",
+        Self::Continuation002Reconciler=>"/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-002/worker",
     }}
     fn validate(self,path:&Path)->Result<()>{if path!=Path::new(self.path()){return Err("failed 011 held executable is not the exact fixed role path".into());}Ok(())}
 }
@@ -579,6 +587,11 @@ mod tests{
         failed_process_snapshot(&[456,457,458],99,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();
         for field in 0..3{let mut info=failed_identity_fixture(12);match field{0=>info.pid=458,1=>info.parent=458,_=>info.group=458};assert!(failed_process_ownership(&info,&[456,457,458],99).is_err());}
     }
+    #[test]fn continuation002_four_owner_snapshot_keeps_ordinary_three_owner_bound(){
+        let owners=[456,457,458,459];assert!(failed_process_snapshot(&owners,99,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).is_err());failed_process_snapshot_with_bound(&owners,99,4,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();
+        for field in 0..3{assert!(failed_process_snapshot_with_bound(&owners,99,4,||Ok(vec![99,12]),|pid|{let mut info=failed_identity_fixture(pid as u32);if pid==12{match field{0=>info.pid=459,1=>info.parent=459,_=>info.group=459};}Ok(info)}).is_err());}
+        for bad in [vec![456,457,458,459,460],vec![456,457,458,458],vec![456,457,458,99]]{assert!(failed_process_snapshot_with_bound(&bad,99,4,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).is_err());}assert!(failed_process_snapshot_with_bound(&owners,99,5,||Ok(vec![99,12]),|pid|Ok(failed_identity_fixture(pid as u32))).is_err());
+    }
     #[test]fn failed_process_snapshot_accepts_complete_unrelated_churn_but_not_surviving_birth_change(){
         let mut inventories=[vec![99,12],vec![99,13]].into_iter();let before=failed_process_snapshot(&[456],99,||Ok(inventories.next().unwrap()),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();
         let after=failed_process_snapshot(&[456],99,||Ok(vec![99,14]),|pid|Ok(failed_identity_fixture(pid as u32))).unwrap();failed_011_processes_unchanged(&before,&after).unwrap();
@@ -603,12 +616,13 @@ mod tests{
     }
     use std::os::unix::fs::PermissionsExt;
     #[test]fn failed_011_text_inspector_roles_admit_only_exact_held_pathnames(){
-        let roles=[Failed011ExecutableRole::OriginalWorker,Failed011ExecutableRole::IdleHelper,Failed011ExecutableRole::BothOrderProbe,Failed011ExecutableRole::RouteGuardian,Failed011ExecutableRole::ConsumedReconciler,Failed011ExecutableRole::ContinuationReconciler];
+        let roles=[Failed011ExecutableRole::OriginalWorker,Failed011ExecutableRole::IdleHelper,Failed011ExecutableRole::BothOrderProbe,Failed011ExecutableRole::RouteGuardian,Failed011ExecutableRole::ConsumedReconciler,Failed011ExecutableRole::ContinuationReconciler,Failed011ExecutableRole::Continuation002Reconciler];
         for role in roles{role.validate(Path::new(role.path())).unwrap();for other in roles{if role.path()!=other.path(){assert!(role.validate(Path::new(other.path())).is_err());}}
             for path in [format!("{}/extra",role.path()),format!("{} (deleted)",role.path()),role.path().replace("151f574a1c3c354b","other"),format!("{}/../worker",role.path()),"/private/tmp/worker".into()]{if path!=role.path(){assert!(role.validate(Path::new(&path)).is_err());}}
         }
         assert_eq!(Failed011ExecutableRole::ConsumedReconciler.path(),"/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker");
         assert_eq!(Failed011ExecutableRole::ContinuationReconciler.path(),"/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-001/worker");
+        assert_eq!(Failed011ExecutableRole::Continuation002Reconciler.path(),"/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-002/worker");
     }
     #[test]fn private_reconciliation_executable_hashes_positional_bytes_without_offset_changes(){
         assert!(!OwnedChild::root_identity(),"private held-image fixtures must never run as root");

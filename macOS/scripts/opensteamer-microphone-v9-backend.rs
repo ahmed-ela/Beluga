@@ -18,6 +18,7 @@ const DRIVER_HOST_DISPLAY:&str="Core Audio Driver (OpensteamerVirtualMicrophone.
 const DRIVER_HOST_LSOF:&str="Core Audio Driver (OpensteamerV";
 pub(super) const RECONCILE_011_WORKER:&str="/Library/Application Support/opensteamer/microphone-v9-reconcile-011/worker";
 const CONTINUE_011_WORKER:&str="/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-001/worker";
+const CONTINUE_011_002_WORKER:&str="/Library/Application Support/opensteamer/microphone-v9-reconcile-011-continuation-002/worker";
 const FAILED_011_NAMESPACE:&str="driver-microphone-v9-151f574a1c3c354b";
 const FAILED_011_NONCE:&str="0c6553bf7c2322bc87fc0b1580b739e2db7820fd8405ad4b8c9e33f6d0f8f0d5";
 const FAILED_011_REQUEST:&str="18c655bff4dd81a3fd9435aae9940fbc15fd92d6b6975a5fdb4245e3e7507178";
@@ -25,10 +26,17 @@ const FAILED_011_AUTHORITY:&str="afebc8d84640a8ac3155a70f51d8bc06c24b4f40ec0488a
 const FAILED_011_WORKER:&str="d91091c850d22ec315cc08ca4add458efb5dfb3e29b26080ba0665dea9af5613";
 const FAILURE_TERMINAL:&str="FAILED_NO_EFFECTS_RECONCILED";
 const CONTINUATION_TERMINAL:&str="FAILED_NO_EFFECTS_RECONCILED_CONTINUATION_001";
+const CONTINUATION_002_TERMINAL:&str="FAILED_NO_EFFECTS_RECONCILED_CONTINUATION_002";
 const CONSUMED_011_RECONCILER:&str="86423d013e9d0790d09d715e6052ec0cf6dc2451d0827eb310a82d1540cfc983";
+const CONSUMED_011_CONTINUATION:&str="a7b31b495d0719f27991920606a1728ad4b15a4d366cbe57fc59180fc7dcd165";
+const CONSUMED_011_CONTINUATION_FENCE:&str="2153c1bbc602d60f531856aa26e21f95bcf9f63237995a784fac8569a1ae907c";
+const CONSUMED_011_CONTINUATION_OWNER:&str="94114";
+const CONSUMED_011_CONTINUATION_METADATA:&str="5340ac78e0339d6d095ed3c227fd10f3471424660f4608fa51ec9b7673c13cab";
 const HISTORICAL_011_FENCE:&str="7dade8d5ab2eaa0681cff8886e6702f9118ed65b27608ed1536e9d89b602d0e6";
 const HISTORICAL_011_APPENDS:&[&str]=&["child-active-002","child-clean-002"];
 const CONTINUATION_011_APPENDS:&[&str]=&["child-active-003","child-clean-003","gate-metadata-003.txt","gate-metadata-004.txt","continuation-001-host-before.txt","continuation-001-host-after.txt"];
+const CONSUMED_CONTINUATION_011_APPENDS:&[&str]=&["child-active-003","child-clean-003","gate-metadata-003.txt"];
+const CONTINUATION_002_APPENDS:&[&str]=&["child-active-004","child-clean-004","gate-metadata-004.txt","gate-metadata-005.txt","continuation-002-host-before.txt","continuation-002-host-after.txt"];
 const FAILED_011_TOP:&[&str]=&["SEALING_COMPLETE","SEALING_INCOMPLETE","authority.txt","build-manifest.json","candidate.driver","child-active-001","child-clean-001","core-baseline.txt","driver-host-baseline.txt","failed","gate-metadata-001.txt","gate-metadata-002.txt","guardian-1.events","host-baseline.txt","journal","prior","probes","recovery-refusal.txt","request.txt"];
 const RECONCILIATION_APPENDS:&[&str]=&["child-active-002","child-clean-002","gate-metadata-003.txt","gate-metadata-004.txt","reconciliation-host-before.txt","reconciliation-host-after.txt"];
 const FAILED_011_PINS:&[(&str,&str)]=&[
@@ -41,6 +49,7 @@ const FAILED_011_PINS:&[(&str,&str)]=&[
     ("guardian-1.events","e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),("journal/journal-001","514a6dfc6fdd8e6cea34a3a8fea3ecc4e9ea3d6374fe985d93b5eadff9e55fec")];
 const FAILURE_TERMINAL_FIELDS:&[&str]=&["schema","terminal","namespace","nonce","request_sha256","authority_sha256","original_worker_sha256","reconciler_worker_sha256","original_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256","observed_at_unix_ms","normal_restarts","rollback_restarts","original_cause","original_guardian_teardown","guardian_coverage_proven","deployment_verified","pcm_verified"];
 const CONTINUATION_TERMINAL_FIELDS:&[&str]=&["schema","terminal","namespace","nonce","request_sha256","authority_sha256","original_worker_sha256","consumed_reconciler_worker_sha256","reconciler_worker_sha256","original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","original_child_fence_sha256","historical_child_fence_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256","observed_at_unix_ms","normal_restarts","rollback_restarts","original_cause","original_guardian_teardown","guardian_coverage_proven","deployment_verified","pcm_verified"];
+const CONTINUATION_002_TERMINAL_FIELDS:&[&str]=&["schema","terminal","namespace","nonce","request_sha256","authority_sha256","original_worker_sha256","consumed_reconciler_worker_sha256","consumed_continuation_worker_sha256","reconciler_worker_sha256","original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","original_child_fence_sha256","historical_child_fence_sha256","consumed_continuation_child_fence_sha256","consumed_continuation_gate_metadata_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256","observed_at_unix_ms","normal_restarts","rollback_restarts","original_cause","original_guardian_teardown","guardian_coverage_proven","deployment_verified","pcm_verified"];
 const HOST_EXE:&str="/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer";
 const HOST_FRAMEWORK:&str="/Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC";
 const HOST_INFO:&str="/Applications/opensteamer Host.app/Contents/Info.plist";
@@ -429,6 +438,10 @@ impl ReconciliationInventory{
         if extras.iter().any(|name|!HISTORICAL_011_APPENDS.contains(name)&&!CONTINUATION_011_APPENDS.contains(name)&&*name!=CONTINUATION_TERMINAL){return Err("exact 011 continuation append role refused".into());}
         Self::capture_exact(state,extras,owner,group)
     }
+    fn capture_continuation_002(state:&Path,extras:&[&str],owner:u32,group:u32)->Result<Self>{
+        if extras.iter().any(|name|!HISTORICAL_011_APPENDS.contains(name)&&!CONSUMED_CONTINUATION_011_APPENDS.contains(name)&&!CONTINUATION_002_APPENDS.contains(name)&&*name!=CONTINUATION_002_TERMINAL){return Err("exact 011 continuation002 append role refused".into());}
+        Self::capture_exact(state,extras,owner,group)
+    }
     fn capture_exact(state:&Path,extras:&[&str],owner:u32,group:u32)->Result<Self>{
         let top=FAILED_011_TOP.iter().chain(extras).map(|name|name.to_string()).collect::<Vec<_>>();exact_reconciliation_names(state,&top)?;
         reconciliation_layout(state)?;
@@ -458,6 +471,15 @@ impl ReconciliationInventory{
             }
         }).map(|(name,node)|format!("{name}\0{:?}\0{}\0",node.identity,node.digest)).collect::<String>();sha256(bytes.as_bytes())
     }
+    fn continuation_002_digest(&self,projection:ContinuationProjection)->String{
+        let bytes=self.nodes.iter().filter(|(name,_)|{
+            name.as_str()!=CONTINUATION_002_TERMINAL&&match projection{
+                ContinuationProjection::Original=>!HISTORICAL_011_APPENDS.contains(&name.as_str())&&!CONSUMED_CONTINUATION_011_APPENDS.contains(&name.as_str())&&!CONTINUATION_002_APPENDS.contains(&name.as_str()),
+                ContinuationProjection::Input=>!CONTINUATION_002_APPENDS.contains(&name.as_str()),
+                ContinuationProjection::Final=>true,
+            }
+        }).map(|(name,node)|format!("{name}\0{:?}\0{}\0",node.identity,node.digest)).collect::<String>();sha256(bytes.as_bytes())
+    }
     fn bytes(&self,name:&str)->Result<Vec<u8>>{self.nodes.get(name).ok_or("failure reconciliation exact record missing")?.bytes()}
     fn verify_original(&self,request:&Request)->Result<()>{
         failed_011_request(request)?;
@@ -475,6 +497,16 @@ fn historical_011_containment(inventory:&ReconciliationInventory,request:&Reques
     if active!=clean||sha256(&active)!=HISTORICAL_011_FENCE{return Err("exact 011 historical finalized containment byte pin differs".into());}
     child_fence_validate(&active,request,2)?;let fields=strict_flat(&active,CHILD_FENCE_FIELDS,8192)?;
     if fields["owner_pid"]!="61441"{return Err("exact 011 historical native owner differs".into());}Ok(())
+}
+fn consumed_continuation_011_containment(inventory:&ReconciliationInventory,request:&Request)->Result<()>{
+    historical_011_containment(inventory,request)?;
+    let active=inventory.bytes("child-active-003")?;let clean=inventory.bytes("child-clean-003")?;
+    if active!=clean||sha256(&active)!=CONSUMED_011_CONTINUATION_FENCE{return Err("consumed continuation001 exact finalized003 pin differs".into());}
+    child_fence_validate(&active,request,3)?;let fields=strict_flat(&active,CHILD_FENCE_FIELDS,8192)?;
+    if fields["owner_pid"]!=CONSUMED_011_CONTINUATION_OWNER{return Err("consumed continuation001 native003 owner differs".into());}
+    let metadata=inventory.bytes("gate-metadata-003.txt")?;
+    if sha256(&metadata)!=CONSUMED_011_CONTINUATION_METADATA{return Err("consumed continuation001 exact metadata003 pin differs".into());}
+    validate_gate_metadata(&metadata,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",3,Some("candidate-present"))?;Ok(())
 }
 
 fn failure_terminal_validate(bytes:&[u8],request:&Request)->Result<BTreeMap<String,String>>{
@@ -542,6 +574,19 @@ fn failed_011_absence_roles(owners:&[u32],old_worker:&os::SealedExecutable,helpe
 }
 fn failed_011_absence_role_count(owners:usize,consumed:bool,continuation:bool)->Result<()>{
     if !matches!((owners,consumed,continuation),(1,false,false)|(2,true,false)|(3,true,true)){return Err("failed 011 exact continuation owner/image role set differs".into());}Ok(())
+}
+fn failed_011_continuation_002_absence(owners:&[u32],old_worker:&os::SealedExecutable,helpers:[&os::SealedExecutable;3],consumed:&os::SealedExecutable,consumed_continuation:&os::SealedExecutable,current_completed:Option<&os::SealedExecutable>)->Result<()>{
+    if owners.len()!=if current_completed.is_some(){4}else{3}{return Err("continuation002 exact historical/current owner role count differs".into());}
+    use os::Failed011ExecutableRole as Role;
+    let mut images=vec![(old_worker,Role::OriginalWorker),(helpers[0],Role::IdleHelper),(helpers[1],Role::BothOrderProbe),(helpers[2],Role::RouteGuardian),(consumed,Role::ConsumedReconciler),(consumed_continuation,Role::ContinuationReconciler)];
+    if let Some(image)=current_completed{images.push((image,Role::Continuation002Reconciler));}
+    for _ in 0..2{
+        for(image,_)in &images{image.reconcile_revalidate()?;}
+        let before=os::failed_011_continuation_002_process_inventory(owners)?;
+        for(image,role)in &images{image.reconcile_revalidate()?;let output=(||inspector_capture("failed_011_executable_owner",os::OwnedChild::failed_011_executable_owners(image,*role)?,65536))();failed_011_mapping_fence(output,image.reconcile_revalidate())?;}
+        let after=os::failed_011_continuation_002_process_inventory(owners)?;os::failed_011_processes_unchanged(&before,&after)?;
+        for(image,_)in &images{image.reconcile_revalidate()?;}
+    }Ok(())
 }
 fn failure_reconciliation_record(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<Vec<u8>>{
     let mut fields=BTreeMap::new();
@@ -615,7 +660,56 @@ fn validate_continuation_crosslinks(inventory:&ReconciliationInventory,request:&
     }
     let observed=positive(&fields["observed_at_unix_ms"])?;if observed<last_observed||observed-last_observed>5000{return Err("continuation terminal is not bound to a fresh final observation".into());}Ok(())
 }
+fn continuation_002_terminal_validate(bytes:&[u8],request:&Request)->Result<BTreeMap<String,String>>{
+    failed_011_request(request)?;let fields=strict_flat(bytes,CONTINUATION_002_TERMINAL_FIELDS,MAX_REQUEST)?;
+    for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v3"),("terminal",CONTINUATION_002_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("consumed_reconciler_worker_sha256",CONSUMED_011_RECONCILER),("consumed_continuation_worker_sha256",CONSUMED_011_CONTINUATION),("original_child_fence_sha256",FAILED_011_PINS.iter().find(|(name,_)|*name=="child-clean-001").unwrap().1),("historical_child_fence_sha256",HISTORICAL_011_FENCE),("consumed_continuation_child_fence_sha256",CONSUMED_011_CONTINUATION_FENCE),("consumed_continuation_gate_metadata_sha256",CONSUMED_011_CONTINUATION_METADATA),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{if fields[key]!=value{return Err("continuation002 terminal exact authority/history/unknown-cause policy differs".into());}}
+    for key in ["reconciler_worker_sha256","original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256"]{if !hex(&fields[key],64){return Err("continuation002 terminal digest role differs".into());}}
+    if [FAILED_011_WORKER,CONSUMED_011_RECONCILER,CONSUMED_011_CONTINUATION].contains(&fields["reconciler_worker_sha256"].as_str()){return Err("continuation002 cannot relabel an original/consumed image".into());}positive(&fields["observed_at_unix_ms"])?;Ok(fields)
+}
+fn continuation_002_record_fields(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<BTreeMap<String,String>>{
+    failed_011_request(request)?;let mut fields:BTreeMap<String,String>=BTreeMap::new();
+    for(key,value)in [("schema","opensteamer.microphone-v9-failed-no-effects-reconciled.v3"),("terminal",CONTINUATION_002_TERMINAL),("namespace",FAILED_011_NAMESPACE),("nonce",FAILED_011_NONCE),("request_sha256",FAILED_011_REQUEST),("authority_sha256",FAILED_011_AUTHORITY),("original_worker_sha256",FAILED_011_WORKER),("consumed_reconciler_worker_sha256",CONSUMED_011_RECONCILER),("consumed_continuation_worker_sha256",CONSUMED_011_CONTINUATION),("reconciler_worker_sha256",worker_sha),("normal_restarts","0"),("rollback_restarts","0"),("original_cause","UNKNOWN"),("original_guardian_teardown","UNKNOWN"),("guardian_coverage_proven","false"),("deployment_verified","false"),("pcm_verified","false")]{fields.insert(key.into(),value.to_string());}
+    fields.insert("original_inventory_sha256".into(),original.continuation_002_digest(ContinuationProjection::Original));fields.insert("input_inventory_sha256".into(),original.continuation_002_digest(ContinuationProjection::Input));fields.insert("final_inventory_sha256".into(),final_inventory.continuation_002_digest(ContinuationProjection::Final));fields.insert("observed_at_unix_ms".into(),observed.to_string());
+    for(key,name)in [("original_child_fence_sha256","child-clean-001"),("historical_child_fence_sha256","child-clean-002"),("consumed_continuation_child_fence_sha256","child-clean-003"),("consumed_continuation_gate_metadata_sha256","gate-metadata-003.txt"),("reconciliation_child_fence_sha256","child-clean-004"),("gate_before_sha256","gate-metadata-004.txt"),("gate_after_sha256","gate-metadata-005.txt"),("host_before_sha256","continuation-002-host-before.txt"),("host_after_sha256","continuation-002-host-after.txt"),("core_generation_sha256","core-baseline.txt"),("driver_host_generation_sha256","driver-host-baseline.txt")]{fields.insert(key.into(),sha256(&final_inventory.bytes(name)?));}Ok(fields)
+}
+fn continuation_002_reconciliation_record(request:&Request,worker_sha:&str,original:&ReconciliationInventory,final_inventory:&ReconciliationInventory,observed:u64)->Result<Vec<u8>>{
+    let fields=continuation_002_record_fields(request,worker_sha,original,final_inventory,observed)?;let bytes=CONTINUATION_002_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>().into_bytes();continuation_002_terminal_validate(&bytes,request)?;Ok(bytes)
+}
+fn recovery_quiet_transition(prior:&HostGate,next:&HostGate,historical:bool)->Result<()>{
+    for key in ["host_present","host_pid","host_launchd_runs","host_start_identity_sha256","host_nonce","host_lock_device","host_lock_inode","host_display_identity_sha256","display_headless","readiness","host_executable_sha256","host_framework_sha256","host_info_plist_sha256","host_launch_plist_sha256","input_uid","output_uid","system_output_uid","routes_identity_sha256","manager_generation","session_log_device","session_log_inode"]{if next.fields[key]!=prior.fields[key]{return Err("continuation002 host/source/display/routes/manager/log identity changed".into());}}
+    let prior_size=positive(&prior.fields["session_log_size"])?;let next_size=positive(&next.fields["session_log_size"])?;
+    let prior_reset=prior.fields["session_log_reset_offset"].parse::<u64>().map_err(|_|"historical reset offset malformed")?;let next_reset=next.fields["session_log_reset_offset"].parse::<u64>().map_err(|_|"fresh reset offset malformed")?;
+    if next_size<prior_size{return Err("continuation002 session log extent regressed".into());}
+    if historical{if next_reset!=prior_reset&&next_reset<prior_size{return Err("continuation002 new quiet boundary overlaps/regresses immutable historical extent".into());}}
+    else if next_reset!=prior_reset{return Err("continuation002 quiet boundary changed after first fresh receipt".into());}
+    if next_size==prior_size&&(next.fields["session_log_sha256"]!=prior.fields["session_log_sha256"]||next.fields["session_log_tail_sha256"]!=prior.fields["session_log_tail_sha256"]){return Err("continuation002 same-extent prefix/tail digest changed".into());}
+    if positive(&next.fields["observed_at_unix_ms"])?<positive(&prior.fields["observed_at_unix_ms"])?{return Err("continuation002 observation time regressed".into());}Ok(())
+}
+fn validate_continuation_002_crosslinks(inventory:&ReconciliationInventory,request:&Request,fields:&BTreeMap<String,String>)->Result<()>{
+    inventory.revalidate()?;historical_011_containment(inventory,request)?;
+    for(key,projection)in [("original_inventory_sha256",ContinuationProjection::Original),("input_inventory_sha256",ContinuationProjection::Input),("final_inventory_sha256",ContinuationProjection::Final)]{if fields[key]!=inventory.continuation_002_digest(projection){return Err("continuation002 immutable whole-inventory crosslink differs".into());}}
+    for(sequence,key)in [(1,"original_child_fence_sha256"),(2,"historical_child_fence_sha256"),(3,"consumed_continuation_child_fence_sha256"),(4,"reconciliation_child_fence_sha256")]{let active=inventory.bytes(&format!("child-active-{sequence:03}"))?;let clean=inventory.bytes(&format!("child-clean-{sequence:03}"))?;child_fence_validate(&active,request,sequence)?;if active!=clean||fields[key]!=sha256(&clean){return Err("continuation002 finalized containment crosslink differs".into());}}
+    for(key,name)in [("consumed_continuation_gate_metadata_sha256","gate-metadata-003.txt"),("gate_before_sha256","gate-metadata-004.txt"),("gate_after_sha256","gate-metadata-005.txt"),("host_before_sha256","continuation-002-host-before.txt"),("host_after_sha256","continuation-002-host-after.txt"),("core_generation_sha256","core-baseline.txt"),("driver_host_generation_sha256","driver-host-baseline.txt")]{if fields[key]!=sha256(&inventory.bytes(name)?){return Err("continuation002 observation byte crosslink differs".into());}}
+    let mut prior=failure_host_gate(&inventory.bytes("host-baseline.txt")?,request)?;
+    let consumed_metadata=validate_gate_metadata(&inventory.bytes("gate-metadata-003.txt")?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",3,Some("candidate-present"))?;
+    let mut previous=positive(&prior.fields["observed_at_unix_ms"])?.max(positive(&consumed_metadata["observed_at_unix_ms"])?);
+    for(index,name)in ["continuation-002-host-before.txt","continuation-002-host-after.txt"].iter().enumerate(){
+        let next=failure_host_gate(&inventory.bytes(name)?,request)?;recovery_quiet_transition(&prior,&next,index==0)?;
+        let observed=positive(&next.fields["observed_at_unix_ms"])?;if observed<previous{return Err("continuation002 fresh receipt precedes retained history".into());}
+        let sequence=index+4;let metadata=validate_gate_metadata(&inventory.bytes(&format!("gate-metadata-{sequence:03}.txt"))?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",sequence,Some("candidate-present"))?;
+        let metadata_time=positive(&metadata["observed_at_unix_ms"])?;if metadata_time<previous||metadata_time>observed||observed-metadata_time>20000{return Err("continuation002 fresh receipt is not bound to imminent metadata".into());}previous=observed;prior=next;
+    }
+    let observed=positive(&fields["observed_at_unix_ms"])?;if observed<previous||observed-previous>5000{return Err("continuation002 terminal not bound to fresh final observation".into());}Ok(())
+}
+fn validate_continuation_002_evidence(inventory:&ReconciliationInventory,request:&Request,bytes:&[u8])->Result<BTreeMap<String,String>>{
+    inventory.verify_original(request)?;consumed_continuation_011_containment(inventory,request)?;let fields=continuation_002_terminal_validate(bytes,request)?;validate_continuation_002_crosslinks(inventory,request,&fields)?;Ok(fields)
+}
 fn failed_011_terminal_clear(state:&Path,request:&Request)->Result<()>{
+    match fs::symlink_metadata(state.join(CONTINUATION_002_TERMINAL)){
+        Ok(_)=>return failed_011_continuation_002_terminal_clear(state,request),
+        Err(error)if error.kind()==std::io::ErrorKind::NotFound=>{},
+        Err(_)=>return Err("exact 011 continuation002 terminal presence unproved".into()),
+    }
     match fs::symlink_metadata(state.join(CONTINUATION_TERMINAL)){
         Ok(_)=>failed_011_continuation_terminal_clear(state,request),
         Err(error)if error.kind()==std::io::ErrorKind::NotFound=>failed_011_v1_terminal_clear(state,request),
@@ -658,6 +752,28 @@ fn failed_011_continuation_terminal_clear(state:&Path,request:&Request)->Result<
     failed_011_absence_roles(&owners,&old_worker,[&helpers[0],&helpers[1],&helpers[2]],Some(&consumed),Some(&continuation))?;
     old_worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;continuation.reconcile_revalidate()?;consumed_directory.revalidate()?;continuation_directory.revalidate()?;for helper in &helpers{helper.reconcile_revalidate()?;}
     for held in ancestry.iter().chain(exec_ancestry.iter()).chain(consumed_ancestry.iter()).chain(continuation_ancestry.iter()){held.revalidate()?;}inventory.revalidate()
+}
+fn failed_011_continuation_002_terminal_clear(state:&Path,request:&Request)->Result<()>{
+    failed_011_request(request)?;let ancestry=sealed_fs::root_ancestry(request)?;
+    let extras=HISTORICAL_011_APPENDS.iter().chain(CONSUMED_CONTINUATION_011_APPENDS).chain(CONTINUATION_002_APPENDS).copied().chain([CONTINUATION_002_TERMINAL]).collect::<Vec<_>>();
+    let inventory=ReconciliationInventory::capture_continuation_002(state,&extras,0,0)?;let fields=validate_continuation_002_evidence(&inventory,request,&inventory.bytes(CONTINUATION_002_TERMINAL)?)?;
+    let exec=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);let exec_ancestry=sealed_fs::root_ancestry_path(&exec,0o711)?;
+    let authority=strict_flat(&inventory.bytes("authority.txt")?,AUTHORITY_FIELDS,MAX_REQUEST)?;
+    for key in ["namespace","nonce","guard_tooling_commit","guard_tooling_tree","worker_sha256","idle_helper_sha256","both_order_probe_sha256","route_guardian_sha256"]{if authority[key]!=request.get(key){return Err("continuation002 original authority crosslink changed".into());}}
+    let candidate=verify_bundle(&state.join("candidate.driver"),request.get("driver_tree_sha256"),request.get("driver_executable_sha256"),0)?;
+    if candidate.0.device!=positive(&authority["candidate_root_device"])?||candidate.0.inode!=positive(&authority["candidate_root_inode"])?||candidate.1.inode!=positive(&authority["candidate_executable_inode"])?{return Err("continuation002 original staged candidate inode changed".into());}
+    read_pinned(&exec.join("tools/gate_inputs.txt"),&authority["gate_inputs_sha256"],0,0o444,MAX_REQUEST)?;read_pinned(&exec.join("tools/opensteamer-microphone-v9-host-gate.rb"),&authority["host_gate_sha256"],0,0o444,MAX_REQUEST)?;
+    let helpers=[("idle-helper","idle_helper_sha256"),("both-order-probe","both_order_probe_sha256"),("route-guardian","route_guardian_sha256")].iter().map(|(role,pin)|os::SealedExecutable::open(&exec.join(role),request.get(pin))).collect::<Result<Vec<_>>>()?;
+    let old_worker=os::SealedExecutable::open(&exec.join("worker"),FAILED_011_WORKER)?;
+    let paths=[RECONCILE_011_WORKER,CONTINUE_011_WORKER,CONTINUE_011_002_WORKER];let pins=[CONSUMED_011_RECONCILER,CONSUMED_011_CONTINUATION,fields["reconciler_worker_sha256"].as_str()];
+    let mut role_ancestries=Vec::new();let mut directories=Vec::new();let mut workers=Vec::new();
+    for(path,pin)in paths.iter().zip(pins){let parent=Path::new(path).parent().unwrap();role_ancestries.extend(sealed_fs::root_ancestry_path(parent,0o711)?);directories.push(GateDirectory::capture(parent)?);workers.push(os::SealedExecutable::open(Path::new(path),pin)?);}
+    let owners=[1,2,3,4].iter().map(|sequence|{let fields=strict_flat(&inventory.bytes(&format!("child-active-{sequence:03}"))?,CHILD_FENCE_FIELDS,8192)?;positive(&fields["owner_pid"])?.try_into().map_err(|_|"continuation002 owner PID overflow".into())}).collect::<Result<Vec<u32>>>()?;
+    failed_011_continuation_002_absence(&owners,&old_worker,[&helpers[0],&helpers[1],&helpers[2]],&workers[0],&workers[1],Some(&workers[2]))?;
+    // Historical prefix proof is not a fresh live quiescence or guardian claim.
+    continuation_002_saved_log_prefixes(&inventory,request)?;
+    old_worker.reconcile_revalidate()?;for worker in &workers{worker.reconcile_revalidate()?;}for directory in &directories{directory.revalidate()?;}for helper in &helpers{helper.reconcile_revalidate()?;}
+    for held in ancestry.iter().chain(exec_ancestry.iter()).chain(role_ancestries.iter()){held.revalidate()?;}inventory.revalidate()
 }
 
 pub(super) fn reconcile_failed_no_effects_011(request:&Request,worker_sha:&str)->Result<String>{
@@ -720,6 +836,35 @@ pub(super) fn reconcile_failed_no_effects_011_continuation_001(request:&Request,
     original.revalidate_nodes()?;final_inventory.revalidate_nodes()?;context.revalidate()?;old_worker.reconcile_revalidate()?;worker.reconcile_revalidate()?;consumed.reconcile_revalidate()?;worker_directory.revalidate()?;consumed_directory.revalidate()?;for held in worker_ancestry.iter().chain(consumed_ancestry.iter()){held.revalidate()?;}
     Ok(format!("schema=opensteamer.microphone-v9-failure-reconciliation-outcome.v2\nnamespace={}\nnonce={}\nrequest_sha256={}\nauthority_sha256={}\noriginal_worker_sha256={}\nconsumed_reconciler_worker_sha256={}\nreconciler_worker_sha256={}\nhistorical_child_fence_sha256={}\nterminal={}\nnormal_restarts=0\nrollback_restarts=0\noriginal_cause=UNKNOWN\noriginal_guardian_teardown=UNKNOWN\nguardian_coverage_proven=false\ndeployment_verified=false\npcm_verified=false\nreconciliation_record_sha256={}\nreason=FAILED_ATTEMPT_ONLY_NOT_DEPLOYMENT_AUTHORITY\n",FAILED_011_NAMESPACE,FAILED_011_NONCE,FAILED_011_REQUEST,FAILED_011_AUTHORITY,FAILED_011_WORKER,CONSUMED_011_RECONCILER,worker_sha,HISTORICAL_011_FENCE,CONTINUATION_TERMINAL,sha256(&bytes)))
 }
+pub(super) fn reconcile_failed_no_effects_011_continuation_002(request:&Request,worker_sha:&str)->Result<String>{
+    if !os::OwnedChild::root_identity()||!hex(worker_sha,64)||[FAILED_011_WORKER,CONSUMED_011_RECONCILER,CONSUMED_011_CONTINUATION].contains(&worker_sha)||env::current_exe().map_err(|_|"continuation002 image path unavailable")?!=Path::new(CONTINUE_011_002_WORKER){return Err("continuation002 exact root image role/pin differs".into());}
+    let paths=[RECONCILE_011_WORKER,CONTINUE_011_WORKER,CONTINUE_011_002_WORKER];let pins=[CONSUMED_011_RECONCILER,CONSUMED_011_CONTINUATION,worker_sha];
+    let mut role_ancestries=Vec::new();let mut directories=Vec::new();let mut workers=Vec::new();
+    for(path,pin)in paths.iter().zip(pins){let parent=Path::new(path).parent().unwrap();role_ancestries.extend(sealed_fs::root_ancestry_path(parent,0o711)?);directories.push(GateDirectory::capture(parent)?);let worker=os::SealedExecutable::open(Path::new(path),pin)?;worker.reconcile_revalidate()?;workers.push(worker);}
+    let(mut context,original,old_worker)=RootContext::open_failed_011_continuation_002(request)?;old_worker.reconcile_revalidate()?;
+    let owners=[1,2,3].iter().map(|sequence|{let fields=strict_flat(&original.bytes(&format!("child-active-{sequence:03}"))?,CHILD_FENCE_FIELDS,8192)?;positive(&fields["owner_pid"])?.try_into().map_err(|_|"continuation002 historical native owner overflow".into())}).collect::<Result<Vec<u32>>>()?;
+    let event=original.nodes.get("guardian-1.events").ok_or("original guardian event descriptor missing")?;
+    let absence=||->Result<()>{failed_011_continuation_002_absence(&owners,&old_worker,[&context.idle,&context.probe,&context.guardian],&workers[0],&workers[1],None)?;let output=inspector_capture("failed_011_event_owner",os::OwnedChild::failed_011_event_owners()?,65536)?;failure_event_owner(&output,std::process::id(),event.file.as_raw_fd(),&event.identity,&event.path)?;event.revalidate()};
+    absence()?;let before=context.recovery_quiet_gate(None)?;context.record("continuation-002-host-before.txt",&before.bytes)?;
+    let core=context.core_record("core-baseline.txt")?.ok_or("original CoreAudio baseline missing")?;let host=context.driver_host_record("driver-host-baseline.txt")?.ok_or("original driver host baseline missing")?;
+    let images=context.image_paths()?;let prior=context.prior_identity()?;
+    if read_core()?!=core||context.bound_driver_host(&core)?!=(host.clone(),LoadedDriver::Prior){return Err("continuation002 original loaded V8/CoreAudio/helper generation differs".into());}
+    original.revalidate_nodes()?;old_worker.reconcile_revalidate()?;for worker in &workers{worker.reconcile_revalidate()?;}absence()?;
+    let after=context.recovery_quiet_gate(Some(&before))?;context.record("continuation-002-host-after.txt",&after.bytes)?;
+    if read_core()?!=core||context.bound_driver_host(&core)?!=(host,LoadedDriver::Prior)||context.image_paths()?!=images||context.prior_identity()?!=prior{return Err("continuation002 installed/loaded original V8 generation changed".into());}
+    absence()?;context.revalidate()?;original.revalidate_nodes()?;old_worker.reconcile_revalidate()?;for worker in &workers{worker.reconcile_revalidate()?;}for directory in &directories{directory.revalidate()?;}for held in &role_ancestries{held.revalidate()?;}
+    let authority=Authority::load(request,&context.state,&context.executables)?;if authority.fields!=context.authority.fields||authority.candidate_root!=context.authority.candidate_root||authority.candidate_executable!=context.authority.candidate_executable{return Err("continuation002 original sealed candidate/authority changed".into());}
+    context.close_child_fence()?;
+    let extras=HISTORICAL_011_APPENDS.iter().chain(CONSUMED_CONTINUATION_011_APPENDS).chain(CONTINUATION_002_APPENDS).copied().collect::<Vec<_>>();let final_inventory=ReconciliationInventory::capture_continuation_002(&context.state,&extras,0,0)?;final_inventory.verify_original(request)?;consumed_continuation_011_containment(&final_inventory,request)?;
+    if final_inventory.continuation_002_digest(ContinuationProjection::Input)!=original.continuation_002_digest(ContinuationProjection::Input){return Err("continuation002 immutable original19/historical002/consumed003 input changed".into());}
+    let observed:u64=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"continuation002 clock unavailable")?.as_millis().try_into().map_err(|_|"continuation002 clock overflow")?;
+    let bytes=continuation_002_reconciliation_record(request,worker_sha,&original,&final_inventory,observed)?;validate_continuation_002_evidence(&final_inventory,request,&bytes)?;
+    final_inventory.revalidate()?;original.revalidate_nodes()?;for worker in &workers{worker.reconcile_revalidate()?;}for directory in &directories{directory.revalidate()?;}
+    context.record(CONTINUATION_002_TERMINAL,&bytes)?;
+    let extras=extras.into_iter().chain([CONTINUATION_002_TERMINAL]).collect::<Vec<_>>();let completed=ReconciliationInventory::capture_continuation_002(&context.state,&extras,0,0)?;validate_continuation_002_evidence(&completed,request,&completed.bytes(CONTINUATION_002_TERMINAL)?)?;
+    original.revalidate_nodes()?;final_inventory.revalidate_nodes()?;context.revalidate()?;old_worker.reconcile_revalidate()?;for worker in &workers{worker.reconcile_revalidate()?;}for directory in &directories{directory.revalidate()?;}for held in &role_ancestries{held.revalidate()?;}
+    Ok(format!("schema=opensteamer.microphone-v9-failure-reconciliation-outcome.v3\nnamespace={}\nnonce={}\nrequest_sha256={}\nauthority_sha256={}\noriginal_worker_sha256={}\nconsumed_reconciler_worker_sha256={}\nconsumed_continuation_worker_sha256={}\nreconciler_worker_sha256={}\nhistorical_child_fence_sha256={}\nconsumed_continuation_child_fence_sha256={}\nconsumed_continuation_gate_metadata_sha256={}\nterminal={}\nnormal_restarts=0\nrollback_restarts=0\noriginal_cause=UNKNOWN\noriginal_guardian_teardown=UNKNOWN\nguardian_coverage_proven=false\ndeployment_verified=false\npcm_verified=false\nreconciliation_record_sha256={}\nreason=FAILED_ATTEMPT_ONLY_NOT_DEPLOYMENT_AUTHORITY\n",FAILED_011_NAMESPACE,FAILED_011_NONCE,FAILED_011_REQUEST,FAILED_011_AUTHORITY,FAILED_011_WORKER,CONSUMED_011_RECONCILER,CONSUMED_011_CONTINUATION,worker_sha,HISTORICAL_011_FENCE,CONSUMED_011_CONTINUATION_FENCE,CONSUMED_011_CONTINUATION_METADATA,CONTINUATION_002_TERMINAL,sha256(&bytes)))
+}
 
 pub(super) struct RootContext{
     request:Request, state:PathBuf, executables:PathBuf,
@@ -776,6 +921,21 @@ impl HostGate{
     }
 }
 impl RootContext{
+    fn open_failed_011_continuation_002(request:&Request)->Result<(Self,ReconciliationInventory,os::SealedExecutable)>{
+        failed_011_request(request)?;let state=PathBuf::from(request.root_path());let executables=PathBuf::from(EXECUTABLES).join(FAILED_011_NAMESPACE);
+        let state_ancestry=sealed_fs::root_ancestry(request)?;let exec_ancestry=sealed_fs::root_ancestry_path(&executables,0o711)?;let hal_ancestry=sealed_fs::root_ancestry_path(Path::new("/Library/Audio/Plug-Ins/HAL"),0o755)?;
+        let lock_parent=sealed_fs::HeldDirectory::capture(Path::new(ROOT_TRANSACTIONS),0,0,0o700)?;let controller_lock=sealed_fs::RootLock::acquire(&lock_parent)?;
+        let extras=HISTORICAL_011_APPENDS.iter().chain(CONSUMED_CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();let original=ReconciliationInventory::capture_continuation_002(&state,&extras,0,0)?;original.verify_original(request)?;consumed_continuation_011_containment(&original,request)?;
+        if next_child_fence(&state,request)?!=4{return Err("continuation002 accepts only immutable finalized001/002/003".into());}
+        for(sequence,name)in [(1,"gate-metadata-001.txt"),(2,"gate-metadata-002.txt"),(3,"gate-metadata-003.txt")]{validate_gate_metadata(&original.bytes(name)?,request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87",sequence,Some("candidate-present"))?;}
+        let authority=Authority::load(request,&state,&executables)?;let old_worker=os::SealedExecutable::open(&executables.join("worker"),FAILED_011_WORKER)?;
+        let idle=os::SealedExecutable::open(&executables.join("idle-helper"),request.get("idle_helper_sha256"))?;let probe=os::SealedExecutable::open(&executables.join("both-order-probe"),request.get("both_order_probe_sha256"))?;let guardian=os::SealedExecutable::open(&executables.join("route-guardian"),request.get("route_guardian_sha256"))?;
+        let request_file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(state.join("request.txt")).map_err(|_|"continuation002 original sealed request descriptor unavailable")?;
+        let log_file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open("/var/tmp/opensteamer-worldwide-host.log").map_err(|_|"continuation002 fixed held session log unavailable")?;let stat=log_file.metadata().map_err(|_|"continuation002 held log metadata unavailable")?;
+        if !stat.is_file()||stat.uid()!=501||stat.nlink()!=1{return Err("continuation002 held log owner/type/links differ".into());}
+        original.revalidate()?;controller_lock.revalidate()?;let child_fence=child_fence_bytes(request,4)?;state_ancestry.last().unwrap().write_record("child-active-004",&child_fence,0o400)?;
+        let context=Self{request:request.clone(),state,executables,state_ancestry,exec_ancestry,hal_ancestry,authority,idle,probe,guardian,request_file,log_file,controller_lock,child_fence,child_sequence:4,child_clean:false};context.revalidate()?;original.revalidate_nodes()?;Ok((context,original,old_worker))
+    }
     fn open_failed_011(request:&Request)->Result<(Self,ReconciliationInventory,os::SealedExecutable)>{
         Self::open_failed_011_exact(request,false)
     }
@@ -869,6 +1029,22 @@ impl RootContext{
         let bytes=gate_metadata_bytes(&self.request,self.authority.get("host_gate_sha256"),mode,observed,sequence,&identities)?;
         let name=format!("gate-metadata-{sequence:03}.txt");self.record(&name,&bytes)?;
         let metadata=RootGateMetadata{directories,proof:GateMetadataFile::open(&self.state.join(name),&bytes)?};metadata.revalidate()?;Ok(metadata)
+    }
+    fn recovery_quiet_gate(&self,first:Option<&HostGate>)->Result<HostGate>{
+        failed_011_request(&self.request)?;if self.child_sequence!=4{return Err("recovery quiet gate is private to exact continuation002".into());}
+        self.host_bytes()?;let baseline_path=self.state.join("host-baseline.txt");let original=failure_host_gate(&read_owned(&baseline_path,0,0,0o400,MAX_REQUEST)?,&self.request)?;
+        let baseline=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&baseline_path).map_err(|_|"recovery original baseline descriptor unavailable")?;
+        self.log_prefix(&original)?;
+        let prior=first.unwrap_or(&original);self.log_prefix(prior)?;
+        // Hash the held historical/fresh-before prefix before the next Ruby
+        // observation, not inside its five-second freshness window.
+        let checkpoints=if first.is_some(){vec![&original,prior]}else{vec![&original]};recovery_stream_prefixes(&self.log_file,Path::new("/var/tmp/opensteamer-worldwide-host.log"),&checkpoints,Instant::now()+Duration::from_secs(20))?;
+        let sequence=if first.is_some(){5}else{4};if next_gate_metadata(&self.state,&self.request,self.authority.get("host_gate_sha256"))?!=sequence{return Err("continuation002 imminent gate sequence differs".into());}
+        let script=self.executables.join("tools/opensteamer-microphone-v9-host-gate.rb");read_pinned(&script,self.authority.get("host_gate_sha256"),0,0o444,MAX_REQUEST)?;
+        let metadata=self.gate_metadata("--candidate-present")?;
+        let captured=(||{let captured=os::OwnedChild::ruby_gate(&script,"--candidate-present",&self.request.sha256,&self.request_file,Some(&baseline),None,&metadata.proof.file,&metadata.proof.digest)?.finish(Duration::from_secs(20),MAX_REQUEST)?;if captured.code!=0||!captured.stderr.is_empty(){return Err(host_gate_failure(captured.code,&captured.stdout,&captured.stderr));}Ok(captured)})();
+        let captured=gate_metadata_result(captured,metadata.revalidate())?;let gate=HostGate::validate(&captured.stdout,&self.request,"--candidate-present")?;
+        self.host_bytes()?;self.log_prefix(&gate)?;self.log_prefix(&original)?;self.log_prefix(prior)?;recovery_quiet_transition(prior,&gate,first.is_none())?;Ok(gate)
     }
     pub(super) fn gate(&self,mode:&str)->Result<HostGate>{
         self.host_bytes()?;
@@ -1041,6 +1217,57 @@ impl RootContext{
 }
 
 fn contains_bytes(bytes:&[u8],needle:&[u8])->bool{bytes.windows(needle.len()).any(|window|window==needle)}
+#[derive(Clone)]
+struct RecoveryPrefixHash{state:[u32;8],pending:Vec<u8>,length:u64}
+impl RecoveryPrefixHash{
+    fn new()->Self{Self{state:[0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19],pending:Vec::with_capacity(64),length:0}}
+    fn block(&mut self,chunk:&[u8]){
+        const K:[u32;64]=[
+            0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+            0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+            0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+            0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+            0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+            0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+            0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+            0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+        let mut words=[0u32;64];for(index,word)in chunk.chunks_exact(4).enumerate(){words[index]=u32::from_be_bytes(word.try_into().unwrap());}
+        for index in 16..64{let a=words[index-15];let b=words[index-2];words[index]=words[index-16].wrapping_add(a.rotate_right(7)^a.rotate_right(18)^(a>>3)).wrapping_add(words[index-7]).wrapping_add(b.rotate_right(17)^b.rotate_right(19)^(b>>10));}
+        let[mut a,mut b,mut c,mut d,mut e,mut f,mut g,mut h]=self.state;
+        for index in 0..64{let one=h.wrapping_add(e.rotate_right(6)^e.rotate_right(11)^e.rotate_right(25)).wrapping_add((e&f)^(!e&g)).wrapping_add(K[index]).wrapping_add(words[index]);let two=(a.rotate_right(2)^a.rotate_right(13)^a.rotate_right(22)).wrapping_add((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d.wrapping_add(one);d=c;c=b;b=a;a=one.wrapping_add(two);}
+        for(slot,value)in self.state.iter_mut().zip([a,b,c,d,e,f,g,h]){*slot=slot.wrapping_add(value);}
+    }
+    fn update(&mut self,mut bytes:&[u8])->Result<()>{
+        self.length=self.length.checked_add(bytes.len() as u64).filter(|length|*length<=u64::MAX/8).ok_or("recovery prefix SHA length overflow")?;
+        if !self.pending.is_empty(){let count=(64-self.pending.len()).min(bytes.len());self.pending.extend_from_slice(&bytes[..count]);bytes=&bytes[count..];if self.pending.len()==64{let block=self.pending.clone();self.block(&block);self.pending.clear();}}
+        while bytes.len()>=64{self.block(&bytes[..64]);bytes=&bytes[64..];}self.pending.extend_from_slice(bytes);Ok(())
+    }
+    fn finish(mut self)->String{let bits=self.length*8;let mut end=self.pending.clone();end.push(0x80);while end.len()%64!=56{end.push(0);}end.extend_from_slice(&bits.to_be_bytes());for block in end.chunks_exact(64){self.block(block);}self.state.iter().map(|value|format!("{value:08x}")).collect()}
+}
+#[cfg(test)]
+fn recovery_stream_prefix(file:&File,path:&Path,gate:&HostGate,deadline:Instant)->Result<()>{
+    recovery_stream_prefixes(file,path,&[gate],deadline)
+}
+fn recovery_stream_prefixes(file:&File,path:&Path,gates:&[&HostGate],deadline:Instant)->Result<()>{
+    unsafe extern "C"{fn fcntl(fd:i32,command:i32,...)->i32;}
+    let flags=unsafe{fcntl(file.as_raw_fd(),3)};let metadata=file.metadata().map_err(|_|"recovery prefix held descriptor stat unavailable")?;
+    if gates.is_empty()||gates.len()>3||flags<0||flags&3!=0||!metadata.is_file()||metadata.uid()!=501||metadata.nlink()!=1{return Err("recovery prefix exact checkpoint/descriptor/access policy differs".into());}
+    let mut checkpoints=Vec::new();for gate in gates{let size=positive(&gate.fields["session_log_size"])?;let reset=gate.fields["session_log_reset_offset"].parse::<u64>().map_err(|_|"recovery prefix reset extent malformed")?;let device=positive(&gate.fields["session_log_device"])?;let inode=positive(&gate.fields["session_log_inode"])?;if metadata.dev()!=device||metadata.ino()!=inode||metadata.len()<size||size>u64::MAX/8||reset>=size||size-reset>32*1024*1024||!hex(&gate.fields["session_log_sha256"],64){return Err("recovery prefix checkpoint inode/extent/digest policy differs".into());}checkpoints.push((size,reset,*gate,Vec::with_capacity((size-reset)as usize)));}checkpoints.sort_by_key(|(size,_,_,_)|*size);
+    let size=checkpoints.last().unwrap().0;let before=Identity::of(&metadata);let mut digest=RecoveryPrefixHash::new();let mut position=0u64;let mut chunk=vec![0u8;1024*1024];let mut next=0usize;
+    while next<checkpoints.len(){
+        os::supervisor_check()?;if Instant::now()>=deadline{return Err("recovery whole-prefix streaming deadline exceeded".into());}
+        if position==checkpoints[next].0{let(_,_,gate,tail)=&checkpoints[next];if digest.clone().finish()!=gate.fields["session_log_sha256"]{return Err("recovery held whole-prefix checkpoint digest differs".into());}validate_session_tail(tail,gate)?;next+=1;continue;}
+        let count=(checkpoints[next].0-position).min(chunk.len()as u64)as usize;let read=file.read_at(&mut chunk[..count],position).map_err(|_|"recovery prefix positional read failed")?;if read!=count{return Err("recovery whole-prefix short/truncated read refused".into());}digest.update(&chunk[..count])?;
+        for(extent,reset,_,tail)in &mut checkpoints{let end=(position+count as u64).min(*extent);let start=position.max(*reset);if end>start{tail.extend_from_slice(&chunk[(start-position)as usize..(end-position)as usize]);}}position+=count as u64;
+    }
+    if Instant::now()>=deadline{return Err("recovery whole-prefix checkpoint validation deadline exceeded".into());}
+    let held=Identity::of(&file.metadata().map_err(|_|"recovery prefix held after-stat unavailable")?);let named=Identity::of(&fs::symlink_metadata(path).map_err(|_|"recovery prefix named after-stat unavailable")?);
+    if (before.device,before.inode,before.uid,before.links)!=(held.device,held.inode,held.uid,held.links)||(held.device,held.inode,held.uid,held.links)!=(named.device,named.inode,named.uid,named.links)||held.size<size||named.size<size{return Err("recovery prefix held/named identity replaced or truncated".into());}Ok(())
+}
+fn continuation_002_saved_log_prefixes(inventory:&ReconciliationInventory,request:&Request)->Result<()>{
+    let path=Path::new("/var/tmp/opensteamer-worldwide-host.log");let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(|_|"continuation002 saved prefix descriptor unavailable")?;
+    let gates=["host-baseline.txt","continuation-002-host-before.txt","continuation-002-host-after.txt"].iter().map(|name|failure_host_gate(&inventory.bytes(name)?,request)).collect::<Result<Vec<_>>>()?;let refs=gates.iter().collect::<Vec<_>>();recovery_stream_prefixes(&file,path,&refs,Instant::now()+Duration::from_secs(20))
+}
 fn validate_session_tail(bytes:&[u8],gate:&HostGate)->Result<()>{
     const RESETS:&[&str]=&["Worldwide availability is waiting for the paired iPhone","Worldwide viewer disconnected","Worldwide peer returned to idle","Worldwide media ended; the Mac remains available for the paired iPhone"];
     const UNSAFE:&[&str]=&["Worldwide authenticated media route selected","Starting screen video capture","peerConnected=true","controlOpen=true"];
@@ -1812,6 +2039,7 @@ impl Backend for OsBackend{
 
 #[cfg(test)]mod tests{
     use super::*;
+    use std::io::Write;
     fn failed_011_fixture_request()->Request{
         let mut request=super::super::tests::request();request.fields.insert("namespace".into(),FAILED_011_NAMESPACE.into());request.fields.insert("nonce".into(),FAILED_011_NONCE.into());request.fields.insert("worker_sha256".into(),FAILED_011_WORKER.into());request.sha256=FAILED_011_REQUEST.into();request
     }
@@ -1840,7 +2068,7 @@ impl Backend for OsBackend{
     fn remove_reconciliation_fixture(path:&Path){
         // Exact exclusively-created fixture paths, never production or evidence.
         for(_,_,relative)in NODES.iter().rev().filter(|(_,_,relative)|*relative!="."){let node=path.join("candidate.driver").join(relative);if node.is_dir(){fs::remove_dir(node).unwrap();}else{fs::remove_file(node).unwrap();}}
-        fs::remove_file(path.join("journal/journal-001")).unwrap();for name in RECONCILIATION_APPENDS.iter().chain(CONTINUATION_011_APPENDS).copied().chain([FAILURE_TERMINAL,CONTINUATION_TERMINAL]){if path.join(name).exists(){fs::remove_file(path.join(name)).unwrap();}}
+        fs::remove_file(path.join("journal/journal-001")).unwrap();for name in RECONCILIATION_APPENDS.iter().chain(CONTINUATION_011_APPENDS).chain(CONTINUATION_002_APPENDS).copied().chain([FAILURE_TERMINAL,CONTINUATION_TERMINAL,CONTINUATION_002_TERMINAL]){if path.join(name).exists(){fs::remove_file(path.join(name)).unwrap();}}
         for name in FAILED_011_TOP{let node=path.join(name);if node.is_dir(){fs::remove_dir(node).unwrap();}else{fs::remove_file(node).unwrap();}}fs::remove_dir(path).unwrap();
     }
     #[test]fn failure_reconciliation_inventory_holds_every_original_node_across_only_fixed_appends(){
@@ -1942,6 +2170,76 @@ impl Backend for OsBackend{
     }
     #[test]fn continuation_absence_requires_exact_owner_and_held_image_role_counts(){
         for owners in 0..=4{for consumed in [false,true]{for continuation in [false,true]{let expected=matches!((owners,consumed,continuation),(1,false,false)|(2,true,false)|(3,true,true));assert_eq!(failed_011_absence_role_count(owners,consumed,continuation).is_ok(),expected);}}}
+    }
+    const CONSUMED_METADATA_003_FIXTURE:&[u8]=b"schema=opensteamer.microphone-v9-root-gate-metadata.v1\nnamespace=driver-microphone-v9-151f574a1c3c354b\nnonce=0c6553bf7c2322bc87fc0b1580b739e2db7820fd8405ad4b8c9e33f6d0f8f0d5\nrequest_sha256=18c655bff4dd81a3fd9435aae9940fbc15fd92d6b6975a5fdb4245e3e7507178\nworker_sha256=d91091c850d22ec315cc08ca4add458efb5dfb3e29b26080ba0665dea9af5613\nhost_gate_sha256=91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87\nmode=candidate-present\nobserved_at_unix_ms=1790951263407\nsequence=3\nacl_absent=true\nxattrs_empty=true\nprefix_identity=16777232,37808072,0,0,16841,9,288,1790940184,67270496,1790940184,67270496\nnamespace_identity=16777232,37859055,0,0,16841,7,224,1790940184,185283797,1790940184,185283797\ntools_identity=16777232,37859056,0,0,16841,6,192,1790940184,152836943,1790940184,152836943\nproduct_identity=16777232,37859057,0,0,16841,6,192,1790940184,180192915,1790940184,180192915\nobservers_identity=16777232,37859058,0,0,16841,5,160,1790940184,148649653,1790940184,148649653\n";
+    fn continuation_002_input_fixture(label:&str)->(PathBuf,sealed_fs::HeldDirectory,u32,u32,Request){
+        let(path,held,owner,group,request)=continuation_input_fixture(label);let fence=continuation_fixture_fence(&request,3,94114);assert_eq!(sha256(&fence),CONSUMED_011_CONTINUATION_FENCE);
+        for name in ["child-active-003","child-clean-003"]{held.write_record(name,&fence,0o400).unwrap();}assert_eq!(sha256(CONSUMED_METADATA_003_FIXTURE),CONSUMED_011_CONTINUATION_METADATA);held.write_record("gate-metadata-003.txt",CONSUMED_METADATA_003_FIXTURE,0o400).unwrap();
+        let mut baseline=strict_flat(&fs::read(path.join("host-baseline.txt")).unwrap(),GATE_FIELDS,MAX_REQUEST).unwrap();baseline.insert("observed_at_unix_ms".into(),"1790951263000".into());let bytes=GATE_FIELDS.iter().map(|key|format!("{key}={}\n",baseline[*key])).collect::<String>().into_bytes();replace_reconciliation_fixture_record(&path,&held,"host-baseline.txt",&bytes);(path,held,owner,group,request)
+    }
+    fn continuation_002_extras()->Vec<&'static str>{HISTORICAL_011_APPENDS.iter().chain(CONSUMED_CONTINUATION_011_APPENDS).chain(CONTINUATION_002_APPENDS).copied().collect()}
+    fn append_continuation_002_fixture(path:&Path,held:&sealed_fs::HeldDirectory,request:&Request,new_quiet:bool){
+        let mut fields=strict_flat(&fs::read(path.join("host-baseline.txt")).unwrap(),GATE_FIELDS,MAX_REQUEST).unwrap();
+        if new_quiet{fields.insert("session_log_reset_offset".into(),"120".into());fields.insert("session_log_size".into(),"200".into());}
+        for(offset,name)in [(1000,"continuation-002-host-before.txt"),(2000,"continuation-002-host-after.txt")]{fields.insert("observed_at_unix_ms".into(),(1_790_951_263_000u64+offset).to_string());let bytes=GATE_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>().into_bytes();replace_reconciliation_fixture_record(path,held,name,&bytes);}
+        let fence=continuation_fixture_fence(request,4,94116);for name in ["child-active-004","child-clean-004"]{held.write_record(name,&fence,0o400).unwrap();}
+        for(sequence,offset)in [(4,900),(5,1900)]{let bytes=gate_metadata_bytes(request,"91166013846d8579af6f94f647e6af3508b49427e83bff36c11d564380578a87","candidate-present",1_790_951_263_000+offset,sequence,&gate_metadata_identities()).unwrap();held.write_record(&format!("gate-metadata-{sequence:03}.txt"),&bytes,0o400).unwrap();}
+    }
+    fn continuation_002_fixture_fields(input:&ReconciliationInventory,final_inventory:&ReconciliationInventory,request:&Request)->BTreeMap<String,String>{
+        let bytes=continuation_002_reconciliation_record(request,&"b".repeat(64),input,final_inventory,1_790_951_265_300).unwrap();continuation_002_terminal_validate(&bytes,request).unwrap()
+    }
+    #[test]fn continuation002_input_retains_exact_consumed003_and_rejects_bootstrap_owner_or_partial_retry(){
+        let(path,held,owner,group,request)=continuation_002_input_fixture("continuation002-input");let extras=HISTORICAL_011_APPENDS.iter().chain(CONSUMED_CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();let input=ReconciliationInventory::capture_continuation_002(&path,&extras,owner,group).unwrap();consumed_continuation_011_containment(&input,&request).unwrap();assert_eq!(input.nodes.len(),35);assert_eq!(next_child_fence_owned(&path,&request,owner,group).unwrap(),4);
+        assert!(input.verify_original(&request).is_err(),"synthetic original records never become original011 authority");assert!(ReconciliationInventory::capture_continuation(&path,HISTORICAL_011_APPENDS,owner,group).is_err());
+        for name in ["child-active-004","gate-metadata-004.txt","continuation-001-host-before.txt",CONTINUATION_TERMINAL,CONTINUATION_002_TERMINAL,"UNRESOLVED_CHILD"]{held.write_record(name,b"unapproved partial state",0o400).unwrap();assert!(ReconciliationInventory::capture_continuation_002(&path,&extras,owner,group).is_err());fs::remove_file(path.join(name)).unwrap();}
+        drop(input);let actual=continuation_fixture_fence(&request,3,94114);
+        for mutant in [continuation_fixture_fence(&request,3,94112),continuation_fixture_fence(&request,4,94114),b"unknown003".to_vec()]{replace_reconciliation_fixture_record(&path,&held,"child-clean-003",&mutant);let bad=ReconciliationInventory::capture_continuation_002(&path,&extras,owner,group).unwrap();assert!(consumed_continuation_011_containment(&bad,&request).is_err());}
+        replace_reconciliation_fixture_record(&path,&held,"child-clean-003",&actual);let text=String::from_utf8(CONSUMED_METADATA_003_FIXTURE.to_vec()).unwrap();replace_reconciliation_fixture_record(&path,&held,"gate-metadata-003.txt",text.replace("sequence=3","sequence=4").as_bytes());let bad=ReconciliationInventory::capture_continuation_002(&path,&extras,owner,group).unwrap();assert!(consumed_continuation_011_containment(&bad,&request).is_err());drop(bad);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn continuation002_v3_schema_is_closed_and_never_relabels_old_roles_or_guardian(){
+        let(path,held,owner,group,request)=continuation_002_input_fixture("continuation002-schema");let input_extras=HISTORICAL_011_APPENDS.iter().chain(CONSUMED_CONTINUATION_011_APPENDS).copied().collect::<Vec<_>>();let input=ReconciliationInventory::capture_continuation_002(&path,&input_extras,owner,group).unwrap();append_continuation_002_fixture(&path,&held,&request,true);let final_inventory=ReconciliationInventory::capture_continuation_002(&path,&continuation_002_extras(),owner,group).unwrap();let fields=continuation_002_fixture_fields(&input,&final_inventory,&request);let text=CONTINUATION_002_TERMINAL_FIELDS.iter().map(|key|format!("{key}={}\n",fields[*key])).collect::<String>();assert_eq!(fields.len(),32);validate_continuation_002_crosslinks(&final_inventory,&request,&fields).unwrap();
+        for key in CONTINUATION_002_TERMINAL_FIELDS{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();for mutant in [text.replace(&format!("{line}\n"),""),text.clone()+&format!("{line}\n"),text.replace(line,&format!("{key}=wrong"))]{assert!(continuation_002_terminal_validate(mutant.as_bytes(),&request).is_err(),"accepted {key}");}}
+        for(key,value)in [("reconciler_worker_sha256",FAILED_011_WORKER),("reconciler_worker_sha256",CONSUMED_011_RECONCILER),("reconciler_worker_sha256",CONSUMED_011_CONTINUATION),("deployment_verified","true"),("pcm_verified","true"),("guardian_coverage_proven","true"),("original_guardian_teardown","CLEAN"),("normal_restarts","1")]{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();assert!(continuation_002_terminal_validate(text.replace(line,&format!("{key}={value}")).as_bytes(),&request).is_err());}
+        assert!(continuation_terminal_validate(text.as_bytes(),&request).is_err());assert!(failure_terminal_validate(text.as_bytes(),&request).is_err());assert!(validate_continuation_002_evidence(&final_inventory,&request,text.as_bytes()).is_err());input.revalidate_nodes().unwrap();drop(final_inventory);drop(input);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn continuation002_accepts_natural_new_quiet_boundary_then_requires_exact_fresh_boundary(){
+        for new_quiet in [false,true]{let(path,held,owner,group,request)=continuation_002_input_fixture("continuation002-quiet");append_continuation_002_fixture(&path,&held,&request,new_quiet);let inventory=ReconciliationInventory::capture_continuation_002(&path,&continuation_002_extras(),owner,group).unwrap();let fields=continuation_002_fixture_fields(&inventory,&inventory,&request);validate_continuation_002_crosslinks(&inventory,&request,&fields).unwrap();assert_eq!(inventory.nodes.len(),41);assert_ne!(fields["original_inventory_sha256"],fields["input_inventory_sha256"]);assert_ne!(fields["input_inventory_sha256"],fields["final_inventory_sha256"]);drop(inventory);drop(held);remove_reconciliation_fixture(&path);}
+    }
+    #[test]fn continuation002_rejects_inside_extent_reset_or_regression_and_all_identity_changes(){
+        let(request,bytes)=gate_fixture("candidate-present");let mut original=HostGate::validate(&bytes,&request,"--candidate-present").unwrap();let mut fresh=original.clone();fresh.fields.insert("session_log_size".into(),"200".into());fresh.fields.insert("session_log_reset_offset".into(),"120".into());recovery_quiet_transition(&original,&fresh,true).unwrap();
+        let mut exact_boundary=fresh.clone();exact_boundary.fields.insert("session_log_reset_offset".into(),original.fields["session_log_size"].clone());recovery_quiet_transition(&original,&exact_boundary,true).unwrap();
+        let mut growing_suffix=fresh.clone();growing_suffix.fields.insert("session_log_size".into(),"201".into());recovery_quiet_transition(&fresh,&growing_suffix,false).unwrap();
+        for reset in ["1","50","99"]{let mut bad=fresh.clone();bad.fields.insert("session_log_reset_offset".into(),reset.into());assert!(recovery_quiet_transition(&original,&bad,true).is_err());}original.fields.insert("session_log_reset_offset".into(),"50".into());let mut bad=fresh.clone();bad.fields.insert("session_log_reset_offset".into(),"0".into());assert!(recovery_quiet_transition(&original,&bad,true).is_err());
+        for key in ["host_pid","host_launchd_runs","host_start_identity_sha256","host_nonce","host_lock_device","host_lock_inode","host_display_identity_sha256","host_executable_sha256","host_framework_sha256","host_info_plist_sha256","host_launch_plist_sha256","input_uid","output_uid","system_output_uid","routes_identity_sha256","manager_generation","session_log_device","session_log_inode"]{let mut bad=fresh.clone();bad.fields.insert(key.into(),"changed".into());assert!(recovery_quiet_transition(&original,&bad,true).is_err(),"accepted {key}");}
+        for(key,value)in [("session_log_size","99"),("observed_at_unix_ms","1")]{let mut bad=fresh.clone();bad.fields.insert(key.into(),value.into());assert!(recovery_quiet_transition(&original,&bad,true).is_err());}
+        for(key,value)in [("session_log_reset_offset","150"),("manager_generation","1"),("session_log_sha256","0"),("session_log_tail_sha256","0")]{let mut bad=fresh.clone();bad.fields.insert(key.into(),value.into());assert!(recovery_quiet_transition(&fresh,&bad,false).is_err(),"accepted after-fresh {key}");}
+    }
+    #[test]fn continuation002_consumer_rejects_new_reset_stale_metadata_and_rebound_host_receipts(){
+        let(path,held,owner,group,request)=continuation_002_input_fixture("continuation002-receipts");append_continuation_002_fixture(&path,&held,&request,true);let extras=continuation_002_extras();
+        for(name,mutants)in [("continuation-002-host-before.txt",vec![("session_log_reset_offset","99"),("manager_generation","1"),("session_log_inode","3"),("session_quiescent","false"),("display_headless","true")]),("continuation-002-host-after.txt",vec![("session_log_reset_offset","150"),("session_log_size","199"),("session_log_sha256","0000000000000000000000000000000000000000000000000000000000000000"),("session_log_tail_sha256","0000000000000000000000000000000000000000000000000000000000000000")]),("gate-metadata-004.txt",vec![("sequence","3"),("observed_at_unix_ms","1790951263000"),("observed_at_unix_ms","1790951264100")]),("gate-metadata-005.txt",vec![("observed_at_unix_ms","1790951263999"),("observed_at_unix_ms","1790951265100")])]{
+            let bytes=fs::read(path.join(name)).unwrap();let text=String::from_utf8(bytes.clone()).unwrap();for(key,value)in mutants{let line=text.lines().find(|line|line.starts_with(&format!("{key}="))).unwrap();let mutant=text.replace(line,&format!("{key}={value}"));assert_ne!(mutant,text);replace_reconciliation_fixture_record(&path,&held,name,mutant.as_bytes());let inventory=ReconciliationInventory::capture_continuation_002(&path,&extras,owner,group).unwrap();let fields=continuation_002_fixture_fields(&inventory,&inventory,&request);assert!(validate_continuation_002_crosslinks(&inventory,&request,&fields).is_err(),"accepted {name} {key}");drop(inventory);}replace_reconciliation_fixture_record(&path,&held,name,&bytes);
+        }
+        let inventory=ReconciliationInventory::capture_continuation_002(&path,&extras,owner,group).unwrap();let fields=continuation_002_fixture_fields(&inventory,&inventory,&request);for key in ["original_inventory_sha256","input_inventory_sha256","final_inventory_sha256","original_child_fence_sha256","historical_child_fence_sha256","consumed_continuation_child_fence_sha256","consumed_continuation_gate_metadata_sha256","reconciliation_child_fence_sha256","gate_before_sha256","gate_after_sha256","host_before_sha256","host_after_sha256","core_generation_sha256","driver_host_generation_sha256"]{let mut bad=fields.clone();bad.insert(key.into(),"0".repeat(64));assert!(validate_continuation_002_crosslinks(&inventory,&request,&bad).is_err(),"accepted {key}");}for observed in ["1790951264999","1790951270301"]{let mut bad=fields.clone();bad.insert("observed_at_unix_ms".into(),observed.into());assert!(validate_continuation_002_crosslinks(&inventory,&request,&bad).is_err());}drop(inventory);drop(held);remove_reconciliation_fixture(&path);
+    }
+    #[test]fn recovery_streaming_sha_matches_known_vectors_and_arbitrary_chunk_boundaries(){
+        for(bytes,expected)in [(b"".as_slice(),"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),(b"abc".as_slice(),"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")]{let mut hash=RecoveryPrefixHash::new();for byte in bytes{hash.update(&[*byte]).unwrap();}assert_eq!(hash.finish(),expected);}
+        for extent in [1,55,56,63,64,65,127,128,1024,1024*1024+63]{let bytes=(0..extent).map(|index|(index%251)as u8).collect::<Vec<_>>();let expected=sha256(&bytes);for count in [1,7,63,64,65,4096,1024*1024]{let mut hash=RecoveryPrefixHash::new();for chunk in bytes.chunks(count){hash.update(chunk).unwrap();assert!(hash.pending.len()<64);}assert_eq!(hash.finish(),expected);}}
+    }
+    #[test]fn recovery_streaming_sha_bounded_128mib_throughput_sample(){
+        let chunk=(0..1024*1024).map(|index|(index%251)as u8).collect::<Vec<_>>();let mut hash=RecoveryPrefixHash::new();let began=Instant::now();for _ in 0..128{hash.update(&chunk).unwrap();}let digest=hash.finish();let seconds=began.elapsed().as_secs_f64();assert!(hex(&digest,64));assert!(seconds>0.0);println!("recovery_prefix_benchmark bytes=134217728 seconds={seconds:.6} mib_per_second={:.6} estimated_2724000472_bytes_seconds={:.6}",128.0/seconds,seconds*2724000472.0/134217728.0);
+    }
+    #[test]fn recovery_streaming_held_prefix_rejects_tamper_tail_truncation_deadline_and_named_replacement(){
+        let(path,held,_,_)=pre_effect_directory_fixture("recovery-prefix");let log=path.join("private-log");let prefix=b"nonsecret historical fixture\n";let tail=b"Worldwide viewer disconnected\nordinary idle log\n";let bytes=[prefix.as_slice(),tail.as_slice()].concat();let mut writer=OpenOptions::new().write(true).create_new(true).mode(0o600).open(&log).unwrap();writer.write_all(&bytes).unwrap();writer.sync_all().unwrap();let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&log).unwrap();let(request,wire)=gate_fixture("candidate-present");let mut gate=HostGate::validate(&wire,&request,"--candidate-present").unwrap();let metadata=file.metadata().unwrap();assert_eq!(metadata.uid(),501,"private prefix fixture runs only as original UID501");for(key,value)in [("session_log_device",metadata.dev().to_string()),("session_log_inode",metadata.ino().to_string()),("session_log_size",bytes.len().to_string()),("session_log_reset_offset",prefix.len().to_string()),("session_log_sha256",sha256(&bytes)),("session_log_tail_sha256",sha256(tail))]{gate.fields.insert(key.into(),value);}
+        recovery_stream_prefix(&file,&log,&gate,Instant::now()+Duration::from_secs(2)).unwrap();assert!(recovery_stream_prefix(&file,&log,&gate,Instant::now()).is_err());writer.write_all(b"append outside retained snapshot\n").unwrap();recovery_stream_prefix(&file,&log,&gate,Instant::now()+Duration::from_secs(2)).unwrap();
+        writer.write_at(b"X",0).unwrap();assert!(recovery_stream_prefix(&file,&log,&gate,Instant::now()+Duration::from_secs(2)).is_err());writer.write_at(&bytes,0).unwrap();let mut bad=gate.clone();bad.fields.insert("session_log_tail_sha256".into(),"0".repeat(64));assert!(recovery_stream_prefix(&file,&log,&bad,Instant::now()+Duration::from_secs(2)).is_err());
+        for marker in ["Starting screen video capture","Worldwide authenticated media route selected","peerConnected=true","controlOpen=true"]{let unsafe_tail=format!("Worldwide viewer disconnected\n{marker}\n").into_bytes();writer.set_len(0).unwrap();writer.write_at(&unsafe_tail,0).unwrap();let mut bad=gate.clone();bad.fields.insert("session_log_size".into(),unsafe_tail.len().to_string());bad.fields.insert("session_log_reset_offset".into(),"0".into());bad.fields.insert("session_log_sha256".into(),sha256(&unsafe_tail));bad.fields.insert("session_log_tail_sha256".into(),sha256(&unsafe_tail));assert!(recovery_stream_prefix(&file,&log,&bad,Instant::now()+Duration::from_secs(2)).is_err(),"valid digests never excuse {marker}");}
+        writer.set_len(1).unwrap();assert!(recovery_stream_prefix(&file,&log,&gate,Instant::now()+Duration::from_secs(2)).is_err());writer.write_at(&bytes,0).unwrap();writer.set_len(bytes.len()as u64).unwrap();let retained=path.join("retained-private-log");fs::rename(&log,&retained).unwrap();fs::write(&log,&bytes).unwrap();assert!(recovery_stream_prefix(&file,&log,&gate,Instant::now()+Duration::from_secs(2)).is_err());drop(file);drop(writer);fs::remove_file(log).unwrap();fs::remove_file(retained).unwrap();drop(held);fs::remove_dir(path).unwrap();
+    }
+    #[test]fn recovery_streaming_checkpoints_reprove_original_prefix_even_when_fresh_digest_is_rebound(){
+        let(path,held,_,_)=pre_effect_directory_fixture("recovery-checkpoints");let log=path.join("private-log");let original=b"nonsecret historical header\nWorldwide viewer disconnected\n";let next_reset=b"Worldwide peer returned to idle\n";let before=[original.as_slice(),b"ordinary old session\n",next_reset.as_slice()].concat();let after=[before.as_slice(),b"ordinary fresh idle suffix\n"].concat();let mut writer=OpenOptions::new().write(true).create_new(true).mode(0o600).open(&log).unwrap();writer.write_all(&after).unwrap();let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&log).unwrap();let(request,wire)=gate_fixture("candidate-present");let base=HostGate::validate(&wire,&request,"--candidate-present").unwrap();let metadata=file.metadata().unwrap();assert_eq!(metadata.uid(),501);
+        let gate=|bytes:&[u8],reset:usize|{let mut gate=base.clone();for(key,value)in [("session_log_device",metadata.dev().to_string()),("session_log_inode",metadata.ino().to_string()),("session_log_size",bytes.len().to_string()),("session_log_reset_offset",reset.to_string()),("session_log_sha256",sha256(bytes)),("session_log_tail_sha256",sha256(&bytes[reset..]))]{gate.fields.insert(key.into(),value);}gate};
+        let original_gate=gate(original,b"nonsecret historical header\n".len());let before_gate=gate(&before,before.len()-next_reset.len());let after_gate=gate(&after,before.len()-next_reset.len());recovery_stream_prefixes(&file,&log,&[&after_gate,&original_gate,&before_gate],Instant::now()+Duration::from_secs(2)).unwrap();recovery_stream_prefixes(&file,&log,&[&before_gate,&before_gate],Instant::now()+Duration::from_secs(2)).unwrap();
+        writer.write_at(b"X",0).unwrap();let mut changed_before=before.clone();changed_before[0]=b'X';let rebound=gate(&changed_before,before.len()-next_reset.len());recovery_stream_prefixes(&file,&log,&[&rebound],Instant::now()+Duration::from_secs(2)).unwrap();assert!(recovery_stream_prefixes(&file,&log,&[&original_gate,&rebound],Instant::now()+Duration::from_secs(2)).is_err(),"fresh whole-prefix must not hide historical-prefix mutation");assert!(recovery_stream_prefixes(&file,&log,&[],Instant::now()+Duration::from_secs(2)).is_err());assert!(recovery_stream_prefixes(&file,&log,&[&original_gate,&before_gate,&after_gate,&after_gate],Instant::now()+Duration::from_secs(2)).is_err());drop(file);drop(writer);fs::remove_file(log).unwrap();drop(held);fs::remove_dir(path).unwrap();
     }
     #[test]fn failure_reconciliation_consumer_rejects_valid_hex_crosslink_and_finalized_containment_mutants(){
         let(path,held,owner,group,request)=reconciliation_crosslink_fixture("reconcile-crosslinks");let inventory=ReconciliationInventory::capture(&path,RECONCILIATION_APPENDS,owner,group).unwrap();let fields=reconciliation_crosslink_fixture_fields(&inventory,&request);validate_reconciliation_crosslinks(&inventory,&request,&fields).unwrap();
