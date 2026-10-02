@@ -152,6 +152,10 @@ public actor PairingBootstrapSignalingClient {
     private let cipher: PairingBootstrapCipher
 
     private var state = State.idle
+    private var finishIsInProgress = false
+    private var finishWaiters: [CheckedContinuation<Void, Never>] = []
+    private var transportCloseIsInProgress = false
+    private var transportCloseWaiters: [CheckedContinuation<Void, Never>] = []
     private var continuation: EventStream.Continuation?
     private var receiveTask: Task<Void, Never>?
     private var nextSequence: UInt64 = 0
@@ -197,8 +201,7 @@ public actor PairingBootstrapSignalingClient {
                 mode: .pairing
             )
         } catch {
-            state = .closed
-            await transport.close()
+            await finish(throwing: RendezvousSignalingError.connectionFailed)
             throw RendezvousSignalingError.connectionFailed
         }
 
@@ -206,7 +209,9 @@ public actor PairingBootstrapSignalingClient {
         // therefore win while the socket is still opening and move this client to `.closed`.
         // Never let a later successful connect completion resurrect that closed client.
         guard state == .idle else {
-            await transport.close()
+            await finish(throwing: nil)
+            // Preserve the distinct reclose for a socket installed by a late open.
+            await closeTransport()
             throw RendezvousSignalingError.connectionClosed
         }
 
@@ -359,16 +364,49 @@ public actor PairingBootstrapSignalingClient {
     }
 
     private func finish(throwing error: (any Error)?) async {
-        guard state != .closed else { return }
+        guard state != .closed else {
+            await joinFinishIfNeeded()
+            await joinTransportCloseIfNeeded()
+            return
+        }
         state = .closed
+        finishIsInProgress = true
         let activeContinuation = continuation
         continuation = nil
         let task = receiveTask
         receiveTask = nil
         task?.cancel()
-        await transport.close()
+        await closeTransport()
         if let error { activeContinuation?.finish(throwing: error) }
         else { activeContinuation?.finish() }
+        finishIsInProgress = false
+        let waiters = finishWaiters
+        finishWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Second closes join the retained close, never receiveTask (which may own finish).
+    private func joinFinishIfNeeded() async {
+        guard finishIsInProgress else { return }
+        await withCheckedContinuation { finishWaiters.append($0) }
+    }
+
+    private func joinTransportCloseIfNeeded() async {
+        guard transportCloseIsInProgress else { return }
+        await withCheckedContinuation { transportCloseWaiters.append($0) }
+    }
+
+    private func closeTransport() async {
+        if transportCloseIsInProgress {
+            await joinTransportCloseIfNeeded()
+            return
+        }
+        transportCloseIsInProgress = true
+        await transport.close()
+        transportCloseIsInProgress = false
+        let waiters = transportCloseWaiters
+        transportCloseWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
     }
 
     private static func validate(
