@@ -75,6 +75,26 @@ class BelugaMacClientContractTests < Minitest::Test
     assert C.updater_source_contract!
   end
 
+  def test_source_text_boundaries_accept_utf8_bytes_under_c_locale_and_reject_invalid_bytes
+    [Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |encoding|
+      source = "// π\n".dup.force_encoding(encoding).freeze
+      assert_equal "// π\n", C.utf8_text(source, 'fixture')
+      assert_equal encoding, source.encoding
+      assert_equal "// π\n".bytes, source.bytes
+      updater = {
+        'macOS/Sources/CaptureServer/BelugaUpdateController.swift' => 'BelugaUpdateMenuClient.begin',
+        'macOS/Sources/CaptureServer/BelugaUpdateMenuClient.swift' => 'BelugaUpdateBrokerArtifact.verifyStaged BelugaUpdateIPCChannel',
+        'extra.swift' => source
+      }
+      assert C.updater_source_contract!(updater)
+      assert C.catalog_source_contract!(catalog_sources.merge('extra.swift' => source))
+      invalid = "\xFF".b
+      assert_raises(C::Refusal) { C.updater_source_contract!(updater.merge('extra.swift' => invalid)) }
+      assert_raises(C::Refusal) { C.catalog_source_contract!(catalog_sources.merge('extra.swift' => invalid)) }
+    end
+    assert_raises(C::Refusal) { C.utf8_text(nil, 'fixture') }
+  end
+
   def catalog_sources
     {
       'macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift' =>
@@ -406,6 +426,22 @@ class BelugaMacClientContractTests < Minitest::Test
       File.chmod(0o644, path)
     end
     assert_equal 'e68bcee4217c4f0b0899fe10a45f77f3daa719d0d8daa14f535ed2ad8f7654dd', C.tree_digest(root)
+    renamed = File.join(@directory, 'native-tree-π')
+    File.rename(root, renamed)
+    [Encoding::UTF_8, Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |encoding|
+      path = renamed.dup.force_encoding(encoding).freeze
+      assert_equal 'e68bcee4217c4f0b0899fe10a45f77f3daa719d0d8daa14f535ed2ad8f7654dd', C.tree_digest(path)
+      assert_equal encoding, path.encoding
+    end
+  end
+
+  def test_bundle_tree_refuses_invalid_utf8_names_before_serialization
+    root = File.join(@directory, 'native-tree')
+    visitor = ->(_path, &block) { block.call(root.b + "/\xFF".b) }
+    Find.stub(:find, visitor) do
+      error = assert_raises(C::Refusal) { C.tree_digest(root) }
+      assert_equal 'bundle tree relative path is not valid UTF-8', error.message
+    end
   end
 
   def candidate_identity

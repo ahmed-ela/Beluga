@@ -183,6 +183,14 @@ module MicrophoneRegressionGate
     raise RuntimeError, message unless condition
   end
 
+  # Source and Swift Testing logs are UTF-8 even under the scrubbed C locale.
+  def self.utf8_text(bytes, label)
+    require!(bytes.is_a?(String), label + ' is not text')
+    text = bytes.dup.force_encoding(Encoding::UTF_8)
+    require!(text.valid_encoding?, label + ' is not valid UTF-8')
+    text
+  end
+
   def self.exact_keys!(value, keys, label)
     require!(value.is_a?(Hash) && value.keys.sort == keys.sort, "#{label} has an unrecognized field set")
   end
@@ -346,6 +354,7 @@ module MicrophoneRegressionGate
   end
 
   def self.shared_signaling_inventory(text)
+    text = utf8_text(text, 'shared signaling discovery')
     methods = text.lines.map(&:strip).select { |line| line.start_with?(SHARED_SIGNALING_SUITE + '/') }
     require!((1..128).cover?(methods.length) && methods.uniq.length == methods.length &&
              methods.all? { |id| id.match?(/\ARemoteSessionCoreTests\.DurableSignalingClientTests\/\w+\(\)\z/) } &&
@@ -356,6 +365,7 @@ module MicrophoneRegressionGate
   # Exact pinned Swift Testing console format. Starts/passes may interleave,
   # but each discovered method must start once before passing once in one suite.
   def self.validate_shared_signaling(text, expected)
+    text = utf8_text(text, 'shared signaling result')
     require!(text.bytesize <= 2 * 1024 * 1024 && (1..128).cover?(expected.length) &&
              expected.uniq.length == expected.length &&
              expected.all? { |id| id.match?(/\ARemoteSessionCoreTests\.DurableSignalingClientTests\/\w+\(\)\z/) },
@@ -538,7 +548,8 @@ module MicrophoneRegressionGate
   ].freeze
 
   def self.mac_producer_inventory(root)
-    source = File.read(File.join(root, 'macOS/scripts/verify-beluga-mac-client-tests.rb'))
+    source = utf8_text(File.binread(File.join(root, 'macOS/scripts/verify-beluga-mac-client-tests.rb')),
+                       'Mac producer source')
     methods = source.scan(/^\s*def (test\w+)(?:\(|\s|$)/).flatten
     require!(!methods.empty? && methods.uniq.length == methods.length && (MAC_PRODUCER_PINNED - methods).empty?,
              'Mac producer harness inventory is incomplete or duplicated')
@@ -546,6 +557,7 @@ module MicrophoneRegressionGate
   end
 
   def self.validate_mac_producer_harness(text, expected)
+    text = utf8_text(text, 'Mac producer result')
     lines = text.lines
     case_lines = lines.each_with_index.select { |line, _| line.start_with?('BelugaMacClientContractTests#') }
     cases = case_lines.map do |line, _|

@@ -82,6 +82,13 @@ module BelugaMacClient
     raise Refusal, message unless condition
   end
 
+  def self.utf8_text(bytes, label)
+    require!(bytes.is_a?(String), label + ' is not text')
+    text = bytes.dup.force_encoding(Encoding::UTF_8)
+    require!(text.valid_encoding?, label + ' is not valid UTF-8')
+    text
+  end
+
   def self.public_key!(value)
     require!(value.is_a?(String), 'publicEDKey is unconfigured; generate an updater key in Keychain first')
     decoded = Base64.strict_decode64(value)
@@ -306,8 +313,9 @@ module BelugaMacClient
   # This is a source regression guard, not a substitute for signed replacement tests.
   def self.updater_source_contract!(sources = nil)
     sources ||= Dir.glob(File.join(ROOT, 'macOS/Sources/CaptureServer/**/*.swift')).to_h do |path|
-      [path.delete_prefix("#{ROOT}/"), File.read(path)]
+      [path.delete_prefix("#{ROOT}/"), File.binread(path)]
     end
+    sources = sources.transform_values { |bytes| utf8_text(bytes, 'Mac updater source') }
     require!(!sources.empty?, 'menu sources missing')
     sources.each do |path, source|
       require!(!source.match?(/\b(?:import\s+Sparkle|SPUUpdater|SPUStandardUpdaterController)\b/), "in-process updater is forbidden: #{path}")
@@ -329,8 +337,9 @@ module BelugaMacClient
   # It prevents this producer stamping v2 onto the former single-viewer composition.
   def self.catalog_source_contract!(sources = nil)
     sources ||= Dir.glob(File.join(ROOT, 'macOS/Sources/CaptureServer/**/*.swift')).to_h do |path|
-      [path.delete_prefix("#{ROOT}/"), File.read(path)]
+      [path.delete_prefix("#{ROOT}/"), File.binread(path)]
     end
+    sources = sources.transform_values { |bytes| utf8_text(bytes, 'Mac catalog source') }
     coordinator = sources['macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift']
     store = sources['macOS/Sources/CaptureServer/WorldwidePairingStore.swift']
     bootstrap = sources['macOS/Sources/CaptureServer/WorldwidePairingBootstrap.swift']
@@ -594,8 +603,10 @@ module BelugaMacClient
   # inputs; this digest never substitutes for the distribution verifier's gates.
   def self.tree_digest(path)
     digest = Digest::SHA256.new
-    Find.find(path) do |node|
-      relative = node.delete_prefix(path)
+    Find.find(path.b) do |node|
+      # Filesystem names can be tagged binary under LC_ALL=C. Validate their
+      # existing UTF-8 bytes, without transcoding or changing the digest format.
+      relative = utf8_text(node.b.delete_prefix(path.b), 'bundle tree relative path')
       info = File.lstat(node)
       digest.update([relative, info.mode & 0o777, info.ftype].to_json)
       if info.symlink?

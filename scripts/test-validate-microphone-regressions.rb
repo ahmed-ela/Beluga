@@ -360,6 +360,37 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('behavioral results') { verify(value) }
   end
 
+  def test_utf8_text_boundaries_preserve_valid_bytes_and_reject_malformed_bytes
+    [Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |encoding|
+      bytes = "◇ π ✔".dup.force_encoding(encoding).freeze
+      assert_equal "◇ π ✔", Gate.utf8_text(bytes, 'fixture')
+      assert_equal "◇ π ✔".bytes, bytes.bytes
+      assert_equal encoding, bytes.encoding
+      result = shared_log.dup.force_encoding(encoding).freeze
+      assert_equal @shared_methods, Gate.validate_shared_signaling(result, @shared_methods)
+      assert_equal encoding, result.encoding
+      discovery = ("# π\n" + @shared_methods.join("\n")).force_encoding(encoding)
+      assert_equal @shared_methods, Gate.shared_signaling_inventory(discovery)
+      producer = ("# π\n" + producer_log).force_encoding(encoding)
+      assert_nil Gate.validate_mac_producer_harness(producer, @producer_methods)
+    end
+    rejects('is not text') { Gate.utf8_text(nil, 'fixture') }
+    invalid = "\xFF".b
+    rejects('not valid UTF-8') { Gate.shared_signaling_inventory(invalid) }
+    rejects('not valid UTF-8') { Gate.validate_shared_signaling(shared_log.b + invalid, @shared_methods) }
+    rejects('not valid UTF-8') { Gate.validate_mac_producer_harness(producer_log.b + invalid, @producer_methods) }
+  end
+
+  def test_mac_producer_source_inventory_requires_valid_utf8_without_locale_transcoding
+    path = File.join(@root, 'macOS/scripts/verify-beluga-mac-client-tests.rb')
+    source = File.binread(path) + "# π\n".b
+    File.binwrite(path, source)
+    assert_equal @producer_methods, Gate.mac_producer_inventory(@root)
+    assert_equal source, File.binread(path)
+    File.binwrite(path, source + "\xFF".b)
+    rejects('not valid UTF-8') { Gate.mac_producer_inventory(@root) }
+  end
+
   def test_mac_producer_inventory_requires_each_critical_case_and_no_duplicates
     path = File.join(@root, 'macOS/scripts/verify-beluga-mac-client-tests.rb')
     original = File.read(path)
