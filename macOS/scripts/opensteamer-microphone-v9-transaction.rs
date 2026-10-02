@@ -365,6 +365,7 @@ trait Backend {
     fn observe(&mut self) -> Result<Facts>;
     fn persist(&mut self, journal: &Journal) -> Result<()>;
     fn effect(&mut self, effect: Effect) -> Result<()>;
+    fn retain_admission_refusal(&mut self, _reason: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -431,10 +432,13 @@ impl<'a, B: Backend> Transaction<'a, B> {
     }
     fn run(&mut self) -> Terminal {
         if !self.backend.live_admission() { return Terminal::Refused; }
-        let facts = match self.backend.observe() { Ok(value) => value, Err(_) => return Terminal::Refused };
+        let facts = match self.backend.observe() {
+            Ok(value) => value,
+            Err(reason) => return if self.backend.retain_admission_refusal(&reason).is_ok() { Terminal::Refused } else { Terminal::RecoveryRequired },
+        };
         if !facts.fresh_gate || facts.invariant().is_err() || facts.driver != DriverLocation::PriorCanonical || facts.loaded != LoadedDriver::Prior ||
             !facts.host_present || !facts.host_ready_exact || facts.normal_restarts != 0 || facts.rollback_restarts != 0 || facts.route_notifications != 0 {
-            return Terminal::Refused;
+            return if self.backend.retain_admission_refusal("initial admission predicates differ").is_ok() { Terminal::Refused } else { Terminal::RecoveryRequired };
         }
         let attempt = (|| -> Result<()> {
             self.record(State::Prepared)?;
@@ -534,6 +538,12 @@ impl<'a, B: Backend> Transaction<'a, B> {
         })();
         if recovery.is_ok() { Terminal::RolledBack } else { Terminal::RecoveryRequired }
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn finalize_restart_report<B, F: FnOnce(&mut B) -> Result<()>, C: FnOnce(&mut B) -> Result<(u8,u8)>>(backend: &mut B, finalize: F, counts: C) -> Result<(u8,u8)> {
+    finalize(backend)?;
+    counts(backend)
 }
 
 struct MissingOsBackend;
@@ -897,10 +907,12 @@ fn cli(arguments: &[String]) -> i32 {
             let mut transaction=Transaction{backend:&mut backend,journal};
             let mut outcome=if arguments[0]=="--resume-authorized"{transaction.resume()}else{transaction.run()};
             if outcome==Terminal::RecoveryRequired&&arguments[0]=="--execute-authorized"{
-                let journal=backend.prepare_recovery()?;let mut recovery=Transaction{backend:&mut backend,journal};outcome=recovery.resume();
+                match backend.prepare_recovery(){
+                    Ok(journal)=>{let mut recovery=Transaction{backend:&mut backend,journal};outcome=recovery.resume();},
+                    Err(reason)=>backend.retain_recovery_refusal(&reason)?,
+                }
             }
-            let(normal,rollback)=backend.restart_counts()?;
-            backend.finalize_containment()?;
+            let(normal,rollback)=finalize_restart_report(&mut backend,|backend|backend.finalize_containment(),|backend|backend.restart_counts_for(outcome))?;
             let reason=match outcome{Terminal::Committed|Terminal::RolledBack=>"NONE",Terminal::CommittedUnverified=>"POSTCOMMIT_READBACK_UNVERIFIED",Terminal::RecoveryRequired=>"EXACT_RECOVERY_PROOF_INCOMPLETE",Terminal::Refused=>"FRESH_ADMISSION_REFUSED"};
             println!("schema=opensteamer.microphone-v9-transaction-outcome.v1\nnamespace={}\nrequest_sha256={}\nterminal={}\nnormal_restarts={}\nrollback_restarts={}\nreason={}",request.get("namespace"),request.sha256,outcome.name(),normal,rollback,reason);
             Ok(if matches!(outcome,Terminal::Committed|Terminal::RolledBack){0}else{78})
@@ -962,13 +974,19 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct Model { facts: Facts, durable: Vec<u8>, effects: Vec<Effect>, fail_effect: Option<(Effect,bool)>, fail_persist: Option<(State,bool)>, enabled: bool }
+    struct Model { facts: Facts, durable: Vec<u8>, effects: Vec<Effect>, fail_effect: Option<(Effect,bool)>, fail_persist: Option<(State,bool)>, enabled: bool,
+        fail_observe: Option<String>, refuse_diagnostic: bool, refusals: Vec<String> }
     impl Model {
-        fn new() -> Self { Self { facts: Facts { identity_exact:true,fresh_gate:true,root_sealed:false,host_present:true,host_ready_exact:true,driver:DriverLocation::PriorCanonical,prior_retained_exact:false,loaded:LoadedDriver::Prior,normal_restarts:0,rollback_restarts:0,public_nonce_both_orders:false,complete_v2_idle_with_history:false,route_notifications:0,route_teardown_clean:false }, durable:Vec::new(), effects:Vec::new(), fail_effect:None, fail_persist:None, enabled:true } }
+        fn new() -> Self { Self { facts: Facts { identity_exact:true,fresh_gate:true,root_sealed:false,host_present:true,host_ready_exact:true,driver:DriverLocation::PriorCanonical,prior_retained_exact:false,loaded:LoadedDriver::Prior,normal_restarts:0,rollback_restarts:0,public_nonce_both_orders:false,complete_v2_idle_with_history:false,route_notifications:0,route_teardown_clean:false }, durable:Vec::new(), effects:Vec::new(), fail_effect:None, fail_persist:None, enabled:true,
+            fail_observe:None, refuse_diagnostic:false, refusals:Vec::new() } }
     }
     impl Backend for Model {
         fn live_admission(&self) -> bool { self.enabled }
-        fn observe(&mut self) -> Result<Facts> { Ok(self.facts.clone()) }
+        fn observe(&mut self) -> Result<Facts> { match &self.fail_observe { Some(reason) => Err(reason.clone()), None => Ok(self.facts.clone()) } }
+        fn retain_admission_refusal(&mut self, reason: &str) -> Result<()> {
+            self.refusals.push(reason.to_string());
+            if self.refuse_diagnostic { Err("refusal diagnostic persistence failed".into()) } else { Ok(()) }
+        }
         fn persist(&mut self, journal: &Journal) -> Result<()> {
             let fail = self.fail_persist.filter(|(state,_)| Some(*state) == journal.last());
             if fail.map(|(_,after)| !after).unwrap_or(false) { self.fail_persist=None; return Err("before durable append".into()); }
@@ -1008,6 +1026,25 @@ mod tests {
         assert_eq!(req.root_path(),format!("{ROOT_TRANSACTIONS}/driver-microphone-v9-fixture"));assert_eq!(DRIVER,"/Library/Audio/Plug-Ins/HAL/OpensteamerVirtualMicrophone.driver");
     }
     #[test] fn one_normal_restart_success() {let req=request();let mut model=Model::new();assert_eq!(run(&mut model,&req),Terminal::Committed);assert_eq!(model.facts.normal_restarts,1);assert_eq!(model.facts.rollback_restarts,0);assert!(model.facts.committed());assert!(Journal::parse(&model.durable,&req).unwrap().last().unwrap().committed());}
+    #[test] fn initial_refusal_retains_original_reason_without_effect_or_journal() {
+        let req=request();let mut model=Model::new();
+        model.fail_observe=Some("sealed original-UID host gate failed".into());
+        assert_eq!(run(&mut model,&req),Terminal::Refused);
+        assert_eq!(model.refusals,vec!["sealed original-UID host gate failed"]);
+        assert!(model.effects.is_empty()&&model.durable.is_empty());
+        model.refuse_diagnostic=true;
+        assert_eq!(run(&mut model,&req),Terminal::RecoveryRequired);
+        assert!(model.effects.is_empty()&&model.durable.is_empty());
+    }
+    #[test] fn restart_report_finalizes_containment_even_when_counts_are_unproved() {
+        let mut finalized=false;
+        assert!(finalize_restart_report(&mut (),|_|{finalized=true;Ok(())},|_|Err("loaded image unavailable".into())).is_err());
+        assert!(finalized);
+        let mut counted=false;
+        assert!(finalize_restart_report(&mut (),|_|Err("owned child unresolved".into()),|_|{counted=true;Ok((0,0))}).is_err());
+        assert!(!counted);
+        assert_eq!(finalize_restart_report(&mut (),|_|Ok(()),|_|Ok((1,0))).unwrap(),(1,0));
+    }
     #[test]fn restored_restart_counts_match_exact_wrapper_contract(){
         let mut model=Model::new();model.facts.route_teardown_clean=true;assert!(model.facts.restored());
         model.facts.normal_restarts=1;assert!(!model.facts.restored());model.facts.rollback_restarts=1;assert!(model.facts.restored());

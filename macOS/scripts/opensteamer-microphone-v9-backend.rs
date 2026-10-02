@@ -9,6 +9,11 @@ use std::time::Instant;
 const EXECUTABLES:&str="/Library/Application Support/opensteamer/microphone-v9-executables";
 const DRIVER_NAME:&str="OpensteamerVirtualMicrophone.driver";
 const DRIVER_EXE:&str="Contents/MacOS/OpensteamerVirtualMicrophone";
+const DRIVER_HOST_ID:&str="com.apple.audio.Core-Audio-Driver-Service.helper";
+const DRIVER_HOST_BUNDLE:&str="/System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc";
+const DRIVER_HOST_EXE:&str="/System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc/Contents/MacOS/com.apple.audio.Core-Audio-Driver-Service.helper";
+const DRIVER_HOST_DISPLAY:&str="Core Audio Driver (OpensteamerVirtualMicrophone.driver)";
+const DRIVER_HOST_LSOF:&str="Core Audio Driver (OpensteamerV";
 const HOST_EXE:&str="/Applications/opensteamer Host.app/Contents/MacOS/CaptureServer";
 const HOST_FRAMEWORK:&str="/Applications/opensteamer Host.app/Contents/Frameworks/LiveKitWebRTC.framework/Versions/A/LiveKitWebRTC";
 const HOST_INFO:&str="/Applications/opensteamer Host.app/Contents/Info.plist";
@@ -338,7 +343,7 @@ impl RootContext{
         let script=self.executables.join("tools/opensteamer-microphone-v9-host-gate.rb");
         read_pinned(&script,self.authority.get("host_gate_sha256"),0,0o444,MAX_REQUEST)?;
         let captured=os::OwnedChild::ruby_gate(&script,mode,&self.request.sha256,&self.request_file,baseline.as_ref(),ready.as_ref())?.finish(Duration::from_secs(20),MAX_REQUEST)?;
-        if captured.code!=0||!captured.stderr.is_empty(){return Err("sealed original-UID host gate failed".into());}
+        if captured.code!=0||!captured.stderr.is_empty(){return Err(host_gate_failure(captured.code,&captured.stdout,&captured.stderr));}
         let gate=HostGate::validate(&captured.stdout,&self.request,mode)?;self.host_bytes()?;self.log_prefix(&gate)?;
         if let Some(bytes)=self.optional_record("host-baseline.txt")?{
             let original=HostGate::validate_baseline(&bytes,&self.request)?;self.log_prefix(&original)?;
@@ -548,33 +553,140 @@ fn read_core()->Result<CoreGeneration>{
 }
 fn stable_core()->Result<CoreGeneration>{let first=read_core()?;std::thread::sleep(Duration::from_millis(100));if read_core()?!=first{return Err("CoreAudio generation is unstable".into());}Ok(first)}
 
+#[derive(Clone,Debug,PartialEq,Eq)]
+struct DriverHostGeneration{
+    core:CoreGeneration,pid:u32,runs:u64,start_sha:String,process_uuid:String,process_version:u64,launch_uuid:String,
+    apple_device:u64,apple_inode:u64,apple_stat_sha:String,apple_sha:String,hal_device:u64,hal_inode:u64,
+}
+impl DriverHostGeneration{
+    fn fields(&self)->String{format!("core_pid={}\ncore_runs={}\ncore_start_sha256={}\npid={}\nruns={}\nstart_sha256={}\nprocess_uuid={}\nprocess_version={}\nlaunch_uuid={}\napple_device={}\napple_inode={}\napple_stat_sha256={}\napple_sha256={}\nhal_device={}\nhal_inode={}\n",self.core.pid,self.core.runs,self.core.start_sha,self.pid,self.runs,self.start_sha,self.process_uuid,self.process_version,self.launch_uuid,self.apple_device,self.apple_inode,self.apple_stat_sha,self.apple_sha,self.hal_device,self.hal_inode)}
+    fn successor(&self,next:&Self)->bool{
+        // A new parameterized one-shot XPC service has its own runs counter;
+        // it must be its first run, never daemon-runs+1 or a reused instance.
+        self.core.successor(&next.core)&&next.runs==1&&self.pid!=next.pid&&self.process_version!=next.process_version&&self.launch_uuid!=next.launch_uuid&&
+            (self.apple_device,self.apple_inode,&self.apple_stat_sha,&self.apple_sha,&self.process_uuid)==(next.apple_device,next.apple_inode,&next.apple_stat_sha,&next.apple_sha,&next.process_uuid)
+    }
+}
+const DRIVER_HOST_FIELDS:&[&str]=&["schema","namespace","nonce","core_pid","core_runs","core_start_sha256","pid","runs","start_sha256","process_uuid","process_version","launch_uuid","apple_device","apple_inode","apple_stat_sha256","apple_sha256","hal_device","hal_inode"];
+fn canonical_uuid(value:&str)->bool{value.len()==36&&value.bytes().enumerate().all(|(i,b)|if [8,13,18,23].contains(&i){b==b'-'}else{b.is_ascii_digit()||(b'A'..=b'F').contains(&b)})}
+fn driver_selector(bytes:&[u8])->Result<u32>{
+    if bytes.len()>8192||!bytes.ends_with(b"\n"){return Err("driver host candidate inventory extent differs".into());}
+    let text=std::str::from_utf8(bytes).map_err(|_|"driver host candidate encoding differs")?;let rows=text.split_terminator('\n').collect::<Vec<_>>();
+    if rows.len()!=1{return Err("driver host candidate is absent or not unique".into());}let pid=positive(rows[0])?;
+    if pid<=1||pid>i32::MAX as u64{return Err("driver host candidate PID differs".into());}Ok(pid as u32)
+}
+fn driver_process(bytes:&[u8],pid:u32)->Result<(String,String)>{
+    if bytes.len()>8192||!bytes.ends_with(b"\n")||bytes.contains(&b'\r'){return Err("driver host process extent differs".into());}
+    let text=std::str::from_utf8(bytes).map_err(|_|"driver host process encoding differs")?;let fields=text.split_ascii_whitespace().collect::<Vec<_>>();
+    if fields.len()!=13||fields[..4]!=[pid.to_string().as_str(),"1","202","202"]||fields[9..].join(" ")!=DRIVER_HOST_DISPLAY{return Err("driver host exact process identity differs".into());}
+    let month=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].iter().position(|month|*month==fields[5]).ok_or("driver host start month differs")?+1;
+    let day=fields[6].parse::<u8>().map_err(|_|"driver host start day differs")?;
+    if !(1..=31).contains(&day)||! ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].contains(&fields[4])||fields[8].len()!=4||!fields[8].bytes().all(|b|b.is_ascii_digit())||fields[7].len()!=8||!fields[7].bytes().enumerate().all(|(i,b)|if [2,5].contains(&i){b==b':'}else{b.is_ascii_digit()}){return Err("driver host start identity malformed".into());}
+    Ok((sha256(fields[4..9].join(" ").as_bytes()),format!("{}-{month:02}-{day:02} {}",fields[8],fields[7])))
+}
+// Parse the bounded actual launchctl procinfo shape, including its benign Mach
+// info diagnostic. Identity-bearing keys/sections may never repeat. The
+// display/comm strings are only consistency checks, not service authority.
+fn driver_procinfo(bytes:&[u8],core:&CoreGeneration,pid:u32,start:&str)->Result<(u64,String,u64,String)>{
+    if bytes.is_empty()||bytes.len()>65536||!bytes.ends_with(b"\n")||!bytes.is_ascii()||bytes.contains(&b'\r'){return Err("driver host procinfo extent/encoding differs".into());}
+    let text=std::str::from_utf8(bytes).unwrap();let mut stack=Vec::<String>::new();let mut fields=BTreeMap::new();let mut sections=std::collections::BTreeSet::new();let mut plain=std::collections::BTreeSet::new();let mut service=None;
+    for (count,raw)in text.split_terminator('\n').enumerate(){
+        if count>=2048{return Err("driver host procinfo line bound exceeded".into());}let line=raw.trim();if line.is_empty(){continue;}
+        if line=="}"||line=="};"{if stack.pop().is_none(){return Err("driver host procinfo closing extent differs".into());}continue;}
+        if let Some(name)=line.strip_suffix(" = {"){
+            let key=if stack.is_empty(){name.to_string()}else{format!("{}/{}",stack.join("/"),name)};
+            if !sections.insert(key)||stack.len()>=8{return Err("driver host procinfo duplicate/deep section refused".into());}
+            if stack.is_empty()&&name.starts_with("pid/"){if service.replace(name.to_string()).is_some(){return Err("driver host procinfo duplicate service refused".into());}}
+            stack.push(name.into());continue;
+        }
+        if let Some((key,value))=line.split_once(" = ").or_else(||line.split_once(" => ")){
+            let name=if stack.is_empty(){key.to_string()}else{format!("{}/{}",stack.join("/"),key)};
+            if fields.insert(name,value.to_string()).is_some(){return Err("driver host procinfo duplicate field refused".into());}
+        }else if !plain.insert((stack.join("/"),line.to_string())){return Err("driver host procinfo duplicate flag refused".into());}
+    }
+    if !stack.is_empty(){return Err("driver host procinfo torn section refused".into());}
+    let service=service.ok_or("driver host service binding missing")?;let prefix=format!("pid/{}/{DRIVER_HOST_ID}.",core.pid);let uuid=service.strip_prefix(&prefix).ok_or("driver host service core/domain differs")?;
+    if !canonical_uuid(uuid){return Err("driver host launch instance UUID differs".into());}
+    let expect=|key:&str,value:&str|->Result<()>{if fields.get(key).map(String::as_str)!=Some(value){return Err(format!("driver host procinfo {key} binding differs"));}Ok(())};
+    for(key,value)in [("program path",DRIVER_HOST_EXE),("argument count","1"),("argument vector/[0]",DRIVER_HOST_DISPLAY),("responsible path","/usr/sbin/coreaudiod"),("code signing info","valid"),("bsd proc info/ppid","1"),("bsd proc info/uid","202"),("bsd proc info/svuid","202"),("bsd proc info/ruid","202"),("bsd proc info/gid","202"),("bsd proc info/svgid","202"),("bsd proc info/rgid","202"),("bsd proc info/comm name","com.apple.audio"),("bsd proc info/long name",DRIVER_HOST_LSOF),("bsd proc info/start date",start),("unique identifier info/parent id","1"),("entitlements/\"com.apple.private.audio.driver-host\"","true;"),("entitlements/\"com.apple.security.cs.disable-library-validation\"","true;")]{expect(key,value)?;}
+    for key in ["bsd proc info/pid","bsd proc info/pgid","unique identifier info/id"]{expect(key,&pid.to_string())?;}
+    for key in ["responsible pid","responsible unique pid"]{expect(key,&core.pid.to_string())?;}
+    for flag in ["platform binary","entitlements validated","require enforcement"]{if !plain.contains(&(String::new(),flag.into())){return Err("driver host Apple platform signature proof differs".into());}}
+    for(key,value)in [("original",DRIVER_HOST_ID),("path",DRIVER_HOST_BUNDLE),("type","XPCService"),("state","running"),("bundle id",DRIVER_HOST_ID),("program",DRIVER_HOST_EXE),("domain",&format!("pid/{} [coreaudiod]",core.pid)),("pid",&pid.to_string()),("environment/LaunchInstanceID",uuid),("environment/XPC_SERVICE_NAME",DRIVER_HOST_ID)]{expect(&format!("{service}/{key}"),value)?;}
+    let properties=fields.get(&format!("{service}/properties")).ok_or("driver host service properties missing")?.split(" | ").collect::<Vec<_>>();
+    for property in ["xpc bundle","joins host session","system service","one-shot"]{if properties.iter().filter(|value|**value==property).count()!=1{return Err("driver host service ownership properties differ".into());}}
+    let process_uuid=fields.get("unique identifier info/uuid").ok_or("driver host executable UUID missing")?;
+    if !canonical_uuid(process_uuid){return Err("driver host executable UUID malformed".into());}
+    Ok((positive(fields.get(&format!("{service}/runs")).ok_or("driver host runs missing")?)?,process_uuid.clone(),positive(fields.get("unique identifier info/version").ok_or("driver host process version missing")?)?,uuid.into()))
+}
+
 // lsof's NUL field mode avoids spaces/newlines in path parsing. The only
 // accepted HAL image is bound by actual device/inode, not its displayed name.
-fn loaded_mapping(bytes:&[u8],pid:u32,prior:&Identity,candidate:&Identity)->Result<LoadedDriver>{
-    if bytes.len()>1024*1024||!bytes.ends_with(b"\n"){return Err("CoreAudio image inventory extent differs".into());}
-    let mut process_seen=false;let mut command_seen=false;let mut record=BTreeMap::new();let mut images=Vec::new();
-    fn finish(record:&mut BTreeMap<u8,String>,images:&mut Vec<(u64,u64)>)->Result<()>{
-        if record.is_empty(){return Ok(());}if record.get(&b'n').is_some_and(|path|path.ends_with("/Contents/MacOS/OpensteamerVirtualMicrophone")){
-            if record.get(&b'f').map(String::as_str)!=Some("txt"){return Err("HAL image is not an executable text mapping".into());}
+fn mapped_images(bytes:&[u8])->Result<Vec<(u32,String,String,u64,u64)>>{
+    if bytes.is_empty()||bytes.len()>1024*1024||!bytes.ends_with(b"\n"){return Err("CoreAudio image inventory extent differs".into());}
+    let mut process=None;let mut command=None;let mut record=BTreeMap::new();let mut images=Vec::new();let mut processes=std::collections::BTreeSet::new();
+    fn finish(record:&mut BTreeMap<u8,String>,images:&mut Vec<(u32,String,String,u64,u64)>,process:Option<u32>,command:Option<&str>)->Result<()>{
+        if record.is_empty(){return Ok(());}if record.get(&b'n').is_some_and(|path|path==DRIVER_HOST_EXE||path.ends_with("/Contents/MacOS/OpensteamerVirtualMicrophone")){
+            if record.get(&b'f').map(String::as_str)!=Some("txt"){return Err("HAL/Apple image is not an executable text mapping".into());}
             let device=record.get(&b'D').and_then(|value|value.strip_prefix("0x")).ok_or("HAL mapping device missing")?;
             if device.is_empty()||device.len()>16||!device.bytes().all(|byte|byte.is_ascii_hexdigit()){return Err("HAL mapping device malformed".into());}
             let inode=positive(record.get(&b'i').ok_or("HAL mapping inode missing")?)?;
-            images.push((u64::from_str_radix(device,16).map_err(|_|"HAL mapping device overflow")?,inode));
+            images.push((process.ok_or("image mapping process missing")?,command.ok_or("image mapping command missing")?.into(),record[&b'n'].clone(),u64::from_str_radix(device,16).map_err(|_|"HAL mapping device overflow")?,inode));
         }record.clear();Ok(())
     }
-    for raw in bytes.split(|byte|*byte==0){let token=raw.strip_prefix(b"\n").unwrap_or(raw);if token.is_empty()||token==b"\n"{continue;}
+    for (count,raw)in bytes.split(|byte|*byte==0).enumerate(){if count>32768{return Err("CoreAudio mapping field bound exceeded".into());}let token=raw.strip_prefix(b"\n").unwrap_or(raw);if token.is_empty()||token==b"\n"{continue;}
         let key=token[0];let value=std::str::from_utf8(&token[1..]).map_err(|_|"CoreAudio image field encoding differs")?.to_string();
         match key{
-            b'p'=>{finish(&mut record,&mut images)?;if process_seen||value!=pid.to_string(){return Err("CoreAudio mapping process differs".into());}process_seen=true;},
-            b'c'=>{if command_seen||value!="coreaudiod"{return Err("CoreAudio mapping command differs".into());}command_seen=true;},
-            b'f'=>{finish(&mut record,&mut images)?;record.insert(key,value);},
+            b'p'=>{finish(&mut record,&mut images,process,command.as_deref())?;let pid=positive(&value)?;if pid<=1||pid>i32::MAX as u64||!processes.insert(pid){return Err("CoreAudio mapping process duplicate/bound differs".into());}process=Some(pid as u32);command=None;},
+            b'c'=>{if process.is_none()||command.replace(value).is_some(){return Err("CoreAudio mapping command duplicate/order differs".into());}},
+            b'f'=>{finish(&mut record,&mut images,process,command.as_deref())?;record.insert(key,value);},
             b'D'|b'i'|b'n'=>{if record.insert(key,value).is_some(){return Err("CoreAudio mapping field duplicate refused".into());}},
             _=>return Err("CoreAudio mapping unknown field refused".into()),
         }
     }
-    finish(&mut record,&mut images)?;
-    if !process_seen||!command_seen||images.len()!=1{return Err("CoreAudio exact unique HAL image unproved".into());}
-    if images[0]==(prior.device,prior.inode){Ok(LoadedDriver::Prior)}else if images[0]==(candidate.device,candidate.inode){Ok(LoadedDriver::Candidate)}else{Err("CoreAudio loaded HAL image inode differs".into())}
+    finish(&mut record,&mut images,process,command.as_deref())?;Ok(images)
+}
+fn loaded_mapping(bytes:&[u8],pid:u32,apple:&Identity,prior:&Identity,candidate:&Identity)->Result<LoadedDriver>{
+    let images=mapped_images(bytes)?;let apples=images.iter().filter(|image|image.2==DRIVER_HOST_EXE).collect::<Vec<_>>();let hals=images.iter().filter(|image|image.2!=DRIVER_HOST_EXE).collect::<Vec<_>>();
+    if images.iter().any(|image|image.0!=pid||image.1!=DRIVER_HOST_LSOF)||apples.len()!=1||hals.len()!=1|| (apples[0].3,apples[0].4)!=(apple.device,apple.inode){return Err("exact Apple driver host and unique HAL image unproved".into());}
+    if (hals[0].3,hals[0].4)==(prior.device,prior.inode){Ok(LoadedDriver::Prior)}else if (hals[0].3,hals[0].4)==(candidate.device,candidate.inode){Ok(LoadedDriver::Candidate)}else{Err("CoreAudio loaded HAL image inode differs".into())}
+}
+fn unique_hal_owner(bytes:&[u8],pid:u32,device:u64,inode:u64)->Result<()>{
+    let images=mapped_images(bytes)?;if images.len()!=1||images[0].0!=pid||images[0].1!=DRIVER_HOST_LSOF||(images[0].3,images[0].4)!=(device,inode)||images[0].2==DRIVER_HOST_EXE{return Err("global exact HAL mapping is absent, duplicated or owned by another process".into());}Ok(())
+}
+fn completed_restart_budget(base:Option<&CoreGeneration>,normal_intent:Option<&CoreGeneration>,normal_done:Option<&CoreGeneration>,rollback_intent:Option<&CoreGeneration>,rollback_done:Option<&CoreGeneration>)->Result<(u8,u8)>{
+    let Some(base)=base else{if normal_intent.is_some()||normal_done.is_some()||rollback_intent.is_some()||rollback_done.is_some(){return Err("restart records without exact baseline refused".into());}return Ok((0,0));};
+    let Some(intent)=normal_intent else{if normal_done.is_some()||rollback_intent.is_some()||rollback_done.is_some(){return Err("restart completion without owned intent refused".into());}return Ok((0,0));};
+    if intent!=base{return Err("normal restart intent baseline differs".into());}let normal=normal_done.ok_or("durable normal TERM intent unresolved; count is not zero and signal is never repeated")?;
+    if !base.successor(normal){return Err("normal daemon completion is not an exact successor".into());}
+    if let Some(intent)=rollback_intent{let done=rollback_done.ok_or("durable rollback TERM intent unresolved; count is not zero and signal is never repeated")?;if intent!=normal||!normal.successor(done){return Err("rollback daemon completion/budget differs".into());}Ok((1,1))}
+    else{if rollback_done.is_some(){return Err("rollback completion without intent refused".into());}Ok((1,0))}
+}
+fn admission_refusal_bytes(request:&Request,reason:&str)->Result<Vec<u8>>{
+    if reason.is_empty()||reason.len()>2048{return Err("admission refusal diagnostic extent differs".into());}
+    let escaped=reason.as_bytes().iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+    Ok(format!("schema=opensteamer.microphone-v9-admission-refusal.v1\nnamespace={}\nnonce={}\nrequest_sha256={}\nreason_sha256={}\nreason_utf8_hex={}\n",request.get("namespace"),request.get("nonce"),request.sha256,sha256(reason.as_bytes()),escaped).into_bytes())
+}
+fn host_gate_failure(code:i32,stdout:&[u8],stderr:&[u8])->String{
+    // Only the eventual fatal admission error is retained by the caller. The
+    // expected absent-host probe while the host is present writes no record.
+    // Never silently truncate diagnostics: large output retains exact extent
+    // and SHA; bounded small stderr additionally retains escaped actual bytes.
+    let detail=if stderr.len()<=512{stderr.iter().map(|b|format!("{b:02x}")).collect::<String>()}else{"not-inlined-over-512-bytes".into()};
+    format!("sealed original-UID host gate failed code={code} stdout_bytes={} stdout_sha256={} stderr_bytes={} stderr_sha256={} stderr_hex={detail}",stdout.len(),sha256(stdout),stderr.len(),sha256(stderr))
+}
+fn validate_admission_refusal(bytes:&[u8],request:&Request)->Result<()>{
+    let fields=strict_flat(bytes,&["schema","namespace","nonce","request_sha256","reason_sha256","reason_utf8_hex"],8192)?;
+    let encoded=&fields["reason_utf8_hex"];if fields["schema"]!="opensteamer.microphone-v9-admission-refusal.v1"||fields["namespace"]!=request.get("namespace")||fields["nonce"]!=request.get("nonce")||fields["request_sha256"]!=request.sha256||!hex(&fields["reason_sha256"],64)||encoded.len()>4096||encoded.len()%2!=0||!hex(encoded,encoded.len()){return Err("admission refusal diagnostic crosslinks differ".into());}
+    let reason=(0..encoded.len()).step_by(2).map(|i|u8::from_str_radix(&encoded[i..i+2],16).map_err(|_|"refusal hex malformed")).collect::<std::result::Result<Vec<_>,_>>()?;
+    let text=std::str::from_utf8(&reason).map_err(|_|"admission refusal UTF-8 differs")?;if admission_refusal_bytes(request,text)?!=bytes{return Err("admission refusal canonical reason/hash differs".into());}Ok(())
+}
+const PRE_EFFECT_RECORDS:&[&str]=&["request.txt","build-manifest.json","authority.txt","SEALING_INCOMPLETE","SEALING_COMPLETE","candidate.driver","journal","prior","failed","probes","host-baseline.txt","admission-refusal.txt","child-active-001","child-clean-001"];
+fn refusal_journal_empty(memory:&Journal,durable:&Journal,resumed:bool,sequence:usize)->Result<()>{
+    if memory.last().is_some()||durable.last().is_some()||resumed||sequence!=1{return Err("pre-effect refusal has durable/recovered transaction effects".into());}Ok(())
+}
+fn refusal_containment_finalized(clean:bool,resumed:bool,sequence:usize)->Result<()>{
+    if !clean||resumed||sequence!=1{return Err("pre-effect refusal lacks first-attempt finalized containment".into());}Ok(())
 }
 
 impl RootContext{
@@ -590,6 +702,29 @@ impl RootContext{
         Ok(Some(CoreGeneration{pid:pid as u32,runs:positive(&fields["runs"])?,start_sha:fields["start_sha256"].clone()}))
     }
     fn save_core(&self,name:&str,core:&CoreGeneration)->Result<()>{self.record(name,format!("schema=opensteamer.microphone-v9-core-generation.v1\nnamespace={}\nnonce={}\n{}",self.request.get("namespace"),self.request.get("nonce"),core.fields()).as_bytes())}
+    fn driver_host_record(&self,name:&str)->Result<Option<DriverHostGeneration>>{
+        let Some(bytes)=self.optional_record(name)?else{return Ok(None)};let fields=strict_flat(&bytes,DRIVER_HOST_FIELDS,8192)?;
+        if fields["schema"]!="opensteamer.microphone-v9-driver-host-generation.v1"||fields["namespace"]!=self.request.get("namespace")||fields["nonce"]!=self.request.get("nonce"){return Err("driver host durable record crosslinks differ".into());}
+        for key in ["core_start_sha256","start_sha256","apple_stat_sha256","apple_sha256"]{if !hex(&fields[key],64){return Err("driver host record digest malformed".into());}}
+        for key in ["process_uuid","launch_uuid"]{if !canonical_uuid(&fields[key]){return Err("driver host record UUID malformed".into());}}
+        let pid=positive(&fields["pid"])?;let core_pid=positive(&fields["core_pid"])?;if pid<=1||pid>i32::MAX as u64||core_pid<=1||core_pid>i32::MAX as u64{return Err("driver host record PID bound differs".into());}
+        Ok(Some(DriverHostGeneration{core:CoreGeneration{pid:core_pid as u32,runs:positive(&fields["core_runs"])?,start_sha:fields["core_start_sha256"].clone()},pid:pid as u32,runs:positive(&fields["runs"])?,start_sha:fields["start_sha256"].clone(),process_uuid:fields["process_uuid"].clone(),process_version:positive(&fields["process_version"])?,launch_uuid:fields["launch_uuid"].clone(),apple_device:positive(&fields["apple_device"])?,apple_inode:positive(&fields["apple_inode"])?,apple_stat_sha:fields["apple_stat_sha256"].clone(),apple_sha:fields["apple_sha256"].clone(),hal_device:positive(&fields["hal_device"])?,hal_inode:positive(&fields["hal_inode"])?}))
+    }
+    fn save_driver_host(&self,name:&str,host:&DriverHostGeneration)->Result<()>{self.record(name,format!("schema=opensteamer.microphone-v9-driver-host-generation.v1\nnamespace={}\nnonce={}\n{}",self.request.get("namespace"),self.request.get("nonce"),host.fields()).as_bytes())}
+    fn image_paths(&self)->Result<(PathBuf,Identity,PathBuf,Identity)>{
+        let mut prior=Vec::new();let mut candidate=Vec::new();
+        for path in [PathBuf::from(DRIVER),self.state.join("prior").join(DRIVER_NAME),self.state.join("candidate.driver"),self.state.join("failed").join(DRIVER_NAME)]{
+            match fs::symlink_metadata(&path){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>{},Err(_)=>return Err("HAL image location metadata unavailable".into()),Ok(metadata)=>{
+                if (metadata.dev(),metadata.ino())==(self.request.number("predecessor_driver_device"),self.request.number("predecessor_driver_inode")){
+                    let image=verify_bundle(&path,self.request.get("predecessor_driver_tree_sha256"),self.request.get("predecessor_driver_executable_sha256"),0)?.1;prior.push((path.join(DRIVER_EXE),image));
+                }else if (metadata.dev(),metadata.ino())==(self.authority.candidate_root.device,self.authority.candidate_root.inode){
+                    let image=verify_bundle(&path,self.request.get("driver_tree_sha256"),self.request.get("driver_executable_sha256"),0)?.1;
+                    if image!=self.authority.candidate_executable{return Err("candidate executable full sealed identity changed".into());}candidate.push((path.join(DRIVER_EXE),image));
+                }else{return Err("HAL image location is an unknown bundle inode".into());}
+            }}
+        }
+        if prior.len()!=1||candidate.len()!=1{return Err("HAL images lack unique retained/candidate locations".into());}let(p,pi)=prior.pop().unwrap();let(c,ci)=candidate.pop().unwrap();Ok((p,pi,c,ci))
+    }
     fn prior_identity(&self)->Result<(Identity,Identity)>{
         let mut exact=Vec::new();for path in [PathBuf::from(DRIVER),self.state.join("prior").join(DRIVER_NAME)]{
             match fs::symlink_metadata(&path){Err(error)if error.kind()==std::io::ErrorKind::NotFound=>{},Err(_)=>return Err("predecessor location metadata unavailable".into()),Ok(metadata)=>{
@@ -599,11 +734,24 @@ impl RootContext{
             }}
         }if exact.len()!=1{return Err("predecessor unique retained inode unproved".into());}Ok(exact.pop().unwrap())
     }
-    fn loaded(&self,core:&CoreGeneration)->Result<LoadedDriver>{
-        let prior=self.prior_identity()?.1;
-        let bytes=clean_output(os::OwnedChild::core_mappings(core.pid)?,1024*1024)?;
-        let loaded=loaded_mapping(&bytes,core.pid,&prior,&self.authority.candidate_executable)?;
-        if read_core()?!=*core{return Err("CoreAudio generation changed while binding HAL image".into());}Ok(loaded)
+    fn read_driver_host(&self,core:&CoreGeneration)->Result<(DriverHostGeneration,LoadedDriver)>{
+        if read_core()?!=*core{return Err("CoreAudio generation differs before driver-host proof".into());}
+        let pid=driver_selector(&clean_output(os::OwnedChild::driver_host_pids()?,8192)?)?;
+        let process=clean_output(os::OwnedChild::driver_host_process(pid)?,8192)?;let(start_sha,start)=driver_process(&process,pid)?;
+        let info=clean_output(os::OwnedChild::driver_host_procinfo(pid)?,65536)?;let(runs,process_uuid,process_version,launch_uuid)=driver_procinfo(&info,core,pid,&start)?;
+        let apple=Path::new(DRIVER_HOST_EXE);let apple_identity=Identity::of(&fs::symlink_metadata(apple).map_err(|_|"Apple driver host image stat unavailable")?);
+        let apple_bytes=read_owned(apple,0,0,0o755,16*1024*1024)?;
+        let(prior_path,prior,candidate_path,candidate)=self.image_paths()?;
+        let bytes=clean_output(os::OwnedChild::core_mappings(pid)?,1024*1024)?;let loaded=loaded_mapping(&bytes,pid,&apple_identity,&prior,&candidate)?;
+        let image=if loaded==LoadedDriver::Prior{&prior}else{&candidate};let(hal_device,hal_inode)=(image.device,image.inode);
+        unique_hal_owner(&clean_output(os::OwnedChild::driver_image_owners(&prior_path,&candidate_path)?,1024*1024)?,pid,hal_device,hal_inode)?;
+        let after_process=clean_output(os::OwnedChild::driver_host_process(pid)?,8192)?;let after_identity=driver_process(&after_process,pid)?;
+        let after_info=driver_procinfo(&clean_output(os::OwnedChild::driver_host_procinfo(pid)?,65536)?,core,pid,&after_identity.1)?;
+        if after_identity!=(start_sha.clone(),start)||after_info!=(runs,process_uuid.clone(),process_version,launch_uuid.clone())||driver_selector(&clean_output(os::OwnedChild::driver_host_pids()?,8192)?)?!=pid||read_core()?!=*core||Identity::of(&fs::symlink_metadata(apple).map_err(|_|"Apple driver host image disappeared")?)!=apple_identity||self.image_paths()?!=(prior_path,prior,candidate_path,candidate){return Err("driver host/core/image generation changed during binding".into());}
+        Ok((DriverHostGeneration{core:core.clone(),pid,runs,start_sha,process_uuid,process_version,launch_uuid,apple_device:apple_identity.device,apple_inode:apple_identity.inode,apple_stat_sha:sha256(format!("{apple_identity:?}").as_bytes()),apple_sha:sha256(&apple_bytes),hal_device,hal_inode},loaded))
+    }
+    fn bound_driver_host(&self,core:&CoreGeneration)->Result<(DriverHostGeneration,LoadedDriver)>{
+        let first=self.read_driver_host(core)?;std::thread::sleep(Duration::from_millis(100));if self.read_driver_host(core)?!=first{return Err("driver host composite generation is unstable".into());}Ok(first)
     }
     fn idle_read(&self,action:&str,phase:&str,schema:u64,instance:Option<u64>,name:Option<&str>)->Result<proof::IdleReceipt>{
         self.revalidate()?;
@@ -677,7 +825,7 @@ impl GuardianSegment{
 pub(super) struct OsBackend{
     context:RootContext,journal:Journal,guardian:Option<GuardianSegment>,next_guardian:u8,
     clean_segments:u8,public:Option<proof::PublicProofReceipt>,idle:Option<proof::IdleReceipt>,
-    candidate_instance:Option<u64>,rollback_bootstrap:Option<proof::IdleReceipt>,
+    candidate_instance:Option<u64>,rollback_bootstrap:Option<proof::IdleReceipt>,resumed:bool,
 }
 impl Drop for OsBackend{
     fn drop(&mut self){
@@ -694,7 +842,7 @@ impl OsBackend{
         // adopting any durable pending journal generation.
         context.controller_lock.revalidate()?;
         let journal=if resume{load_durable_journal(request)?}else{Journal::new(request)};
-        let mut backend=Self{context,journal,guardian:None,next_guardian:1,clean_segments:0,public:None,idle:None,candidate_instance:None,rollback_bootstrap:None};
+        let mut backend=Self{context,journal,guardian:None,next_guardian:1,clean_segments:0,public:None,idle:None,candidate_instance:None,rollback_bootstrap:None,resumed:resume};
         if let Some(bytes)=backend.context.optional_record("candidate-bootstrap.json")?{
             let receipt=proof::verify_idle(&bytes,proof::IdleExpected{phase:"after-reload",schema:2,nonce:request.get("nonce"),instance:None,exit_code:75})?;
             if receipt.progress!=proof::IdleProgress::BootstrapRequiresFreshIdleAndPublicProbe{return Err("saved candidate bootstrap progress differs".into());}backend.candidate_instance=Some(receipt.instance);
@@ -720,7 +868,32 @@ impl OsBackend{
         Ok(backend)
     }
     pub(super) fn journal_snapshot(&self)->Journal{self.journal.clone()}
-    pub(super) fn restart_counts(&self)->Result<(u8,u8)>{let(_,_,normal,rollback)=self.core_facts()?;Ok((normal,rollback))}
+    pub(super) fn retain_recovery_refusal(&mut self,reason:&str)->Result<()>{
+        let bytes=admission_refusal_bytes(&self.context.request,reason)?;let bytes=String::from_utf8(bytes).map_err(|_|"recovery refusal encoding differs")?.replace("opensteamer.microphone-v9-admission-refusal.v1","opensteamer.microphone-v9-recovery-refusal.v1").into_bytes();
+        self.context.record("recovery-refusal.txt",&bytes)
+    }
+    pub(super) fn restart_counts_for(&self,outcome:Terminal)->Result<(u8,u8)>{
+        // Counts are durable owned daemon completions, not a second loaded()
+        // observation that could mask the original error or create children
+        // after final containment. Helper acceptance is a separate authority.
+        if outcome==Terminal::Refused{
+            self.pre_effect_empty()?;
+            refusal_containment_finalized(self.context.child_clean,self.resumed,self.context.child_sequence)?;
+            let reason=self.context.optional_record("admission-refusal.txt")?.ok_or("pre-effect refusal original diagnostic missing")?;validate_admission_refusal(&reason,&self.context.request)?;
+            return Ok((0,0));
+        }
+        let base=self.context.core_record("core-baseline.txt")?;let ni=self.context.core_record("normal-restart-intent.txt")?;let nd=self.context.core_record("normal-restart-complete.txt")?;let ri=self.context.core_record("rollback-restart-intent.txt")?;let rd=self.context.core_record("rollback-restart-complete.txt")?;
+        completed_restart_budget(base.as_ref(),ni.as_ref(),nd.as_ref(),ri.as_ref(),rd.as_ref())
+    }
+    fn pre_effect_empty(&self)->Result<()>{
+        self.context.controller_lock.revalidate()?;let durable=load_durable_journal(&self.context.request)?;
+        refusal_journal_empty(&self.journal,&durable,self.resumed,self.context.child_sequence)?;
+        for(count,entry)in fs::read_dir(&self.context.state).map_err(|_|"pre-effect state inventory unavailable")?.enumerate(){
+            if count>=64{return Err("pre-effect state inventory bound exceeded".into());}let entry=entry.map_err(|_|"pre-effect state entry unavailable")?;let name=entry.file_name().into_string().map_err(|_|"pre-effect state name differs")?;
+            if !PRE_EFFECT_RECORDS.contains(&name.as_str()){return Err("pre-effect refusal has effect/baseline/unknown durable evidence".into());}
+            if ["prior","failed","probes","journal"].contains(&name.as_str())&&fs::read_dir(entry.path()).map_err(|_|"pre-effect directory inventory unavailable")?.next().is_some(){return Err("pre-effect refusal contains retained effect/pending evidence".into());}
+        }Ok(())
+    }
     pub(super) fn finalize_containment(&mut self)->Result<()>{
         if self.guardian.is_some(){self.close_guardian()?;}
         self.context.close_child_fence()
@@ -735,15 +908,36 @@ impl OsBackend{
     }
     fn prepare_resume_observers(&mut self)->Result<()>{
         self.context.controller_lock.revalidate()?;
-        let(core,loaded,normal,rollback)=self.core_facts()?;
-        if normal==1&&rollback==0&&self.context.core_record("normal-restart-complete.txt")?.is_none(){
-            // A real exact successor may have appeared before interruption
-            // prevented its completion record. Pin that freshly observed
-            // generation before any conditional second restart; do not guess
-            // a historic PID or repeat the original TERM.
-            if loaded!=LoadedDriver::Candidate{return Err("interrupted normal completion lacks exact candidate load".into());}
-            self.context.save_core("normal-restart-complete.txt",&core)?;
+        let current=stable_core()?;
+        for name in ["normal","rollback"]{
+            let intent=self.context.core_record(&format!("{name}-restart-intent.txt"))?;
+            if let Some(before)=intent{
+                let host_before=self.context.driver_host_record(&format!("{name}-driver-host-intent.txt"))?.ok_or("service intent lacks owned driver-host intent; never repeat TERM")?;
+                let expected=self.context.driver_host_record(if name=="normal"{"driver-host-baseline.txt"}else{"normal-driver-host-complete.txt"})?.ok_or("service intent driver-host baseline missing")?;
+                if host_before!=expected||host_before.core!=before{return Err("service/driver-host intent generation differs".into());}
+                if self.context.core_record(&format!("{name}-restart-complete.txt"))?.is_none(){
+                // Daemon completion is independent of helper acceptance. This
+                // resolves an owned intent only to a freshly exact successor;
+                // it can never authorize another TERM or fabricate a load.
+                if !before.successor(&current){return Err("durable service intent has no exact successor; never repeat TERM".into());}
+                self.context.save_core(&format!("{name}-restart-complete.txt"),&current)?;
+            }}
         }
+        let(base,ni,nd,ri,rd)=(self.context.core_record("core-baseline.txt")?,self.context.core_record("normal-restart-intent.txt")?,self.context.core_record("normal-restart-complete.txt")?,self.context.core_record("rollback-restart-intent.txt")?,self.context.core_record("rollback-restart-complete.txt")?);
+        let(normal,rollback)=completed_restart_budget(base.as_ref(),ni.as_ref(),nd.as_ref(),ri.as_ref(),rd.as_ref())?;
+        if normal==1{
+            let name=if rollback==1{"rollback"}else{"normal"};
+            if self.context.driver_host_record(&format!("{name}-driver-host-complete.txt"))?.is_none(){
+                let(host,loaded)=self.context.bound_driver_host(&current)?;
+                let before=self.context.driver_host_record(if rollback==1{"normal-driver-host-complete.txt"}else{"driver-host-baseline.txt"})?.ok_or("interrupted helper binding baseline missing")?;
+                if !before.successor(&host){return Err("interrupted service successor has no exact new driver host".into());}
+                let observed_name=format!("{name}-driver-host-observed.txt");
+                if let Some(observed)=self.context.driver_host_record(&observed_name)?{if observed!=host{return Err("helper changed after failed/interrupted reload observation".into());}}else{self.context.save_driver_host(&observed_name,&host)?;}
+                if loaded==if rollback==1{LoadedDriver::Prior}else{LoadedDriver::Candidate}{self.context.save_driver_host(&format!("{name}-driver-host-complete.txt"),&host)?;}
+                else if rollback==1||loaded!=LoadedDriver::Prior{return Err("interrupted reload expected HAL image unproved".into());}
+            }
+        }
+        let(_,loaded,normal,rollback)=self.core_facts()?;
         if loaded==LoadedDriver::Candidate&&self.candidate_instance.is_none(){
             if normal!=1||rollback!=0{return Err("recovery candidate bootstrap has no exact owned successor".into());}
             let receipt=self.context.idle_read("--bootstrap-instance","after-reload",2,None,Some("candidate-bootstrap.json"))?;
@@ -765,27 +959,36 @@ impl OsBackend{
     }
     fn close_guardian(&mut self)->Result<()>{let segment=self.guardian.take().ok_or("owned guardian missing at clean teardown boundary")?;segment.finish(&self.context)?;self.clean_segments+=1;Ok(())}
     fn core_facts(&self)->Result<(CoreGeneration,LoadedDriver,u8,u8)>{
-        let core=stable_core()?;let loaded=self.context.loaded(&core)?;
+        let core=stable_core()?;let(host,loaded)=self.context.bound_driver_host(&core)?;
         let Some(base)=self.context.core_record("core-baseline.txt")?else{
-            if loaded!=LoadedDriver::Prior{return Err("initial exact loaded predecessor is unproved".into());}return Ok((core,loaded,0,0));
+            if loaded!=LoadedDriver::Prior||self.context.driver_host_record("driver-host-baseline.txt")?.is_some(){return Err("initial exact loaded predecessor/baseline is unproved".into());}
+            for name in ["normal-restart-intent.txt","normal-restart-complete.txt","rollback-restart-intent.txt","rollback-restart-complete.txt","normal-driver-host-intent.txt","normal-driver-host-observed.txt","normal-driver-host-complete.txt","rollback-driver-host-intent.txt","rollback-driver-host-observed.txt","rollback-driver-host-complete.txt","normal-reload-unproved.txt","rollback-reload-unproved.txt"]{if self.context.optional_record(name)?.is_some(){return Err("initial observer has orphaned restart/helper evidence".into());}}return Ok((core,loaded,0,0));
         };
         let normal_intent=self.context.core_record("normal-restart-intent.txt")?;
         let normal_done=self.context.core_record("normal-restart-complete.txt")?;
         let rollback_intent=self.context.core_record("rollback-restart-intent.txt")?;
         let rollback_done=self.context.core_record("rollback-restart-complete.txt")?;
         if normal_intent.as_ref().is_some_and(|value|value!=&base){return Err("normal restart intent baseline differs".into());}
-        if normal_intent.is_none(){if core!=base||normal_done.is_some()||rollback_intent.is_some()||rollback_done.is_some(){return Err("unowned CoreAudio generation change refused".into());}return Ok((core,loaded,0,0));}
+        let host_base=self.context.driver_host_record("driver-host-baseline.txt")?.ok_or("CoreAudio baseline lacks driver-host baseline")?;
+        if host_base.core!=base{return Err("driver-host/CoreAudio baseline crosslink differs".into());}
+        if normal_intent.is_none(){if core!=base||host!=host_base||normal_done.is_some()||rollback_intent.is_some()||rollback_done.is_some(){return Err("unowned CoreAudio/driver-host generation change refused".into());}
+            for name in ["normal-driver-host-intent.txt","normal-driver-host-observed.txt","normal-driver-host-complete.txt","rollback-driver-host-intent.txt","rollback-driver-host-observed.txt","rollback-driver-host-complete.txt","normal-reload-unproved.txt","rollback-reload-unproved.txt"]{if self.context.optional_record(name)?.is_some(){return Err("driver-host restart evidence without service intent refused".into());}}return Ok((core,loaded,0,0));}
+        if self.context.driver_host_record("normal-driver-host-intent.txt")?.as_ref()!=Some(&host_base){return Err("normal service intent driver-host baseline differs".into());}
         if core==base{return Err("durable TERM intent has no resolved successor; do not repeat signal".into());}
-        let normal=if let Some(value)=normal_done{if !base.successor(&value){return Err("normal restart completion is not exact successor".into());}value}else{
-            if !base.successor(&core)||rollback_intent.is_some(){return Err("unresolved normal restart cannot bind rollback generation".into());}core.clone()
-        };
+        let normal=normal_done.ok_or("daemon successor completion missing; no helper acceptance or repeat TERM")?;if !base.successor(&normal){return Err("normal restart completion is not exact successor".into());}
         if let Some(before)=rollback_intent{
             if before!=normal{return Err("rollback restart intent baseline differs".into());}
             if core==normal{return Err("durable rollback TERM intent has no resolved successor; do not repeat signal".into());}
             if !normal.successor(&core)||rollback_done.as_ref().is_some_and(|done|done!=&core){return Err("rollback restart generation/budget differs".into());}
-            if loaded!=LoadedDriver::Prior{return Err("rollback exact loaded predecessor differs".into());}Ok((core,loaded,1,1))
+            let normal_host=self.context.driver_host_record("normal-driver-host-complete.txt")?.ok_or("rollback lacks proven normal candidate driver host")?;
+            let done=self.context.driver_host_record("rollback-driver-host-complete.txt")?.ok_or("rollback driver-host completion missing")?;
+            if self.context.driver_host_record("rollback-driver-host-intent.txt")?.as_ref()!=Some(&normal_host)||loaded!=LoadedDriver::Prior||normal_host.core!=normal||!host_base.successor(&normal_host)||!normal_host.successor(&host)||host!=done{return Err("rollback exact driver-host generation/predecessor differs".into());}Ok((core,loaded,1,1))
         }else{
             if rollback_done.is_some()||core!=normal{return Err("CoreAudio changed outside normal restart budget".into());}
+            let observed=self.context.driver_host_record("normal-driver-host-observed.txt")?.ok_or("owned daemon successor lacks driver-host observation; reload unproved")?;
+            if observed!=host||!host_base.successor(&host){return Err("normal driver-host generation changed or was not newly bound".into());}
+            if let Some(done)=self.context.driver_host_record("normal-driver-host-complete.txt")?{if done!=host||loaded!=LoadedDriver::Candidate{return Err("normal candidate driver-host completion differs".into());}}
+            else if loaded!=LoadedDriver::Prior{return Err("normal helper acceptance unproved; cannot turn failed boundary green".into());}
             Ok((core,loaded,1,0))
         }
     }
@@ -814,33 +1017,48 @@ impl OsBackend{
         if rollback{
             if normal!=1||restored!=0||loaded!=LoadedDriver::Candidate||self.location()?!=DriverLocation::PriorCanonical{return Err("conditional rollback restart exact predicates differ".into());}
         }else if normal!=0||restored!=0||loaded!=LoadedDriver::Prior||self.location()?!=DriverLocation::CandidateCanonical{return Err("normal restart exact predicates differ".into());}
-        self.close_guardian()?;
+        let(before_host,_)=self.context.bound_driver_host(&core)?;self.close_guardian()?;
         let name=if rollback{"rollback"}else{"normal"};
         // No listener can truthfully cover the deliberate service reload gap.
         // Record that gap explicitly, never turn its absence into zero events.
         self.context.record(&format!("{name}-route-monitor-gap.txt"),format!("schema=opensteamer.microphone-v9-intentional-coreaudio-gap.v1\nnonce={}\nbefore_pid={}\nbefore_runs={}\ncoverage=not-claimed-inside-authorized-restart\n",self.context.request.get("nonce"),core.pid,core.runs).as_bytes())?;
         self.context.gate("--host-absent")?;
-        if stable_core()?!=core{return Err("CoreAudio generation changed before exact TERM".into());}
+        if stable_core()?!=core||self.context.bound_driver_host(&core)?.0!=before_host{return Err("CoreAudio/driver-host generation changed before exact TERM".into());}
         let _restart_deferral=os::begin_restart_dispatch()?;
         self.context.save_core(&format!("{name}-restart-intent.txt"),&core)?;
-        let output=os::OwnedChild::term_exact_core()?.finish(Duration::from_secs(5),8192)?;
-        if output.code!=0||!output.stdout.is_empty()||!output.stderr.is_empty(){return Err("exact service-bound CoreAudio TERM failed; intent is never repeated".into());}
-        let deadline=Instant::now()+Duration::from_secs(30);let after=loop{
-            if let Ok(next)=stable_core(){if core.successor(&next){break next;}if next!=core{return Err("CoreAudio restart was not exactly one successor".into());}}
-            if Instant::now()>=deadline{return Err("CoreAudio restart successor deadline exceeded".into());}std::thread::sleep(Duration::from_millis(100));
-        };
-        self.context.gate("--host-absent")?;
-        let bootstrap=if rollback{self.context.idle_read("--bootstrap-prior-instance","after-rollback",1,None,Some("rollback-bootstrap.json"))?}
-            else{self.context.idle_read("--bootstrap-instance","after-reload",2,None,Some("candidate-bootstrap.json"))?};
-        if rollback{self.rollback_bootstrap=Some(bootstrap);}else{self.candidate_instance=Some(bootstrap.instance);}
-        if self.context.loaded(&after)?!=if rollback{LoadedDriver::Prior}else{LoadedDriver::Candidate}{return Err("fresh bootstrap does not bind exact loaded HAL image".into());}
-        self.context.save_core(&format!("{name}-restart-complete.txt"),&after)?;self.arm()?;Ok(())
+        self.context.save_driver_host(&format!("{name}-driver-host-intent.txt"),&before_host)?;
+        let result=(||->Result<()>{
+            let output=os::OwnedChild::term_exact_core()?.finish(Duration::from_secs(5),8192)?;
+            if output.code!=0||!output.stdout.is_empty()||!output.stderr.is_empty(){return Err("exact service-bound CoreAudio TERM failed; intent is never repeated".into());}
+            let deadline=Instant::now()+Duration::from_secs(30);let after=loop{
+                if let Ok(next)=stable_core(){if core.successor(&next){break next;}if next!=core{return Err("CoreAudio restart was not exactly one successor".into());}}
+                if Instant::now()>=deadline{return Err("CoreAudio restart successor deadline exceeded".into());}std::thread::sleep(Duration::from_millis(100));
+            };
+            // Durable daemon accounting precedes helper/idle acceptance. An
+            // old/unbound helper cannot conceal this consumed service TERM.
+            self.context.save_core(&format!("{name}-restart-complete.txt"),&after)?;
+            self.context.gate("--host-absent")?;
+            let(host,image)=self.context.bound_driver_host(&after)?;
+            if !before_host.successor(&host){return Err("service successor did not reload an exact newly bound Apple driver host".into());}
+            self.context.save_driver_host(&format!("{name}-driver-host-observed.txt"),&host)?;
+            if image!=if rollback{LoadedDriver::Prior}else{LoadedDriver::Candidate}{return Err("new Apple driver host loaded the wrong exact HAL generation".into());}
+            self.context.save_driver_host(&format!("{name}-driver-host-complete.txt"),&host)?;
+            let bootstrap=if rollback{self.context.idle_read("--bootstrap-prior-instance","after-rollback",1,None,Some("rollback-bootstrap.json"))?}
+                else{self.context.idle_read("--bootstrap-instance","after-reload",2,None,Some("candidate-bootstrap.json"))?};
+            if rollback{self.rollback_bootstrap=Some(bootstrap);}else{self.candidate_instance=Some(bootstrap.instance);}
+            if self.context.bound_driver_host(&after)?!=(host,image){return Err("driver host changed across fresh bootstrap".into());}self.arm()?;Ok(())
+        })();
+        if let Err(reason)=&result{self.context.record(&format!("{name}-reload-unproved.txt"),format!("schema=opensteamer.microphone-v9-reload-unproved.v1\nnamespace={}\nnonce={}\nrequest_sha256={}\nbefore_pid={}\nbefore_runs={}\nreason_sha256={}\n",self.context.request.get("namespace"),self.context.request.get("nonce"),self.context.request.sha256,core.pid,core.runs,sha256(reason.as_bytes())).as_bytes())?;}result
     }
 }
 impl Backend for OsBackend{
     // Admission was explicitly enabled only after whole-path source review;
     // actual execution still requires every sealed and fresh runtime predicate.
     fn live_admission(&self)->bool{LIVE_ADMISSION}
+    fn retain_admission_refusal(&mut self,reason:&str)->Result<()>{
+        self.pre_effect_empty()?;let bytes=admission_refusal_bytes(&self.context.request,reason)?;
+        if let Some(prior)=self.context.optional_record("admission-refusal.txt")?{if prior!=bytes{return Err("first admission refusal is immutable".into());}validate_admission_refusal(&prior,&self.context.request)}else{self.context.record("admission-refusal.txt",&bytes)}
+    }
     fn persist(&mut self,journal:&Journal)->Result<()>{
         self.context.revalidate()?;let parent=sealed_fs::HeldDirectory::capture(&self.context.state.join("journal"),0,0,0o700)?;parent.persist(journal)?;self.journal=journal.clone();Ok(())
     }
@@ -864,7 +1082,7 @@ impl Backend for OsBackend{
             complete_v2_idle_with_history:self.idle.is_some(),route_notifications:0,route_teardown_clean:self.clean_segments>0})
     }
     fn effect(&mut self,effect:Effect)->Result<()>{os::supervisor_check()?;match effect{
-        Effect::Seal=>{self.context.gate("--candidate-present")?;let core=stable_core()?;if self.context.loaded(&core)?!=LoadedDriver::Prior{return Err("initial loaded predecessor differs".into());}self.context.save_core("core-baseline.txt",&core)?;self.arm()},
+        Effect::Seal=>{self.context.gate("--candidate-present")?;let core=stable_core()?;let(host,image)=self.context.bound_driver_host(&core)?;if image!=LoadedDriver::Prior{return Err("initial loaded predecessor differs".into());}self.context.save_core("core-baseline.txt",&core)?;self.context.save_driver_host("driver-host-baseline.txt",&host)?;self.arm()},
         Effect::StopHost=>self.context.stop_host().map(|_|()),Effect::RetainPrior=>self.context.retain_prior(),Effect::Publish=>self.context.publish(),
         Effect::NormalRestart=>self.reload(false),Effect::RollbackRestart=>self.reload(true),
         Effect::PublicProbe=>{let instance=self.candidate_instance.ok_or("public probe actual instance absent")?;self.public=Some(self.context.probe(instance,&self.routes_hash())?);Ok(())},
@@ -885,6 +1103,149 @@ impl Backend for OsBackend{
 
 #[cfg(test)]mod tests{
     use super::*;
+    // Literal retained read-only inspection; no runtime query in these tests.
+    const DRIVER_PROCINFO_FIXTURE:&str=r#"program path = /System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc/Contents/MacOS/com.apple.audio.Core-Audio-Driver-Service.helper
+Could not print Mach info for pid 309: 0x5
+argument count = 1
+argument vector = {
+	[0] = Core Audio Driver (OpensteamerVirtualMicrophone.driver)
+}
+environment vector = {
+}
+bsd proc info = {
+	pid = 309
+	ppid = 1
+	pgid = 309
+	status = stopped
+	xstatus = 0x00000000
+	flags = 64-bit|session leader
+	uid = 202
+	svuid = 202
+	ruid = 202
+	gid = 202
+	svgid = 202
+	rgid = 202
+	comm name = com.apple.audio
+	long name = Core Audio Driver (OpensteamerV
+	controlling tty devnode = 0xffffffff
+	controlling tty pgid = 0
+	start date = 2026-09-06 18:47:05
+}
+unique identifier info = {
+	uuid = 9CF4BB51-DDE9-3A76-B5E9-BC99AF522B58
+	id = 309
+	parent id = 1
+	version = 693
+	orig parent version = 7
+}
+audit info
+	session id = 100001
+	uid = 4294967295
+	success mask = 0x0
+	failure mask = 0x0
+	flags = is_initial
+sandboxed = no
+container = (no container)
+
+responsible pid = 178
+responsible unique pid = 178
+responsible path = /usr/sbin/coreaudiod
+
+pressured exit info = {
+	dirty state tracked = 1
+	dirty = 1
+	pressured-exit capable = 1
+}
+
+jetsam priority = 40
+jetsam memory limit = 15
+jetsam state = tracked,idle-exit,dirty
+
+entitlements = {
+	"com.apple.private.audio.driver-host" = true;
+	"com.apple.security.cs.disable-library-validation" = true;
+};
+
+code signing info = valid
+	refuse invalid pages
+	kill on invalid pages
+	restrict
+	require enforcement
+	allowed mach-o
+	platform dyld
+	entitlements validated
+	platform binary
+
+pid/178/com.apple.audio.Core-Audio-Driver-Service.helper.5E2741F7-BA88-4661-B3F2-9DCC814E6CFA = {
+	original = com.apple.audio.Core-Audio-Driver-Service.helper
+	active count = 2
+	path = /System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc
+	type = XPCService
+	state = running
+	bundle id = com.apple.audio.Core-Audio-Driver-Service.helper
+
+	program = /System/Library/Frameworks/CoreAudio.framework/Versions/A/XPCServices/com.apple.audio.Core-Audio-Driver-Service.helper.xpc/Contents/MacOS/com.apple.audio.Core-Audio-Driver-Service.helper
+	inherited environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+		HOME => /var/empty
+		TMPDIR => /var/folders/zz/zyxvpxvq6csfxvn_n00000s800006_/T/
+	}
+
+	default environment = {
+		PATH => /usr/bin:/bin:/usr/sbin:/sbin
+	}
+
+	environment = {
+		LaunchInstanceID => 5E2741F7-BA88-4661-B3F2-9DCC814E6CFA
+		XPC_SERVICE_NAME => com.apple.audio.Core-Audio-Driver-Service.helper
+		MallocSpaceEfficient => 0
+		OSLogRateLimit => 64
+		MallocNanoZone => 0
+	}
+
+	domain = pid/178 [coreaudiod]
+	asid = 100001
+	minimum runtime = 10
+	base minimum runtime = 10
+	exit timeout = 5
+	runs = 1
+	pid = 309
+	immediate reason = ipc (mach)
+	forks = 0
+	execs = 1
+	initialized = 1
+	trampolined = 1
+	started suspended = 0
+	proxy started suspended = 0
+	checked allocations = 0 (queried = 1)
+	checked allocations reason = inherited
+	checked allocations flags = 0x0
+	last exit code = (never exited)
+
+	instance-specific endpoints = {
+		"com.apple.audio.Core-Audio-Driver-Service.helper" = {
+			port = 0x3ea03
+			active = 1
+			managed = 1
+			reset = 0
+			hide = 0
+			watching = 0
+		}
+	}
+
+	spawn type = adaptive (6)
+	jetsam priority = 40
+	jetsam memory limit (active, soft) = 15 MB
+	jetsam memory limit (inactive, soft) = 15 MB
+	jetsamproperties category = xpcservice
+	jetsam thread limit = 32
+	cpumon = default
+	exponential throttling grace limit = 10
+
+	properties = xpc bundle | supports transactions | supports pressured exit | joins host session | parameterized sandbox | is copy | system service | one-shot | exponential throttling | tle system | no EXC_RESOURCE during audio
+}
+
+"#;
     use std::os::unix::fs::PermissionsExt;
     fn identity(device:u64,inode:u64)->Identity{Identity{device,inode,uid:0,gid:0,mode:0o100755,links:1,size:1,mtime:1,mtime_nsec:0,ctime:1,ctime_nsec:0}}
     fn gate_fixture(mode:&str)->(Request,Vec<u8>){
@@ -926,10 +1287,54 @@ impl Backend for OsBackend{
         assert!(before.successor(&after));assert!(!before.successor(&CoreGeneration{runs:11,..after.clone()}));assert!(!before.successor(&CoreGeneration{pid:456,..after}));
     }
     #[test]fn loaded_hal_is_exact_device_inode_not_name_or_new_path_bytes(){
-        let prior=identity(16777232,12);let candidate=identity(16777232,13);
-        let make=|inode|format!("p456\0ccoreaudiod\0\nftxt\0D0x1000010\0i{inode}\0n{DRIVER}/{DRIVER_EXE}\0\n").into_bytes();
-        assert_eq!(loaded_mapping(&make(12),456,&prior,&candidate).unwrap(),LoadedDriver::Prior);assert_eq!(loaded_mapping(&make(13),456,&prior,&candidate).unwrap(),LoadedDriver::Candidate);
-        for mutant in [make(14),make(12).iter().copied().chain(make(13)).collect(),String::from_utf8(make(12)).unwrap().replace("D0x1000010","D0x1000011").into_bytes(),String::from_utf8(make(12)).unwrap().replace("p456","p457").into_bytes(),String::from_utf8(make(12)).unwrap().replace("i12","i12\0i12").into_bytes()]{assert!(loaded_mapping(&mutant,456,&prior,&candidate).is_err());}
+        let prior=identity(16777232,12);let candidate=identity(16777232,13);let apple=identity(16777232,1152921500312151036);
+        let make=|inode|format!("p309\0c{DRIVER_HOST_LSOF}\0\nftxt\0D0x1000010\0i1152921500312151036\0n{DRIVER_HOST_EXE}\0\nftxt\0D0x1000010\0i32520560\0n/Library/Preferences/Logging/.plist-cache.EbOgNKJs\0\nftxt\0D0x1000010\0i1152921500312573277\0n/usr/lib/dyld\0\nftxt\0D0x1000010\0i{inode}\0n{DRIVER}/{DRIVER_EXE}\0\n").into_bytes();
+        assert_eq!(loaded_mapping(&make(12),309,&apple,&prior,&candidate).unwrap(),LoadedDriver::Prior);assert_eq!(loaded_mapping(&make(13),309,&apple,&prior,&candidate).unwrap(),LoadedDriver::Candidate);
+        for mutant in [make(14),make(12).iter().copied().chain(make(13)).collect(),String::from_utf8(make(12)).unwrap().replace("D0x1000010","D0x1000011").into_bytes(),String::from_utf8(make(12)).unwrap().replace("p309","p310").into_bytes(),String::from_utf8(make(12)).unwrap().replace("i12","i12\0i12").into_bytes(),String::from_utf8(make(12)).unwrap().replace("i1152921500312151036","i1152921500312151037").into_bytes()]{assert!(loaded_mapping(&mutant,309,&apple,&prior,&candidate).is_err());}
+        let daemon=format!("p178\0ccoreaudiod\0\nftxt\0D0x1000010\0i12\0n{DRIVER}/{DRIVER_EXE}\0\n");assert!(loaded_mapping(daemon.as_bytes(),178,&apple,&prior,&candidate).is_err());
+        let no_hal=format!("p309\0c{DRIVER_HOST_LSOF}\0\nftxt\0D0x1000010\0i1152921500312151036\0n{DRIVER_HOST_EXE}\0\n");assert!(loaded_mapping(no_hal.as_bytes(),309,&apple,&prior,&candidate).is_err());
+    }
+    #[test]fn driver_host_selector_process_and_actual_procinfo_are_independent_authorities(){
+        let core=CoreGeneration{pid:178,runs:1,start_sha:"a".repeat(64)};
+        assert_eq!(driver_selector(b"309\n").unwrap(),309);for mutant in [b"".as_slice(),b"309\n310\n",b"0309\n",b"1\n",b"309\r\n"]{assert!(driver_selector(mutant).is_err());}
+        let process=b"  309 1 202 202 Sun Sep  6 18:47:05 2026 Core Audio Driver (OpensteamerVirtualMicrophone.driver)\n";
+        let(_,start)=driver_process(process,309).unwrap();assert_eq!(start,"2026-09-06 18:47:05");
+        for mutant in [String::from_utf8(process.to_vec()).unwrap().replace("202 202","501 501"),String::from_utf8(process.to_vec()).unwrap().replace("309 1","309 178"),String::from_utf8(process.to_vec()).unwrap().replace(".driver)",".driver) --spoof")]{assert!(driver_process(mutant.as_bytes(),309).is_err());}
+        let proof=driver_procinfo(DRIVER_PROCINFO_FIXTURE.as_bytes(),&core,309,&start).unwrap();assert_eq!(proof.0,1);assert_eq!(proof.2,693);
+        for mutant in [DRIVER_PROCINFO_FIXTURE.replace("responsible pid = 178","responsible pid = 179"),DRIVER_PROCINFO_FIXTURE.replace("responsible path = /usr/sbin/coreaudiod","responsible path = /tmp/coreaudiod"),DRIVER_PROCINFO_FIXTURE.replace("domain = pid/178 [coreaudiod]","domain = pid/179 [coreaudiod]"),DRIVER_PROCINFO_FIXTURE.replace("pid/178/com.apple.audio","pid/179/com.apple.audio"),DRIVER_PROCINFO_FIXTURE.replace(DRIVER_HOST_EXE,"/tmp/driver-helper"),DRIVER_PROCINFO_FIXTURE.replace("uid = 202","uid = 501"),DRIVER_PROCINFO_FIXTURE.replace("start date = 2026-09-06 18:47:05","start date = 2026-09-06 18:47:06"),DRIVER_PROCINFO_FIXTURE.replace("program path = ",&format!("program path = {DRIVER_HOST_EXE}\nprogram path = ")),DRIVER_PROCINFO_FIXTURE.replace("type = XPCService","type = LaunchDaemon"),DRIVER_PROCINFO_FIXTURE.replace("platform binary","not platform binary"),DRIVER_PROCINFO_FIXTURE.replace("joins host session","not joined"),DRIVER_PROCINFO_FIXTURE.replace("LaunchInstanceID => 5E2741F7","LaunchInstanceID => 6E2741F7"),format!("{DRIVER_PROCINFO_FIXTURE}}}\n")]{assert!(driver_procinfo(mutant.as_bytes(),&core,309,&start).is_err());}
+        // Counters are not generation authority. Every identity still binds.
+        let benign=DRIVER_PROCINFO_FIXTURE.replace("active count = 2","active count = 3").replace("port = 0x3ea03","port = 0x3ea04");assert_eq!(driver_procinfo(benign.as_bytes(),&core,309,&start).unwrap(),proof);
+    }
+    #[test]fn driver_host_global_mapping_rejects_other_duplicate_and_daemon_owners(){
+        let make=|pid,command:&str,inode|format!("p{pid}\0c{command}\0\nftxt\0D0x1000010\0i{inode}\0n{DRIVER}/{DRIVER_EXE}\0\n");
+        let exact=make(309,DRIVER_HOST_LSOF,29974734);unique_hal_owner(exact.as_bytes(),309,16777232,29974734).unwrap();
+        for mutant in [make(310,DRIVER_HOST_LSOF,29974734),make(178,"coreaudiod",29974734),make(309,DRIVER_HOST_LSOF,29974735),format!("{exact}{}",make(310,DRIVER_HOST_LSOF,29974734)),format!("{exact}{}",make(310,DRIVER_HOST_LSOF,29974735))]{assert!(unique_hal_owner(mutant.as_bytes(),309,16777232,29974734).is_err());}
+    }
+    fn driver_generation()->DriverHostGeneration{DriverHostGeneration{core:CoreGeneration{pid:178,runs:1,start_sha:"a".repeat(64)},pid:309,runs:1,start_sha:"b".repeat(64),process_uuid:"9CF4BB51-DDE9-3A76-B5E9-BC99AF522B58".into(),process_version:693,launch_uuid:"5E2741F7-BA88-4661-B3F2-9DCC814E6CFA".into(),apple_device:16777232,apple_inode:1152921500312151036,apple_stat_sha:"c".repeat(64),apple_sha:"d".repeat(64),hal_device:16777232,hal_inode:29974734}}
+    #[test]fn driver_host_successor_requires_fresh_one_shot_under_exact_daemon_successor(){
+        let before=driver_generation();let next=DriverHostGeneration{core:CoreGeneration{pid:179,runs:2,start_sha:"e".repeat(64)},pid:310,process_version:694,launch_uuid:"6E2741F7-BA88-4661-B3F2-9DCC814E6CFA".into(),start_sha:"f".repeat(64),hal_inode:29974735,..before.clone()};assert!(before.successor(&next));
+        for mutant in [DriverHostGeneration{pid:309,..next.clone()},DriverHostGeneration{process_version:693,..next.clone()},DriverHostGeneration{launch_uuid:before.launch_uuid.clone(),..next.clone()},DriverHostGeneration{core:before.core.clone(),..next.clone()},DriverHostGeneration{core:CoreGeneration{runs:3,..next.core.clone()},..next.clone()},DriverHostGeneration{runs:2,..next.clone()},DriverHostGeneration{apple_inode:1152921500312151037,..next.clone()},DriverHostGeneration{apple_sha:"0".repeat(64),..next.clone()},DriverHostGeneration{apple_stat_sha:"0".repeat(64),..next.clone()},DriverHostGeneration{process_uuid:"0CF4BB51-DDE9-3A76-B5E9-BC99AF522B58".into(),..next.clone()}]{assert!(!before.successor(&mutant));}
+    }
+    #[test]fn durable_daemon_budget_cannot_hide_failed_helper_or_repeat_unresolved_intent(){
+        let base=driver_generation().core;let normal=CoreGeneration{pid:179,runs:2,start_sha:"e".repeat(64)};let rollback=CoreGeneration{pid:180,runs:3,start_sha:"f".repeat(64)};
+        assert_eq!(completed_restart_budget(None,None,None,None,None).unwrap(),(0,0));assert_eq!(completed_restart_budget(Some(&base),None,None,None,None).unwrap(),(0,0));
+        // This count is true even when helper acceptance failed: the pure
+        // budget function has no loaded()/OS inspector dependency at all.
+        assert_eq!(completed_restart_budget(Some(&base),Some(&base),Some(&normal),None,None).unwrap(),(1,0));assert_eq!(completed_restart_budget(Some(&base),Some(&base),Some(&normal),Some(&normal),Some(&rollback)).unwrap(),(1,1));
+        for args in [(None,Some(&base),Some(&normal),None,None),(Some(&base),Some(&base),None,None,None),(Some(&base),None,Some(&normal),None,None),(Some(&base),Some(&normal),Some(&normal),None,None),(Some(&base),Some(&base),Some(&rollback),None,None),(Some(&base),Some(&base),Some(&normal),Some(&normal),None),(Some(&base),Some(&base),Some(&normal),Some(&base),Some(&rollback)),(Some(&base),Some(&base),Some(&normal),None,Some(&rollback))]{assert!(completed_restart_budget(args.0,args.1,args.2,args.3,args.4).is_err());}
+    }
+    #[test]fn pre_effect_refusal_needs_empty_durable_journal_exact_reason_and_final_containment(){
+        let request=super::super::tests::request();let empty=Journal::new(&request);let pending=empty.appended(State::Prepared).unwrap();
+        refusal_journal_empty(&empty,&empty,false,1).unwrap();refusal_containment_finalized(true,false,1).unwrap();
+        for(memory,durable,resumed,sequence)in [(&empty,&pending,false,1),(&pending,&empty,false,1),(&empty,&empty,true,1),(&empty,&empty,false,2)]{assert!(refusal_journal_empty(memory,durable,resumed,sequence).is_err());}
+        for(clean,resumed,sequence)in [(false,false,1),(true,true,1),(true,false,2)]{assert!(refusal_containment_finalized(clean,resumed,sequence).is_err());}
+        assert!(PRE_EFFECT_RECORDS.contains(&"host-baseline.txt"));for name in ["core-baseline.txt","driver-host-baseline.txt","normal-restart-intent.txt","normal-restart-complete.txt","normal-driver-host-complete.txt","normal-reload-unproved.txt","rollback-restart-intent.txt","recovery-refusal.txt","unknown-effect"]{assert!(!PRE_EFFECT_RECORDS.contains(&name));}
+        let bytes=admission_refusal_bytes(&request,"original cause = bounded\nprivate UTF-8 ✓").unwrap();validate_admission_refusal(&bytes,&request).unwrap();
+        let text=String::from_utf8(bytes).unwrap();for mutant in [text.replace("namespace=","namespace=0"),text.replace("reason_sha256=","reason_sha256=0"),text.replace("reason_utf8_hex=","reason_utf8_hex=00"),text.clone()+"reason_sha256=duplicate\n"]{assert!(validate_admission_refusal(mutant.as_bytes(),&request).is_err());}assert!(admission_refusal_bytes(&request,&"x".repeat(2049)).is_err());
+    }
+    #[test]fn fatal_host_gate_error_retains_exact_code_stderr_without_silent_truncation(){
+        let stderr=b"host-gate: REFUSED exact source refusal\n";let reason=host_gate_failure(78,b"",stderr);assert!(reason.contains("code=78"));assert!(reason.contains(&format!("stderr_sha256={}",sha256(stderr))));assert!(reason.contains("stderr_hex=686f73742d67617465"));
+        let large=vec![b'x';513];let reason=host_gate_failure(78,b"non-authority",&large);assert!(reason.contains("stderr_bytes=513"));assert!(reason.contains(&format!("stderr_sha256={}",sha256(&large))));assert!(reason.contains("stderr_hex=not-inlined-over-512-bytes"));assert!(reason.len()<2048);
     }
     #[test]fn authority_parser_refuses_control_duplicates_and_unknown_authority(){
         let text=AUTHORITY_FIELDS.iter().map(|key|format!("{key}=fixture\n")).collect::<String>();

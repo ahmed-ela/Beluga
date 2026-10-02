@@ -204,12 +204,41 @@ impl OwnedChild {
         let mut command=Command::new("/bin/ps");command.args(["-p",&pid.to_string(),"-o","lstart="]);Self::dropped(command,None,&[])
     }
     pub(super) fn core_pids()->Result<Self>{let mut command=Command::new("/usr/bin/pgrep");command.args(["-x","coreaudiod"]);Self::dropped(command,None,&[])}
+    // This display string only selects candidates. The backend independently
+    // binds the Apple image, full process generation and responsible service.
+    pub(super) fn driver_host_pids()->Result<Self>{let mut command=Command::new("/usr/bin/pgrep");command.args(["-f","-x",r"Core Audio Driver \(OpensteamerVirtualMicrophone\.driver\)"]);Self::dropped(command,None,&[])}
+    pub(super) fn driver_host_process(pid:u32)->Result<Self>{
+        if pid<=1||pid>i32::MAX as u32{return Err("driver host PID bound differs".into());}
+        let mut command=Command::new("/bin/ps");command.args(["-ww","-p",&pid.to_string(),"-o","pid=","-o","ppid=","-o","uid=","-o","gid=","-o","lstart=","-o","command="]);Self::dropped(command,None,&[])
+    }
+    pub(super) fn driver_host_procinfo(pid:u32)->Result<Self>{
+        if pid<=1||pid>i32::MAX as u32{return Err("driver host PID bound differs".into());}
+        let mut command=Command::new("/bin/launchctl");command.args(["procinfo",&pid.to_string()]);Self::root_inspector(command)
+    }
     pub(super) fn core_mappings(pid:u32)->Result<Self>{
         if unsafe{getuid()}!=0||unsafe{geteuid()}!=0||pid==0||pid>i32::MAX as u32{return Err("root CoreAudio inspector admission differs".into());}
         let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-p",&pid.to_string(),"-d","txt","-F0pcDfin"]);
+        Self::root_inspector(command)
+    }
+    pub(super) fn driver_image_owners(prior:&Path,candidate:&Path)->Result<Self>{
+        // Fixed HAL roles only, derived from verified root bundle locations;
+        // never an arbitrary request-selected root command or pathname.
+        for path in [prior,candidate]{
+            let text=path.to_str().ok_or("HAL owner path encoding differs")?;
+            let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::DRIVER);
+            if text!=canonical{
+                let tail=text.strip_prefix(&format!("{}/",super::ROOT_TRANSACTIONS)).ok_or("HAL owner path escaped fixed roots")?;
+                let(namespace,role)=tail.split_once('/').ok_or("HAL owner namespace absent")?;
+                if !namespace.starts_with("driver-microphone-v9-")||namespace.len()>96||!namespace.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')||
+                    !["candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone","prior/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone","failed/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone"].contains(&role){return Err("HAL owner path is not a fixed sealed role".into());}
+            }
+        }
+        let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-d","txt","-F0pcDfin","--"]).arg(prior).arg(candidate);Self::root_inspector(command)
+    }
+    fn root_inspector(mut command:Command)->Result<Self>{
+        if unsafe{getuid()}!=0||unsafe{geteuid()}!=0{return Err("root OS inspector admission differs".into());}
         command.current_dir("/").env_clear().env("LC_ALL","C").env("PATH","/usr/bin:/bin:/usr/sbin:/sbin")
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
-        Self::spawn(command,0)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);Self::spawn(command,0)
     }
     pub(super) fn term_exact_core()->Result<Self>{
         if unsafe{getuid()}!=0||unsafe{geteuid()}!=0{return Err("root CoreAudio TERM identity differs".into());}
