@@ -31,6 +31,10 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
         case cancelledInitialCheck(presentationID: UUID)
         case declinedCandidate(presentationID: UUID, item: SUAppcastItem,
                                state: SPUUserUpdateState, choice: SPUUserUpdateChoice)
+        case failedInitialCheckShown(presentationID: UUID, error: NSError)
+        case acknowledgedFailedInitialCheck(presentationID: UUID, error: NSError)
+        case candidatePresented
+        case updateNotFoundShown(error: NSError)
         case unsafeActivity
     }
 
@@ -43,6 +47,7 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
     private var replyAuthorityRetired = false
     private var presentation: Presentation?
     private var presentationGeneration: UUID?
+    private var errorPresentation: ErrorPresentation?
 
     /// The gate must durably retain possibly-armed ownership before returning true.
     /// False/throw denies this reply only; it neither cancels Sparkle nor releases a fence.
@@ -70,6 +75,7 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
 
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState,
                          reply: @escaping (SPUUserUpdateChoice) -> Void) {
+        unarmedIntent(.candidatePresented)
         userDriver.showUpdateFound(with: appcastItem, state: state,
             reply: protectedReply(phase: .updateFound(appcastItem: appcastItem, state: state),
                                   reply: reply))
@@ -85,13 +91,27 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
 
     func showUpdateNotFoundWithError(_ error: Error, acknowledgement: @escaping () -> Void) {
         retireReplyAuthority()
+        unarmedIntent(.updateNotFoundShown(error: error as NSError))
         userDriver.showUpdateNotFoundWithError(error, acknowledgement: acknowledgement)
     }
 
     func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
         retireReplyAuthority()
-        unarmedIntent(.unsafeActivity)
-        userDriver.showUpdaterError(error, acknowledgement: acknowledgement)
+        let current = ErrorPresentation(error: error as NSError)
+        errorPresentation = current
+        // This observation grants nothing by itself. The session must prove an exact
+        // never-armed initial check and pair acknowledgement with real SDK cleanup.
+        unarmedIntent(.failedInitialCheckShown(presentationID: current.id, error: current.error))
+        userDriver.showUpdaterError(error, acknowledgement: { [weak self] in
+            guard let self, self.errorPresentation === current, !current.acknowledged else { return }
+            current.acknowledged = true
+            self.unarmedIntent(.acknowledgedFailedInitialCheck(
+                presentationID: current.id, error: current.error))
+            // The observer can synchronously supersede this presentation.
+            guard self.errorPresentation === current else { return }
+            self.errorPresentation = nil
+            acknowledgement()
+        })
     }
 
     func showDownloadInitiated(cancellation: @escaping () -> Void) {
@@ -196,6 +216,7 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
     }
 
     private func makePresentation(phase: InstallRequest.Phase) -> Presentation {
+        errorPresentation = nil
         let current = Presentation(request: InstallRequest(operationID: operationID,
                                                            presentationID: UUID(), phase: phase))
         presentation = current
@@ -217,15 +238,18 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
         replyAuthorityRetired = true
         presentation = nil
         presentationGeneration = nil
+        errorPresentation = nil
     }
 
     private func protectedCancellation(_ cancellation: @escaping () -> Void,
                                        initialCheck: Bool) -> () -> Void {
         let generation = UUID()
+        errorPresentation = nil
         presentation = nil
         presentationGeneration = generation
-        if initialCheck, !replyAuthorityRetired {
-            unarmedIntent(.initialCheckShown(presentationID: generation))
+        if initialCheck {
+            if !replyAuthorityRetired { unarmedIntent(.initialCheckShown(presentationID: generation)) }
+            else { unarmedIntent(.unsafeActivity) }
         }
         return { [weak self] in
             guard let self, !self.replyAuthorityRetired,
@@ -242,5 +266,12 @@ final class BelugaUpdateUserDriver: NSObject, SPUUserDriver {
         var replied = false
         var authorizing = false
         init(request: InstallRequest) { self.request = request }
+    }
+
+    private final class ErrorPresentation {
+        let id = UUID()
+        let error: NSError
+        var acknowledged = false
+        init(error: NSError) { self.error = error }
     }
 }

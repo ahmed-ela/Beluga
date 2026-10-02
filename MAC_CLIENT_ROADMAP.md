@@ -97,12 +97,29 @@ The browser protocol must not change deployed /v1/rendezvous or /v2/availability
 
 ## Implementation evidence — 2026-10-02
 
+- Fresh initial feed-fetch/parse failure now has a guarded completion path after
+  the exact one-shot native error acknowledgement, matching abort/idle-finish
+  callbacks, no candidate admission or installation activity, continuous
+  ownership, and unchanged predecessor. Standard Sparkle error UI is retained.
+  A rejected candidate reentry invalidates even an already minted completion;
+  Core rechecks immediately before removing the prepared marker.
+  `mac-failed-initial-check-2.log` passes 348 focused tests, including 13 new
+  cases. The first run's throwing-test-closure compilation failure is retained;
+  the explicit do/catch regression now counts only actual rejection. No signed
+  native update or error dialog has been exercised.
+- The preceding clean `e2e3766` checkpoint passed all 24 phases of the full
+  offline microphone gate: 241 Mac tests, 429 Simulator passes with 22 explicitly
+  enumerated physical-only exclusions, Rust and native driver checks. Receipt
+  verification passed before the next source edit. That receipt is historical,
+  not release authority for the later updater or Android changes; a fresh final
+  source-bound gate remains required. No physical-device/runtime proof is implied.
 - Release-preparation checkpoint: fresh initial-check Cancel and exact
   notDownloaded Skip/dismiss now have a reason-bound unarmed completion path.
   The actual protected UI intent, native manual-cycle callbacks, unchanged
   predecessor and exact prepared record must all agree. Interrupted/resumed,
-  armed, failed and restored attempts cannot use it. Network/feed-error recovery
-  remains a separate distribution blocker; no install or release is claimed.
+  armed, failed and restored attempts cannot use it. The later feed-error source
+  checkpoint above supersedes this gap; native validation is still outstanding.
+  No install or release is claimed.
 - `mac-unarmed-decisions-2.log`: 335 focused Swift tests pass and the executable
   links. The first run retained two failing tests: a singleton masquerading as a
   different item and an unintended repeated-admission rejection. The fixture now

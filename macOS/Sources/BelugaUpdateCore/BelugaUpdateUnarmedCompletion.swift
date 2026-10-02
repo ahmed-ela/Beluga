@@ -4,14 +4,21 @@ import Foundation
 /// The real driver supplies it only after paired native callbacks. These fields alone
 /// authenticate nothing, cannot be restored from a marker, and grant no runtime authority.
 package struct BelugaUpdateUnarmedCompletion: Equatable, Sendable {
+    /// Bounded initial appcast failures, not arbitrary SDK or installer errors.
+    package enum FailedInitialCheck: Equatable, Sendable {
+        case feedFetch
+        case feedParseOrSignature
+    }
+
     package enum Reason: Equatable, Sendable {
         case noUpdate
         case cancelledCheck
         case declinedCandidate(BelugaUpdateOperation.ArtifactIdentity)
+        case failedInitialCheck(FailedInitialCheck)
 
         func matches(candidate: BelugaUpdateOperation.ArtifactIdentity?) -> Bool {
             switch self {
-            case .noUpdate, .cancelledCheck: candidate == nil
+            case .noUpdate, .cancelledCheck, .failedInitialCheck: candidate == nil
             case .declinedCandidate(let expected): candidate == expected
             }
         }

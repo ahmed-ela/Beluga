@@ -599,6 +599,104 @@ final class BelugaUpdateUserDriverTests: XCTestCase {
 
     @MainActor
     private var testError: NSError { NSError(domain: "Beluga.UpdateUserDriver.Test", code: 1) }
+
+    @MainActor
+    func testErrorAcknowledgementReportsExactOneShotIntentBeforeSDKForwarding() throws {
+        let fake = FakeUpdateUserDriver(); fake.deferErrorAcknowledgements = true
+        let error = testError
+        var shown = [UUID](), acknowledged = [UUID](), order = [String]()
+        var sdkAcknowledgements = 0, installAuthorizations = 0
+        let adapter = BelugaUpdateUserDriver(operationID: UUID(), userDriver: fake,
+            authorizeInstallation: { _ in installAuthorizations += 1; return true },
+            unarmedIntent: { intent in
+                switch intent {
+                case .failedInitialCheckShown(let id, let received):
+                    XCTAssertTrue(received === error)
+                    shown.append(id); order.append("shown")
+                case .acknowledgedFailedInitialCheck(let id, let received):
+                    XCTAssertTrue(received === error)
+                    acknowledged.append(id); order.append("ack-intent")
+                case .unsafeActivity: break
+                default: XCTFail("Unexpected error-dialog intent")
+                }
+            }, installed: { _ in XCTFail("Error acknowledgement is not installation") })
+        adapter.showUpdaterError(error) { sdkAcknowledgements += 1; order.append("sdk-ack") }
+        XCTAssertEqual(shown.count, 1)
+        XCTAssertTrue(acknowledged.isEmpty)
+        XCTAssertEqual(sdkAcknowledgements, 0)
+        fake.errorAcknowledgements[0]()
+        fake.errorAcknowledgements[0]()
+        XCTAssertEqual(acknowledged, shown)
+        XCTAssertEqual(order, ["shown", "ack-intent", "sdk-ack"])
+        XCTAssertEqual(sdkAcknowledgements, 1)
+        adapter.showReady { _ in XCTFail("Error terminalized install replies") }
+        fake.readyReplies[0](.install)
+        XCTAssertEqual(installAuthorizations, 0)
+    }
+
+    @MainActor
+    func testSupersededErrorAcknowledgementCannotReportOrForwardAnOldCompletion() {
+        let fake = FakeUpdateUserDriver(); fake.deferErrorAcknowledgements = true
+        var observed = [NSError](), forwarded = [Int]()
+        let adapter = BelugaUpdateUserDriver(operationID: UUID(), userDriver: fake,
+            authorizeInstallation: { _ in false }, unarmedIntent: { intent in
+                if case .acknowledgedFailedInitialCheck(_, let error) = intent { observed.append(error) }
+            }, installed: { _ in XCTFail("Error is not installed") })
+        let first = testError, second = testError
+        XCTAssertFalse(first === second)
+        adapter.showUpdaterError(first) { forwarded.append(1) }
+        adapter.showUpdaterError(second) { forwarded.append(2) }
+        fake.errorAcknowledgements[0]()
+        XCTAssertTrue(observed.isEmpty)
+        XCTAssertTrue(forwarded.isEmpty)
+        fake.errorAcknowledgements[1]()
+        fake.errorAcknowledgements[1]()
+        XCTAssertEqual(observed.count, 1)
+        XCTAssertTrue(observed.first === second)
+        XCTAssertEqual(forwarded, [2])
+    }
+
+    @MainActor
+    func testReadyInstalledOrDismissedPresentationRetiresPendingErrorAcknowledgement() {
+        for mode in 0..<3 {
+            let fake = FakeUpdateUserDriver(); fake.deferErrorAcknowledgements = true
+            var observed = 0, forwarded = 0
+            let adapter = BelugaUpdateUserDriver(operationID: UUID(), userDriver: fake,
+                authorizeInstallation: { _ in XCTFail("No installation authority"); return true },
+                unarmedIntent: { intent in
+                    if case .acknowledgedFailedInitialCheck = intent { observed += 1 }
+                }, installed: { _ in })
+            adapter.showUpdaterError(testError) { forwarded += 1 }
+            if mode == 0 { adapter.showReady { _ in } }
+            else if mode == 1 { adapter.showUpdateInstalledAndRelaunched(false) {} }
+            else { adapter.dismissUpdateInstallation() }
+            fake.errorAcknowledgements[0]()
+            XCTAssertEqual(observed, 0, "mode \(mode)")
+            XCTAssertEqual(forwarded, 0, "mode \(mode)")
+        }
+    }
+
+    @MainActor
+    func testErrorAcknowledgementObserverReentryCannotForwardStaleSDKAbort() {
+        let fake = FakeUpdateUserDriver(); fake.deferErrorAcknowledgements = true
+        let reference = AdapterReference()
+        var acknowledgementIntents = 0, sdkAcknowledgements = 0
+        let adapter = BelugaUpdateUserDriver(operationID: UUID(), userDriver: fake,
+            authorizeInstallation: { _ in XCTFail("Error cannot install"); return true },
+            unarmedIntent: { intent in
+                if case .acknowledgedFailedInitialCheck = intent {
+                    acknowledgementIntents += 1
+                    reference.value?.showReady { _ in XCTFail("Terminal error cannot revive install") }
+                }
+            }, installed: { _ in XCTFail("No installed evidence") })
+        reference.value = adapter
+        adapter.showUpdaterError(testError) { sdkAcknowledgements += 1 }
+        fake.errorAcknowledgements[0]()
+        fake.errorAcknowledgements[0]()
+        XCTAssertEqual(acknowledgementIntents, 1)
+        XCTAssertEqual(sdkAcknowledgements, 0)
+        fake.readyReplies[0](.install)
+    }
 }
 
 @MainActor
@@ -631,6 +729,8 @@ private class FakeUpdateUserDriver: NSObject, SPUUserDriver {
     var retries = [() -> Void]()
     var checkCancellations = [() -> Void]()
     var downloadCancellations = [() -> Void]()
+    var deferErrorAcknowledgements = false
+    var errorAcknowledgements = [() -> Void]()
 
     func show(_ request: SPUUpdatePermissionRequest,
                                      reply: @escaping (SUUpdatePermissionResponse) -> Void) {
@@ -673,7 +773,8 @@ private class FakeUpdateUserDriver: NSObject, SPUUserDriver {
     func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
         events.append("error")
         errors.append(error as NSError)
-        acknowledgement()
+        errorAcknowledgements.append(acknowledgement)
+        if !deferErrorAcknowledgements { acknowledgement() }
     }
 
     func showDownloadInitiated(cancellation: @escaping () -> Void) {

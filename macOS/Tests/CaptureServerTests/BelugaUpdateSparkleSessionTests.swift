@@ -855,6 +855,330 @@ final class BelugaUpdateSparkleSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testFreshInitialFeedFailuresNeedAcknowledgementExactAbortAndIdleFinish() throws {
+        let cases: [(SUError, BelugaUpdateUnarmedCompletion.FailedInitialCheck)] = [
+            (.downloadError, .feedFetch), (.appcastParseError, .feedParseOrSignature),
+        ]
+        for (code, expected) in cases {
+            let h = Harness(); h.enableUnarmedRetirement = true
+            h.ui.deferErrorAcknowledgements = true
+            let session = h.makeSession()
+            try session.startManualCheck()
+            try session.admitCheck(from: h.engine.identity, check: .updates)
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            driver.showUserInitiatedUpdateCheck {}
+            let error = initialFeedError(code)
+            var sdkAcknowledgements = 0
+            driver.showUpdaterError(error) { sdkAcknowledgements += 1 }
+            XCTAssertEqual(sdkAcknowledgements, 0)
+            XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            h.ui.errorAcknowledgements[0]()
+            h.ui.errorAcknowledgements[0]()
+            XCTAssertEqual(sdkAcknowledgements, 1)
+            XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            session.aborted(from: h.engine.identity, error: error)
+            XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertEqual(h.unarmedRetirements.map(\.reason), [.failedInitialCheck(expected)])
+            XCTAssertEqual(h.observationNames, ["aborted", "cycle", "unarmed-retired"])
+            XCTAssertTrue(h.installRequests.isEmpty)
+            XCTAssertTrue(h.boundCandidates.isEmpty)
+            let proof = try XCTUnwrap(h.unarmedRetirements.first)
+            XCTAssertFalse(session.isCurrentUnarmedCompletion(proof))
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertEqual(h.unarmedRetirements.count, 1)
+        }
+    }
+
+    @MainActor
+    func testFailedInitialCheckReasonsOnlyMatchNilDurableCandidate() throws {
+        let candidate = try BelugaUpdateOperation.ArtifactIdentity(version: "0.2.1", build: 101,
+            executableSHA256: String(repeating: "c", count: 64),
+            dependencyClosureSHA256: String(repeating: "d", count: 64))
+        for failure in [BelugaUpdateUnarmedCompletion.FailedInitialCheck.feedFetch, .feedParseOrSignature] {
+            let reason = BelugaUpdateUnarmedCompletion.Reason.failedInitialCheck(failure)
+            XCTAssertTrue(reason.matches(candidate: nil))
+            XCTAssertFalse(reason.matches(candidate: candidate))
+        }
+    }
+
+    @MainActor
+    func testFeedFailureRejectsMissingMismatchedDuplicateOutOfOrderOrUncertainProof() throws {
+        for mode in 0..<20 {
+            let h = Harness(); h.enableUnarmedRetirement = true
+            h.ui.deferErrorAcknowledgements = true
+            let session = h.makeSession()
+            try session.startManualCheck()
+            if mode != 1 { try session.admitCheck(from: h.engine.identity, check: .updates) }
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            if mode != 0 { driver.showUserInitiatedUpdateCheck {} }
+            let error = mode == 11 ? initialFeedError(.signatureError) :
+                mode == 12 ? NSError(domain: "other", code: Int(SUError.downloadError.rawValue)) :
+                initialFeedError(.downloadError)
+            driver.showUpdaterError(error) {}
+            if mode == 2 { session.aborted(from: h.engine.identity, error: error) }
+            if mode != 3 && mode != 17 { h.ui.errorAcknowledgements[0]() }
+            if mode == 13 {
+                driver.showUpdaterError(error) {}
+                h.ui.errorAcknowledgements[1]()
+            }
+            if mode == 14 { driver.showUpdateNotFoundWithError(error) {} }
+            if mode == 15 { session.noUpdate(from: h.engine.identity, error: manualNoUpdateError()) }
+            if mode == 19 { driver.showUserInitiatedUpdateCheck {} }
+            if mode != 4 {
+                session.aborted(from: mode == 16 ? NSObject() : h.engine.identity,
+                    error: mode == 5 ? initialFeedError(.downloadError) : error)
+            }
+            if mode == 7 { session.aborted(from: h.engine.identity, error: error) }
+            if mode == 9 { h.engine.sessionInProgress = true }
+            if mode == 10 { h.retained = false }
+            session.finishedCycle(from: h.engine.identity,
+                check: mode == 8 ? .updatesInBackground : .updates,
+                error: mode == 6 ? initialFeedError(.downloadError) : mode == 18 ? nil : error)
+            if mode == 17 { h.ui.errorAcknowledgements[0]() }
+            XCTAssertTrue(h.unarmedRetirements.isEmpty, "mode \(mode)")
+            XCTAssertEqual(h.retained, mode != 10, "mode \(mode)")
+        }
+    }
+
+    @MainActor
+    func testSameFeedErrorAfterAnyCandidateAttemptOrUnsafeActivityRemainsFenced() throws {
+        for mode in 0..<15 {
+            let h = Harness(); h.enableUnarmedRetirement = true
+            let session = h.makeSession()
+            try session.startManualCheck()
+            try session.admitCheck(from: h.engine.identity, check: .updates)
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            driver.showUserInitiatedUpdateCheck {}
+            let item = SUAppcastItem.empty()
+            switch mode {
+            case 0: try session.admitUpdate(from: h.engine.identity, item: item, check: .updates)
+            case 1:
+                h.candidateError = TestFailure.refused
+                XCTAssertThrowsError(try session.admitUpdate(from: h.engine.identity, item: item, check: .updates))
+                XCTAssertTrue(h.boundCandidates.isEmpty)
+            case 2:
+                h.bindingError = TestFailure.refused
+                XCTAssertThrowsError(try session.admitUpdate(from: h.engine.identity, item: item, check: .updates))
+                XCTAssertTrue(h.boundCandidates.isEmpty)
+            case 3:
+                XCTAssertThrowsError(try session.admitUpdate(from: h.engine.identity,
+                    item: item, check: .updateInformation))
+                XCTAssertTrue(h.boundCandidates.isEmpty)
+            case 4, 13:
+                let state = try XCTUnwrap(SPUUserUpdateState(coder: FixtureCoder(stage: mode == 13 ? 2 : 0)))
+                driver.showUpdateFound(with: item, state: state) { _ in }
+            case 5: session.foundUpdate(from: h.engine.identity, item: item)
+            case 6:
+                driver.showReady { _ in }
+                h.ui.readyReply?(.install)
+            case 7: driver.showDownloadInitiated {}
+            case 8: driver.showDownloadDidStartExtractingUpdate()
+            case 9: _ = session.permitsTargetTermination(from: h.engine.identity)
+            case 10: _ = session.interceptInstallOnQuit(from: h.engine.identity, item: item)
+            case 11: _ = session.extractionInvariantHolds(from: h.engine.identity)
+            case 12: h.ui.checkCancellation?()
+            default: driver.showInstallingUpdate(withApplicationTerminated: false) {}
+            }
+            let error = initialFeedError(.downloadError)
+            driver.showUpdaterError(error) {}
+            session.aborted(from: h.engine.identity, error: error)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertTrue(h.unarmedRetirements.isEmpty, "mode \(mode)")
+            XCTAssertTrue(h.retained, "mode \(mode)")
+        }
+    }
+
+    @MainActor
+    func testInitialFeedFailureCannotClearStartupFailureOrAbsentOwnerAdmission() throws {
+        for startupFailure in [false, true] {
+            let h = Harness()
+            h.enableUnarmedRetirement = startupFailure
+            if startupFailure { h.engine.startError = initialFeedError(.downloadError) }
+            let session = h.makeSession()
+            if startupFailure { XCTAssertThrowsError(try session.startManualCheck()) }
+            else {
+                try session.startManualCheck()
+                try session.admitCheck(from: h.engine.identity, check: .updates)
+            }
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            driver.showUserInitiatedUpdateCheck {}
+            let error = initialFeedError(.downloadError)
+            driver.showUpdaterError(error) {}
+            session.aborted(from: h.engine.identity, error: error)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            XCTAssertTrue(h.retained)
+        }
+    }
+
+    @MainActor
+    func testFeedFailureRetirementReentryOrVerifierFailureRetainsAuthority() throws {
+        for reentry in [false, true] {
+            let h = Harness(); h.enableUnarmedRetirement = true
+            let session = h.makeSession()
+            if reentry {
+                h.onObservation = { value in
+                    if case .cycleFinished = value.event { h.engine.userDriver?.showReady { _ in } }
+                }
+            } else { h.retirementError = TestFailure.refused }
+            try session.startManualCheck()
+            try session.admitCheck(from: h.engine.identity, check: .updates)
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            driver.showUserInitiatedUpdateCheck {}
+            let error = initialFeedError(.appcastParseError)
+            driver.showUpdaterError(error) {}
+            session.aborted(from: h.engine.identity, error: error)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertEqual(h.unarmedRetirements.count, reentry ? 0 : 1)
+            XCTAssertFalse(h.observationNames.contains("unarmed-retired"))
+            XCTAssertTrue(h.retained)
+            h.onObservation = nil
+        }
+    }
+
+    @MainActor
+    func testActualPrivateBrokerFeedFailureRequiresExplicitControlledHistory() throws {
+        for controlled in [false, true] {
+            let fixture = try PrivateBrokerFixture(); defer { fixture.remove() }
+            let broker = try BelugaUpdateBrokerSession(context: fixture.context,
+                acquireOwnership: { try fixture.acquire() })
+            let h = Harness(target: fixture.bundle, operationID: fixture.operationID)
+            var nativeSession: BelugaUpdateSparkleSession?
+            let history: BelugaUpdateControlledHistoryAdmission? = controlled ?
+                .init(verify: { _, _, _ in }) : nil
+            let authority = BelugaUpdateSparkleSession.Authority(
+                withPreparedAuthority: { operationID, body in
+                    try broker.prepare(operationID: operationID, predecessorMenuInstanceID: UUID(),
+                        controlledHistory: history, verifyPredecessor: { _ in try fixture.predecessor() })
+                    try broker.bindBroker(.init(artifact: fixture.predecessor(),
+                        nativeCDHash: Data(repeating: 7, count: 20)),
+                        operationID: operationID, target: fixture.context.target)
+                    h.retained = true
+                    try broker.startUpdater(operationID: operationID, target: fixture.context.target, body)
+                }, isRetained: { broker.ownsLease && broker.operationID == $0 && broker.state == .started },
+                bindCandidate: { _, _ in XCTFail("Feed failure cannot bind a candidate") },
+                authorizeInstallation: { _ in XCTFail("Feed failure cannot install"); return false },
+                mayTerminateTarget: { _ in false }, retirePreparedUnarmed: { completion in
+                    try broker.retirePreparedUnarmed(completion, verifyCompletion: { value in
+                        guard nativeSession?.isCurrentUnarmedCompletion(value) == true else {
+                            throw TestFailure.refused
+                        }
+                        XCTAssertThrowsError(try fixture.acquire())
+                    }, verifyPredecessor: { _ in try fixture.predecessor() })
+                })
+            let session = h.makeSession(authority: authority)
+            nativeSession = session
+            try session.startManualCheck()
+            try session.admitCheck(from: h.engine.identity, check: .updates)
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            driver.showUserInitiatedUpdateCheck {}
+            let error = initialFeedError(.downloadError)
+            driver.showUpdaterError(error) {}
+            session.aborted(from: h.engine.identity, error: error)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertEqual(try fixture.store.read(expectedTarget: fixture.context.target) == nil, controlled)
+            XCTAssertEqual(broker.ownsLease, !controlled)
+            XCTAssertEqual(h.observationNames.contains("unarmed-retired"), controlled)
+            if controlled {
+                let next = try fixture.acquire(); next.release()
+                XCTAssertEqual(broker.state, .cleared)
+            }
+            nativeSession = nil
+        }
+    }
+
+    @MainActor
+    func testRejectedCandidateDuringFailedCycleObservationInvalidatesMintedProof() throws {
+        let h = Harness(); h.enableUnarmedRetirement = true
+        let session = h.makeSession()
+        var rejectedAdmissions = 0
+        h.onObservation = { value in
+            if case .cycleFinished = value.event {
+                do {
+                    try session.admitUpdate(from: h.engine.identity,
+                        item: .empty(), check: .updates)
+                    XCTFail("A finished failed check must reject candidate reentry")
+                } catch {
+                    rejectedAdmissions += 1
+                }
+            }
+        }
+        try session.startManualCheck()
+        try session.admitCheck(from: h.engine.identity, check: .updates)
+        let driver = try XCTUnwrap(h.engine.userDriver)
+        driver.showUserInitiatedUpdateCheck {}
+        let error = initialFeedError(.downloadError)
+        driver.showUpdaterError(error) {}
+        session.aborted(from: h.engine.identity, error: error)
+        session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+        XCTAssertEqual(rejectedAdmissions, 1)
+        XCTAssertTrue(h.unarmedRetirements.isEmpty)
+        XCTAssertFalse(h.observationNames.contains("unarmed-retired"))
+        XCTAssertTrue(h.boundCandidates.isEmpty)
+        XCTAssertTrue(h.installRequests.isEmpty)
+        XCTAssertTrue(h.retained)
+        h.onObservation = nil
+    }
+
+    @MainActor
+    func testRejectedCandidateDuringActualCoreVerificationFailsSecondProofAndKeepsFence() throws {
+        let fixture = try PrivateBrokerFixture(); defer { fixture.remove() }
+        let broker = try BelugaUpdateBrokerSession(context: fixture.context,
+            acquireOwnership: { try fixture.acquire() })
+        let h = Harness(target: fixture.bundle, operationID: fixture.operationID)
+        var nativeSession: BelugaUpdateSparkleSession?
+        var verificationCalls = 0
+        let authority = BelugaUpdateSparkleSession.Authority(
+            withPreparedAuthority: { operationID, body in
+                try broker.prepare(operationID: operationID, predecessorMenuInstanceID: UUID(),
+                    controlledHistory: .init(verify: { _, _, _ in }),
+                    verifyPredecessor: { _ in try fixture.predecessor() })
+                try broker.bindBroker(.init(artifact: fixture.predecessor(),
+                    nativeCDHash: Data(repeating: 7, count: 20)),
+                    operationID: operationID, target: fixture.context.target)
+                h.retained = true
+                try broker.startUpdater(operationID: operationID, target: fixture.context.target, body)
+            }, isRetained: { broker.ownsLease && broker.operationID == $0 && broker.state == .started },
+            bindCandidate: { _, _ in XCTFail("Rejected admission cannot bind") },
+            authorizeInstallation: { _ in XCTFail("No installation"); return false },
+            mayTerminateTarget: { _ in false }, retirePreparedUnarmed: { completion in
+                try broker.retirePreparedUnarmed(completion, verifyCompletion: { value in
+                    verificationCalls += 1
+                    guard let session = nativeSession,
+                          session.isCurrentUnarmedCompletion(value) else { throw TestFailure.refused }
+                    if verificationCalls == 1 {
+                        XCTAssertThrowsError(try session.admitUpdate(from: h.engine.identity,
+                            item: .empty(), check: .updates))
+                        XCTAssertFalse(session.isCurrentUnarmedCompletion(value))
+                        // Return deliberately: Core's second proof check must independently
+                        // detect the invalidation before exact marker removal.
+                    }
+                }, verifyPredecessor: { _ in try fixture.predecessor() })
+            })
+        let session = h.makeSession(authority: authority)
+        nativeSession = session
+        try session.startManualCheck()
+        try session.admitCheck(from: h.engine.identity, check: .updates)
+        let driver = try XCTUnwrap(h.engine.userDriver)
+        driver.showUserInitiatedUpdateCheck {}
+        let error = initialFeedError(.appcastParseError)
+        driver.showUpdaterError(error) {}
+        session.aborted(from: h.engine.identity, error: error)
+        let held = try fixture.current()
+        session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+        XCTAssertEqual(verificationCalls, 2)
+        XCTAssertEqual(try fixture.current(), held)
+        XCTAssertTrue(broker.ownsLease)
+        XCTAssertThrowsError(try fixture.acquire())
+        XCTAssertTrue(h.boundCandidates.isEmpty)
+        XCTAssertTrue(h.installRequests.isEmpty)
+        XCTAssertFalse(h.observationNames.contains("unarmed-retired"))
+        XCTAssertEqual(h.observationNames.last, "unarmed-retirement-failed")
+        nativeSession = nil
+    }
+
+    @MainActor
     func testSignedLookingCachedReplacedOrResumedItemCannotAuthorizeFirstInstall() throws {
         for mode in 0..<4 {
             let harness = Harness()
@@ -1049,6 +1373,8 @@ private final class FakeUserDriver: NSObject, SPUUserDriver {
     var retry: (() -> Void)?
     var checkCancellation: (() -> Void)?
     var downloadCancellation: (() -> Void)?
+    var deferErrorAcknowledgements = false
+    var errorAcknowledgements = [() -> Void]()
     func show(_ request: SPUUpdatePermissionRequest, reply: @escaping (SUUpdatePermissionResponse) -> Void) {}
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) { checkCancellation = cancellation }
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState,
@@ -1056,7 +1382,10 @@ private final class FakeUserDriver: NSObject, SPUUserDriver {
     func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {}
     func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) {}
     func showUpdateNotFoundWithError(_ error: Error, acknowledgement: @escaping () -> Void) { acknowledgement() }
-    func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) { acknowledgement() }
+    func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
+        errorAcknowledgements.append(acknowledgement)
+        if !deferErrorAcknowledgements { acknowledgement() }
+    }
     func showDownloadInitiated(cancellation: @escaping () -> Void) { downloadCancellation = cancellation }
     func showDownloadDidReceiveExpectedContentLength(_ expectedContentLength: UInt64) {}
     func showDownloadDidReceiveData(ofLength length: UInt64) {}
@@ -1086,6 +1415,10 @@ private enum TestFailure: Error { case refused }
 private func manualNoUpdateError(manual: Bool = true) -> NSError {
     NSError(domain: SUSparkleErrorDomain, code: Int(SUError.noUpdateError.rawValue),
             userInfo: [SPUNoUpdateFoundUserInitiatedKey: manual])
+}
+
+private func initialFeedError(_ code: SUError) -> NSError {
+    NSError(domain: SUSparkleErrorDomain, code: Int(code.rawValue))
 }
 
 /// Saved SDK status is intentionally synthesized here, with no feed signature.

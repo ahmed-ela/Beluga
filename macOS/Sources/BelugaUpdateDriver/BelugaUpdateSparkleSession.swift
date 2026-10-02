@@ -109,6 +109,8 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
     private var installationAuthorized = false
     private var boundCandidate: BelugaUpdateOperation.ArtifactIdentity?
     private var candidateBindingInProgress = false
+    private var candidateAdmissionAttempted = false
+    private var candidatePresentationObserved = false
     private var startupBodyInvocations = 0
     private let cycleNonce = UUID()
     private var startupSucceeded = false
@@ -120,6 +122,15 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
     private var cancelledInitialCheck = false
     private var foundItem: SUAppcastItem?
     private var decline: Decline?
+    private var initialCheckFailure: InitialCheckFailure?
+
+    private struct InitialCheckFailure {
+        let presentationID: UUID
+        let error: NSError
+        let reason: BelugaUpdateUnarmedCompletion.FailedInitialCheck
+        var acknowledged = false
+        var observedAbort = false
+    }
 
     private struct Decline {
         let presentationID: UUID
@@ -313,6 +324,12 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
     func admitUpdate(from identity: AnyObject, item: SUAppcastItem,
                      check: SPUUpdateCheck) throws {
         guard matches(identity) else { throw SessionError.foreignUpdater }
+        // Even a rejected candidate admission is outside the proven feed-error path.
+        // Do not infer never-attempted admission from a nil durable candidate.
+        candidateAdmissionAttempted = true
+        // Retirement can synchronously reenter after minting its completion. Poison
+        // current proof before any state/check guard throws on the rejected attempt.
+        if initialCheckFailure != nil { cleanUnarmedCycle = false }
         guard check == .updates else { throw SessionError.nonManualCheck }
         guard state == .running, manualCycleAdmitted, authority.isRetained(operationID) else {
             throw SessionError.authorityNotRetained
@@ -325,7 +342,7 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
             try bindVerifiedCandidate(item)
             return
         }
-        guard !cancelledInitialCheck, decline == nil else {
+        guard !cancelledInitialCheck, decline == nil, initialCheckFailure == nil else {
             cleanUnarmedCycle = false
             throw SessionError.candidateChanged
         }
@@ -371,17 +388,21 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
         switch intent {
         case .initialCheckShown(let presentationID):
             guard initialCheckPresentation == nil, admittedItem == nil, boundCandidate == nil,
-                  noUpdateError == nil, decline == nil, !cancelledInitialCheck else {
+                  noUpdateError == nil, decline == nil, initialCheckFailure == nil,
+                  !cancelledInitialCheck else {
                 cleanUnarmedCycle = false; return
             }
             initialCheckPresentation = presentationID
         case .cancelledInitialCheck(let presentationID):
             guard initialCheckPresentation == presentationID, admittedItem == nil,
                   boundCandidate == nil, noUpdateError == nil, decline == nil,
-                  !cancelledInitialCheck else { cleanUnarmedCycle = false; return }
+                  initialCheckFailure == nil, !cancelledInitialCheck else {
+                cleanUnarmedCycle = false; return
+            }
             cancelledInitialCheck = true
         case .declinedCandidate(let presentationID, let item, let userState, let choice):
             guard decline == nil, !cancelledInitialCheck, noUpdateError == nil,
+                  initialCheckFailure == nil,
                   choice == .dismiss || choice == .skip,
                   userState.stage == .notDownloaded, userState.userInitiated,
                   admittedItem === item, foundItem === item, let candidate = boundCandidate else {
@@ -389,6 +410,34 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
             }
             decline = Decline(presentationID: presentationID, item: item, state: userState,
                               choice: choice, candidate: candidate)
+        case .failedInitialCheckShown(let presentationID, let error):
+            guard initialCheckPresentation != nil, initialCheckFailure == nil,
+                  !candidateAdmissionAttempted, !candidatePresentationObserved,
+                  !candidateBindingInProgress,
+                  admittedItem == nil, foundItem == nil, boundCandidate == nil,
+                  noUpdateError == nil, decline == nil, !cancelledInitialCheck,
+                  let reason = Self.initialCheckFailureReason(error) else {
+                cleanUnarmedCycle = false; return
+            }
+            initialCheckFailure = InitialCheckFailure(presentationID: presentationID,
+                                                       error: error, reason: reason)
+        case .candidatePresented:
+            candidatePresentationObserved = true
+            if initialCheckFailure != nil { cleanUnarmedCycle = false }
+        case .updateNotFoundShown(let error):
+            guard initialCheckFailure == nil, noUpdateError === error else {
+                cleanUnarmedCycle = false; return
+            }
+        case .acknowledgedFailedInitialCheck(let presentationID, let error):
+            guard var failure = initialCheckFailure, !failure.acknowledged,
+                  !failure.observedAbort, failure.presentationID == presentationID,
+                  failure.error === error, !candidateAdmissionAttempted,
+                  !candidatePresentationObserved,
+                  !candidateBindingInProgress, admittedItem == nil, foundItem == nil,
+                  boundCandidate == nil, noUpdateError == nil, decline == nil,
+                  !cancelledInitialCheck else { cleanUnarmedCycle = false; return }
+            failure.acknowledged = true
+            initialCheckFailure = failure
         case .unsafeActivity:
             cleanUnarmedCycle = false
         }
@@ -399,7 +448,8 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
         let native = error as NSError
         if state == .running, startupSucceeded, manualCycleAdmitted, noUpdateError == nil,
            cleanUnarmedCycle, !cancelledInitialCheck, decline == nil,
-           admittedItem == nil, boundCandidate == nil, Self.isManualNoUpdate(native) {
+           initialCheckFailure == nil, admittedItem == nil, boundCandidate == nil,
+           Self.isManualNoUpdate(native) {
             noUpdateError = native
         } else { cleanUnarmedCycle = false }
         emit(.noUpdate(error))
@@ -407,9 +457,14 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
 
     func aborted(from identity: AnyObject, error: Error) {
         guard matches(identity) else { return }
-        // Pinned SDK reports its no-update error as didAbort immediately before didFinish.
-        // Any other abort is uncertainty, not a successful unarmed cycle.
-        if noUpdateError !== (error as NSError) { cleanUnarmedCycle = false }
+        // Pinned SDK calls this after error-UI acknowledgement and downloader cleanup,
+        // immediately before didFinish. Require exact object identity, not a code alone.
+        let native = error as NSError
+        if var failure = initialCheckFailure, cleanUnarmedCycle, failure.acknowledged,
+           !failure.observedAbort, failure.error === native {
+            failure.observedAbort = true
+            initialCheckFailure = failure
+        } else if noUpdateError !== native { cleanUnarmedCycle = false }
         emit(.aborted(error))
     }
 
@@ -421,13 +476,23 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
            cleanUnarmedCycle, !installationAuthorized, engine?.sessionInProgress == false,
            authority.isRetained(operationID) {
             if noUpdateError != nil, noUpdateError === finishedError,
-               boundCandidate == nil, admittedItem == nil, decline == nil, !cancelledInitialCheck {
+               boundCandidate == nil, admittedItem == nil, decline == nil,
+               initialCheckFailure == nil, !cancelledInitialCheck {
                 reason = .noUpdate
+            } else if let failure = initialCheckFailure, failure.acknowledged,
+                      failure.observedAbort, failure.error === finishedError,
+                      initialCheckPresentation != nil, !candidateAdmissionAttempted,
+                      !candidatePresentationObserved,
+                      !candidateBindingInProgress, admittedItem == nil, foundItem == nil,
+                      boundCandidate == nil, noUpdateError == nil, decline == nil,
+                      !cancelledInitialCheck {
+                reason = .failedInitialCheck(failure.reason)
             } else if finishedError == nil, noUpdateError == nil, cancelledInitialCheck,
                       initialCheckPresentation != nil, boundCandidate == nil,
-                      admittedItem == nil, decline == nil {
+                      admittedItem == nil, decline == nil, initialCheckFailure == nil {
                 reason = .cancelledCheck
             } else if finishedError == nil, noUpdateError == nil, !cancelledInitialCheck,
+                      initialCheckFailure == nil,
                       let decline, decline.observedSDKChoice, boundCandidate == decline.candidate,
                       admittedItem === decline.item, foundItem === decline.item {
                 reason = .declinedCandidate(decline.candidate)
@@ -470,6 +535,16 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
               let manual = error.userInfo[SPUNoUpdateFoundUserInitiatedKey] as? NSNumber,
               CFGetTypeID(manual) == CFBooleanGetTypeID() else { return false }
         return manual.boolValue
+    }
+
+    private static func initialCheckFailureReason(_ error: NSError)
+        -> BelugaUpdateUnarmedCompletion.FailedInitialCheck? {
+        guard error.domain == SUSparkleErrorDomain else { return nil }
+        switch error.code {
+        case Int(SUError.downloadError.rawValue): return .feedFetch
+        case Int(SUError.appcastParseError.rawValue): return .feedParseOrSignature
+        default: return nil
+        }
     }
 
     func extractionInvariantHolds(from identity: AnyObject) -> Bool {
