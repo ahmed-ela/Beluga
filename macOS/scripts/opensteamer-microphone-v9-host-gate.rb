@@ -51,11 +51,34 @@ module BelugaMicrophoneV9HostGate
   MAX_BYTES = 65_536
   MAX_TAIL_BYTES = 32 * 1024 * 1024
   TAIL_READ_BYTES = 1024 * 1024
+  # Pinned macOS SDK sys/stat.h: SF_NOUNLINK (rename/delete protection).
+  # Only the canonical /Library ancestor carries this exact system flag.
+  LIBRARY_FLAGS = "1048576\n".freeze
+  CLI_STAGES = %w[caller request sealed_sources product_contract baseline observe source_recheck output unknown].freeze
+  MAX_DIAGNOSTIC_BYTES = 2 * 1024 * 1024
   SAFE_ENV = { 'HOME' => '/Users/ahmed', 'USER' => 'ahmed', 'LOGNAME' => 'ahmed',
                'PATH' => '/usr/bin:/bin:/usr/sbin:/sbin', 'LC_ALL' => 'C', 'TMPDIR' => '/private/tmp' }.freeze
 
   def self.assert!(condition, message)
     raise Refused, message, cause: nil unless condition
+  end
+
+  def self.refusal_diagnostic(stage, error)
+    stage = 'unknown' unless CLI_STAGES.include?(stage)
+    kind = case error
+           when Refused then 'Refused'
+           when SystemCallError then 'SystemCallError'
+           when IOError then 'IOError'
+           when ArgumentError then 'ArgumentError'
+           when TypeError then 'TypeError'
+           when EncodingError then 'EncodingError'
+           else 'StandardError'
+           end
+    message = error.message
+    bounded = message.is_a?(String) && message.bytesize <= MAX_DIAGNOSTIC_BYTES
+    diagnostic = bounded ? 'hashed' : 'extent_refused'
+    digest = Digest::SHA256.hexdigest(bounded ? message.b : 'diagnostic message extent refused')
+    "microphone-v9-host-gate: REFUSED stage=#{stage} class=#{kind} diagnostic=#{diagnostic} reason_sha256=#{digest} (no runtime admission; diagnostic contents redacted)"
   end
 
   def self.sha!(value)
@@ -228,12 +251,24 @@ module BelugaMicrophoneV9HostGate
     end
 
     def clean_metadata!(path)
+      library = nil
+      expected_flags = "0\n"
+      if path == '/Library'
+        library = File.lstat(path)
+        BelugaMicrophoneV9HostGate.assert!(File.realpath(path) == path && library.directory? &&
+          library.uid == 0 && library.gid == 0 && (library.mode & 07777) == 0755, 'sealed Library ancestor refused')
+        expected_flags = LIBRARY_FLAGS
+      end
       out, _err, status = run('/bin/ls', '-lde', path)
       BelugaMicrophoneV9HostGate.assert!(status.success? && !out.lines.first.to_s.split.first.to_s.include?('+'), 'sealed node ACL refused')
       out, err, status = run('/usr/bin/xattr', path)
       BelugaMicrophoneV9HostGate.assert!(status.success? && out.empty? && err.empty?, 'sealed node xattrs refused')
       out, _err, status = run('/usr/bin/stat', '-f', '%f', path)
-      BelugaMicrophoneV9HostGate.assert!(status.success? && out == "0\n", 'sealed node flags refused')
+      BelugaMicrophoneV9HostGate.assert!(status.success? && out == expected_flags, 'sealed node flags refused')
+      if library
+        BelugaMicrophoneV9HostGate.assert!(File.realpath(path) == path &&
+          BelugaMicrophoneV9HostGate.identity(File.lstat(path)) == BelugaMicrophoneV9HostGate.identity(library), 'sealed Library identity changed')
+      end
     end
 
     def run(*argv, stdin_data: nil, **options)
@@ -576,27 +611,35 @@ module BelugaMicrophoneV9HostGate
   end
 
   def self.cli!(argv)
+    stage = 'caller'
     assert!(Process.uid == 501 && Process.euid == 501, 'host gate requires original UID501')
     assert!(ENV.keys.none? { |key| key.match?(/\A(?:RUBY|GEM|BUNDLE|DYLD_|LD_)/) }, 'interpreter loader refused')
     assert!(argv.size == 3 && MODES.any? { |mode| argv[0] == '--' + mode } && argv[1] == '/dev/fd/3', 'usage: sealed host gate --candidate-present|--host-absent|--host-ready /dev/fd/3 SHA')
+    stage = 'request'
     request = request!(read_fd!(3), argv[2]); mode = argv[0].delete_prefix('--')
     tools = PREFIX + '/' + request['namespace'] + '/tools'
     commands = Commands.new(tools)
+    stage = 'sealed_sources'
     sources = sealed_sources!(tools, request['namespace'], commands: commands)
+    stage = 'product_contract'
     Open3.singleton_class.prepend(Module.new { define_method(:capture3) { |*args, **options| commands.run(*args, **options) } })
     require tools + '/product/opensteamer-host-v91-cutover-controller'
     require tools + '/product/opensteamer-host-successor-contract'
     contract = OpenSteamerHostSuccessor::ReleaseContract.new(PROFILE, PROFILE_SHA)
     assert!(contract.namespace == HOST_NAMESPACE, 'successor profile namespace changed')
     OpenSteamerV91Cutover::Pins.bind_contract!(contract)
+    stage = 'baseline'
     baseline = mode == 'candidate-present' ? nil : read_fd!(4)
     ready = mode == 'candidate-present' ? nil : optional_fd!(5)
+    stage = 'observe'
     result = observe!(mode, request, tools, baseline, ready, deadline: commands.deadline)
+    stage = 'source_recheck'
     sources.each { |path, record| assert!(identity(File.lstat(path)) == record, 'sealed dependency identity changed') }
+    stage = 'output'
     puts result
     0
-  rescue Refused, StandardError
-    warn 'microphone-v9-host-gate: REFUSED (no runtime admission; diagnostic contents redacted)'
+  rescue Refused, StandardError => error
+    warn refusal_diagnostic(stage, error)
     78
   end
 end

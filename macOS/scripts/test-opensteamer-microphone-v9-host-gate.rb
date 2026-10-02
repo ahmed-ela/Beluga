@@ -418,4 +418,153 @@ class MicrophoneV9HostGateTests < Minitest::Test
     assert_raises(Gate::Refused) { Gate.sealed_sources!('/private/unsealed', 'driver-microphone-v9-fixture', commands: commands) }
     assert_raises(Gate::Refused) { Gate.read_fd!(100_000) }
   end
+
+  MetadataStat = Struct.new(:dev, :ino, :uid, :gid, :mode, :nlink, :size, :mtime, :ctime, :kind, keyword_init: true) do
+    def directory?; kind == :directory end
+    def file?; kind == :file end
+  end
+  MetadataStatus = Struct.new(:ok) do
+    def success?; ok end
+  end
+
+  def metadata_stat(**changes)
+    MetadataStat.new(**{ dev: 2, ino: 3, uid: 0, gid: 0, mode: 040755, nlink: 1,
+      size: 128, mtime: Time.at(10), ctime: Time.at(20), kind: :directory }.merge(changes))
+  end
+
+  # This exercises production policy and dispatch with no process or system-node IO.
+  def clean_metadata_fixture(path: '/Library', before: metadata_stat, after: before,
+      canonical: path, final_canonical: canonical, flags: "1048576\n", flags_ok: true,
+      acl: "drwxr-xr-x 1 root wheel 128 fixture\n", xattrs: '', xattr_errors: '')
+    tools = Gate::PREFIX + '/driver-microphone-v9-fixture/tools'
+    commands = Gate::Commands.new(tools); calls = []
+    stats = [before, after]; canonical_paths = [canonical, final_canonical]
+    runner = lambda do |*argv|
+      commands.allowed!(argv); calls << argv
+      case argv.first
+      when '/bin/ls' then [acl, '', MetadataStatus.new(true)]
+      when '/usr/bin/xattr' then [xattrs, xattr_errors, MetadataStatus.new(true)]
+      when '/usr/bin/stat' then [flags, '', MetadataStatus.new(flags_ok)]
+      else flunk 'unexpected metadata command'
+      end
+    end
+    File.stub(:lstat, ->(_path) { stats.shift || after }) do
+      File.stub(:realpath, ->(_path) { canonical_paths.shift || final_canonical }) do
+        commands.stub(:run, runner) { commands.clean_metadata!(path) }
+      end
+    end
+    calls
+  end
+
+  def test_exact_canonical_library_sf_nounlink_policy
+    assert_equal [['/bin/ls', '-lde', '/Library'], ['/usr/bin/xattr', '/Library'],
+      ['/usr/bin/stat', '-f', '%f', '/Library']], clean_metadata_fixture
+    assert_equal 3, clean_metadata_fixture(path: '/Library/Application Support', flags: "0\n").size
+    ["0\n", "1048577\n", "1048578\n", "1\n", "01048576\n", "1048576\r\n", '1048576', "1048576\nextra\n"].each do |flags|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(flags: flags) }
+    end
+    assert_raises(Gate::Refused) { clean_metadata_fixture(flags_ok: false) }
+    [metadata_stat(uid: 501), metadata_stat(gid: 80), metadata_stat(mode: 040711),
+     metadata_stat(mode: 040775), metadata_stat(mode: 040777), metadata_stat(kind: :file, mode: 0100755),
+     metadata_stat(kind: :symlink, mode: 0120755)].each do |stat|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(before: stat) }
+    end
+    assert_raises(Gate::Refused) { clean_metadata_fixture(canonical: '/private/Library') }
+    assert_raises(Gate::Refused) { clean_metadata_fixture(final_canonical: '/private/Library') }
+    assert_raises(Gate::Refused) { clean_metadata_fixture(acl: "drwxr-xr-x+ 1 root wheel 128 fixture\n") }
+    assert_raises(Gate::Refused) { clean_metadata_fixture(xattrs: "com.example.fixture\n") }
+    assert_raises(Gate::Refused) { clean_metadata_fixture(xattr_errors: "refused\n") }
+  end
+
+  def test_library_flag_exception_does_not_extend_to_other_paths_or_aliases
+    tools = Gate::PREFIX + '/driver-microphone-v9-fixture/tools'
+    ['/Library/Application Support', tools, tools + '/product/fixture', '/private/unexpected',
+     '/Library/', '/Library/.', '/private/Library', '//Library', '/'].each do |path|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(path: path) }
+    end
+    assert_equal 3, clean_metadata_fixture(path: tools, flags: "0\n").size
+  end
+
+  def test_library_full_identity_is_retained_across_metadata_reads
+    { dev: 4, ino: 4, uid: 501, gid: 80, mode: 040711, nlink: 2, size: 129,
+      mtime: Time.at(11), ctime: Time.at(21) }.each do |field, value|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(after: metadata_stat(**{ field => value })) }
+    end
+    [metadata_stat(mtime: Time.at(10, 1, :nsec)), metadata_stat(ctime: Time.at(20, 1, :nsec))].each do |stat|
+      assert_raises(Gate::Refused) { clean_metadata_fixture(after: stat) }
+    end
+  end
+
+  def test_production_sealed_source_ancestry_includes_library_but_excludes_root
+    namespace = 'driver-microphone-v9-fixture'; tools = Gate::PREFIX + '/' + namespace + '/tools'
+    adapter = File.expand_path('opensteamer-microphone-v9-host-gate.rb', __dir__)
+    seen = []; commands = Object.new
+    commands.define_singleton_method(:clean_metadata!) { |path| seen << path }
+    stat = lambda do |path|
+      path == adapter ? metadata_stat(kind: :file, mode: 0100444) :
+        metadata_stat(gid: path == '/Library/Application Support' ? 80 : 0)
+    end
+    File.stub(:realpath, ->(path) { path == adapter ? tools + '/opensteamer-microphone-v9-host-gate.rb' : path }) do
+      File.stub(:lstat, stat) do
+        Gate.stub(:read_file!, ->(*_args, **_options) { ['fixture', Gate.identity(metadata_stat(kind: :file))] }) do
+          records = Gate.sealed_sources!(tools, namespace, commands: commands)
+          assert records.key?('/Library')
+          refute records.key?('/')
+        end
+      end
+    end
+    assert_includes seen, '/Library'
+    refute_includes seen, '/'
+    dispatch = Gate::Commands.new(tools)
+    assert dispatch.metadata_path?('/Library')
+    assert_raises(Gate::Refused) { dispatch.metadata_path?('/') }
+  end
+
+  def test_refusal_diagnostic_is_bounded_stage_class_and_hash_only
+    private_message = "/private/fixture credential-like-value\nsecret\x00\xff".b
+    error = Gate::Refused.new(private_message)
+    Gate::CLI_STAGES.each do |stage|
+      diagnostic = Gate.refusal_diagnostic(stage, error)
+      assert_includes diagnostic, "stage=#{stage} class=Refused diagnostic=hashed"
+      assert_includes diagnostic, 'reason_sha256=' + Digest::SHA256.hexdigest(private_message)
+      refute_includes diagnostic, '/private/'
+      refute_includes diagnostic, 'secret'
+      assert diagnostic.ascii_only?
+      assert_operator diagnostic.bytesize, :<, 400
+    end
+    diagnostic = Gate.refusal_diagnostic(private_message, Class.new(StandardError).new(private_message))
+    assert_includes diagnostic, 'stage=unknown class=StandardError'
+    refute_includes diagnostic, 'secret'
+    { SystemCallError => SystemCallError.new('private', 13), IOError => IOError.new(private_message),
+      ArgumentError => ArgumentError.new(private_message), TypeError => TypeError.new(private_message),
+      EncodingError => EncodingError.new(private_message) }.each do |kind, exception|
+      assert_includes Gate.refusal_diagnostic('observe', exception), "class=#{kind.name} diagnostic=hashed"
+    end
+    huge = Gate::Refused.new('s' * (Gate::MAX_DIAGNOSTIC_BYTES + 1))
+    diagnostic = Gate.refusal_diagnostic('observe', huge)
+    assert_includes diagnostic, 'diagnostic=extent_refused'
+    assert_includes diagnostic, 'reason_sha256=' + Digest::SHA256.hexdigest('diagnostic message extent refused')
+    assert_operator diagnostic.bytesize, :<, 400
+  end
+
+  def test_cli_sealed_source_refusal_retains_safe_stage_and_original_reason_hash
+    bytes = text(request); reason = 'sealed node flags refused'; code = nil
+    stdout, stderr = capture_io do
+      Process.stub(:uid, 501) do
+        Process.stub(:euid, 501) do
+          ENV.stub(:keys, []) do
+            Gate.stub(:read_fd!, bytes) do
+              Gate.stub(:sealed_sources!, ->(*_args, **_options) { raise Gate::Refused, reason }) do
+                code = Gate.cli!(['--candidate-present', '/dev/fd/3', Digest::SHA256.hexdigest(bytes)])
+              end
+            end
+          end
+        end
+      end
+    end
+    assert_equal 78, code
+    assert_empty stdout
+    assert_equal Gate.refusal_diagnostic('sealed_sources', Gate::Refused.new(reason)) + "\n", stderr
+    refute_includes stderr, reason
+  end
 end
