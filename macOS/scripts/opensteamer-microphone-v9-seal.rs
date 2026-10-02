@@ -168,26 +168,67 @@ impl Budget {
 }
 
 struct Plan { staged: BTreeMap<String, (CapturedSource, u32)>, held: Vec<CapturedSource>, manifest: CapturedSource }
+
+pub(super) fn held_internal_namespace(path:&Path)->Result<Vec<sealed_fs::HeldDirectory>>{
+    require(path.parent()==Some(Path::new("/private/tmp")),"internal namespace parent role differs")?;
+    let mut held=Vec::new();
+    for(parent,mode)in [("/",0o755),("/private",0o755),("/private/tmp",0o1777)]{
+        held.push(sealed_fs::HeldDirectory::capture(Path::new(parent),0,0,mode)?);
+    }
+    let metadata=fs::symlink_metadata(path).map_err(|_|"internal namespace metadata unavailable")?;
+    require(metadata.dev()==held.last().ok_or("internal volume ancestry absent")?.descriptor().metadata().map_err(|_|"internal volume descriptor metadata unavailable")?.dev(),"internal namespace is on another volume")?;
+    held.push(sealed_fs::HeldDirectory::capture(path,501,metadata.gid(),0o700)?);
+    for directory in &held{directory.revalidate()?;}Ok(held)
+}
+
+fn held_capsule_directories(build:&Path)->Result<Vec<sealed_fs::HeldDirectory>>{
+    let mut held=Vec::new();
+    let roles:[(&str,Vec<String>);5]=[
+        ("inputs",vec!["candidate.driver".into(),"producer".into(),"tools".into()]),
+        ("inputs/tools",vec!["opensteamer-microphone-v9-host-gate.rb".into(),"observers".into(),"product".into()]),
+        ("inputs/tools/product",INPUTS.iter().filter(|(_,_,origin,_,_)|*origin=="product").map(|(_,_,_,relative,_)|Path::new(relative).file_name().unwrap().to_str().unwrap().into()).collect()),
+        ("inputs/tools/observers",INPUTS.iter().filter(|(_,_,origin,_,_)|*origin=="observers").map(|(_,_,_,relative,_)|relative.to_string()).collect()),
+        ("inputs/producer",ARTIFACT_RECORDS.iter().map(|(name,_)|name.to_string()).collect()),
+    ];
+    for(relative,mut expected)in roles{
+        let path=build.join(relative);let metadata=fs::symlink_metadata(&path).map_err(|_|"internal capsule directory metadata unavailable")?;
+        require(metadata.dev()==fs::symlink_metadata(build).map_err(|_|"internal build directory disappeared")?.dev(),"internal capsule directory is on another volume")?;
+        held.push(sealed_fs::HeldDirectory::capture(&path,501,metadata.gid(),0o700)?);
+        let mut actual=Vec::new();
+        for child in fs::read_dir(&path).map_err(|_|"internal capsule directory layout unavailable")?{
+            require(actual.len()<expected.len(),"internal capsule contains extra nodes")?;
+            actual.push(child.map_err(|_|"internal capsule child unavailable")?.file_name().into_string().map_err(|_|"internal capsule child name encoding refused")?);
+        }
+        expected.sort();actual.sort();require(actual==expected,"internal capsule exact role layout differs")?;
+    }
+    for directory in &held{directory.revalidate()?;}Ok(held)
+}
 fn gate_inputs(bytes: &[u8], records: &BTreeMap<String, SourceRecord>) -> Result<()> {
     let mut expected = String::from("schema=opensteamer.microphone-v9-gate-inputs.v1\n");
     for (destination, key, _, _, _) in INPUTS { expected.push_str(&format!("{key}={}\n", records[*destination].digest)); }
     require(bytes == expected.as_bytes(), "seal gate input exact crosslinks differ")
 }
-fn parse_manifest(bytes: &[u8], request: &Request, build: &Path) -> Result<(BTreeMap<String, SourceRecord>, Vec<SourceRecord>)> {
+type ManifestRecords=(BTreeMap<String,SourceRecord>,Vec<SourceRecord>,BTreeMap<String,SourceRecord>);
+fn parse_manifest(bytes: &[u8], request: &Request, build: &Path) -> Result<ManifestRecords> {
     require(bytes.len() <= MAX_MANIFEST, "seal manifest extent refused")?;
     let value = Parser::parse(bytes)?;
-    let fields = exact(&value, &["schema", "productCommit", "productTree", "guardToolingCommit", "guardToolingTree", "deploymentAuthority", "liveQueriesPerformed", "sources", "swiftCompiler", "rustCompiler", "sdkSettings", "commands", "sealedInputs", "tools"])?;
-    for (key, expected) in [("schema", "opensteamer.microphone-v9.native-guard-build.v1"), ("productCommit", request.get("product_commit")),
+    let fields = exact(&value, &["schema", "productCommit", "productTree", "guardToolingCommit", "guardToolingTree", "deploymentAuthority", "liveQueriesPerformed", "sources", "swiftCompiler", "rustCompiler", "sdkSettings", "commands", "sealedInputs", "tools", "originalInputs", "releaseInputs", "reusedTools"])?;
+    for (key, expected) in [("schema", "opensteamer.microphone-v9.native-guard-build.v2"), ("productCommit", request.get("product_commit")),
         ("productTree", request.get("product_tree")), ("guardToolingCommit", request.get("guard_tooling_commit")), ("guardToolingTree", request.get("guard_tooling_tree"))] {
         require(text(fields,key)? == expected, "seal manifest source provenance differs")?;
     }
     require(fields["deploymentAuthority"] == Json::Bool(false) && fields["liveQueriesPerformed"] == Json::Bool(false), "seal manifest claims deployment or live activity")?;
     let inputs = object(&fields["sealedInputs"])?; require(inputs.len() == INPUTS.len()+1 && inputs.contains_key("tools/gate_inputs.txt"), "seal dependency role set differs")?;
+    let originals=object(&fields["originalInputs"])?;
+    let releases=object(&fields["releaseInputs"])?;
+    let file_count=CANDIDATE_NODES.iter().filter(|(_,_,directory)|!*directory).count();
+    require(originals.len()==INPUTS.len()+ARTIFACT_RECORDS.len()+file_count&&releases.len()==ARTIFACT_RECORDS.len()+file_count,"seal original/copy role set differs")?;
     let mut staged = BTreeMap::new();
     for (destination, key, origin, relative, _) in INPUTS {
         let record = SourceRecord::parse(inputs.get(*destination).ok_or("seal dependency missing")?)?;
         let root = match *origin { "tooling" => TOOLING, "product" => PRODUCT, "observers" => OBSERVERS, _ => unreachable!() };
-        require(record.path == Path::new(root).join(relative), "seal dependency source is not its fixed role")?;
+        let original=SourceRecord::parse(originals.get(*destination).ok_or("seal original dependency missing")?)?;
+        require(original.path==Path::new(root).join(relative)&&record.path==build.join("inputs").join(destination)&&record.digest==original.digest&&record.identity[..2]!=original.identity[..2],"seal dependency original/copy crosslink differs")?;
         if let Some((_, digest)) = PRODUCT_PINS.iter().find(|(item,_)| item == key) { require(record.digest == *digest, "seal immutable observer/product byte pin differs")?; }
         staged.insert(destination.to_string(), record);
     }
@@ -199,6 +240,23 @@ fn parse_manifest(bytes: &[u8], request: &Request, build: &Path) -> Result<(BTre
         require(record.path == build.join(basename) && record.digest == request.get(key), "seal compiled tool role/request pin differs")?;
         staged.insert(destination.to_string(),record);
     }
+    validate_reused_tools(fields["reusedTools"].clone(),tools)?;
+    let mut release_records=BTreeMap::new();
+    for(name,digest)in ARTIFACT_RECORDS{
+        let role=format!("producer/{name}");
+        let original=SourceRecord::parse(originals.get(&role).ok_or("seal original producer record missing")?)?;
+        let record=SourceRecord::parse(releases.get(&role).ok_or("seal copied producer record missing")?)?;
+        require(original.path==Path::new(ARTIFACT).join(name)&&original.digest==*digest&&record.path==build.join("inputs").join(&role)&&record.digest==*digest&&record.identity[..2]!=original.identity[..2],"seal producer original/copy crosslink differs")?;
+        release_records.insert(role,record);
+    }
+    for(relative,mode,directory)in CANDIDATE_NODES{if !directory{
+        let role=format!("candidate/{relative}");
+        let original=SourceRecord::parse(originals.get(&role).ok_or("seal original candidate record missing")?)?;
+        let record=SourceRecord::parse(releases.get(&role).ok_or("seal copied candidate record missing")?)?;
+        require(original.path==Path::new(ARTIFACT).join("OpensteamerVirtualMicrophone.driver").join(relative)&&record.path==build.join("inputs/candidate.driver").join(relative)&&record.digest==original.digest&&record.identity[..2]!=original.identity[..2]&&record.identity[4]&0o7777==*mode as i128&&original.identity[4]&0o7777==*mode as i128,"seal candidate original/copy crosslink differs")?;
+        if *relative=="Contents/MacOS/OpensteamerVirtualMicrophone"{require(record.digest==request.get("driver_executable_sha256"),"seal copied candidate executable pin differs")?;}
+        release_records.insert(role,record);
+    }}
     let sources = object(&fields["sources"])?; require(!sources.is_empty() && sources.len() <= 32, "seal source proof count refused")?;
     let mut retained = Vec::new();
     for (path, value) in sources {
@@ -226,16 +284,36 @@ fn parse_manifest(bytes: &[u8], request: &Request, build: &Path) -> Result<(BTre
         for channel in ["stdout", "stderr"] { let record = SourceRecord::parse(&command[channel])?;
             require(record.path.parent() == Some(build.join("commands").as_path()), "seal build log path escaped owned build")?; retained.push(record); }
     }
-    Ok((staged, retained))
+    Ok((staged, retained,release_records))
 }
 
-fn capture_candidate(request: &Request, budget: &mut Budget) -> Result<(BTreeMap<String,(CapturedSource,u32)>,Vec<sealed_fs::HeldDirectory>)> {
-    let root = Path::new(ARTIFACT).join("OpensteamerVirtualMicrophone.driver");
+const REUSED_BUILD:&str="/private/tmp/beluga-microphone-v9-guards.20261001-32089-syciju";
+const REUSED_BUILD_SHA:&str="a4181ebc4124a0445b58be029207d44b9c01b5209d9c9f091dbb94721e280a00";
+const REUSED_TOOLS:&[(&str,&str,&str)]=&[
+    ("idleHelper","idle-helper","e836530dd07b3fce44b0983ca2fa165dfe9c32fad10c4689a98848851204a0f2"),
+    ("bothOrderProbe","public-proof","b173980bb41afea5a2dbde3bfae56caa7ce0de74926ca8b4e05e6a43832d14ec"),
+    ("routeGuardian","route-guardian","8e0401c1acced9ec94310aa64a255f5ee348af1e01beebed8584ed1825ae96cb"),
+];
+fn validate_reused_tools(value:Json,tools:&BTreeMap<String,Json>)->Result<()>{
+    let fields=exact(&value,&["buildProof","guardToolingCommit","guardToolingTree","tools"])?;
+    let proof=SourceRecord::parse(&fields["buildProof"])?;
+    require(proof.path==Path::new(REUSED_BUILD).join("build-proof.json")&&proof.digest==REUSED_BUILD_SHA&&text(fields,"guardToolingCommit")==Ok("3132f604ed68de66e788e2860212fe4474b5235f")&&text(fields,"guardToolingTree")==Ok("5491060293b9cf13b929c5d3ae8129fdc31b1d37"),"seal reused guard provenance differs")?;
+    let original=exact(&fields["tools"],&["idleHelper","bothOrderProbe","routeGuardian"])?;
+    for(role,name,digest)in REUSED_TOOLS{
+        let source=SourceRecord::parse(&original[*role])?;let copied=SourceRecord::parse(&tools[*role])?;
+        require(source.path==Path::new(REUSED_BUILD).join(name)&&source.digest==*digest&&copied.digest==*digest&&source.identity[..2]!=copied.identity[..2],"seal reused tool byte/identity provenance differs")?;
+    }Ok(())
+}
+
+fn capture_candidate(request: &Request, build:&Path,records:&BTreeMap<String,SourceRecord>,budget: &mut Budget) -> Result<(BTreeMap<String,(CapturedSource,u32)>,Vec<sealed_fs::HeldDirectory>)> {
+    let root = build.join("inputs/candidate.driver");
+    let device=fs::symlink_metadata(build).map_err(|_|"internal candidate build parent unavailable")?.dev();
     let mut directories = Vec::new(); let mut captured = BTreeMap::new(); let mut canonical = Vec::new(); let mut hashes = BTreeMap::new();
     for (relative, mode, directory) in CANDIDATE_NODES {
         budget.check()?; let path = if *relative == "." { root.clone() } else { root.join(relative) };
         if *directory {
             let metadata=fs::symlink_metadata(&path).map_err(|_| "candidate directory metadata unavailable")?;
+            require(metadata.dev()==device,"candidate directory is on another volume")?;
             let held=sealed_fs::HeldDirectory::capture(&path,501,metadata.gid(),*mode)?;
             let mut expected=CANDIDATE_NODES.iter().filter_map(|(child,_,_)| {
                 if *child == "." { return None; } let item=Path::new(child); let parent=item.parent()?.to_str()?;
@@ -253,21 +331,15 @@ fn capture_candidate(request: &Request, budget: &mut Budget) -> Result<(BTreeMap
             require(metadata.mode()&0o7777==*mode,"candidate file mode differs")?;
             // The immutable whole-tree digest independently pins each captured
             // file; no digest is selected by a live root command or path.
-            let expected=sha256(&read_candidate_bytes(&path,budget)?);
-            let file=CapturedSource::read(&path,&expected,None,budget)?; hashes.insert(*relative,sha256(&file.bytes)); captured.insert(relative.to_string(),(file,*mode));
+            let record=&records[&format!("candidate/{relative}")];
+            let file=CapturedSource::read(&path,&record.digest,Some(record),budget)?; hashes.insert(*relative,sha256(&file.bytes)); captured.insert(relative.to_string(),(file,*mode));
+            require(captured[*relative].0.identity.device==device,"candidate file is on another volume")?;
         }
         canonical.extend_from_slice(format!("{}|{mode:o}|{relative}\0",if *directory {"Directory"} else {"Regular File"}).as_bytes());
     }
     for (relative,_,directory) in CANDIDATE_NODES { if !directory { canonical.extend_from_slice(format!("{relative}\0{}\0",hashes[relative]).as_bytes()); } }
     require(sha256(&canonical)==request.get("driver_tree_sha256") && hashes["Contents/MacOS/OpensteamerVirtualMicrophone"]==request.get("driver_executable_sha256"),"candidate exact immutable tree/executable differs")?;
     for directory in &directories { directory.revalidate()?; } Ok((captured,directories))
-}
-fn read_candidate_bytes(path:&Path,budget:&mut Budget)->Result<Vec<u8>> {
-    budget.check()?; let mut file=OpenOptions::new().read(true).custom_flags(NOFOLLOW|CLOEXEC).open(path).map_err(|_| "candidate initial nofollow read failed")?;
-    let metadata=file.metadata().map_err(|_|"candidate initial metadata failed")?;
-    require(metadata.is_file()&&metadata.uid()==501&&metadata.nlink()==1&&metadata.len()<=MAX_FILE as u64,"candidate initial extent/type refused")?;
-    let mut bytes=Vec::new(); let mut chunk=[0;65_536]; loop { budget.check()?; let count=file.read(&mut chunk).map_err(|_|"candidate initial read failed")?; if count==0 {break;} require(bytes.len()+count<=MAX_FILE,"candidate initial extent exceeded")?; budget.consume(count)?; bytes.extend_from_slice(&chunk[..count]); }
-    Ok(bytes)
 }
 
 fn simple_name(name:&str)->Result<CString>{ require(!name.is_empty()&&name!="."&&name!=".."&&!name.contains('/')&&name.len()<=255,"seal relative name refused")?; CString::new(name).map_err(|_|"seal relative name NUL refused".into()) }
@@ -361,32 +433,36 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
     require(unsafe{getuid()}==0&&unsafe{geteuid()}==0,"sealing requires independently pinned root dispatch")?;
     require(hex(pins.request_sha256,64)&&hex(pins.manifest_sha256,64)&&hex(pins.worker_sha256,64),"external seal trust pins malformed")?;
     let mut budget=Budget::new();
+    require(private_request_path(request_path.to_str().ok_or("internal request path encoding refused")?),"seal internal request role differs")?;
+    let request_directories=held_internal_namespace(request_path.parent().ok_or("internal request parent absent")?)?;
     let request_source=CapturedSource::read(request_path,pins.request_sha256,None,&mut budget)?;
     require(request_source.identity.mode&0o7777==0o600&&request_source.bytes.len()<=MAX_REQUEST,"original-UID request metadata refused")?;
+    let internal_device=request_directories.last().ok_or("internal request directory absent")?.descriptor().metadata().map_err(|_|"internal request directory metadata unavailable")?.dev();
+    require(request_source.identity.device==internal_device,"internal request file is on another volume")?;
     let request=Request::parse(&request_source.bytes,pins.request_sha256)?;
     require(request.get("worker_sha256")==pins.worker_sha256,"external worker pin differs from request crosslink")?;
     let bootstrap=held_bootstrap(&request,pins.worker_sha256)?;
     require(manifest_path.file_name()==Some(std::ffi::OsStr::new("build-proof.json")),"seal build manifest basename differs")?;
     let build=manifest_path.parent().ok_or("seal build directory absent")?;
     require(build.parent()==Some(Path::new("/private/tmp"))&&build.file_name().and_then(|name|name.to_str()).is_some_and(|name|name.starts_with("beluga-microphone-v9-guards.")&&name.len()<=128),"seal build is not exact owned build namespace")?;
-    let build_meta=fs::symlink_metadata(build).map_err(|_|"seal build directory metadata unavailable")?;
-    let build_directory=sealed_fs::HeldDirectory::capture(build,501,build_meta.gid(),0o700)?;
+    let build_directories=held_internal_namespace(build)?;
+    let capsule_directories=held_capsule_directories(build)?;
     let manifest=CapturedSource::read(manifest_path,pins.manifest_sha256,None,&mut budget)?;
-    require(manifest.identity.mode&0o7777==0o600,"seal build manifest mode differs")?;
+    require(manifest.identity.mode&0o7777==0o600&&manifest.identity.device==internal_device,"seal build manifest mode/volume differs")?;
     // Source/toolchain/command records are typed, duplicate-rejecting data in
     // the independently pinned manifest. The original-UID dispatch revalidates
     // those records; root reads only bytes it actually stages plus fixed
     // producer records. This is not a second privileged build audit.
-    let (records,_retained)=parse_manifest(&manifest.bytes,&request,build)?;
+    let (records,_retained,release_records)=parse_manifest(&manifest.bytes,&request,build)?;
     let mut plan=Plan{staged:BTreeMap::new(),held:vec![request_source],manifest};
     for (destination,record) in &records { let source=CapturedSource::read(&record.path,&record.digest,Some(record),&mut budget)?;
-        require(!source.bytes.is_empty(),"sealed executable/dependency role is empty")?;
+        require(!source.bytes.is_empty()&&source.identity.device==internal_device,"sealed executable/dependency role is empty or on another volume")?;
         let mode=if let Some((_,_,_,_,mode))=INPUTS.iter().find(|(relative,_,_,_,_)|*relative==destination){*mode}else if destination=="tools/gate_inputs.txt"{0o444}else{0o555};
         plan.staged.insert(destination.clone(),(source,mode)); }
     gate_inputs(&plan.staged["tools/gate_inputs.txt"].0.bytes,&records)?;
-    for (name,digest) in ARTIFACT_RECORDS { plan.held.push(CapturedSource::read(&Path::new(ARTIFACT).join(name),digest,None,&mut budget)?); }
-    let (candidate,candidate_directories)=capture_candidate(&request,&mut budget)?;
-    build_directory.revalidate()?;
+    for (name,digest) in ARTIFACT_RECORDS {let record=&release_records[&format!("producer/{name}")];let source=CapturedSource::read(&record.path,digest,Some(record),&mut budget)?;require(source.identity.device==internal_device,"producer copy is on another volume")?;plan.held.push(source);}
+    let (candidate,candidate_directories)=capture_candidate(&request,build,&release_records,&mut budget)?;
+    for directory in request_directories.iter().chain(&build_directories).chain(&capsule_directories){directory.revalidate()?;}
     for source in plan.held.iter().chain(plan.staged.values().map(|(file,_)|file)).chain(candidate.values().map(|(file,_)|file)).chain(std::iter::once(&plan.manifest)){source.revalidate()?;}
     budget.check()?;
     let ancestors=sealed_fs::root_ancestry_path(Path::new(BASE),0o755)?; let base=ancestors.last().ok_or("seal fixed base not held")?;
@@ -414,7 +490,7 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
         else { let source=&candidate[*relative].0; source.revalidate()?; write(&parents[parent],name,&source.bytes,*mode)?; }
     }
     for source in plan.held.iter().chain(plan.staged.values().map(|(file,_)|file)).chain(candidate.values().map(|(file,_)|file)).chain(std::iter::once(&plan.manifest)){source.revalidate()?;}
-    for directory in &candidate_directories{directory.revalidate()?;} build_directory.revalidate()?;
+    for directory in candidate_directories.iter().chain(&request_directories).chain(&build_directories).chain(&capsule_directories){directory.revalidate()?;}
     let (root_identity,executable_identity)=backend::verify_bundle(&Path::new(&request.root_path()).join("candidate.driver"),request.get("driver_tree_sha256"),request.get("driver_executable_sha256"),0)?;
     let mut authority=BTreeMap::new(); authority.insert("schema","opensteamer.microphone-v9-root-authority.v1".to_string());
     for key in ["namespace","nonce","guard_tooling_commit","guard_tooling_tree","worker_sha256","idle_helper_sha256","both_order_probe_sha256","route_guardian_sha256"]{authority.insert(key,request.get(key).to_string());}
@@ -422,7 +498,7 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
     authority.insert("host_gate_sha256",records["tools/opensteamer-microphone-v9-host-gate.rb"].digest.clone()); authority.insert("gate_inputs_sha256",records["tools/gate_inputs.txt"].digest.clone());
     authority.insert("candidate_root_device",root_identity.device.to_string()); authority.insert("candidate_root_inode",root_identity.inode.to_string()); authority.insert("candidate_executable_inode",executable_identity.inode.to_string());
     let authority=authority.iter().map(|(key,value)|format!("{key}={value}\n")).collect::<String>(); write(&state,"authority.txt",authority.as_bytes(),0o400)?;
-    budget.check()?; for held in &ancestors{held.revalidate()?;} bootstrap.revalidate()?;states.revalidate()?;executables.revalidate()?;state.revalidate()?;exec.revalidate()?;controller_lock.revalidate()?;
+    budget.check()?; for held in ancestors.iter().chain(&request_directories).chain(&build_directories).chain(&capsule_directories).chain(&candidate_directories){held.revalidate()?;} bootstrap.revalidate()?;states.revalidate()?;executables.revalidate()?;state.revalidate()?;exec.revalidate()?;controller_lock.revalidate()?;
     write(&state,"SEALING_COMPLETE",marker.as_bytes(),0o400)?;
     Ok(SealedAttempt{state:PathBuf::from(request.root_path()),executables:PathBuf::from(EXEC_BASE).join(request.get("namespace")),authority_sha256:sha256(authority.as_bytes())})
 }
@@ -445,19 +521,43 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
             ("identity".into(),Json::Array([1,2,501,20,33152,1,8,1,0,1,0].iter().map(|number|Json::Number(number.to_string())).collect())),
         ]))
     }
+    fn copied_record(path:&str,digest:&str)->Json{
+        let mut value=record(path,digest);
+        if let Json::Array(identity)=fields_mut(&mut value).get_mut("identity").unwrap(){identity[1]=Json::Number("3".into());}
+        value
+    }
     fn fixture()->(Request,Json,PathBuf){
         let mut fields=FIELDS.iter().map(|key|(key.to_string(),"a".repeat(64))).collect::<BTreeMap<_,_>>();
         for(key,value)in EXACT_FIELDS{fields.insert(key.to_string(),value.to_string());}
         fields.insert("guard_tooling_commit".into(),"b".repeat(40));fields.insert("guard_tooling_tree".into(),"c".repeat(40));
+        for(role,_,digest)in REUSED_TOOLS{let key=TOOLS.iter().find(|(item,_,_,_)|item==role).unwrap().3;fields.insert(key.into(),digest.to_string());}
         let request=Request{fields,sha256:"d".repeat(64)};let build=PathBuf::from("/private/tmp/beluga-microphone-v9-guards.fixture");
-        let mut inputs=BTreeMap::new();
+        let mut inputs=BTreeMap::new();let mut originals=BTreeMap::new();let mut releases=BTreeMap::new();
         for(destination,key,origin,relative,_)in INPUTS{
             let base=match *origin{"product"=>PRODUCT,"observers"=>OBSERVERS,_=>TOOLING};
             let digest=PRODUCT_PINS.iter().find(|(item,_)|item==key).map(|(_,digest)|digest.to_string()).unwrap_or_else(||"a".repeat(64));
-            inputs.insert(destination.to_string(),record(&format!("{base}/{relative}"),&digest));
+            originals.insert(destination.to_string(),record(&format!("{base}/{relative}"),&digest));
+            inputs.insert(destination.to_string(),copied_record(build.join("inputs").join(destination).to_str().unwrap(),&digest));
         }
         inputs.insert("tools/gate_inputs.txt".into(),record(build.join("gate_inputs.txt").to_str().unwrap(),&"a".repeat(64)));
-        let tools=TOOLS.iter().map(|(role,_,basename,key)|(role.to_string(),record(build.join(basename).to_str().unwrap(),request.get(key)))).collect();
+        let tools=TOOLS.iter().map(|(role,_,basename,key)|(role.to_string(),copied_record(build.join(basename).to_str().unwrap(),request.get(key)))).collect();
+        for(name,digest)in ARTIFACT_RECORDS{
+            let role=format!("producer/{name}");originals.insert(role.clone(),record(Path::new(ARTIFACT).join(name).to_str().unwrap(),digest));
+            releases.insert(role.clone(),copied_record(build.join("inputs").join(role).to_str().unwrap(),digest));
+        }
+        for(relative,mode,directory)in CANDIDATE_NODES{if !directory{
+            let role=format!("candidate/{relative}");let digest=if *relative=="Contents/MacOS/OpensteamerVirtualMicrophone"{request.get("driver_executable_sha256")}else{&"a".repeat(64)};
+            let mut original=record(Path::new(ARTIFACT).join("OpensteamerVirtualMicrophone.driver").join(relative).to_str().unwrap(),digest);
+            let mut copied=copied_record(build.join("inputs/candidate.driver").join(relative).to_str().unwrap(),digest);
+            for value in [&mut original,&mut copied]{if let Json::Array(identity)=fields_mut(value).get_mut("identity").unwrap(){identity[4]=Json::Number((0o100000+mode).to_string());}}
+            originals.insert(role.clone(),original);releases.insert(role,copied);
+        }}
+        let reused=Json::Object(BTreeMap::from([
+            ("buildProof".into(),record(Path::new(REUSED_BUILD).join("build-proof.json").to_str().unwrap(),REUSED_BUILD_SHA)),
+            ("guardToolingCommit".into(),Json::Text("3132f604ed68de66e788e2860212fe4474b5235f".into())),
+            ("guardToolingTree".into(),Json::Text("5491060293b9cf13b929c5d3ae8129fdc31b1d37".into())),
+            ("tools".into(),Json::Object(REUSED_TOOLS.iter().map(|(role,name,digest)|(role.to_string(),record(Path::new(REUSED_BUILD).join(name).to_str().unwrap(),digest))).collect())),
+        ]));
         let public=format!("{TOOLING}/iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift");let derived=build.join("public/main.swift").to_str().unwrap().to_string();
         let sources=Json::Object(BTreeMap::from([(public.clone(),record(&public,&"a".repeat(64))),(derived.clone(),record(&derived,&"a".repeat(64)))]));
         let commands=Json::Array(vec![Json::Object(BTreeMap::from([
@@ -467,9 +567,10 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
             ("stderr".into(),record(build.join("commands/001.stderr").to_str().unwrap(),&"a".repeat(64))),
         ]))]);
         let mut manifest=BTreeMap::new();
-        for(key,value)in [("schema","opensteamer.microphone-v9.native-guard-build.v1"),("productCommit",request.get("product_commit")),("productTree",request.get("product_tree")),("guardToolingCommit",request.get("guard_tooling_commit")),("guardToolingTree",request.get("guard_tooling_tree"))]{manifest.insert(key.into(),Json::Text(value.into()));}
+        for(key,value)in [("schema","opensteamer.microphone-v9.native-guard-build.v2"),("productCommit",request.get("product_commit")),("productTree",request.get("product_tree")),("guardToolingCommit",request.get("guard_tooling_commit")),("guardToolingTree",request.get("guard_tooling_tree"))]{manifest.insert(key.into(),Json::Text(value.into()));}
         manifest.insert("deploymentAuthority".into(),Json::Bool(false));manifest.insert("liveQueriesPerformed".into(),Json::Bool(false));
         manifest.insert("sources".into(),sources);manifest.insert("commands".into(),commands);manifest.insert("tools".into(),Json::Object(tools));manifest.insert("sealedInputs".into(),Json::Object(inputs));
+        manifest.insert("originalInputs".into(),Json::Object(originals));manifest.insert("releaseInputs".into(),Json::Object(releases));manifest.insert("reusedTools".into(),reused);
         for key in ["swiftCompiler","rustCompiler","sdkSettings"]{manifest.insert(key.into(),record(&format!("/fixture/{key}"),&"a".repeat(64)));}
         (request,Json::Object(manifest),build)
     }
@@ -505,6 +606,30 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
         }
         let mut mutant=manifest.clone();let sources=fields_mut(fields_mut(&mut mutant).get_mut("sources").unwrap());fields_mut(sources.get_mut(build.join("public/main.swift").to_str().unwrap()).unwrap()).insert("sha256".into(),Json::Text("f".repeat(64)));assert!(!accepted(&mutant,&request,&build));
     }
+    #[test]fn internal_copy_records_cannot_relabel_origins_omit_roles_or_accept_changed_bytes(){
+        let(request,manifest,build)=fixture();
+        for field in ["originalInputs","releaseInputs"]{
+            let roles=object(&object(&manifest).unwrap()[field]).unwrap().keys().cloned().collect::<Vec<_>>();
+            for role in roles{
+                let mut mutant=manifest.clone();fields_mut(fields_mut(&mut mutant).get_mut(field).unwrap()).remove(&role);assert!(!accepted(&mutant,&request,&build));
+                for(key,value)in [("path",Json::Text("/Volumes/t7/forged-copy".into())),("sha256",Json::Text("f".repeat(64)))]{
+                    let mut mutant=manifest.clone();fields_mut(fields_mut(fields_mut(&mut mutant).get_mut(field).unwrap()).get_mut(&role).unwrap()).insert(key.into(),value);assert!(!accepted(&mutant,&request,&build),"{field}/{role}/{key}");
+                }
+            }
+        }
+        for role in ["tools/opensteamer-microphone-v9-host-gate.rb","producer/binding-request.json","candidate/Contents/MacOS/OpensteamerVirtualMicrophone"]{
+            let original=object(&object(&manifest).unwrap()["originalInputs"]).unwrap()[role].clone();
+            let copied_field=if role.starts_with("tools/"){"sealedInputs"}else{"releaseInputs"};
+            let mut mutant=manifest.clone();
+            let identity=object(&original).unwrap()["identity"].clone();
+            fields_mut(fields_mut(fields_mut(&mut mutant).get_mut(copied_field).unwrap()).get_mut(role).unwrap()).insert("identity".into(),identity);
+            assert!(!accepted(&mutant,&request,&build),"historical inode relabeled as {role}");
+        }
+        for field in ["originalInputs","releaseInputs","sealedInputs"]{
+            let mut mutant=manifest.clone();fields_mut(fields_mut(&mut mutant).get_mut(field).unwrap()).insert("extra".into(),record("/private/tmp/extra",&"a".repeat(64)));assert!(!accepted(&mutant,&request,&build));
+        }
+        let mut mutant=manifest.clone();fields_mut(fields_mut(&mut mutant).get_mut("reusedTools").unwrap()).insert("guardToolingCommit".into(),Json::Text(request.get("guard_tooling_commit").into()));assert!(!accepted(&mutant,&request,&build),"unchanged Swift tools must retain their actual producer");
+    }
     #[test]fn exact_dependency_table_and_gate_crosslinks(){
         assert_eq!(INPUTS.len(),8);assert_eq!(TOOLS.len(),4);assert_eq!(CANDIDATE_NODES.len(),11);
         let records=INPUTS.iter().map(|(destination,_,_,_,_)|(destination.to_string(),SourceRecord{path:"/fixture".into(),digest:"a".repeat(64),identity:[0;11]})).collect::<BTreeMap<_,_>>();
@@ -516,7 +641,7 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
         let bytes=b"{\"path\":\"/private/tmp/fixture\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"identity\":[1,2,501,20,33152,1,8,1,0,1,0]}";
         assert!(SourceRecord::parse(&Parser::parse(bytes).unwrap()).is_ok());
         let text=std::str::from_utf8(bytes).unwrap();
-        for mutant in [text.replace("501","0"),text.replace("33152","33206"),text.replace("/private/tmp/fixture","/private/tmp/../fixture"),text.replace("\"identity\":[","\"identity\":\""),text.replace("\"path\":","\"authority\":true,\"path\":"),text.replace("[1,2,501","[1,2,\"501\""),text.replace("1,0,1,0]","1,1000000000,1,0]")]{
+        for mutant in [text.replace("501","0"),text.replace("501","99"),text.replace("33152","33206"),text.replace("/private/tmp/fixture","/private/tmp/../fixture"),text.replace("\"identity\":[","\"identity\":\""),text.replace("\"path\":","\"authority\":true,\"path\":"),text.replace("[1,2,501","[1,2,\"501\""),text.replace("1,0,1,0]","1,1000000000,1,0]")]{
             assert!(Parser::parse(mutant.as_bytes()).and_then(|value|SourceRecord::parse(&value)).is_err());
         }
         assert!(Parser::parse(text.replace("\"path\":","\"path\":\"duplicate\",\"path\":").as_bytes()).is_err());
@@ -540,5 +665,17 @@ pub(super) fn seal_original_uid_inputs(request_path:&Path,manifest_path:&Path,pi
         fs::set_permissions(&path,fs::Permissions::from_mode(0o666)).unwrap();assert!(CapturedSource::read(&path,&digest,None,&mut Budget::new()).is_err());
         fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();fs::write(&path,b"changed fixture!").unwrap();assert!(CapturedSource::read(&path,&digest,None,&mut Budget::new()).is_err());
         fs::remove_file(&path).unwrap();fs::remove_dir(&directory).unwrap();
+    }
+    #[test]fn real_internal_namespace_rejects_alias_wrong_mode_and_parent_replacement(){
+        use std::os::unix::fs::{symlink,PermissionsExt};
+        assert_eq!(unsafe{geteuid()},501,"offline fixture requires original UID, never root");
+        let path=PathBuf::from(format!("/private/tmp/beluga-v9-internal-directory-test-{}",std::process::id()));
+        fs::create_dir(&path).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o700)).unwrap();
+        let held=held_internal_namespace(&path).unwrap();
+        fs::set_permissions(&path,fs::Permissions::from_mode(0o755)).unwrap();assert!(held_internal_namespace(&path).is_err());assert!(held.last().unwrap().revalidate().is_err());
+        fs::set_permissions(&path,fs::Permissions::from_mode(0o700)).unwrap();
+        let alias=path.with_extension("alias");symlink(&path,&alias).unwrap();assert!(held_internal_namespace(&alias).is_err());fs::remove_file(&alias).unwrap();
+        let renamed=path.with_extension("held");fs::rename(&path,&renamed).unwrap();fs::create_dir(&path).unwrap();fs::set_permissions(&path,fs::Permissions::from_mode(0o700)).unwrap();assert!(held.last().unwrap().revalidate().is_err());
+        fs::remove_dir(&path).unwrap();fs::remove_dir(&renamed).unwrap();
     }
 }

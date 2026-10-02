@@ -96,6 +96,25 @@ class MicrophoneV9GuardBuilderTest < Minitest::Test
     end
   end
 
+  def test_build_input_growing_read_refuses_at_pinned_extent
+    with_directory do |path|
+      input = File.join(path, 'input')
+      File.open(input, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write('offline') }
+      actual_open = File.method(:open); reads = 0
+      replacement = lambda do |*arguments, &block|
+        actual_open.call(*arguments) do |file|
+          file.define_singleton_method(:read) { |_maximum| reads += 1; 'growing!' }
+          block.call(file)
+        end
+      end
+      File.stub(:open, replacement) do
+        assert_raises(Build::Refused) { Build.file_record(input) }
+      end
+      assert_equal 1, reads
+      assert_equal 'offline', File.binread(input)
+    end
+  end
+
   def test_leader_exit_between_nonreaping_wait_and_group_check_is_contained
     with_directory do |path|
       output = File.open(File.join(path, 'child'), 'w')
@@ -173,22 +192,122 @@ class MicrophoneV9GuardBuilderTest < Minitest::Test
 
   def test_exact_compiler_recipes_and_full_source_closure_are_required
     root = '/private/tmp/beluga-microphone-v9-guards.offline'
-    fixture = { 'sources' => (Build.source_paths + [root + '/public/main.swift']).to_h { |path| [path, nil] },
-                'commands' => Build.compile_recipes(root).map { |argv| { 'argv' => argv } } }
-    assert Build.audit_recipes!(fixture, root)
+    [false, true].each do |legacy|
+      paths = legacy ? Build.legacy_source_paths : Build.source_paths
+      recipes = legacy ? Build.legacy_compile_recipes(root) : Build.compile_recipes(root)
+      fixture = { 'sources' => (paths + [root + '/public/main.swift']).to_h { |path| [path, nil] },
+                  'commands' => recipes.map { |argv| { 'argv' => argv } } }
+      assert Build.audit_recipes!(fixture, root, legacy: legacy)
+      mutants = [
+        ->(value) { value['sources'].delete(paths.first) },
+        ->(value) { value['sources']['/private/tmp/foreign.swift'] = nil },
+        ->(value) { value['commands'][0]['argv'] = ['/usr/bin/true'] },
+        ->(value) { value['commands'][0]['argv'].delete('warnings') },
+        ->(value) { value['commands'][0]['argv'][-1] = root + '/not-the-worker' },
+        ->(value) { value['commands'] << value['commands'][0] },
+        ->(value) { value['commands'] << { 'argv' => ['/bin/sh', '-c', 'true'] } }
+      ]
+      if legacy
+        mutants += [
+          ->(value) { value['commands'][1]['argv'].delete('-warnings-as-errors') },
+          ->(value) { value['commands'][2]['argv'][-1] = root + '/not-the-probe' },
+          ->(value) { value['commands'].reverse! }
+        ]
+      else
+        mutants << ->(value) { value['commands'] << { 'argv' => Build.legacy_compile_recipes(root)[1] } }
+      end
+      mutants.each do |mutation|
+        value = Marshal.load(Marshal.dump(fixture)); mutation.call(value)
+        assert_raises(Build::Refused) { Build.audit_recipes!(value, root, legacy: legacy) }
+      end
+    end
+    assert_includes Build.source_paths, Build::ROOT + '/macOS/scripts/opensteamer-microphone-v9-input-staging.rb'
+    assert_equal [Build::RUSTC], Build.compile_recipes(root).map(&:first)
+  end
+
+  def reuse_fixture
+    root = File.dirname(Build::REUSE_PROOF); records = {}; inode = 10
+    make = lambda do |path, sha = ('a' * 64), mode = 0644, size = 1|
+      inode += 1
+      records[path] = { 'path' => path, 'sha256' => sha, 'identity' => [1, inode, 501, 20, 0100000 | mode, 1, size, 1, 0, 1, 0] }
+    end
+    sources = (Build.legacy_source_paths + [root + '/public/main.swift']).to_h { |path| [path, make.call(path)] }
+    sources[Build::DECODER] = make.call(Build::DECODER, Build::DECODER_SHA)
+    sources[Build::MONITOR] = make.call(Build::MONITOR, Build::MONITOR_SHA)
+    tools = { 'worker' => 'transaction' }.merge(Build::REUSED_ROLES).to_h { |role, name| [role, make.call(root + '/' + name, 'b' * 64, 0755)] }
+    commands = Build.legacy_compile_recipes(root).each_with_index.map do |argv, index|
+      logs = %w[stdout stderr].to_h { |channel| [channel, make.call(root + '/commands/' + format('%03d.%s', index + 1, channel), Digest::SHA256.hexdigest(''), 0600, 0)] }
+      { 'argv' => argv, 'pid' => index + 1, 'exitStatus' => 0, 'termSignal' => nil, 'timedOutOrLogBound' => false }.merge(logs)
+    end
+    proof = { 'schema' => 'opensteamer.microphone-v9.native-guard-build.v1', 'deploymentAuthority' => false,
+      'liveQueriesPerformed' => false, 'productCommit' => Build::PRODUCT_COMMIT, 'productTree' => Build::PRODUCT_TREE,
+      'guardToolingCommit' => Build::REUSE_COMMIT, 'guardToolingTree' => Build::REUSE_TREE,
+      'sources' => sources, 'tools' => tools, 'commands' => commands, 'sealedInputs' => {} }
+    proof['swiftCompiler'] = make.call(Build::SWIFTC, Build::SWIFT_SHA)
+    proof['rustCompiler'] = make.call(Build::RUSTC, Build::RUST_SHA)
+    proof['sdkSettings'] = make.call(Build::SDK + '/SDKSettings.json', Build::SDK_SHA)
+    manifest = make.call(Build::REUSE_PROOF, Build::REUSE_SHA, 0600, 1000)
+    [Marshal.load(Marshal.dump(proof)), records, manifest]
+  end
+
+  def fixture_reuse(proof, records)
+    active = []
+    allowed = [Build::REUSE_PROOF] + proof['commands'].flat_map { |command| %w[stdout stderr].map { |key| command[key]['path'] } } +
+      proof['sources'].keys.select { |path| path.end_with?('.swift') } +
+      Build::REUSED_ROLES.values.map { |name| File.dirname(Build::REUSE_PROOF) + '/' + name }
+    reader = lambda do |path, **options|
+      raise 'historical non-Swift source was relabeled/currently audited' unless allowed.include?(path)
+      active << path
+      value = records.fetch(path)
+      raise Build::Staging::Refused, 'fixture changed' if options[:expected] && options[:expected] != value
+      value
+    end
+    result = File.stub(:realpath, ->(path) { path }) do
+      Build::Staging.stub(:record!, reader) do
+        Build.stub(:proof_bytes!, ->(_record) { JSON.generate(proof) }) do
+          Build.stub(:file_record, ->(path, **_options) { records.fetch(path) }) { Build.reused_tools! }
+        end
+      end
+    end
+    [result, active]
+  end
+
+  def test_reused_v1_original_provenance_and_unchanged_swift_records
+    proof, records, manifest = reuse_fixture
+    result, active = fixture_reuse(proof, records)
+    assert_equal %w[buildProof guardToolingCommit guardToolingTree tools], result.keys.sort
+    assert_equal manifest, result['buildProof']
+    assert_equal Build::REUSE_COMMIT, result['guardToolingCommit']
+    assert_equal Build::REUSE_TREE, result['guardToolingTree']
+    assert_equal Build::REUSED_ROLES.keys.sort, result['tools'].keys.sort
+    Build::REUSED_ROLES.each_key { |role| assert_equal proof['tools'][role], result['tools'][role] }
+    refute_includes active, Build::ROOT + '/macOS/scripts/build-opensteamer-microphone-v9-guards.rb'
+    refute_includes active, Build::ROOT + '/macOS/scripts/opensteamer-microphone-v9-transaction.rs'
+  end
+
+  def test_reused_v1_refuses_relabeling_fields_recipes_and_record_drift
     mutants = [
-      ->(value) { value['sources'].delete(Build.source_paths.first) },
-      ->(value) { value['sources']['/private/tmp/foreign.swift'] = nil },
-      ->(value) { value['commands'][0]['argv'] = ['/usr/bin/true'] },
-      ->(value) { value['commands'][1]['argv'].delete('-warnings-as-errors') },
-      ->(value) { value['commands'][2]['argv'][-1] = root + '/not-the-probe' },
-      ->(value) { value['commands'] << value['commands'][0] },
-      ->(value) { value['commands'].reverse! },
-      ->(value) { value['commands'] << { 'argv' => ['/bin/sh', '-c', 'true'] } }
+      ->(proof, _records) { proof['schema'] = 'opensteamer.microphone-v9.native-guard-build.v2' },
+      ->(proof, _records) { proof['originalInputs'] = {} },
+      ->(proof, _records) { proof['reusedTools'] = {} },
+      ->(proof, _records) { proof['releaseInputs'] = {} },
+      ->(proof, _records) { proof['deploymentAuthority'] = true },
+      ->(proof, _records) { proof['liveQueriesPerformed'] = true },
+      ->(proof, _records) { proof['guardToolingCommit'] = 'c' * 40 },
+      ->(proof, _records) { proof['guardToolingTree'] = 'c' * 40 },
+      ->(proof, _records) { proof['commands'][1]['argv'].delete('-warnings-as-errors') },
+      ->(proof, _records) { proof['sources'].delete(Build::MONITOR) },
+      ->(proof, _records) { proof['tools'].delete('routeGuardian') },
+      ->(_proof, records) { records[Build::REUSE_PROOF]['sha256'] = 'd' * 64 }
     ]
     mutants.each do |mutation|
-      value = Marshal.load(Marshal.dump(fixture)); mutation.call(value)
-      assert_raises(Build::Refused) { Build.audit_recipes!(value, root) }
+      proof, records, = reuse_fixture; mutation.call(proof, records)
+      assert_raises(Build::Refused) { fixture_reuse(proof, records) }
+    end
+    %w[idleHelper bothOrderProbe routeGuardian].each do |role|
+      proof, records, = reuse_fixture
+      input = proof['tools'].fetch(role); input['sha256'] = 'e' * 64
+      assert_raises(Build::Refused) { fixture_reuse(proof, records) }
     end
   end
 

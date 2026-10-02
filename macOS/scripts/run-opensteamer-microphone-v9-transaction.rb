@@ -19,6 +19,8 @@ module BelugaMicrophoneV9Supervisor
   OUTCOME_KEYS = %w[schema namespace request_sha256 terminal normal_restarts rollback_restarts reason].freeze
   SEAL_KEYS = %w[schema namespace nonce request_sha256 build_manifest_sha256 worker_sha256 terminal authority_sha256].freeze
   TERMINALS = %w[REFUSED COMMITTED_V9 COMMITTED_V9_UNVERIFIED ROLLED_BACK_EXACT_V8 RECOVERY_REQUIRED].freeze
+  INTERNAL_DIRECTORY = %r{\A/private/tmp/beluga-microphone-v9-supervisor\.[A-Za-z0-9_-]+\z}.freeze
+  INTERNAL_REQUEST = %r{\A/private/tmp/beluga-microphone-v9-supervisor\.[A-Za-z0-9_-]+/native-request\.txt\z}.freeze
 
   def self.require!(value, message)
     raise Refused, message unless value
@@ -27,6 +29,21 @@ module BelugaMicrophoneV9Supervisor
   def self.original_uid!
     Contract.unelevated!
     require!(ENV.keys.none? { |key| key.match?(/\A(?:RUBY|GEM|BUNDLE|DYLD_|LD_|GIT_CONFIG|RUSTC_WRAPPER|RUSTFLAGS|SWIFT_)/) }, 'inherited supervisor loader refused')
+  end
+
+  def self.internal_directory_fence!(path, held, expected, commands)
+    require!(path.is_a?(String) && path.match?(INTERNAL_DIRECTORY) && File.realpath(path) == path, 'internal supervisor directory role/alias refused')
+    stat = File.lstat(path); descriptor_stat = held.stat
+    identity = [stat.dev, stat.ino, stat.uid, stat.gid, stat.mode]
+    require!(stat.directory? && stat.uid == 501 && stat.mode & 07777 == 0700 &&
+             descriptor_stat.directory? && [descriptor_stat.dev, descriptor_stat.ino, descriptor_stat.uid, descriptor_stat.gid, descriptor_stat.mode] == identity &&
+             (expected.nil? || expected == identity), 'internal supervisor directory identity/ownership changed')
+    permissions = commands.run('/bin/ls', '-lde', path)
+    require!(permissions.lines.size == 1 && permissions.start_with?('drwx------ '), 'internal supervisor directory ACL refused')
+    terminal = File.lstat(path)
+    require!([terminal.dev, terminal.ino, terminal.uid, terminal.gid, terminal.mode] == identity && File.realpath(path) == path,
+             'internal supervisor directory changed during ACL check')
+    identity
   end
 
   def self.flat(bytes, keys)
@@ -86,7 +103,7 @@ module BelugaMicrophoneV9Supervisor
     Contract.validate_native!(native)
     [request_path, manifest_path, worker_path].each { |path| Contract.absolute!(path) }
     [request_sha, manifest_sha].each { |digest| Contract.sha!(digest) }
-    require!(request_path.start_with?('/Volumes/t7/') && manifest_path.match?(%r{\A/private/tmp/beluga-microphone-v9-guards\.[A-Za-z0-9_-]+/build-proof\.json\z}) &&
+    require!(request_path.match?(INTERNAL_REQUEST) && manifest_path.match?(%r{\A/private/tmp/beluga-microphone-v9-guards\.[A-Za-z0-9_-]+/build-proof\.json\z}) &&
              worker_path == File.join(File.dirname(manifest_path), 'transaction'), 'bootstrap input roles refused')
     directory = BASE + '/microphone-v9-bootstrap-' + native.fetch('nonce')
     destination = directory + '/worker'
@@ -207,8 +224,10 @@ module BelugaMicrophoneV9Supervisor
   end
 
   def self.manifest_identity_fence!(manifest)
-    records = manifest.fetch('sources').values + manifest.fetch('tools').values + manifest.fetch('sealedInputs').values +
-      %w[swiftCompiler rustCompiler sdkSettings].map { |key| manifest.fetch(key) }
+    reused = manifest.fetch('reusedTools')
+    records = %w[sources tools sealedInputs originalInputs releaseInputs].flat_map { |key| manifest.fetch(key).values } +
+      %w[swiftCompiler rustCompiler sdkSettings].map { |key| manifest.fetch(key) } +
+      [reused.fetch('buildProof')] + reused.fetch('tools').values
     records.each do |record|
       path = record.fetch('path'); expected = record.fetch('identity')
       require!(File.realpath(path) == path && Build.identity(File.lstat(path)) == expected, 'prepared build input identity changed')
@@ -242,14 +261,19 @@ module BelugaMicrophoneV9Supervisor
   def self.persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, native)
     native_path = File.join(evidence, 'native-request.txt'); native_bytes = Contract.native_text(native)
     request_sha = Digest::SHA256.hexdigest(native_bytes)
-    File.open(native_path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(native_bytes); file.flush; file.fsync }
-    require!(Build.file_record(native_path, digest: request_sha)['sha256'] == request_sha, 'derived native request differs')
+    created_identity = nil
+    File.open(native_path, File::WRONLY | File::CREAT | File::EXCL, 0600) do |file|
+      file.write(native_bytes); file.flush; file.fsync; created_identity = Contract.stat_identity(file.stat)
+    end
+    request_bytes, request_identity = Contract.read_file!({ 'path' => native_path, 'sha256' => request_sha }, mode: 0600, maximum: 65_536)
+    require!(request_bytes == native_bytes && request_identity['identity'] == created_identity,
+             'derived native request differs')
     preparation = { 'schema' => 'opensteamer.microphone-v9-dispatch-inputs.v1',
       'coordinator' => descriptor, 'buildManifest' => { 'path' => manifest_path, 'sha256' => manifest_sha },
       'nativeRequest' => { 'path' => native_path, 'sha256' => request_sha } }
     File.open(File.join(evidence, 'dispatch-inputs.json'), File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.generate(preparation) + "\n"); file.flush; file.fsync }
     File.open(evidence, File::RDONLY | File::NOFOLLOW) { |directory| directory.fsync }
-    [native_path, request_sha]
+    [native_path, request_sha, request_identity]
   end
 
   def self.seal!(coordinator_path, coordinator_sha, manifest_path, manifest_sha, collect_fresh: nil)
@@ -258,14 +282,16 @@ module BelugaMicrophoneV9Supervisor
     bytes, identity = Contract.read_file!(descriptor, mode: 0600, maximum: Contract::MAX_JSON)
     coordinator = Contract.parse_json(bytes)
     Contract.validate_request!(coordinator)
-    evidence = Dir.mktmpdir('beluga-microphone-v9-supervisor.', '/Volumes/t7'); File.chmod(0700, evidence)
+    evidence = Dir.mktmpdir('beluga-microphone-v9-supervisor.', '/private/tmp'); File.chmod(0700, evidence)
     command_directory = File.join(evidence, 'audit-commands'); Dir.mkdir(command_directory, 0700)
     commands = Build::Commands.new(command_directory)
+    held_directory = File.open(evidence, File::RDONLY | File::NOFOLLOW)
+    directory_identity = internal_directory_fence!(evidence, held_directory, nil, commands)
     manifest_record = Build.file_record(manifest_path, digest: manifest_sha)
     manifest = Build.audit_build!(manifest_path, manifest_sha, commands)
     require!(Build.file_record(manifest_path, digest: manifest_sha) == manifest_record, 'build manifest changed during audit')
     manifest_bindings!(coordinator.fetch('nativeRequest'), coordinator, manifest)
-    native_path = request_sha = nil
+    native_path = request_sha = persisted_request_identity = nil
     if collect_fresh
       require!(collect_fresh.respond_to?(:call), 'fresh collector is not callable')
       original_descriptor, original_identity = descriptor, identity
@@ -282,22 +308,28 @@ module BelugaMicrophoneV9Supervisor
         manifest_identity_fence!(manifest)
         local_source_generation!(manifest, commands)
         require!(Build.file_record(manifest_path, digest: manifest_sha) == manifest_record, 'prepared build manifest changed')
-        native_path, request_sha = persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, coordinator.fetch('nativeRequest'))
+        native_path, request_sha, persisted_request_identity = persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, coordinator.fetch('nativeRequest'))
+        internal_directory_fence!(evidence, held_directory, directory_identity, commands)
         # Contract's prepared artifact/receipt/tool fences and actual five-second
         # gate check run after this continuation, including all private fsyncs.
         coordinator
       end
     else
       verification = Contract.verify(coordinator)
-      native_path, request_sha = persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, coordinator.fetch('nativeRequest'))
+      native_path, request_sha, persisted_request_identity = persist_dispatch_inputs!(evidence, descriptor, manifest_path, manifest_sha, coordinator.fetch('nativeRequest'))
     end
     require!(Contract.read_file!(descriptor, mode: 0600, maximum: Contract::MAX_JSON)[1] == identity, 'coordinator changed before dispatch')
     native = coordinator.fetch('nativeRequest')
-    require!(request_sha == verification.fetch('nativeRequestSha256') && File.binread(native_path) == verification.fetch('nativeRequest'), 'prepared native projection differs')
+    request_bytes, request_identity = Contract.read_file!({ 'path' => native_path, 'sha256' => request_sha }, mode: 0600, maximum: 65_536)
+    require!(request_sha == verification.fetch('nativeRequestSha256') && request_bytes == verification.fetch('nativeRequest') &&
+             request_identity == persisted_request_identity, 'prepared native projection differs')
     script = bootstrap_script(native, native_path, request_sha, manifest_path, manifest_sha, manifest.fetch('tools').fetch('worker').fetch('path'))
     session = OwnedSession.new(evidence, seconds: 45, recovery_seconds: 45)
     manifest_identity_fence!(manifest) if collect_fresh
     require!(Build.file_record(manifest_path, digest: manifest_sha) == manifest_record, 'build manifest changed before dispatch')
+    internal_directory_fence!(evidence, held_directory, directory_identity, commands)
+    require!(Contract.read_file!({ 'path' => native_path, 'sha256' => request_sha }, mode: 0600, maximum: 65_536)[1] == request_identity,
+             'internal native request changed before dispatch')
     fresh_gate_fence!(coordinator, verification)
     stdout, stderr, status = with_signal_abort(session) { session.run(['/usr/bin/sudo', '-n', '--', '/bin/sh', '-c', script]) }
     fields = flat(stdout, SEAL_KEYS)
@@ -307,6 +339,8 @@ module BelugaMicrophoneV9Supervisor
              fields['terminal'] == 'SEALED_INPUTS_NOT_INSTALLED' && fields['authority_sha256'].match?(/\A[0-9a-f]{64}\z/), 'root seal did not prove a complete exact namespace; retain attempt')
     { 'evidence' => evidence, 'request' => native_path, 'requestSHA256' => request_sha, 'result' => fields,
       'deploymentAuthority' => false, 'liveInstalled' => false }
+  ensure
+    held_directory&.close
   end
 
   def self.fresh_execute_inputs!(request_path, request_sha, native, commands)
@@ -340,12 +374,20 @@ module BelugaMicrophoneV9Supervisor
   def self.execute!(mode, original_request_path, request_sha, expected_worker_sha)
     original_uid!
     require!(%w[--execute-authorized --resume-authorized].include?(mode), 'native dispatch mode refused')
-    bytes, = Contract.read_file!({ 'path' => original_request_path, 'sha256' => request_sha }, mode: 0600, maximum: 65_536)
+    require!(original_request_path.is_a?(String) && original_request_path.match?(INTERNAL_REQUEST), 'internal native request role refused')
+    evidence = Dir.mktmpdir('beluga-microphone-v9-supervisor.', '/private/tmp'); File.chmod(0700, evidence)
+    command_directory = File.join(evidence, 'audit-commands'); Dir.mkdir(command_directory, 0700)
+    commands = Build::Commands.new(command_directory)
+    request_directory = File.dirname(original_request_path)
+    held_request_directory = File.open(request_directory, File::RDONLY | File::NOFOLLOW)
+    request_directory_identity = internal_directory_fence!(request_directory, held_request_directory, nil, commands)
+    held_directory = File.open(evidence, File::RDONLY | File::NOFOLLOW)
+    directory_identity = internal_directory_fence!(evidence, held_directory, nil, commands)
+    request_descriptor = { 'path' => original_request_path, 'sha256' => request_sha }
+    bytes, request_identity = Contract.read_file!(request_descriptor, mode: 0600, maximum: 65_536)
     native = Contract.parse_native(bytes); Contract.sha!(expected_worker_sha)
     require!(native['worker_sha256'] == expected_worker_sha, 'independent worker pin differs')
-    evidence = Dir.mktmpdir('beluga-microphone-v9-supervisor.', '/Volumes/t7'); File.chmod(0700, evidence)
-    command_directory = File.join(evidence, 'audit-commands'); Dir.mkdir(command_directory, 0700)
-    fresh_execute_inputs!(original_request_path, request_sha, native, Build::Commands.new(command_directory)) if mode == '--execute-authorized'
+    fresh_execute_inputs!(original_request_path, request_sha, native, commands) if mode == '--execute-authorized'
     executable = EXECUTABLES + '/' + native.fetch('namespace') + '/worker'
     # Exact root role; native code holds/revalidates root ownership, ancestry,
     # inode, bytes, original authority, controller lock and fresh live gate.
@@ -355,6 +397,9 @@ module BelugaMicrophoneV9Supervisor
              Build.identity(File.lstat(executable)) == Build.identity(stat), 'sealed worker role changed')
     session = OwnedSession.new(evidence, seconds: native.fetch('timeout_seconds').to_i + 10)
     script = sealed_execution_script(native, mode, request_sha, expected_worker_sha)
+    internal_directory_fence!(request_directory, held_request_directory, request_directory_identity, commands)
+    internal_directory_fence!(evidence, held_directory, directory_identity, commands)
+    require!(Contract.read_file!(request_descriptor, mode: 0600, maximum: 65_536)[1] == request_identity, 'internal execution request changed')
     stdout, stderr, status = with_signal_abort(session) { session.run(['/usr/bin/sudo', '-n', '--', '/bin/sh', '-c', script]) }
     fields = validate_outcome!(stdout, native, request_sha)
     require!(stderr.empty? && status.exited?, 'native dispatcher did not return a typed terminal')
@@ -364,6 +409,8 @@ module BelugaMicrophoneV9Supervisor
     # claiming success; nonzero/refused/aborted outcomes can never be green.
     { 'evidence' => evidence, 'result' => fields, 'exitStatus' => status.exitstatus,
       'abortReason' => session.abort_reason, 'deploymentVerified' => false }
+  ensure
+    held_directory&.close; held_request_directory&.close
   end
 
   def self.main(arguments)

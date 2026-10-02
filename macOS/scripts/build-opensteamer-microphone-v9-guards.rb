@@ -7,6 +7,7 @@ require 'json'
 require 'open3'
 require 'tmpdir'
 require_relative 'opensteamer-microphone-v9-host-gate'
+require_relative 'opensteamer-microphone-v9-input-staging'
 
 module BelugaMicrophoneV9GuardBuild
   class Refused < StandardError; end
@@ -34,6 +35,12 @@ module BelugaMicrophoneV9GuardBuild
   MONITOR = PRODUCT + '/macOS/scripts/opensteamer-v91-coreaudio-route-monitor.swift'
   MONITOR_SHA = 'b7ffc3c939ff2b19d1f85305335b3363555a967a76b38b034db377209f88bf86'.freeze
   OBSERVERS = '/Users/ahmed/Library/Application Support/opensteamer/paired-host-updates-v90/paired-v90-update-1790273646-83304-497866f7-25e2-4701-b155-442ca77d541c/pinned-v86-observer-tools'.freeze
+  REUSE_PROOF = '/private/tmp/beluga-microphone-v9-guards.20261001-32089-syciju/build-proof.json'.freeze
+  REUSE_SHA = 'a4181ebc4124a0445b58be029207d44b9c01b5209d9c9f091dbb94721e280a00'.freeze
+  REUSE_COMMIT = '3132f604ed68de66e788e2860212fe4474b5235f'.freeze
+  REUSE_TREE = '5491060293b9cf13b929c5d3ae8129fdc31b1d37'.freeze
+  REUSED_ROLES = { 'idleHelper' => 'idle-helper', 'bothOrderProbe' => 'public-proof', 'routeGuardian' => 'route-guardian' }.freeze
+  Staging = BelugaMicrophoneV9InputStaging
   MAX_COMMAND_SECONDS = 120
   MAX_LOG_BYTES = 16 * 1024 * 1024
   SAFE_ENV = { 'PATH' => '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME' => '/var/empty',
@@ -98,14 +105,11 @@ module BelugaMicrophoneV9GuardBuild
   end
 
   def self.file_record(path, digest: nil)
-    require!(path.start_with?('/') && File.realpath(path) == path, 'build input alias refused')
-    before = File.lstat(path)
-    require!(before.file? && before.uid == 501 && before.nlink == 1 &&
-             (before.mode & 07022).zero? && before.size.between?(1, 256 * 1024 * 1024), 'build input metadata refused')
-    sha = Digest::SHA256.file(path).hexdigest
-    require!(identity(File.lstat(path)) == identity(before) && (!digest || sha == digest), 'build input changed or digest differs')
-    { 'path' => path, 'sha256' => sha, 'identity' => identity(before) }
-  rescue SystemCallError
+    internal = path.is_a?(String) && path.match?(%r{\A/private/tmp/beluga-microphone-v9-guards\.[a-zA-Z0-9_-]+/})
+    record = Staging.record!(path, internal: internal)
+    require!(!digest || record['sha256'] == digest, 'build input digest differs')
+    record
+  rescue Staging::Refused, SystemCallError
     raise Refused, 'build input unavailable'
   end
 
@@ -217,7 +221,7 @@ module BelugaMicrophoneV9GuardBuild
     records
   end
 
-  def self.source_paths
+  def self.legacy_source_paths
     helper = ROOT + '/macOS/scripts/microphone-v9-idle-proof'
     [ROOT + '/iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift', DECODER, MONITOR,
      helper + '/BelugaMicrophoneIdleProof.swift', helper + '/BelugaMicrophoneEndpointContract.swift', helper + '/main.swift',
@@ -229,10 +233,19 @@ module BelugaMicrophoneV9GuardBuild
       %w[transaction os backend proof seal].map { |name| ROOT + '/macOS/scripts/opensteamer-microphone-v9-' + name + '.rs' }
   end
 
+  def self.source_paths
+    legacy_source_paths + [ROOT + '/macOS/scripts/opensteamer-microphone-v9-input-staging.rb']
+  end
+
   def self.compile_recipes(root)
+    [[RUSTC, '--edition=2021', '-O', '-D', 'warnings', ROOT + '/macOS/scripts/opensteamer-microphone-v9-transaction.rs', '-o', root + '/transaction']]
+  end
+
+  # Historical recipes are checked, not executed. Their output/source paths
+  # retain the original build namespace and original producer provenance.
+  def self.legacy_compile_recipes(root)
     helper = ROOT + '/macOS/scripts/microphone-v9-idle-proof'
-    [
-      [RUSTC, '--edition=2021', '-O', '-D', 'warnings', ROOT + '/macOS/scripts/opensteamer-microphone-v9-transaction.rs', '-o', root + '/transaction'],
+    compile_recipes(root) + [
       [SWIFTC, '-sdk', SDK, '-swift-version', '6', '-warnings-as-errors', '-O', DECODER,
        helper + '/BelugaMicrophoneIdleProof.swift', helper + '/BelugaMicrophoneEndpointContract.swift', helper + '/main.swift',
        '-framework', 'CoreAudio', '-framework', 'CryptoKit', '-o', root + '/idle-helper'],
@@ -243,18 +256,90 @@ module BelugaMicrophoneV9GuardBuild
     ]
   end
 
-  def self.audit_recipes!(proof, root)
-    require!(proof['sources'].is_a?(Hash) && proof['sources'].keys.sort == (source_paths + [root + '/public/main.swift']).sort,
+  def self.audit_recipes!(proof, root, legacy: false)
+    paths = legacy ? legacy_source_paths : source_paths
+    require!(proof['sources'].is_a?(Hash) && proof['sources'].keys.sort == (paths + [root + '/public/main.swift']).sort,
              'build exact source closure differs')
-    recipes = compile_recipes(root)
+    recipes = legacy ? legacy_compile_recipes(root) : compile_recipes(root)
     commands = proof['commands']
-    require!(commands.is_a?(Array) && commands.size.between?(4, 40), 'build command evidence extent differs')
+    require!(commands.is_a?(Array) && commands.size.between?(recipes.size, 40), 'build command evidence extent differs')
     compiler_commands = commands.select { |command| command.is_a?(Hash) && command['argv'].is_a?(Array) && [RUSTC, SWIFTC].include?(command['argv'][0]) }
     require!(compiler_commands.map { |command| command['argv'] } == recipes, 'build exact ordered compiler recipes differ')
     require!(commands.all? { |command| command.is_a?(Hash) && command['argv'].is_a?(Array) &&
              (recipes.include?(command['argv']) || (command['argv'][0] == '/usr/bin/git' && command['argv'][1] == '-C' &&
              [ROOT, PRODUCT].include?(command['argv'][2]))) }, 'build non-recipe command refused')
     true
+  end
+
+  def self.audit_command_records!(records, root)
+    require!(records.is_a?(Array) && records.size.between?(1, 40), 'build command evidence extent differs')
+    records.each_with_index do |command, index|
+      require!(command.is_a?(Hash) && command.keys.sort == %w[argv exitStatus pid stderr stdout termSignal timedOutOrLogBound] &&
+               command['timedOutOrLogBound'] == false && command['exitStatus'] == 0 && command['termSignal'].nil? &&
+               command['pid'].is_a?(Integer) && command['pid'].positive? && command['argv'].is_a?(Array) &&
+               !command['argv'].empty? && command['argv'].all? { |item| item.is_a?(String) && item.bytesize.between?(1, 8192) && item.ascii_only? }, 'build command result differs')
+      %w[stdout stderr].each do |channel|
+        input = command.fetch(channel)
+        require!(input.is_a?(Hash) && input.keys.sort == %w[identity path sha256] &&
+          input['path'] == File.join(root, 'commands', format('%03d.%s', index + 1, channel)), 'build command log path differs')
+        require!(input['identity'][4] & 07777 == 0600 && input['identity'][6] <= MAX_LOG_BYTES &&
+          Staging.record!(input.fetch('path'), expected: input, empty: true, internal: true) == input, 'build command log changed')
+      end
+    end
+  end
+
+  def self.reused_tools!
+    record = Staging.record!(REUSE_PROOF, internal: true)
+    require!(record['sha256'] == REUSE_SHA && record['identity'][4] & 07777 == 0600 && record['identity'][6] <= 1_048_576,
+      'original reusable proof pin/mode/extent differs')
+    proof = JSON.parse(proof_bytes!(record), object_class: UniqueObject, create_additions: false, max_nesting: 16, allow_nan: false)
+    keys = %w[productCommit productTree guardToolingCommit guardToolingTree schema deploymentAuthority liveQueriesPerformed sources swiftCompiler rustCompiler sdkSettings commands sealedInputs tools]
+    require!(proof.is_a?(Hash) && proof.keys.sort == keys.sort && proof['schema'] == 'opensteamer.microphone-v9.native-guard-build.v1' &&
+      proof['deploymentAuthority'] == false && proof['liveQueriesPerformed'] == false &&
+      proof.values_at('productCommit', 'productTree', 'guardToolingCommit', 'guardToolingTree') == [PRODUCT_COMMIT, PRODUCT_TREE, REUSE_COMMIT, REUSE_TREE],
+      'original reusable build provenance differs')
+    root = File.dirname(REUSE_PROOF)
+    audit_recipes!(proof, root, legacy: true); audit_command_records!(proof.fetch('commands'), root)
+    require!(proof['tools'].is_a?(Hash) && proof['tools'].keys.sort == %w[bothOrderProbe idleHelper routeGuardian worker], 'original reusable tool roles differ')
+    helper = ROOT + '/macOS/scripts/microphone-v9-idle-proof'
+    closure = [DECODER, MONITOR, ROOT + '/iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift',
+      helper + '/BelugaMicrophoneIdleProof.swift', helper + '/BelugaMicrophoneEndpointContract.swift', helper + '/main.swift', root + '/public/main.swift']
+    closure.each do |path|
+      input = proof.fetch('sources').fetch(path)
+      require!(input['path'] == path && Staging.record!(path, expected: input) == input, 'reused Swift source closure changed')
+    end
+    require!(proof['sources'].fetch(DECODER)['sha256'] == DECODER_SHA && proof['sources'].fetch(MONITOR)['sha256'] == MONITOR_SHA &&
+      proof['sources'].fetch(root + '/public/main.swift')['sha256'] == proof['sources'].fetch(closure[2])['sha256'], 'reused Swift source byte pins differ')
+    { 'swiftCompiler' => file_record(File.realpath(SWIFTC), digest: SWIFT_SHA),
+      'rustCompiler' => file_record(RUSTC, digest: RUST_SHA),
+      'sdkSettings' => file_record(File.join(File.realpath(SDK), 'SDKSettings.json'), digest: SDK_SHA) }.each do |key, input|
+      require!(proof[key] == input, 'original reusable toolchain differs')
+    end
+    tools = REUSED_ROLES.to_h do |role, name|
+      input = proof.fetch('tools').fetch(role)
+      require!(input['path'] == root + '/' + name && input['identity'][4] & 0111 != 0 &&
+        Staging.record!(input.fetch('path'), expected: input, internal: true) == input, 'original reusable Swift binary changed')
+      [role, input]
+    end
+    # Changed historical Ruby/Rust source records remain evidence in the pinned
+    # original proof. They are not relabeled as this build's current sources.
+    require!(Staging.record!(REUSE_PROOF, expected: record, internal: true) == record, 'original reusable proof changed')
+    { 'buildProof' => record, 'guardToolingCommit' => REUSE_COMMIT, 'guardToolingTree' => REUSE_TREE, 'tools' => tools }
+  rescue JSON::ParserError, JSON::NestingError, KeyError, TypeError, NoMethodError, Staging::Refused, SystemCallError, IOError
+    raise Refused, 'original reusable build audit refused'
+  end
+
+  def self.proof_bytes!(record)
+    require!(record.fetch('identity')[6].between?(1, 1_048_576), 'build proof read extent differs')
+    bytes = File.open(record.fetch('path'), File::RDONLY | File::NOFOLLOW) do |file|
+      require!(identity(file.stat) == record.fetch('identity'), 'build proof FD differs')
+      value = file.read(record.fetch('identity')[6] + 1)
+      require!(identity(file.stat) == record.fetch('identity'), 'build proof changed at read')
+      value
+    end
+    require!(bytes && bytes.bytesize == record.fetch('identity')[6] && Digest::SHA256.hexdigest(bytes) == record.fetch('sha256') &&
+      bytes.dup.force_encoding('UTF-8').valid_encoding? && identity(File.lstat(record.fetch('path'))) == record.fetch('identity'), 'build proof changed during bounded read')
+    bytes
   end
 
   def self.source_proof!(commands)
@@ -281,16 +366,16 @@ module BelugaMicrophoneV9GuardBuild
     require!(Process.uid == 501 && Process.euid == 501 && expected_sha.match?(/\A[0-9a-f]{64}\z/), 'build audit UID/digest refused')
     record = file_record(path, digest: expected_sha)
     require!(record.fetch('identity')[6] <= 1_048_576 && record.fetch('identity')[4] & 07777 == 0600, 'build proof mode/extent refused')
-    bytes = File.binread(path)
+    bytes = proof_bytes!(record)
     require!(file_record(path, digest: expected_sha) == record && bytes.dup.force_encoding('UTF-8').valid_encoding?, 'build proof changed during read')
     proof = JSON.parse(bytes, object_class: UniqueObject, create_additions: false, max_nesting: 16, allow_nan: false)
-    expected_keys = %w[productCommit productTree guardToolingCommit guardToolingTree schema deploymentAuthority liveQueriesPerformed sources swiftCompiler rustCompiler sdkSettings commands sealedInputs tools]
-    require!(proof.is_a?(Hash) && proof.keys.sort == expected_keys.sort && proof['schema'] == 'opensteamer.microphone-v9.native-guard-build.v1' &&
+    expected_keys = %w[productCommit productTree guardToolingCommit guardToolingTree schema deploymentAuthority liveQueriesPerformed sources swiftCompiler rustCompiler sdkSettings commands originalInputs sealedInputs releaseInputs reusedTools tools]
+    require!(proof.is_a?(Hash) && proof.keys.sort == expected_keys.sort && proof['schema'] == 'opensteamer.microphone-v9.native-guard-build.v2' &&
              proof['deploymentAuthority'] == false && proof['liveQueriesPerformed'] == false, 'build proof schema/authority refused')
     provenance = source_proof!(commands)
     require!(provenance.all? { |key, value| proof[key] == value }, 'build source provenance differs')
     build_root = File.dirname(path)
-    require!(build_root.start_with?('/private/tmp/beluga-microphone-v9-guards.') && File.basename(path) == 'build-proof.json', 'build output namespace refused')
+    require!(build_root.match?(%r{\A/private/tmp/beluga-microphone-v9-guards\.[a-zA-Z0-9_-]+\z}) && File.basename(path) == 'build-proof.json', 'build output namespace refused')
     audit_recipes!(proof, build_root)
     require!(proof['tools'].is_a?(Hash) && proof['tools'].keys.sort == %w[bothOrderProbe idleHelper routeGuardian worker], 'build role set differs')
     { 'worker' => 'transaction', 'idleHelper' => 'idle-helper', 'bothOrderProbe' => 'public-proof', 'routeGuardian' => 'route-guardian' }.each do |role, name|
@@ -299,8 +384,13 @@ module BelugaMicrophoneV9GuardBuild
                input['identity'][4].is_a?(Integer) && input['identity'][4] & 0111 != 0, 'compiled build role path/mode differs')
     end
     inputs = sealed_inputs!
-    require!(proof['sealedInputs'].is_a?(Hash) && proof['sealedInputs'].keys.sort == (inputs.keys + ['tools/gate_inputs.txt']).sort &&
-             inputs.all? { |relative, input| proof['sealedInputs'][relative] == input }, 'build sealed dependency records differ')
+    Staging.audit!(build_root, inputs, proof.fetch('originalInputs'), proof.fetch('sealedInputs'), proof.fetch('releaseInputs'))
+    require!(proof.fetch('reusedTools') == reused_tools!, 'build original reusable proof differs')
+    REUSED_ROLES.each_key do |role|
+      original = proof.fetch('reusedTools').fetch('tools').fetch(role); copied = proof.fetch('tools').fetch(role)
+      require!(copied['sha256'] == original['sha256'] && copied['identity'][4] & 07777 == original['identity'][4] & 07777 &&
+        copied['identity'][0, 2] != original['identity'][0, 2], 'build reused tool copy crosslink differs')
+    end
     require!(proof['sources'].is_a?(Hash) && proof['sources'].size.between?(8, 32) && proof['sources'].all? { |source, input|
       input.is_a?(Hash) && input['path'] == source &&
         (source == DECODER || source == MONITOR || source == File.join(build_root, 'public/main.swift') ||
@@ -310,33 +400,20 @@ module BelugaMicrophoneV9GuardBuild
     require!(proof['sources'].fetch(DECODER).fetch('sha256') == DECODER_SHA && proof['sources'].fetch(MONITOR).fetch('sha256') == MONITOR_SHA &&
              proof['sources'].fetch(File.join(build_root, 'public/main.swift')).fetch('sha256') == proof['sources'].fetch(public_source).fetch('sha256'),
              'build frozen or derived compiler source differs')
-    records = proof['sources'].values + proof['tools'].values + proof['sealedInputs'].values +
+    records = proof['sources'].values + proof['tools'].values + proof['originalInputs'].values + proof['sealedInputs'].values + proof['releaseInputs'].values +
       %w[swiftCompiler rustCompiler sdkSettings].map { |key| proof.fetch(key) }
     records.each do |input|
       require!(input.is_a?(Hash) && input.keys.sort == %w[identity path sha256] && file_record(input.fetch('path'), digest: input.fetch('sha256')) == input,
                'build input or role bytes changed')
     end
+    proof['tools'].each_value { |input| Staging.record!(input.fetch('path'), expected: input, internal: true) }
     require!(proof['swiftCompiler'] == file_record(File.realpath(SWIFTC), digest: SWIFT_SHA) &&
              proof['rustCompiler'] == file_record(RUSTC, digest: RUST_SHA) &&
              proof['sdkSettings'] == file_record(File.join(File.realpath(SDK), 'SDKSettings.json'), digest: SDK_SHA), 'build toolchain differs')
-    require!(proof['commands'].is_a?(Array) && proof['commands'].size.between?(4, 40), 'build command evidence extent differs')
-    proof['commands'].each_with_index do |command, index|
-      require!(command.is_a?(Hash) && command.keys.sort == %w[argv exitStatus pid stderr stdout termSignal timedOutOrLogBound] &&
-               command['timedOutOrLogBound'] == false && command['exitStatus'] == 0 && command['termSignal'].nil? &&
-               command['pid'].is_a?(Integer) && command['pid'].positive? && command['argv'].is_a?(Array) &&
-               !command['argv'].empty? && command['argv'].all? { |item| item.is_a?(String) && item.bytesize.between?(1, 8192) && item.ascii_only? }, 'build command result differs')
-      %w[stdout stderr].each do |channel|
-        input = command.fetch(channel); before = File.lstat(input.fetch('path'))
-        require!(input.keys.sort == %w[identity path sha256] && input['path'] == File.join(build_root, 'commands', format('%03d.%s', index + 1, channel)) &&
-                 File.realpath(input['path']) == input['path'] && before.file? && before.uid == 501 &&
-                 before.nlink == 1 && before.mode & 07777 == 0600 && before.size <= MAX_LOG_BYTES &&
-                 identity(before) == input['identity'] && Digest::SHA256.file(input['path']).hexdigest == input['sha256'] &&
-                 identity(File.lstat(input['path'])) == identity(before), 'build command log changed')
-      end
-    end
+    audit_command_records!(proof.fetch('commands'), build_root)
     require!(source_proof!(commands) == provenance && file_record(path, digest: expected_sha) == record, 'build audit source or manifest changed')
     proof
-  rescue JSON::ParserError, JSON::NestingError, KeyError, TypeError, NoMethodError, SystemCallError
+  rescue JSON::ParserError, JSON::NestingError, KeyError, TypeError, NoMethodError, Staging::Refused, SystemCallError
     raise Refused, 'build evidence audit refused (no installation authority)'
   end
 
@@ -353,7 +430,9 @@ module BelugaMicrophoneV9GuardBuild
     sdk = file_record(File.join(File.realpath(SDK), 'SDKSettings.json'), digest: SDK_SHA)
     public_source = ROOT + '/iOS/opensteamer/scripts/physical-blackhole-microphone-probe.swift'
     sources = source_paths.uniq.sort.to_h { |path| [path, file_record(path)] }
-    sealed_inputs = sealed_inputs!
+    dependencies = sealed_inputs!
+    original_inputs, sealed_inputs, release_inputs = Staging.stage!(root, dependencies)
+    reused_tools = reused_tools!
     # The root sealer receives this exact byte record, not instructions or
     # command paths. The UID501 gate independently fixes dependency byte pins.
     gate_keys = {
@@ -373,31 +452,36 @@ module BelugaMicrophoneV9GuardBuild
     require!(sources.fetch(DECODER)['sha256'] == DECODER_SHA && sources.fetch(MONITOR)['sha256'] == MONITOR_SHA, 'frozen native sources differ')
     binaries = { 'worker' => File.join(root, 'transaction'), 'idleHelper' => File.join(root, 'idle-helper'),
                  'bothOrderProbe' => File.join(root, 'public-proof'), 'routeGuardian' => File.join(root, 'route-guardian') }
-    recipes = compile_recipes(root)
-    commands.run(*recipes[0])
-    commands.run(*recipes[1])
-    # The existing large standalone probe has top-level code. Preserve exact
-    # byte identity while giving swiftc the required main.swift filename.
-    public_directory = File.join(root, 'public'); Dir.mkdir(public_directory, 0700)
-    public_main = File.join(public_directory, 'main.swift'); FileUtils.cp(public_source, public_main)
-    require!(Digest::SHA256.file(public_main).hexdigest == sources[public_source]['sha256'], 'standalone main copy differs')
-    sources[public_main] = file_record(public_main, digest: sources.fetch(public_source).fetch('sha256'))
-    commands.run(*recipes[2])
-    commands.run(*recipes[3])
+    # The public source copy remains in the current source closure, even though
+    # the three unchanged Swift binaries retain the pinned historical recipe.
+    capsule = Staging::Capsule.new(root)
+    public_directory = capsule.directory!('public')
+    public_main = File.join(public_directory, 'main.swift')
+    sources[public_main] = capsule.copy!(sources.fetch(public_source), 'public/main.swift')
+    REUSED_ROLES.each do |role, name|
+      capsule.copy!(reused_tools.fetch('tools').fetch(role), name)
+    end
+    capsule.fence!; capsule.close; capsule = nil
+    commands.run(*compile_recipes(root).fetch(0))
     require!(source_proof!(commands) == provenance && sources.all? { |path, record| file_record(path) == record }, 'source changed during native build')
-    require!(sealed_inputs.all? { |_relative, record| file_record(record.fetch('path')) == record }, 'sealed observer dependencies changed during native build')
+    Staging.audit!(root, sealed_inputs!, original_inputs, sealed_inputs, release_inputs)
+    require!(reused_tools! == reused_tools, 'reused build changed during native build')
     require!(file_record(File.realpath(SWIFTC)) == swift && file_record(RUSTC) == rust &&
              file_record(File.join(File.realpath(SDK), 'SDKSettings.json')) == sdk, 'toolchain changed during native build')
-    proof = provenance.merge('schema' => 'opensteamer.microphone-v9.native-guard-build.v1', 'deploymentAuthority' => false,
+    proof = provenance.merge('schema' => 'opensteamer.microphone-v9.native-guard-build.v2', 'deploymentAuthority' => false,
                              'liveQueriesPerformed' => false, 'sources' => sources, 'swiftCompiler' => swift,
                              'rustCompiler' => rust, 'sdkSettings' => sdk, 'commands' => commands.records,
-                             'sealedInputs' => sealed_inputs,
-                             'tools' => binaries.to_h { |role, path| [role, file_record(path)] })
+                             'originalInputs' => original_inputs, 'sealedInputs' => sealed_inputs, 'releaseInputs' => release_inputs,
+                             'reusedTools' => reused_tools, 'tools' => binaries.to_h { |role, path| [role, file_record(path)] })
     path = File.join(root, 'build-proof.json')
     File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.pretty_generate(proof) + "\n"); file.flush; file.fsync }
     puts JSON.generate({ 'buildProof' => path, 'buildProofSHA256' => Digest::SHA256.file(path).hexdigest,
                          'deploymentAuthority' => false, 'liveQueriesPerformed' => false })
     path
+  rescue Staging::Refused
+    raise Refused, 'internal build input staging refused'
+  ensure
+    capsule&.close
   end
 end
 

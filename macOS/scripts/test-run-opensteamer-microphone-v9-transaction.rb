@@ -75,7 +75,7 @@ class MicrophoneV9SupervisorTest < Minitest::Test
   end
 
   def test_static_bootstrap_is_syntax_checked_but_never_executed
-    script = S.bootstrap_script(native, '/Volumes/t7/fixture/request.txt', 'e' * 64,
+    script = S.bootstrap_script(native, '/private/tmp/beluga-microphone-v9-supervisor.offline-001/native-request.txt', 'e' * 64,
       '/private/tmp/beluga-microphone-v9-guards.offline/build-proof.json', 'f' * 64,
       '/private/tmp/beluga-microphone-v9-guards.offline/transaction')
     assert_includes script, '/usr/bin/shasum -a 256'
@@ -84,9 +84,15 @@ class MicrophoneV9SupervisorTest < Minitest::Test
     directory do |path|
       assert_equal '', S::Build::Commands.new(path).run('/bin/sh', '-n', '-c', script)
     end
-    assert_raises(S::Refused) { S.bootstrap_script(native, '/private/tmp/request', 'e' * 64,
-      '/private/tmp/beluga-microphone-v9-guards.offline/build-proof.json', 'f' * 64,
-      '/private/tmp/beluga-microphone-v9-guards.offline/transaction') }
+    %w[/Volumes/t7/fixture/native-request.txt /private/tmp/request /tmp/beluga-microphone-v9-supervisor.fixture/native-request.txt
+       /private/tmp/beluga-microphone-v9-supervisor./native-request.txt /private/tmp/beluga-microphone-v9-supervisor.fixture/request.txt
+       /private/tmp/beluga-microphone-v9-supervisor.fixture/other/native-request.txt
+       /private/tmp/beluga-microphone-v9-supervisor.fixture/../native-request.txt
+       /private/tmp/beluga-microphone-v9-supervisor.fixture!/native-request.txt].each do |request|
+      assert_raises(S::Refused, C::Refusal) { S.bootstrap_script(native, request, 'e' * 64,
+        '/private/tmp/beluga-microphone-v9-guards.offline/build-proof.json', 'f' * 64,
+        '/private/tmp/beluga-microphone-v9-guards.offline/transaction') }
+    end
   end
 
   def test_actual_owned_dispatcher_returns_nonzero_and_logs_without_success_claim
@@ -184,9 +190,11 @@ class MicrophoneV9SupervisorTest < Minitest::Test
       manifest = %w[productCommit productTree guardToolingCommit guardToolingTree].zip(%w[product_commit product_tree guard_tooling_commit guard_tooling_tree]).to_h { |key, pinned| [key, n[pinned]] }
       manifest['tools'] = tools.transform_values { |entry| S::Build.file_record(entry['path']) }
       manifest['sources'] = {}; manifest['sealedInputs'] = {}
+      manifest['originalInputs'] = {}; manifest['releaseInputs'] = {}
+      manifest['reusedTools'] = { 'buildProof' => S::Build.file_record(tools['worker']['path']), 'tools' => {} }
       %w[swiftCompiler rustCompiler sdkSettings].each { |key| manifest[key] = S::Build.file_record(tools['worker']['path']) }
       manifest_descriptor = make.call('manifest.json', manifest)
-      events = []; clock = [Time.at(100)]; dispatched = []
+      events = []; clock = [Time.at(100)]; dispatched = []; evidence_path = nil
       verification = lambda do |request|
         native_bytes = C.native_text(request.fetch('nativeRequest'))
         { 'nativeRequest' => native_bytes, 'nativeRequestSha256' => Digest::SHA256.hexdigest(native_bytes),
@@ -211,11 +219,15 @@ class MicrophoneV9SupervisorTest < Minitest::Test
         events << :prepare
         fresh = callback.call(C.freeze_tree(C.parse_json(JSON.generate(request))))
         events << :finish
-        assert File.file?(File.join(path, 'evidence', 'dispatch-inputs.json')), 'private persistence must precede final Contract fences'
+        assert File.file?(File.join(evidence_path, 'dispatch-inputs.json')), 'private persistence must precede final Contract fences'
         C.validate_gate!(n, C.parse_json(File.binread(fresh['gateObservation']['path'])), now_ms: (clock[0].to_r * 1000).to_i)
         verification.call(fresh)
       end
-      mktemp = lambda { |*_arguments| target = File.join(path, 'evidence'); Dir.mkdir(target, 0700); target }
+      original_mktemp = Dir.method(:mktmpdir)
+      mktemp = lambda do |prefix, parent|
+        assert_equal '/private/tmp', parent
+        evidence_path = original_mktemp.call(prefix, parent)
+      end
       S.stub(:original_uid!, nil) do
         S::Build.stub(:audit_build!, audit) do
           S.stub(:local_source_generation!, ->(*_arguments) { events << :source }) do
@@ -233,6 +245,8 @@ class MicrophoneV9SupervisorTest < Minitest::Test
           end
         end
       end
+    ensure
+      FileUtils.remove_entry_secure(evidence_path) if evidence_path
     end
   end
 
@@ -253,10 +267,17 @@ class MicrophoneV9SupervisorTest < Minitest::Test
   end
 
   def test_callback_failure_static_drift_and_stale_after_persistence_never_dispatch
-    [:failure, :drift, :stale].each do |kind|
+    [:failure, :drift, :stale, :request_replacement].each do |kind|
       seal_fixture do |initial, descriptor, manifest, make, gate, _events, clock, dispatched, _verify|
         persist = S.method(:persist_dispatch_inputs!)
-        persistence = lambda { |*arguments| value = persist.call(*arguments); clock[0] = Time.at(206) if kind == :stale; value }
+        persistence = lambda do |*arguments|
+          value = persist.call(*arguments); clock[0] = Time.at(206) if kind == :stale
+          if kind == :request_replacement
+            replacement = make.call('native-replacement.txt', File.binread(value[0]))
+            File.rename(replacement['path'], value[0])
+          end
+          value
+        end
         S.stub(:persist_dispatch_inputs!, persistence) do
           error = assert_raises(kind == :failure ? RuntimeError : (kind == :stale ? C::Refusal : S::Refused)) do
             S.seal!(descriptor['path'], descriptor['sha256'], manifest['path'], manifest['sha256'], collect_fresh: lambda { |_prepared|
@@ -286,6 +307,30 @@ class MicrophoneV9SupervisorTest < Minitest::Test
     end
   end
 
+  def test_manifest_v2_original_release_and_reused_records_reject_same_byte_inode_replacement
+    %w[original release reusedProof reusedTool].each do |changed_role|
+      directory do |path|
+        records = %w[compiler original release reusedProof reusedTool].to_h do |role|
+          target = File.join(path, role)
+          File.open(target, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write('same bytes') }
+          [role, S::Build.file_record(target)]
+        end
+        manifest = { 'sources' => {}, 'tools' => {}, 'sealedInputs' => {},
+          'originalInputs' => { 'original' => records.fetch('original') },
+          'releaseInputs' => { 'release' => records.fetch('release') },
+          'reusedTools' => { 'buildProof' => records.fetch('reusedProof'), 'tools' => { 'worker' => records.fetch('reusedTool') } } }
+        %w[swiftCompiler rustCompiler sdkSettings].each { |role| manifest[role] = records.fetch('compiler') }
+        assert S.manifest_identity_fence!(manifest)
+        record = records.fetch(changed_role); replacement = File.join(path, 'replacement')
+        File.open(replacement, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write('same bytes') }
+        File.rename(replacement, record.fetch('path'))
+        assert_equal record.fetch('sha256'), Digest::SHA256.file(record.fetch('path')).hexdigest
+        refute_equal record.fetch('identity')[1], File.lstat(record.fetch('path')).ino
+        assert_raises(S::Refused) { S.manifest_identity_fence!(manifest) }
+      end
+    end
+  end
+
   def test_standalone_stale_seal_and_changed_local_source_still_refuse
     seal_fixture do |initial, descriptor, manifest, _make, _gate, _events, clock, dispatched, _verify|
       C.stub(:verify, lambda { |request|
@@ -297,5 +342,53 @@ class MicrophoneV9SupervisorTest < Minitest::Test
     end
     commands = Object.new; commands.define_singleton_method(:run) { |*_arguments| 'different' }
     assert_raises(S::Refused) { S.local_source_generation!({ 'productCommit' => 'a' * 40, 'productTree' => 'b' * 40 }, commands) }
+  end
+
+  def internal_directory
+    path = Dir.mktmpdir('beluga-microphone-v9-supervisor.offline-', '/private/tmp'); File.chmod(0700, path)
+    held = File.open(path, File::RDONLY | File::NOFOLLOW)
+    commands = Object.new; commands.define_singleton_method(:run) { |*_arguments| 'drwx------  2 ahmed staff fixture' + "\n" }
+    yield path, held, commands
+  ensure
+    held&.close
+    FileUtils.remove_entry_secure(path) if path && File.exist?(path)
+    FileUtils.remove_entry_secure(path + '-held') if path && File.exist?(path + '-held')
+  end
+
+  def test_internal_directory_exact_owner_mode_acl_and_held_inode_fences
+    internal_directory do |path, held, commands|
+      identity = S.internal_directory_fence!(path, held, nil, commands)
+      assert_equal 501, identity[2]
+      assert_equal identity, S.internal_directory_fence!(path, held, identity, commands)
+      File.chmod(0755, path)
+      assert_raises(S::Refused) { S.internal_directory_fence!(path, held, identity, commands) }
+      File.chmod(0700, path)
+      commands.define_singleton_method(:run) { |*_arguments| "drwx------+ 2 ahmed staff fixture\n 0: user:other allow read\n" }
+      assert_raises(S::Refused) { S.internal_directory_fence!(path, held, identity, commands) }
+    end
+    internal_directory do |path, held, commands|
+      identity = S.internal_directory_fence!(path, held, nil, commands)
+      File.rename(path, path + '-held'); Dir.mkdir(path, 0700)
+      assert_raises(S::Refused) { S.internal_directory_fence!(path, held, identity, commands) }
+    end
+  end
+
+  def test_internal_directory_alias_wrong_owner_and_unknown_request_roles_refuse
+    internal_directory do |path, held, commands|
+      before = File.lstat(path); wrong_owner = before.dup
+      wrong_owner.define_singleton_method(:uid) { 0 }
+      original_stat = File.method(:lstat)
+      File.stub(:lstat, ->(target) { target == path ? wrong_owner : original_stat.call(target) }) do
+        assert_raises(S::Refused) { S.internal_directory_fence!(path, held, nil, commands) }
+      end
+      File.rename(path, path + '-held'); File.symlink(path + '-held', path)
+      assert_raises(S::Refused) { S.internal_directory_fence!(path, held, nil, commands) }
+      File.unlink(path); File.rename(path + '-held', path)
+      assert_raises(S::Refused) { S.internal_directory_fence!('/private/tmp/arbitrary', held, nil, commands) }
+    end
+    S.stub(:original_uid!, nil) do
+      assert_raises(S::Refused) { S.execute!('--execute-authorized', '/Volumes/t7/old-attempt/native-request.txt', 'a' * 64, 'b' * 64) }
+      assert_raises(S::Refused) { S.execute!('--resume-authorized', '/private/tmp/arbitrary/native-request.txt', 'a' * 64, 'b' * 64) }
+    end
   end
 end

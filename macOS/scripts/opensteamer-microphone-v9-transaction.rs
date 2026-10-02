@@ -80,6 +80,16 @@ fn guard_build_proof_path(value:&str)->bool {
         name.strip_prefix("beluga-microphone-v9-guards.").is_some_and(|suffix|!suffix.is_empty()&&suffix.bytes().all(|byte|byte.is_ascii_alphanumeric()||matches!(byte,b'-'|b'_')))
 }
 
+fn private_request_path(value:&str)->bool {
+    if !canonical_path(value){return false;}
+    let path=Path::new(value);
+    let Some(directory)=path.parent()else{return false;};
+    let Some(name)=directory.file_name().and_then(|value|value.to_str())else{return false;};
+    path.file_name().and_then(|value|value.to_str())==Some("native-request.txt")&&
+        directory.parent()==Some(Path::new("/private/tmp"))&&
+        name.strip_prefix("beluga-microphone-v9-supervisor.").is_some_and(|suffix|!suffix.is_empty()&&suffix.bytes().all(|byte|byte.is_ascii_alphanumeric()||matches!(byte,b'-'|b'_')))
+}
+
 #[derive(Clone, Debug)]
 struct Request {
     fields: BTreeMap<String, String>,
@@ -844,9 +854,11 @@ fn cli(arguments: &[String]) -> i32 {
         const STAGING_ADMISSION:bool=true;
         if !STAGING_ADMISSION { eprintln!("STAGING_ADMISSION_DISABLED_PENDING_WHOLE_PATH_REVIEW");return 78; }
         let result=(||->Result<()> {
-            if !canonical_path(&arguments[1])||!arguments[1].starts_with("/Volumes/t7/"){return Err("staging request path is outside the private artifact scope".into());}
+            if !private_request_path(&arguments[1]){return Err("staging request path is outside the private internal supervisor role".into());}
             if !guard_build_proof_path(&arguments[3]){return Err("staging build proof is outside its fixed private builder role".into());}
+            let request_parents=seal::held_internal_namespace(Path::new(&arguments[1]).parent().ok_or("internal request parent absent")?)?;
             let request_bytes=read_pinned(Path::new(&arguments[1]),&arguments[2],501,0o600,MAX_REQUEST)?;
+            for parent in &request_parents{parent.revalidate()?;}
             let request=Request::parse(&request_bytes,&arguments[2])?;
             if request.get("worker_sha256")!=arguments[5]{return Err("independent bootstrap image/request worker crosslink differs".into());}
             let worker=env::current_exe().map_err(|_|"trusted bootstrap worker path unavailable")?;
@@ -857,6 +869,7 @@ fn cli(arguments: &[String]) -> i32 {
             for ancestor in sealed_fs::root_ancestry_path(parent,0o711)?{ancestor.revalidate()?;}
             os::begin_supervision(45)?;
             let staged=seal::seal_original_uid_inputs(Path::new(&arguments[1]),Path::new(&arguments[3]),seal::TrustedPins{request_sha256:&arguments[2],manifest_sha256:&arguments[4],worker_sha256:&arguments[5]})?;
+            for parent in &request_parents{parent.revalidate()?;}
             if staged.state!=PathBuf::from(request.root_path())||staged.executables!=PathBuf::from(format!("/Library/Application Support/opensteamer/microphone-v9-executables/{}",request.get("namespace"))){return Err("sealed namespace paths differ from fixed release roles".into());}
             os::supervisor_check()?;
             println!("schema=opensteamer.microphone-v9-seal-outcome.v1\nnamespace={}\nnonce={}\nrequest_sha256={}\nbuild_manifest_sha256={}\nworker_sha256={}\nterminal=SEALED_INPUTS_NOT_INSTALLED\nauthority_sha256={}",request.get("namespace"),request.get("nonce"),request.sha256,arguments[4],arguments[5],staged.authority_sha256);Ok(())
@@ -894,8 +907,8 @@ fn cli(arguments: &[String]) -> i32 {
         })();
         return match result{Ok(code)=>code,Err(error)=>{eprintln!("root-sealed transaction unresolved: {error}");78}};
     }
-    if !canonical_path(&arguments[1]) || !arguments[1].starts_with("/Volumes/t7/") {
-        eprintln!("request path is outside the private artifact scope"); return 65;
+    if !private_request_path(&arguments[1]) {
+        eprintln!("request path is outside the private internal supervisor role"); return 65;
     }
     let bytes = match read_pinned(path, &arguments[2], 501, 0o600, MAX_REQUEST) {
         Ok(value) => value, Err(error) => { eprintln!("{error}"); return 65; }
@@ -924,6 +937,10 @@ mod tests {
     #[test]fn staging_manifest_role_is_exact_and_not_the_artifact_role(){
         assert!(guard_build_proof_path("/private/tmp/beluga-microphone-v9-guards.abCD12/build-proof.json"));
         for path in ["/Volumes/t7/build-proof.json","/private/tmp/beluga-microphone-v9-guards./build-proof.json","/private/tmp/beluga-microphone-v9-guards.good/../build-proof.json","/private/tmp/beluga-microphone-v9-guards.good/other.json","/tmp/beluga-microphone-v9-guards.good/build-proof.json","/private/tmp/beluga-microphone-v9-guards.good/nested/build-proof.json"]{assert!(!guard_build_proof_path(path));}
+    }
+    #[test]fn internal_request_role_never_accepts_external_or_arbitrary_internal_paths(){
+        assert!(private_request_path("/private/tmp/beluga-microphone-v9-supervisor.good-123/native-request.txt"));
+        for path in ["/Volumes/t7/beluga-microphone-v9-supervisor.good/native-request.txt","/private/tmp/native-request.txt","/tmp/beluga-microphone-v9-supervisor.good/native-request.txt","/private/tmp/beluga-microphone-v9-supervisor./native-request.txt","/private/tmp/beluga-microphone-v9-supervisor.good/other.txt","/private/tmp/beluga-microphone-v9-supervisor.good/nested/native-request.txt","/private/tmp/beluga-microphone-v9-supervisor.good/../native-request.txt"]{assert!(!private_request_path(path),"{path}");}
     }
     #[cfg(target_os="macos")]
     #[test]fn staging_cli_original_uid_is_refused_before_any_input_or_namespace_write(){
