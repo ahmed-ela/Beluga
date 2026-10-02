@@ -89,6 +89,16 @@ module MicrophoneRegressionGate
     CaptureServerTests.BlackHoleMicrophoneOutputTests
     CaptureServerTests.WorldwideVirtualMicrophoneDriverIdleTests
     CaptureServerTests.WorldwideSharedClockEpochRecoveryTests
+    CaptureServerTests.WorldwidePairedPhoneCatalogTests
+    CaptureServerTests.WorldwideHostCoordinatorTests
+    CaptureServerTests.WorldwidePairingCatalogBootstrapTests
+    CaptureServerTests.BelugaPhoneCatalogMenuTests
+    CaptureServerTests.WorldwidePairingStoreTests
+    CaptureServerTests.WorldwideHostProcessLockTests
+    CaptureServerTests.BelugaMenuBarTests
+    CaptureServerTests.BelugaUpdateCandidateMetadataTests
+    CaptureServerTests.BelugaUpdateInstalledArtifactTests
+    CaptureServerTests.BelugaUpdateSparkleSessionTests
   ].freeze
   MAC_PINNED = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests/testEveryFreshAggregateStartsWithoutWaitingForTappedPlayback
@@ -106,13 +116,65 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideVirtualMicrophoneDriverIdleTests/testReaderRejectsUnavailableOrMalformedV2WithoutV1Fallback
     CaptureServerTests.WorldwideVirtualMicrophoneDriverIdleTests/testV2PropertyBoundaryRejectsOversizedAndStaleObservations
     CaptureServerTests.WorldwideVirtualMicrophoneDriverIdleTests/testV2FailureCountersDoNotInvalidateTruthfulIdleInventory
+    CaptureServerTests.WorldwidePairedPhoneCatalogTests/testMigrationRetainsBothReconnectCountersAndIgnoresLaterLegacyChanges
+    CaptureServerTests.WorldwidePairedPhoneCatalogTests/testEmptyCatalogIsAuthoritativeAndNeverImportsFutureLegacyRecord
+    CaptureServerTests.WorldwidePairedPhoneCatalogTests/testUpdateCannotResurrectForgottenPhoneEvenWithFreshToken
+    CaptureServerTests.WorldwidePairedPhoneCatalogTests/testCounterAdvanceRetainsSiblingAndSelectionButRegressionFails
+    CaptureServerTests.WorldwideHostCoordinatorTests/testLegacyReadersAndWritersRefuseAfterMigrationIncludingEmptyTombstone
+    CaptureServerTests.WorldwideHostCoordinatorTests/testSelectionWaitsForExactOldCloseAndRechecksOwnerBeforeMutation
+    CaptureServerTests.WorldwideHostCoordinatorTests/testActivePeerAndUnvalidatedSocketCannotAuthorizeCatalogActions
+    CaptureServerTests.WorldwideHostCoordinatorTests/testStopDuringRecoverySendCannotPersistLateCompletionSent
+    CaptureServerTests.WorldwidePairingCatalogBootstrapTests/testStopBeforeHeldCompletionReturnsCannotPersistCompletionSent
+    CaptureServerTests.BelugaPhoneCatalogMenuTests/testPresentedConfirmationTicketIsStaleAfterCatalogRevisionChanges
+    CaptureServerTests.BelugaPhoneCatalogMenuTests/testShutdownDropsLateSuccessAndFailureFromNonCooperativeCommand
+    CaptureServerTests.WorldwidePairingStoreTests/testCorruptIdentityFailsClosedInsteadOfRotatingKeys
+    CaptureServerTests.WorldwidePairingStoreTests/testRelaunchRecoversCompletionButBarsMediaUntilViewerActivationAck
+    CaptureServerTests.WorldwideHostProcessLockTests/testReleasedLockCanBeReacquired
+    CaptureServerTests.WorldwideHostProcessLockTests/testSecondWorldwideHostCannotAcquireSamePerUserLock
+    CaptureServerTests.BelugaMenuBarTests/testMenuStartsRuntimeAtMostOnce
+    CaptureServerTests.BelugaMenuBarTests/testExpiredInvitationAndShutdownClearSecretPresentation
+    CaptureServerTests.BelugaUpdateCandidateMetadataTests/testSignedSingleViewerSchemaIsRejectedEvenWithAHigherOrMaximumBuild
+    CaptureServerTests.BelugaUpdateInstalledArtifactTests/testCatalogVersionMustBePresentExactIntegerNotInferredFromOwnershipOrHighBuild
+    CaptureServerTests.BelugaUpdateInstalledArtifactTests/testCatalogMarkerIsCoveredByFullTreeAndTamperingCannotVerifyCandidate
+    CaptureServerTests.BelugaUpdateSparkleSessionTests/testSignedHighBuildSingleViewerCandidateIsRejectedBeforeBindingOrInstall
   ].freeze
   RUST_PINNED = %w[
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
     ordinary_raw_microphone_profile_rejects_other_policies_and_all_tuple_or_owner_changes
     ordinary_microphone_sharing_profile_does_not_expand_other_targets
   ].freeze
-  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests product-identity product-identity-mutations rust-artifact-validation mac-discovery mac-tests simulator-tests simulator-summary simulator-results simulator-signature
+  SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
+  SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
+  SHARED_SIGNALING_PINNED = %w[
+    availabilityBindsExactExchangeToEnvelopeAndRotatesKeys
+    availabilityClientRekeysAfterReadyAndRelaysSignedReconnectMessage
+    availabilityCloseWinningSuspendedConnectCannotReopenClient
+    availabilityClosesBeforeHeartbeatWhenFirstProtocolStateNeverArrives
+    availabilityLocatorsSeparateRoleCapabilitiesAndRejectRoleSubstitution
+    availabilityMapsBoundedUnavailableErrorForTransientRetry
+    availabilityPingFailureClosesAVisiblyOpenGhostSocket
+    availabilityRejectsLegacyWaitingAndUsesExactAvailabilityMode
+    availabilityRejectsUnboundedOrExtendedErrorSchemas
+    availabilityValidFirstStateCancelsDeadlineAndStartsHeartbeat
+    hostSendsCanonicalProbeAndMatchingAckKeepsAvailabilityOpen
+    matchingAckBeforeSuspendedSendReturnsCompletesExactProbe
+    mismatchedAckForActiveProbeFailsClosed
+    missingApplicationProbeAckClosesHostAvailability
+    pairingBootstrapCloseWinningSuspendedConnectCannotReopenClient
+    pairingBootstrapRestartsSequencesAndReplayWindowForReplacementPeer
+    pairingBootstrapUsesNegotiatedPairingModeAndBoundedPayloads
+    probeDeadlineClosesHostWhileTransportSendIsSuspended
+    sessionCloseWinningSuspendedConnectCannotReopenClient
+    staleProbeAckFailsClosedAndCannotBlessReplacementClient
+    transportCancellationPingFailsClosedWhenLivenessTaskIsNotCancelled
+    viewerHeartbeatsNeverSendApplicationProbes
+    availabilitySecondCloseJoinsNativeFinishAndPreservesFirstTerminalError
+    pairingSecondCloseJoinsNativeFinishAndPreservesFirstTerminalError
+    availabilityCloseJoinsConnectionFailureCleanup
+    availabilityPublicCloseJoinsDistinctLateSuccessReclose
+    pairingPublicCloseJoinsDistinctLateSuccessReclose
+  ].map { |name| SHARED_SIGNALING_SUITE + '/' + name + '()' }.freeze
+  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation mac-discovery mac-tests shared-signaling-tests simulator-tests simulator-summary simulator-results simulator-signature
               simulator-entitlements rust-discovery rust-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
               driver-build-2 driver-verifier driver-load driver-malformed-bundles].freeze
   PROTECTED_ROOTS = ['/Applications', '/Library', '/System', '/Users/ahmed/Library/Application Support/opensteamer'].freeze
@@ -283,6 +345,62 @@ module MicrophoneRegressionGate
     methods.select { |id| MAC_CLASSES.include?(id.split('/').first) }.sort
   end
 
+  def self.shared_signaling_inventory(text)
+    methods = text.lines.map(&:strip).select { |line| line.start_with?(SHARED_SIGNALING_SUITE + '/') }
+    require!((1..128).cover?(methods.length) && methods.uniq.length == methods.length &&
+             methods.all? { |id| id.match?(/\ARemoteSessionCoreTests\.DurableSignalingClientTests\/\w+\(\)\z/) } &&
+             (SHARED_SIGNALING_PINNED - methods).empty?, 'shared signaling discovery is incomplete, malformed or duplicated')
+    methods.sort
+  end
+
+  # Exact pinned Swift Testing console format. Starts/passes may interleave,
+  # but each discovered method must start once before passing once in one suite.
+  def self.validate_shared_signaling(text, expected)
+    require!(text.bytesize <= 2 * 1024 * 1024 && (1..128).cover?(expected.length) &&
+             expected.uniq.length == expected.length &&
+             expected.all? { |id| id.match?(/\ARemoteSessionCoreTests\.DurableSignalingClientTests\/\w+\(\)\z/) },
+             'shared signaling result bounds or expected inventory are invalid')
+    lines = text.lines.map(&:chomp)
+    require!(lines.length <= 4096, 'shared signaling result exceeds line bound')
+    run_starts = []
+    suite_starts = []
+    suite_passes = []
+    footers = []
+    starts = {}
+    passes = {}
+    lines.each_with_index do |line, index|
+      if line == '◇ Test run started.'
+        run_starts << index
+      elsif line == '◇ Suite DurableSignalingClientTests started.'
+        suite_starts << index
+      elsif line.match?(/\A✔ Suite DurableSignalingClientTests passed after \d+(?:\.\d+)? seconds\.\z/)
+        suite_passes << index
+      elsif (match = /\A✔ Test run with (\d+) tests in (\d+) suite passed after \d+(?:\.\d+)? seconds\.\z/.match(line))
+        footers << [index, match[1].to_i, match[2].to_i]
+      elsif (match = /\A◇ Test (\w+\(\)) started\.\z/.match(line))
+        id = SHARED_SIGNALING_SUITE + '/' + match[1]
+        require!(expected.include?(id) && !starts.key?(id), 'shared signaling start is unexpected or duplicated')
+        starts[id] = index
+      elsif (match = /\A✔ Test (\w+\(\)) passed after \d+(?:\.\d+)? seconds\.\z/.match(line))
+        id = SHARED_SIGNALING_SUITE + '/' + match[1]
+        require!(expected.include?(id) && starts.key?(id) && starts[id] < index && !passes.key?(id),
+                 'shared signaling pass is unexpected, duplicated or lacks a matching start')
+        passes[id] = index
+      else
+        require!(!line.match?(/\A(?:\S+\s+)?(?:Test|Suite)\b/),
+                 'shared signaling result is malformed, failed, skipped or belongs to another suite')
+      end
+    end
+    require!(run_starts.length == 1 && suite_starts.length == 1 && suite_passes.length == 1 && footers.length == 1 &&
+             run_starts.first < suite_starts.first && suite_starts.first < suite_passes.first &&
+             suite_passes.first < footers.first[0] && footers.first.drop(1) == [expected.length, 1],
+             'shared signaling suite/run footer is missing, duplicated, out of order or disagrees')
+    require!(starts.keys.sort == expected.sort && passes.keys.sort == expected.sort &&
+             (starts.values + passes.values).all? { |index| index > suite_starts.first && index < suite_passes.first },
+             'shared signaling cases are missing or outside the exact suite')
+    expected.sort
+  end
+
   def self.rust_inventory(text)
     methods = text.lines.map { |line| /\A([\w:]+): test\s*\z/.match(line)&.[](1) }.compact
     require!(!methods.empty? && methods.uniq.length == methods.length, 'empty or duplicate Rust discovery')
@@ -370,11 +488,13 @@ module MicrophoneRegressionGate
       'simulator-signing-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-microphone-simulator-signing.rb'), '--verbose'],
       'release-hook-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-microphone-release-gate.rb')],
       'host-release-hook-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-microphone-host-release-gate.rb')],
+      'mac-producer-contract-tests' => ['/usr/bin/ruby', File.join(root, 'macOS/scripts/verify-beluga-mac-client-tests.rb'), '--verbose'],
       'product-identity' => ['/bin/zsh', File.join(root, 'scripts/check-product-identity.sh'), root],
       'product-identity-mutations' => ['/bin/zsh', File.join(root, 'scripts/test-product-identity.sh')],
       'rust-artifact-validation' => ['/usr/bin/ruby', File.join(root, 'scripts/microphone-regression-gate.rb'), '--verify-rust-artifact'],
       'mac-discovery' => swift_base + ['--list-tests'],
       'mac-tests' => swift_base + ['--skip-build', '--filter', filter, '--xunit-output', File.join(directory, 'mac-results.xml')],
+      'shared-signaling-tests' => swift_base + ['--skip-build', '--disable-xctest', '--filter', SHARED_SIGNALING_FILTER],
       'simulator-tests' => sim,
       'simulator-summary' => ['/usr/bin/xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', result, '--compact'],
       'simulator-results' => ['/usr/bin/xcrun', 'xcresulttool', 'get', 'test-results', 'tests', '--path', result, '--compact'],
@@ -401,6 +521,47 @@ module MicrophoneRegressionGate
 
   def self.validate_host_release_harness(text)
     require!(text.lines.map(&:chomp).count('microphone host release gate behavior tests passed') == 1, 'host release hook behavioral harness is incomplete')
+  end
+
+  MAC_PRODUCER_PINNED = %w[
+    test_release_configuration_accepts_only_configured_exact_identity_version_and_feed
+    test_ownership_protocol_producer_refuses_in_process_sdk_startup
+    test_catalog_producer_requires_migration_checkpoint_routing_and_legacy_account_fence
+    test_catalog_marker_is_exact_integer_not_boolean_string_float_missing_or_future_version
+    test_codesign_parser_rejects_duplicate_identity_development_adhoc_no_runtime_or_no_timestamp
+    test_candidate_identity_is_derived_from_actual_executable_and_full_signed_app_tree
+    test_candidate_identity_cannot_stamp_v2_onto_an_app_with_old_or_missing_catalog_marker
+    test_producer_admits_only_v2_catalog_contract_even_for_high_build_candidate
+    test_appcast_contains_exact_signed_payload_version_arm64_and_public_github_release_url
+    test_package_binds_final_mounted_candidate_metadata_before_whole_feed_signing
+    test_release_builder_binds_tools_before_identity_and_scrubs_every_swift_child
+  ].freeze
+
+  def self.mac_producer_inventory(root)
+    source = File.read(File.join(root, 'macOS/scripts/verify-beluga-mac-client-tests.rb'))
+    methods = source.scan(/^\s*def (test\w+)(?:\(|\s|$)/).flatten
+    require!(!methods.empty? && methods.uniq.length == methods.length && (MAC_PRODUCER_PINNED - methods).empty?,
+             'Mac producer harness inventory is incomplete or duplicated')
+    methods.sort
+  end
+
+  def self.validate_mac_producer_harness(text, expected)
+    lines = text.lines
+    case_lines = lines.each_with_index.select { |line, _| line.start_with?('BelugaMacClientContractTests#') }
+    cases = case_lines.map do |line, _|
+      /\ABelugaMacClientContractTests#(test\w+) = [\d.]+ s = ([.SEF])\s*\z/.match(line)
+    end
+    require!(cases.all? { |entry| entry && entry[2] == '.' } &&
+             cases.map { |entry| entry[1] }.sort == expected && !expected.empty?,
+             'Mac producer behavioral results are absent, duplicated, unexpected, failed or skipped')
+    summaries = lines.each_with_index.map do |line, index|
+      match = /\A(\d+) runs, (\d+) assertions, (\d+) failures, (\d+) errors, (\d+) skips\s*\z/.match(line)
+      [match, index] if match
+    end.compact
+    require!(summaries.length == 1 && summaries.first[0][1].to_i == expected.length &&
+             summaries.first[0][2].to_i >= expected.length &&
+             summaries.first[0].captures.drop(2).all? { |value| value.to_i == 0 } &&
+             summaries.first[1] > case_lines.last[1], 'Mac producer harness footer is incomplete')
   end
 
   SIMULATOR_SIGNING_PINNED = %w[
@@ -626,6 +787,8 @@ module MicrophoneRegressionGate
       MicrophoneRegressionGate.require!(release_tests.lines.map(&:chomp).count('microphone release gate behavior tests passed') == 1, 'release hook behavioral harness did not complete')
       host_release_tests = phase('host-release-hook-self-tests', ['/usr/bin/ruby', File.join(@root, 'scripts/test-microphone-host-release-gate.rb')])
       MicrophoneRegressionGate.validate_host_release_harness(host_release_tests)
+      producer_tests = phase('mac-producer-contract-tests', ['/usr/bin/ruby', File.join(@root, 'macOS/scripts/verify-beluga-mac-client-tests.rb'), '--verbose'])
+      MicrophoneRegressionGate.validate_mac_producer_harness(producer_tests, MicrophoneRegressionGate.mac_producer_inventory(@root))
       identity = phase('product-identity', ['/bin/zsh', File.join(@root, 'scripts/check-product-identity.sh'), @root])
       MicrophoneRegressionGate.require!(identity.lines.map(&:chomp).count('Beluga product identity check passed') == 1, 'product identity checker did not complete')
       identity_mutations = phase('product-identity-mutations', ['/bin/zsh', File.join(@root, 'scripts/test-product-identity.sh')])
@@ -633,7 +796,9 @@ module MicrophoneRegressionGate
       phase('rust-artifact-validation', ['/usr/bin/ruby', File.join(@root, 'scripts/microphone-regression-gate.rb'), '--verify-rust-artifact'])
       MicrophoneRegressionGate.validate_rust_artifacts(@root)
       swift_base = [swift, 'test', '--package-path', @root, '--scratch-path', @swift_scratch, '--jobs', '2']
-      mac_methods = MicrophoneRegressionGate.mac_inventory(phase('mac-discovery', swift_base + ['--list-tests']))
+      mac_discovery = phase('mac-discovery', swift_base + ['--list-tests'])
+      mac_methods = MicrophoneRegressionGate.mac_inventory(mac_discovery)
+      shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
       filter = '^(?:' + mac_methods.map { |id| Regexp.escape(id) }.join('|') + ')$'
       mac_xml = File.join(@evidence, 'mac-results.xml')
       mac_log = phase('mac-tests', swift_base + ['--skip-build', '--filter', filter, '--xunit-output', mac_xml])
@@ -643,6 +808,8 @@ module MicrophoneRegressionGate
       else
         MicrophoneRegressionGate.validate_mac_log(mac_log, mac_methods)
       end
+      shared_log = phase('shared-signaling-tests', swift_base + ['--skip-build', '--disable-xctest', '--filter', SHARED_SIGNALING_FILTER])
+      MicrophoneRegressionGate.validate_shared_signaling(shared_log, shared_methods)
       sim_methods = MicrophoneRegressionGate.simulator_inventory(@root)
       result = File.join(@evidence, 'simulator.xcresult')
       sim_args = [xcodebuild, 'test', '-project', File.join(@root, 'iOS/opensteamer/opensteamer.xcodeproj'), '-scheme', 'opensteamer', '-configuration', 'Debug',
@@ -747,6 +914,7 @@ module MicrophoneRegressionGate
     validate_simulator_signing_harness(read_phase.call('simulator-signing-self-tests'), simulator_signing_inventory(root))
     require!(read_phase.call('release-hook-self-tests').lines.map(&:chomp).count('microphone release gate behavior tests passed') == 1, 'release hook behavioral harness is incomplete')
     validate_host_release_harness(read_phase.call('host-release-hook-self-tests'))
+    validate_mac_producer_harness(read_phase.call('mac-producer-contract-tests'), mac_producer_inventory(root))
     require!(read_phase.call('product-identity').lines.map(&:chomp).count('Beluga product identity check passed') == 1, 'product identity checker is incomplete')
     require!(read_phase.call('product-identity-mutations').lines.map(&:chomp).count('opensteamer product identity regression tests passed') == 1, 'product identity mutations are incomplete')
     validate_rust_artifacts(root)
@@ -769,6 +937,7 @@ module MicrophoneRegressionGate
     coverage = receipt['coverage']
     exact_keys!(coverage, %w[mac simulator intentional_simulator_skips rust c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
+    shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     require!(coverage['mac'] == mac, 'Mac coverage differs from discovery')
     expected_commands = commands(root, directory, receipt['invocation'], tools, receipt['simulator'], mac)
     phases.each { |entry| require!(entry['argv'] == expected_commands.fetch(entry['name']), 'phase command does not match canonical offline invocation: ' + entry['name']) }
@@ -779,6 +948,7 @@ module MicrophoneRegressionGate
       require!(receipt['mac_format'] == 'darwin-xctest-log', 'unrecognized Mac result format')
       validate_mac_log(read_phase.call('mac-tests'), mac)
     end
+    validate_shared_signaling(read_phase.call('shared-signaling-tests'), shared)
     sim = simulator_inventory(root)
     require!(coverage['simulator'] == sim && coverage['intentional_simulator_skips'] == SIMULATOR_SKIPS, 'Simulator coverage or skip contract changed')
     validate_simulator(parse_json(read_phase.call('simulator-summary'), 'Simulator summary'), parse_json(read_phase.call('simulator-results'), 'Simulator results'), sim, receipt['simulator'])

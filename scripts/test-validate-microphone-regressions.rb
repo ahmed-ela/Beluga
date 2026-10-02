@@ -27,6 +27,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
     @signing_methods = Gate.simulator_signing_inventory(File.dirname(File.dirname(File.realpath(__FILE__))))
     write(File.join(@root, 'scripts/test-microphone-simulator-signing.rb'),
           @signing_methods.map { |method| "def #{method}\nend\n" }.join)
+    @producer_methods = Gate.mac_producer_inventory(File.dirname(File.dirname(File.realpath(__FILE__))))
+    write(File.join(@root, 'macOS/scripts/verify-beluga-mac-client-tests.rb'),
+          @producer_methods.map { |method| "def #{method}\nend\n" }.join)
     write(File.join(@root, 'shared/Vendor/LiveKitWebRTC/LiveKitWebRTC.xcframework.zip'), 'fixture vendor bytes')
     write(File.join(@root, 'iOS/opensteamer/Frameworks/OpensteamerAudioTransactionAuthority.xcframework/Info.plist'), 'fixture Rust artifact')
     crate = File.join(@root, 'iOS/opensteamer/Rust/AudioTransactionAuthority')
@@ -45,6 +48,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
       write(File.join(@root, 'macOS/VirtualAudioDriver/tests', name), "int main() {\nstruct fixture { int value; } tests[] = {\n" + entries + "};\n}\n")
     end
     @mac_methods = (Gate::MAC_CLASSES.map { |name| name + '/testFixture' } + Gate::MAC_PINNED).uniq.sort
+    @shared_methods = (Gate::SHARED_SIGNALING_PINNED + %w[firstConcurrentFixture secondConcurrentFixture].map do |name|
+      Gate::SHARED_SIGNALING_SUITE + '/' + name + '()'
+    end).sort
     @rust_methods = Gate::RUST_PINNED.sort
     @c_methods = Gate.c_inventory(@root)
     @developer = File.join(@temporary, 'fixture-Xcode.app/Contents/Developer')
@@ -117,6 +123,20 @@ class MicrophoneRegressionGateTests < Minitest::Test
       "microphone Simulator signing behavior tests passed\n"
   end
 
+  def producer_log
+    @producer_methods.map { |method| "BelugaMacClientContractTests##{method} = 0.00 s = .\n" }.join +
+      "#{@producer_methods.length} runs, 602 assertions, 0 failures, 0 errors, 0 skips\n"
+  end
+
+  def shared_log(methods = @shared_methods)
+    "◇ Test run started.\n↳ Testing Library Version: 1902\n↳ Target Platform: arm64e-apple-macos14.0\n" +
+      "◇ Suite DurableSignalingClientTests started.\n" +
+      methods.map { |id| "◇ Test #{id.split('/').last} started.\n" }.join +
+      methods.reverse.map { |id| "✔ Test #{id.split('/').last} passed after 0.001 seconds.\n" }.join +
+      "✔ Suite DurableSignalingClientTests passed after 0.003 seconds.\n" +
+      "✔ Test run with #{methods.length} tests in 1 suite passed after 0.003 seconds.\n"
+  end
+
   def signing_record_fixture
     # Structural receipt fixture, deliberately not a signed executable. The
     # collector's actual byte/signature parser has its own mandatory test phase.
@@ -154,9 +174,11 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'simulator-signing-self-tests' => signing_log,
       'release-hook-self-tests' => "microphone release gate behavior tests passed\n",
       'host-release-hook-self-tests' => "microphone host release gate behavior tests passed\n",
+      'mac-producer-contract-tests' => producer_log,
       'product-identity' => "Beluga product identity check passed\n",
       'product-identity-mutations' => "opensteamer product identity regression tests passed\n",
-      'mac-discovery' => @mac_methods.join("\n") + "\n", 'mac-tests' => mac_log,
+      'mac-discovery' => (@mac_methods + @shared_methods).join("\n") + "\n", 'mac-tests' => mac_log,
+      'shared-signaling-tests' => shared_log,
       'simulator-summary' => JSON.generate(summary), 'simulator-results' => JSON.generate(results),
       'simulator-entitlements' => JSON.generate(@collected_signing_record),
       'rust-discovery' => @rust_methods.map { |method| method + ': test' }.join("\n") + "\n",
@@ -321,6 +343,147 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('behavioral results') { Gate.validate_simulator_signing_harness(signing_log + signing_log.lines.first, @signing_methods) }
     rejects('behavioral results') { Gate.validate_simulator_signing_harness(signing_log.sub(' s = .', ' s = S'), @signing_methods) }
     rejects('terminal marker') { Gate.validate_simulator_signing_harness(signing_log.sub('behavior tests passed', 'behavior tests absent'), @signing_methods) }
+  end
+
+  def test_mac_producer_phase_is_mandatory_named_and_canonical
+    name = 'mac-producer-contract-tests'
+    value = receipt
+    value['phases'].reject! { |phase| phase['name'] == name }
+    rejects('absent, duplicate') { verify(value) }
+    value = receipt
+    value['phases'].find { |phase| phase['name'] == name }['argv'].delete('--verbose')
+    rejects('canonical offline invocation') { verify(value) }
+    value = receipt
+    path = File.join(@evidence, name + '.log')
+    File.write(path, producer_log.lines.drop(1).join)
+    value['phases'].find { |phase| phase['name'] == name }['sha256'] = Gate.sha(path)
+    rejects('behavioral results') { verify(value) }
+  end
+
+  def test_mac_producer_inventory_requires_each_critical_case_and_no_duplicates
+    path = File.join(@root, 'macOS/scripts/verify-beluga-mac-client-tests.rb')
+    original = File.read(path)
+    Gate::MAC_PRODUCER_PINNED.each do |method|
+      File.write(path, original.sub("def #{method}\nend\n", ''))
+      rejects('harness inventory') { Gate.mac_producer_inventory(@root) }
+    end
+    File.write(path, original + "def #{@producer_methods.first}\nend\n")
+    rejects('harness inventory') { Gate.mac_producer_inventory(@root) }
+  end
+
+  def test_mac_producer_named_results_reject_missing_extra_duplicate_failed_or_skipped
+    [producer_log.lines.drop(1).join, producer_log + producer_log.lines.first,
+     producer_log.sub(@producer_methods.first, 'testUnexpected'),
+     producer_log.sub(' s = .', ' s = ?')].each do |text|
+      rejects('behavioral results') { Gate.validate_mac_producer_harness(text, @producer_methods) }
+    end
+    %w[S E F].each do |status|
+      rejects('behavioral results') { Gate.validate_mac_producer_harness(producer_log.sub(' s = .', ' s = ' + status), @producer_methods) }
+    end
+  end
+
+  def test_mac_producer_footer_must_be_one_exact_complete_footer_after_results
+    footer = producer_log.lines.last
+    [producer_log.sub(footer, ''), producer_log + footer, footer + producer_log.sub(footer, ''),
+     producer_log.sub('0 skips', '1 skips'), producer_log.sub('602 assertions', '0 assertions'),
+     producer_log.sub("#{@producer_methods.length} runs", '0 runs')].each do |text|
+      rejects('harness footer') { Gate.validate_mac_producer_harness(text, @producer_methods) }
+    end
+  end
+
+  def test_shared_signaling_inventory_requires_unique_canonical_methods_and_close_pins
+    assert_equal 27, Gate::SHARED_SIGNALING_PINNED.length
+    assert_equal @shared_methods, Gate.shared_signaling_inventory((@mac_methods + @shared_methods).join("\n"))
+    ['', (@shared_methods + [@shared_methods.first]).join("\n"),
+     @shared_methods.join("\n") + "\n" + Gate::SHARED_SIGNALING_SUITE + '/malformed'].each do |text|
+      rejects('shared signaling discovery') { Gate.shared_signaling_inventory(text) }
+    end
+    Gate::SHARED_SIGNALING_PINNED.each do |id|
+      rejects('shared signaling discovery') { Gate.shared_signaling_inventory((@shared_methods - [id]).join("\n")) }
+    end
+  end
+
+  def test_shared_signaling_concurrent_interleaving_is_accepted
+    assert_equal @shared_methods, Gate.validate_shared_signaling(shared_log, @shared_methods)
+    # A pass may precede another method's start; only its own start must precede it.
+    lines = shared_log.lines
+    pass = lines.find { |line| line.start_with?('✔ Test ' + @shared_methods.first.split('/').last + ' ') }
+    lines.delete(pass)
+    first_start = lines.index { |line| line.start_with?('◇ Test ' + @shared_methods.first.split('/').last + ' ') }
+    lines.insert(first_start + 1, pass)
+    assert_equal @shared_methods, Gate.validate_shared_signaling(lines.join, @shared_methods)
+  end
+
+  def test_shared_signaling_cases_cannot_be_missing_duplicated_unexpected_or_pass_before_start
+    first = @shared_methods.first.split('/').last
+    start = "◇ Test #{first} started.\n"
+    pass = "✔ Test #{first} passed after 0.001 seconds.\n"
+    rejects('cases are missing') { Gate.validate_shared_signaling(shared_log.sub(start, '').sub(pass, ''), @shared_methods) }
+    rejects('start is unexpected or duplicated') { Gate.validate_shared_signaling(shared_log.sub(start, start * 2), @shared_methods) }
+    rejects('pass is unexpected, duplicated') { Gate.validate_shared_signaling(shared_log.sub(pass, pass * 2), @shared_methods) }
+    rejects('start is unexpected') { Gate.validate_shared_signaling(shared_log.sub(first, 'unexpectedFixture()'), @shared_methods) }
+    rejects('matching start') { Gate.validate_shared_signaling(shared_log.sub(start, pass + start), @shared_methods) }
+  end
+
+  def test_shared_signaling_failed_skipped_malformed_or_extra_suite_results_are_refused
+    [shared_log.sub('✔ Test ', '✘ Test '), shared_log.sub(' passed after 0.001 seconds.', ' skipped.'),
+     shared_log.sub('DurableSignalingClientTests started.', 'UnexpectedSuite started.'),
+     shared_log + "◇ Suite OtherTests started.\n", shared_log + "Test Case '-[Other testFixture]' started.\n"].each do |text|
+      rejects('malformed, failed, skipped') { Gate.validate_shared_signaling(text, @shared_methods) }
+    end
+  end
+
+  def test_shared_signaling_suite_run_counts_order_and_case_bounds_are_exact
+    suite_start = "◇ Suite DurableSignalingClientTests started.\n"
+    suite_pass = "✔ Suite DurableSignalingClientTests passed after 0.003 seconds.\n"
+    footer = shared_log.lines.last
+    [shared_log.sub(suite_start, ''), shared_log.sub(suite_start, suite_start * 2),
+     shared_log.sub(suite_pass, ''), shared_log.sub(suite_pass, suite_pass * 2),
+     shared_log.sub('◇ Test run started.', ''), shared_log + "◇ Test run started.\n",
+     shared_log.sub(footer, ''), shared_log + footer, footer + shared_log.sub(footer, ''),
+     shared_log.sub("#{@shared_methods.length} tests in 1 suite", '0 tests in 1 suite'),
+     shared_log.sub('tests in 1 suite', 'tests in 2 suite')].each do |text|
+      rejects('suite/run footer') { Gate.validate_shared_signaling(text, @shared_methods) }
+    end
+    start = shared_log.lines.find { |line| line.start_with?('◇ Test ' + @shared_methods.first.split('/').last + ' ') }
+    rejects('outside the exact suite') { Gate.validate_shared_signaling(start + shared_log.sub(start, ''), @shared_methods) }
+    pass = shared_log.lines.find { |line| line.start_with?('✔ Test ' + @shared_methods.first.split('/').last + ' ') }
+    rejects('outside the exact suite') { Gate.validate_shared_signaling(shared_log.sub(pass, '') + pass, @shared_methods) }
+    rejects('bounds') { Gate.validate_shared_signaling('x' * (2 * 1024 * 1024 + 1), @shared_methods) }
+  end
+
+  def test_shared_signaling_phase_cannot_be_omitted_or_change_filter_or_test_framework
+    name = 'shared-signaling-tests'
+    value = receipt
+    value['phases'].reject! { |phase| phase['name'] == name }
+    rejects('absent, duplicate') { verify(value) }
+    %w[--disable-xctest --skip-build].each do |option|
+      value = receipt
+      value['phases'].find { |phase| phase['name'] == name }['argv'].delete(option)
+      rejects('canonical offline invocation') { verify(value) }
+    end
+    value = receipt
+    argv = value['phases'].find { |phase| phase['name'] == name }['argv']
+    argv[argv.index('--filter') + 1] = 'DurableSignalingClientTests'
+    rejects('canonical offline invocation') { verify(value) }
+    value = receipt
+    path = File.join(@evidence, name + '.log')
+    id = @shared_methods.first.split('/').last
+    File.write(path, shared_log.lines.reject { |line| line.include?('Test ' + id + ' ') }.join)
+    value['phases'].find { |phase| phase['name'] == name }['sha256'] = Gate.sha(path)
+    rejects('cases are missing') { verify(value) }
+  end
+
+  def test_shared_signaling_joint_discovery_and_result_omission_cannot_remove_an_existing_case
+    value = receipt
+    id = Gate::SHARED_SIGNALING_SUITE + '/availabilityRejectsLegacyWaitingAndUsesExactAvailabilityMode()'
+    discovery = File.join(@evidence, 'mac-discovery.log')
+    File.write(discovery, File.readlines(discovery).reject { |line| line.strip == id }.join)
+    value['phases'].find { |phase| phase['name'] == 'mac-discovery' }['sha256'] = Gate.sha(discovery)
+    result = File.join(@evidence, 'shared-signaling-tests.log')
+    File.write(result, shared_log(@shared_methods - [id]))
+    value['phases'].find { |phase| phase['name'] == 'shared-signaling-tests' }['sha256'] = Gate.sha(result)
+    rejects('shared signaling discovery') { verify(value) }
   end
 
   def test_each_critical_simulator_signing_parser_case_is_mandatory
@@ -495,6 +658,21 @@ class MicrophoneRegressionGateTests < Minitest::Test
     prefix = 'CaptureServerTests.WorldwideVirtualMicrophoneDriverIdleTests/'
     pins = Gate::MAC_PINNED.select { |id| id.start_with?(prefix) }
     assert_equal 8, pins.length
+    pins.each do |id|
+      rejects('missing critical Mac test') { Gate.mac_inventory((@mac_methods - [id]).join("\n")) }
+    end
+  end
+
+  def test_catalog_and_update_contract_classes_and_fail_closed_pins_are_mandatory
+    classes = %w[WorldwidePairedPhoneCatalogTests WorldwideHostCoordinatorTests WorldwidePairingCatalogBootstrapTests
+                 BelugaPhoneCatalogMenuTests WorldwidePairingStoreTests WorldwideHostProcessLockTests BelugaMenuBarTests
+                 BelugaUpdateCandidateMetadataTests BelugaUpdateInstalledArtifactTests BelugaUpdateSparkleSessionTests]
+    prefixes = classes.map { |name| 'CaptureServerTests.' + name + '/' }
+    prefixes.each do |prefix|
+      rejects('missing Mac test class') { Gate.mac_inventory(@mac_methods.reject { |id| id.start_with?(prefix) }.join("\n")) }
+    end
+    pins = Gate::MAC_PINNED.select { |id| prefixes.any? { |prefix| id.start_with?(prefix) } }
+    assert_equal 21, pins.length
     pins.each do |id|
       rejects('missing critical Mac test') { Gate.mac_inventory((@mac_methods - [id]).join("\n")) }
     end
