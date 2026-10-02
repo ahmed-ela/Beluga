@@ -680,20 +680,30 @@ fn core_launch(bytes:&[u8])->Result<(u32,u64)>{
     let pid=positive(fields.get("pid").ok_or("CoreAudio PID missing")?)?;let runs=positive(fields.get("runs").ok_or("CoreAudio runs missing")?)?;
     if !closed||depth!=0||pid>i32::MAX as u64{return Err("CoreAudio launch extent/PID differs".into());}Ok((pid as u32,runs))
 }
-fn clean_output(child:os::OwnedChild,maximum:usize)->Result<Vec<u8>>{
-    let captured=child.finish(Duration::from_secs(5),maximum)?;
-    if captured.code!=0||!captured.stderr.is_empty(){return Err("trusted OS identity inspector failed".into());}Ok(captured.stdout)
+const INSPECTOR_ROLES:&[&str]=&["core_launch_before","core_process","core_pids","core_start","core_launch_after","driver_selector_before","driver_process_before","driver_procinfo_before","driver_mappings","driver_owners_prior","driver_owners_candidate","driver_process_after","driver_procinfo_after","driver_selector_after"];
+fn inspector_role(role:&str)->&str{if INSPECTOR_ROLES.contains(&role){role}else{"unknown_inspector"}}
+fn inspector_summary(role:&str,captured:&os::Captured)->String{
+    format!("trusted OS identity inspector refused role={} code={} stdout_bytes={} stdout_sha256={} stderr_bytes={} stderr_sha256={}",inspector_role(role),captured.code,captured.stdout.len(),sha256(&captured.stdout),captured.stderr.len(),sha256(&captured.stderr))
+}
+fn inspector_capture(role:&str,child:os::OwnedChild,maximum:usize)->Result<os::Captured>{
+    child.finish(Duration::from_secs(5),maximum).map_err(|reason|format!("trusted OS identity inspector capture refused role={} reason_sha256={}",inspector_role(role),sha256(reason.as_bytes())))
+}
+fn clean_captured(role:&str,captured:os::Captured)->Result<Vec<u8>>{
+    if captured.code!=0||!captured.stderr.is_empty(){return Err(inspector_summary(role,&captured));}Ok(captured.stdout)
+}
+fn clean_output(role:&str,child:os::OwnedChild,maximum:usize)->Result<Vec<u8>>{
+    clean_captured(role,inspector_capture(role,child,maximum)?)
 }
 fn read_core()->Result<CoreGeneration>{
-    let first=core_launch(&clean_output(os::OwnedChild::core_launch()?,MAX_REQUEST)?)?;
-    let pid=first.0;let process=clean_output(os::OwnedChild::core_process(pid)?,8192)?;
+    let first=core_launch(&clean_output("core_launch_before",os::OwnedChild::core_launch()?,MAX_REQUEST)?)?;
+    let pid=first.0;let process=clean_output("core_process",os::OwnedChild::core_process(pid)?,8192)?;
     let fields=std::str::from_utf8(&process).map_err(|_|"CoreAudio process encoding differs")?.split_ascii_whitespace().collect::<Vec<_>>();
     if fields!=[pid.to_string().as_str(),"1","202","202","/usr/sbin/coreaudiod"]{return Err("CoreAudio exact process identity differs".into());}
-    let pids=clean_output(os::OwnedChild::core_pids()?,8192)?;if pids!=format!("{pid}\n").as_bytes(){return Err("CoreAudio process set is not unique".into());}
-    let start=clean_output(os::OwnedChild::core_start(pid)?,8192)?;let text=std::str::from_utf8(&start).map_err(|_|"CoreAudio start encoding differs")?;
+    let pids=clean_output("core_pids",os::OwnedChild::core_pids()?,8192)?;if pids!=format!("{pid}\n").as_bytes(){return Err("CoreAudio process set is not unique".into());}
+    let start=clean_output("core_start",os::OwnedChild::core_start(pid)?,8192)?;let text=std::str::from_utf8(&start).map_err(|_|"CoreAudio start encoding differs")?;
     if text.lines().count()!=1||!text.ends_with('\n')||text.contains('\r')||text.split_ascii_whitespace().count()!=5{return Err("CoreAudio start identity differs".into());}
     let start_sha=sha256(text.split_ascii_whitespace().collect::<Vec<_>>().join(" ").as_bytes());
-    if core_launch(&clean_output(os::OwnedChild::core_launch()?,MAX_REQUEST)?)?!=first{return Err("CoreAudio generation changed during proof".into());}
+    if core_launch(&clean_output("core_launch_after",os::OwnedChild::core_launch()?,MAX_REQUEST)?)?!=first{return Err("CoreAudio generation changed during proof".into());}
     Ok(CoreGeneration{pid,runs:first.1,start_sha})
 }
 fn stable_core()->Result<CoreGeneration>{let first=read_core()?;std::thread::sleep(Duration::from_millis(100));if read_core()?!=first{return Err("CoreAudio generation is unstable".into());}Ok(first)}
@@ -799,6 +809,64 @@ fn loaded_mapping(bytes:&[u8],pid:u32,apple:&Identity,prior:&Identity,candidate:
 fn unique_hal_owner(bytes:&[u8],pid:u32,device:u64,inode:u64)->Result<()>{
     let images=mapped_images(bytes)?;if images.len()!=1||images[0].0!=pid||images[0].1!=DRIVER_HOST_LSOF||(images[0].3,images[0].4)!=(device,inode)||images[0].2==DRIVER_HOST_EXE{return Err("global exact HAL mapping is absent, duplicated or owned by another process".into());}Ok(())
 }
+// A single fixed-file search may not discard unrelated records or tolerate
+// partial NUL framing. Names are only a two-role bound; inode remains authority.
+fn selected_hal_owners(bytes:&[u8],selected:&Path,identity:&Identity)->Result<()>{
+    if bytes.is_empty()||bytes.len()>1024*1024||!bytes.ends_with(b"\0\n"){return Err("selected HAL owner inventory extent/framing differs".into());}
+    let selected=selected.to_str().ok_or("selected HAL image path encoding differs")?;let installed=format!("{DRIVER}/{DRIVER_EXE}");
+    let mut process=None;let mut files=0;let mut total=0;let mut processes=std::collections::BTreeSet::new();
+    for(count,line)in bytes[..bytes.len()-1].split(|byte|*byte==b'\n').enumerate(){
+        if count>=128||line.is_empty()||!line.ends_with(b"\0"){return Err("selected HAL owner record framing/bound differs".into());}
+        let fields=line[..line.len()-1].split(|byte|*byte==0).collect::<Vec<_>>();
+        if fields.iter().any(|field|field.len()<2||field[1..].iter().any(|byte|*byte<32||*byte==127)){return Err("selected HAL owner field framing differs".into());}
+        if fields[0][0]==b'p'{
+            if process.is_some()&&files==0{return Err("selected HAL owner has an orphan process".into());}
+            if fields.len()!=2||fields[1][0]!=b'c'||&fields[1][1..]!=DRIVER_HOST_LSOF.as_bytes(){return Err("selected HAL owner process fields/command differ".into());}
+            let pid=positive(std::str::from_utf8(&fields[0][1..]).map_err(|_|"selected HAL owner PID encoding differs")?)?;
+            if pid<=1||pid>i32::MAX as u64||!processes.insert(pid){return Err("selected HAL owner process duplicate/bound differs".into());}process=Some(pid);files=0;
+        }else{
+            if process.is_none()||fields.len()!=4||fields[0]!=b"ftxt"{return Err("selected HAL owner file/process ordering differs".into());}
+            let mut record=BTreeMap::new();for field in fields{if ![b'f',b'D',b'i',b'n'].contains(&field[0])||record.insert(field[0],&field[1..]).is_some(){return Err("selected HAL owner file field set/duplicate differs".into());}}
+            if record.len()!=4{return Err("selected HAL owner file field extent differs".into());}
+            let device=std::str::from_utf8(record[&b'D']).map_err(|_|"selected HAL device encoding differs")?.strip_prefix("0x").ok_or("selected HAL device prefix differs")?;
+            if device.is_empty()||device.len()>16||!device.bytes().all(|byte|byte.is_ascii_hexdigit()){return Err("selected HAL device field differs".into());}
+            let inode=positive(std::str::from_utf8(record[&b'i']).map_err(|_|"selected HAL inode encoding differs")?)?;
+            let name=std::str::from_utf8(record[&b'n']).map_err(|_|"selected HAL name encoding differs")?;
+            if u64::from_str_radix(device,16).map_err(|_|"selected HAL device overflow")?!=identity.device||inode!=identity.inode||(name!=selected&&name!=installed){return Err("selected HAL mapping inode/name role differs".into());}
+            files+=1;total+=1;if files>1||total>64{return Err("selected HAL owner mapping duplicate/bound exceeded".into());}
+        }
+    }
+    if process.is_none()||files==0||total==0{return Err("selected HAL owner inventory has no complete mapping".into());}Ok(())
+}
+fn selected_owner_output(role:&str,captured:&os::Captured,path:&Path,identity:&Identity)->Result<()>{
+    if !captured.stderr.is_empty(){return Err(inspector_summary(role,captured));}
+    match captured.code{
+        1 if captured.stdout.is_empty()=>Ok(()),
+        0 if !captured.stdout.is_empty()=>selected_hal_owners(&captured.stdout,path,identity).map_err(|reason|format!("{} parse_error_sha256={}",inspector_summary(role,captured),sha256(reason.as_bytes()))),
+        _=>Err(inspector_summary(role,captured)),
+    }
+}
+fn global_hal_owner(prior_output:&os::Captured,candidate_output:&os::Captured,prior_path:&Path,prior:&Identity,candidate_path:&Path,candidate:&Identity,pid:u32,loaded:LoadedDriver)->Result<()>{
+    selected_owner_output("driver_owners_prior",prior_output,prior_path,prior)?;selected_owner_output("driver_owners_candidate",candidate_output,candidate_path,candidate)?;
+    let selected=match(loaded,prior_output.code,candidate_output.code){(LoadedDriver::Prior,0,1)=>Some((prior_output,prior)),(LoadedDriver::Candidate,1,0)=>Some((candidate_output,candidate)),_=>None};
+    let Some((output,identity))=selected else{return Err(format!("global HAL owner pair/loaded agreement refused; {}; {}",inspector_summary("driver_owners_prior",prior_output),inspector_summary("driver_owners_candidate",candidate_output)));};
+    unique_hal_owner(&output.stdout,pid,identity.device,identity.inode).map_err(|reason|format!("{} owner_error_sha256={}",inspector_summary(if loaded==LoadedDriver::Prior{"driver_owners_prior"}else{"driver_owners_candidate"},output),sha256(reason.as_bytes())))
+}
+struct HeldDriverImage{file:File,path:PathBuf,identity:Identity}
+impl HeldDriverImage{
+    fn capture(path:&Path,identity:&Identity)->Result<Self>{
+        if fs::canonicalize(path).map_err(|_|"selected image canonical path unavailable")?!=path||identity.uid!=0||identity.gid!=0||identity.mode!=0o100755||identity.links!=1{return Err("selected image path/owner/type/mode/links differ".into());}
+        let file=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(path).map_err(|_|"selected image nofollow read-only descriptor unavailable")?;
+        let held=Self{file,path:path.to_path_buf(),identity:identity.clone()};held.revalidate()?;Ok(held)
+    }
+    fn revalidate(&self)->Result<()>{
+        if Identity::of(&self.file.metadata().map_err(|_|"selected image descriptor stat unavailable")?)!=self.identity||Identity::of(&fs::symlink_metadata(&self.path).map_err(|_|"selected image path disappeared")?)!=self.identity{return Err("selected image full descriptor/path identity changed".into());}sealed_fs::no_acl(&self.file)
+    }
+    fn owners(&self,role:&str)->Result<os::Captured>{
+        self.revalidate()?;let output=(||inspector_capture(role,os::OwnedChild::driver_image_owner(&self.path)?,1024*1024))();let checked=self.revalidate();
+        match(output,checked){(Ok(output),Ok(()))=>Ok(output),(Err(reason),Ok(()))=>Err(reason),(Ok(_),Err(error))=>Err(error),(Err(reason),Err(error))=>Err(format!("{reason} image_fence_error_sha256={}",sha256(error.as_bytes())))}
+    }
+}
 fn completed_restart_budget(base:Option<&CoreGeneration>,normal_intent:Option<&CoreGeneration>,normal_done:Option<&CoreGeneration>,rollback_intent:Option<&CoreGeneration>,rollback_done:Option<&CoreGeneration>)->Result<(u8,u8)>{
     let Some(base)=base else{if normal_intent.is_some()||normal_done.is_some()||rollback_intent.is_some()||rollback_done.is_some(){return Err("restart records without exact baseline refused".into());}return Ok((0,0));};
     let Some(intent)=normal_intent else{if normal_done.is_some()||rollback_intent.is_some()||rollback_done.is_some(){return Err("restart completion without owned intent refused".into());}return Ok((0,0));};
@@ -888,18 +956,24 @@ impl RootContext{
     }
     fn read_driver_host(&self,core:&CoreGeneration)->Result<(DriverHostGeneration,LoadedDriver)>{
         if read_core()?!=*core{return Err("CoreAudio generation differs before driver-host proof".into());}
-        let pid=driver_selector(&clean_output(os::OwnedChild::driver_host_pids()?,8192)?)?;
-        let process=clean_output(os::OwnedChild::driver_host_process(pid)?,8192)?;let(start_sha,start)=driver_process(&process,pid)?;
-        let info=clean_output(os::OwnedChild::driver_host_procinfo(pid)?,65536)?;let(runs,process_uuid,process_version,launch_uuid)=driver_procinfo(&info,core,pid,&start)?;
+        let pid=driver_selector(&clean_output("driver_selector_before",os::OwnedChild::driver_host_pids()?,8192)?)?;
+        let process=clean_output("driver_process_before",os::OwnedChild::driver_host_process(pid)?,8192)?;let(start_sha,start)=driver_process(&process,pid)?;
+        let info=clean_output("driver_procinfo_before",os::OwnedChild::driver_host_procinfo(pid)?,65536)?;let(runs,process_uuid,process_version,launch_uuid)=driver_procinfo(&info,core,pid,&start)?;
         let apple=Path::new(DRIVER_HOST_EXE);let apple_identity=Identity::of(&fs::symlink_metadata(apple).map_err(|_|"Apple driver host image stat unavailable")?);
         let apple_bytes=read_owned(apple,0,0,0o755,16*1024*1024)?;
         let(prior_path,prior,candidate_path,candidate)=self.image_paths()?;
-        let bytes=clean_output(os::OwnedChild::core_mappings(pid)?,1024*1024)?;let loaded=loaded_mapping(&bytes,pid,&apple_identity,&prior,&candidate)?;
+        let held_prior=HeldDriverImage::capture(&prior_path,&prior)?;let held_candidate=HeldDriverImage::capture(&candidate_path,&candidate)?;
+        let bytes=clean_output("driver_mappings",os::OwnedChild::core_mappings(pid)?,1024*1024)?;let loaded=loaded_mapping(&bytes,pid,&apple_identity,&prior,&candidate)?;
         let image=if loaded==LoadedDriver::Prior{&prior}else{&candidate};let(hal_device,hal_inode)=(image.device,image.inode);
-        unique_hal_owner(&clean_output(os::OwnedChild::driver_image_owners(&prior_path,&candidate_path)?,1024*1024)?,pid,hal_device,hal_inode)?;
-        let after_process=clean_output(os::OwnedChild::driver_host_process(pid)?,8192)?;let after_identity=driver_process(&after_process,pid)?;
-        let after_info=driver_procinfo(&clean_output(os::OwnedChild::driver_host_procinfo(pid)?,65536)?,core,pid,&after_identity.1)?;
-        if after_identity!=(start_sha.clone(),start)||after_info!=(runs,process_uuid.clone(),process_version,launch_uuid.clone())||driver_selector(&clean_output(os::OwnedChild::driver_host_pids()?,8192)?)?!=pid||read_core()?!=*core||Identity::of(&fs::symlink_metadata(apple).map_err(|_|"Apple driver host image disappeared")?)!=apple_identity||self.image_paths()?!=(prior_path,prior,candidate_path,candidate){return Err("driver host/core/image generation changed during binding".into());}
+        held_prior.revalidate()?;held_candidate.revalidate()?;
+        let prior_output=held_prior.owners("driver_owners_prior");let candidate_output=held_candidate.owners("driver_owners_candidate");
+        // Always finish both full-stat pair fences, including a failed query.
+        let prior_check=held_prior.revalidate();let candidate_check=held_candidate.revalidate();
+        prior_check?;candidate_check?;let prior_output=prior_output?;let candidate_output=candidate_output?;
+        global_hal_owner(&prior_output,&candidate_output,&prior_path,&prior,&candidate_path,&candidate,pid,loaded)?;
+        let after_process=clean_output("driver_process_after",os::OwnedChild::driver_host_process(pid)?,8192)?;let after_identity=driver_process(&after_process,pid)?;
+        let after_info=driver_procinfo(&clean_output("driver_procinfo_after",os::OwnedChild::driver_host_procinfo(pid)?,65536)?,core,pid,&after_identity.1)?;
+        if after_identity!=(start_sha.clone(),start)||after_info!=(runs,process_uuid.clone(),process_version,launch_uuid.clone())||driver_selector(&clean_output("driver_selector_after",os::OwnedChild::driver_host_pids()?,8192)?)?!=pid||read_core()?!=*core||Identity::of(&fs::symlink_metadata(apple).map_err(|_|"Apple driver host image disappeared")?)!=apple_identity||self.image_paths()?!=(prior_path,prior,candidate_path,candidate){return Err("driver host/core/image generation changed during binding".into());}
         Ok((DriverHostGeneration{core:core.clone(),pid,runs,start_sha,process_uuid,process_version,launch_uuid,apple_device:apple_identity.device,apple_inode:apple_identity.inode,apple_stat_sha:sha256(format!("{apple_identity:?}").as_bytes()),apple_sha:sha256(&apple_bytes),hal_device,hal_inode},loaded))
     }
     fn bound_driver_host(&self,core:&CoreGeneration)->Result<(DriverHostGeneration,LoadedDriver)>{
@@ -1545,6 +1619,82 @@ pid/178/com.apple.audio.Core-Audio-Driver-Service.helper.5E2741F7-BA88-4661-B3F2
         let make=|pid,command:&str,inode|format!("p{pid}\0c{command}\0\nftxt\0D0x1000010\0i{inode}\0n{DRIVER}/{DRIVER_EXE}\0\n");
         let exact=make(309,DRIVER_HOST_LSOF,29974734);unique_hal_owner(exact.as_bytes(),309,16777232,29974734).unwrap();
         for mutant in [make(310,DRIVER_HOST_LSOF,29974734),make(178,"coreaudiod",29974734),make(309,DRIVER_HOST_LSOF,29974735),format!("{exact}{}",make(310,DRIVER_HOST_LSOF,29974734)),format!("{exact}{}",make(310,DRIVER_HOST_LSOF,29974735))]{assert!(unique_hal_owner(mutant.as_bytes(),309,16777232,29974734).is_err());}
+    }
+    // Exact saved009 single-prior stdout; the dual search returned these same
+    // bytes with code1 because its second, sealed candidate was unopened.
+    const SINGLE_PRIOR_OWNER_FIXTURE:&[u8]=b"p309\0cCore Audio Driver (OpensteamerV\0\nftxt\0D0x1000010\0i29974734\0n/Library/Audio/Plug-Ins/HAL/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone\0\n";
+    fn owner_output(code:i32,stdout:&[u8],stderr:&[u8])->os::Captured{os::Captured{code,stdout:stdout.to_vec(),stderr:stderr.to_vec()}}
+    fn owner_paths()->(PathBuf,PathBuf){(PathBuf::from(format!("{DRIVER}/{DRIVER_EXE}")),PathBuf::from(format!("{ROOT_TRANSACTIONS}/driver-microphone-v9-fixture/candidate.driver/{DRIVER_EXE}")))}
+    fn owner_mapping(pid:u32,inode:u64,path:&Path)->Vec<u8>{format!("p{pid}\0c{DRIVER_HOST_LSOF}\0\nftxt\0D0x1000010\0i{inode}\0n{}\0\n",path.to_str().unwrap()).into_bytes()}
+    #[test]fn single_image_expected_positive_and_empty_negative_preserve_global_owner(){
+        assert_eq!(sha256(SINGLE_PRIOR_OWNER_FIXTURE),"82a9f7432868d986bfc58a757bbf8f36643d5d91877e1b59960edf2f6af52835");
+        let(prior_path,candidate_path)=owner_paths();let prior=identity(16777232,29974734);let candidate=identity(16777232,29974735);
+        let prior_positive=owner_output(0,SINGLE_PRIOR_OWNER_FIXTURE,b"");let negative=owner_output(1,b"",b"");let candidate_positive=owner_output(0,&owner_mapping(309,candidate.inode,&candidate_path),b"");
+        global_hal_owner(&prior_positive,&negative,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Prior).unwrap();
+        global_hal_owner(&negative,&candidate_positive,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Candidate).unwrap();
+        // The actual dual-file partial1 is NEVER a valid single-image negative.
+        assert!(selected_owner_output("driver_owners_prior",&owner_output(1,SINGLE_PRIOR_OWNER_FIXTURE,b""),&prior_path,&prior).is_err());
+        for(first,second,loaded)in [(&prior_positive,&candidate_positive,LoadedDriver::Prior),(&negative,&negative,LoadedDriver::Prior),(&prior_positive,&negative,LoadedDriver::Candidate),(&prior_positive,&negative,LoadedDriver::Unknown)]{
+            assert!(global_hal_owner(first,second,&prior_path,&prior,&candidate_path,&candidate,309,loaded).is_err());
+        }
+        assert!(global_hal_owner(&prior_positive,&negative,&prior_path,&prior,&candidate_path,&candidate,310,LoadedDriver::Prior).is_err());
+        let duplicate=owner_output(0,&[SINGLE_PRIOR_OWNER_FIXTURE,owner_mapping(310,prior.inode,&prior_path).as_slice()].concat(),b"");
+        assert!(global_hal_owner(&duplicate,&negative,&prior_path,&prior,&candidate_path,&candidate,309,LoadedDriver::Prior).is_err());
+    }
+    #[test]fn single_image_exit_stderr_and_arbitrary_failures_are_not_absence(){
+        let(path,_)=owner_paths();let prior=identity(16777232,29974734);
+        for(code,stdout,stderr)in [(0,b"".as_slice(),b"".as_slice()),(1,SINGLE_PRIOR_OWNER_FIXTURE,b""),(0,SINGLE_PRIOR_OWNER_FIXTURE,b"warning"),(1,b"",b"permission denied"),(2,b"",b""),(75,b"",b""),(78,b"",b""),(-1,b"",b"")]{
+            assert!(selected_owner_output("driver_owners_prior",&owner_output(code,stdout,stderr),&path,&prior).is_err(),"accepted status {code}");
+        }
+        // Other trusted inspectors still require strict exit0, even empty1.
+        assert!(clean_captured("driver_procinfo_before",owner_output(1,b"",b"")).is_err());
+    }
+    #[test]fn single_image_nul_inventory_rejects_unaccounted_or_partial_records(){
+        let(path,_)=owner_paths();let prior=identity(16777232,29974734);let text=String::from_utf8(SINGLE_PRIOR_OWNER_FIXTURE.to_vec()).unwrap();
+        selected_hal_owners(SINGLE_PRIOR_OWNER_FIXTURE,&path,&prior).unwrap();
+        let file=text.split_once('\n').unwrap().1;
+        let mutants=vec![
+            text.replace("p309\0", "p0309\0"),text.replace("p309\0", "p1\0"),text.replace("p309\0", "p2147483648\0"),
+            text.replace(&format!("c{DRIVER_HOST_LSOF}\0"),"ccoreaudiod\0"),text.replace("p309\0", "p309\0p309\0"),
+            text.replace("ftxt\0", "ftxt\0D0x1000010\0"),text.replace("ftxt\0", "ftxt\0xunknown\0"),text.replace("ftxt\0", "fmem\0"),
+            text.replace("D0x1000010\0", ""),text.replace("D0x1000010\0", "D16777232\0"),text.replace("D0x1000010\0", "D0x1000011\0"),
+            text.replace("i29974734\0", "i029974734\0"),text.replace("i29974734\0", "i29974735\0"),text.replace("\0\n", "\n"),
+            text.trim_end_matches('\n').to_string(),text.replace("\0\n", "\0\r\n"),text.replace("\0\n", "\0\n\n"),
+            file.to_string(),format!("p309\0c{DRIVER_HOST_LSOF}\0\n"),format!("{text}p310\0c{DRIVER_HOST_LSOF}\0\n"),
+            format!("{text}{file}"),format!("{text}{text}"),text.replace("ftxt\0D0x1000010", "D0x1000010\0ftxt"),
+            format!("{text}ftxt\0D0x1000010\0i29974734\0n/usr/lib/dyld\0\n"),
+        ];
+        for(mutant_index,mutant)in mutants.iter().enumerate(){assert!(selected_hal_owners(mutant.as_bytes(),&path,&prior).is_err(),"accepted framing mutant {mutant_index}");}
+    }
+    #[test]fn single_image_names_only_allow_selected_role_or_installed_opening_alias(){
+        let installed=PathBuf::from(format!("{DRIVER}/{DRIVER_EXE}"));let retained=PathBuf::from(format!("{ROOT_TRANSACTIONS}/driver-microphone-v9-fixture/prior/{DRIVER_NAME}/{DRIVER_EXE}"));let prior=identity(16777232,29974734);
+        // A retained inode may be reported under its literal current role OR
+        // the fixed installed opening name; this is not a Darwin rename claim.
+        selected_hal_owners(&owner_mapping(309,prior.inode,&retained),&retained,&prior).unwrap();
+        selected_hal_owners(SINGLE_PRIOR_OWNER_FIXTURE,&retained,&prior).unwrap();
+        for name in [format!("{ROOT_TRANSACTIONS}/driver-microphone-v9-other/prior/{DRIVER_NAME}/{DRIVER_EXE}"),format!("{ROOT_TRANSACTIONS}/driver-microphone-v9-fixture/candidate.driver/{DRIVER_EXE}"),format!("{} (deleted)",installed.display()),format!("{} (deleted)",retained.display()),DRIVER_HOST_EXE.into(),"/tmp/OpensteamerVirtualMicrophone".into()]{
+            assert!(selected_hal_owners(&owner_mapping(309,prior.inode,Path::new(&name)),&retained,&prior).is_err());
+        }
+        assert!(selected_hal_owners(&owner_mapping(309,prior.inode+1,&installed),&retained,&prior).is_err());
+    }
+    #[test]fn trusted_inspector_diagnostics_record_only_fixed_roles_extent_exit_and_hashes(){
+        let stdout=b"private /secret/path stdout";let stderr=b"private credential stderr";let captured=owner_output(1,stdout,stderr);let reason=inspector_summary("driver_owners_prior",&captured);
+        for value in ["role=driver_owners_prior".to_string(),"code=1".into(),format!("stdout_bytes={}",stdout.len()),format!("stdout_sha256={}",sha256(stdout)),format!("stderr_bytes={}",stderr.len()),format!("stderr_sha256={}",sha256(stderr))]{assert!(reason.contains(&value));}
+        assert!(!reason.contains("private"));assert!(!reason.contains("/secret/path"));assert!(!reason.contains("credential"));
+        let unknown=inspector_summary("untrusted/path\nsecret",&captured);assert!(unknown.contains("role=unknown_inspector"));assert!(!unknown.contains("untrusted"));
+        assert!(selected_owner_output("driver_owners_prior",&captured,Path::new("/secret/path"),&identity(2,3)).unwrap_err().len()<512);
+    }
+    #[test]fn selected_image_held_fd_and_path_reject_full_stat_drift_and_replacement(){
+        let(path,base,_,_)=pre_effect_directory_fixture("selected-image");let file=path.join("image");fs::write(&file,b"fixture").unwrap();fs::set_permissions(&file,fs::Permissions::from_mode(0o755)).unwrap();
+        let descriptor=OpenOptions::new().read(true).custom_flags(NOFOLLOW).open(&file).unwrap();let original=Identity::of(&descriptor.metadata().unwrap());
+        assert!(HeldDriverImage::capture(&file,&original).is_err()); // UID501 is not production root authority.
+        let mut held=HeldDriverImage{file:descriptor,path:file.clone(),identity:original.clone()};held.revalidate().unwrap();
+        for index in 0..11{let mut changed=original.clone();match index{0=>changed.device+=1,1=>changed.inode+=1,2=>changed.uid+=1,3=>changed.gid+=1,4=>changed.mode+=1,5=>changed.links+=1,6=>changed.size+=1,7=>changed.mtime+=1,8=>changed.mtime_nsec+=1,9=>changed.ctime+=1,_=>changed.ctime_nsec+=1};held.identity=changed;assert!(held.revalidate().is_err(),"accepted image stat field {index}");}
+        held.identity=original;held.revalidate().unwrap();fs::write(&file,b"fixture-expanded").unwrap();assert!(held.revalidate().is_err());drop(held);
+        let descriptor=File::open(&file).unwrap();let identity=Identity::of(&descriptor.metadata().unwrap());let held=HeldDriverImage{file:descriptor,path:file.clone(),identity};
+        let retained=path.join("retained");fs::rename(&file,&retained).unwrap();fs::write(&file,b"fixture-expanded").unwrap();fs::set_permissions(&file,fs::Permissions::from_mode(0o755)).unwrap();assert!(held.revalidate().is_err());drop(held);
+        fs::remove_file(&file).unwrap();std::os::unix::fs::symlink(&retained,&file).unwrap();let identity=Identity::of(&fs::metadata(&retained).unwrap());assert!(HeldDriverImage::capture(&file,&identity).is_err());
+        fs::remove_file(file).unwrap();fs::remove_file(retained).unwrap();drop(base);fs::remove_dir(path).unwrap();
     }
     fn driver_generation()->DriverHostGeneration{DriverHostGeneration{core:CoreGeneration{pid:178,runs:1,start_sha:"a".repeat(64)},pid:309,runs:1,start_sha:"b".repeat(64),process_uuid:"9CF4BB51-DDE9-3A76-B5E9-BC99AF522B58".into(),process_version:693,launch_uuid:"5E2741F7-BA88-4661-B3F2-9DCC814E6CFA".into(),apple_device:16777232,apple_inode:1152921500312151036,apple_stat_sha:"c".repeat(64),apple_sha:"d".repeat(64),hal_device:16777232,hal_inode:29974734}}
     #[test]fn driver_host_successor_requires_fresh_one_shot_under_exact_daemon_successor(){

@@ -170,6 +170,17 @@ fn inherited_channels(inherit:&[(RawFd,RawFd)],ruby_metadata:bool)->Result<()>{
     if ruby_metadata&&(!targets.contains(&3)||!targets.contains(&6)){return Err("Ruby requires request and root metadata proof channels".into());}Ok(())
 }
 
+fn fixed_driver_image_path(path:&Path)->Result<()>{
+    let text=path.to_str().ok_or("HAL owner path encoding differs")?;
+    let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::DRIVER);
+    if text!=canonical{
+        let tail=text.strip_prefix(&format!("{}/",super::ROOT_TRANSACTIONS)).ok_or("HAL owner path escaped fixed roots")?;
+        let(namespace,role)=tail.split_once('/').ok_or("HAL owner namespace absent")?;
+        if !namespace.starts_with("driver-microphone-v9-")||namespace.len()<="driver-microphone-v9-".len()||namespace.len()>96||!namespace.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')||
+            !["candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone","prior/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone","failed/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone"].contains(&role){return Err("HAL owner path is not a fixed sealed role".into());}
+    }Ok(())
+}
+
 pub(super) struct OwnedChild {
     child:Child, stdin:Option<ChildStdin>, stdout:ChildStdout, stderr:ChildStderr,
     output:Vec<u8>, errors:Vec<u8>, stdout_eof:bool, stderr_eof:bool, reaped:bool, expected_uid:u32, guardian:bool,
@@ -231,20 +242,13 @@ impl OwnedChild {
         let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-p",&pid.to_string(),"-d","txt","-F0pcDfin"]);
         Self::root_inspector(command)
     }
-    pub(super) fn driver_image_owners(prior:&Path,candidate:&Path)->Result<Self>{
+    pub(super) fn driver_image_owner(path:&Path)->Result<Self>{
         // Fixed HAL roles only, derived from verified root bundle locations;
         // never an arbitrary request-selected root command or pathname.
-        for path in [prior,candidate]{
-            let text=path.to_str().ok_or("HAL owner path encoding differs")?;
-            let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::DRIVER);
-            if text!=canonical{
-                let tail=text.strip_prefix(&format!("{}/",super::ROOT_TRANSACTIONS)).ok_or("HAL owner path escaped fixed roots")?;
-                let(namespace,role)=tail.split_once('/').ok_or("HAL owner namespace absent")?;
-                if !namespace.starts_with("driver-microphone-v9-")||namespace.len()>96||!namespace.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'_')||
-                    !["candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone","prior/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone","failed/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone"].contains(&role){return Err("HAL owner path is not a fixed sealed role".into());}
-            }
-        }
-        let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-d","txt","-F0pcDfin","--"]).arg(prior).arg(candidate);Self::root_inspector(command)
+        fixed_driver_image_path(path)?;
+        // One search item: exit1 can only be considered by the backend when
+        // BOTH output channels are exactly empty, never partial results.
+        let mut command=Command::new("/usr/sbin/lsof");command.args(["-n","-P","-a","-d","txt","-F0pcDfin","--"]).arg(path);Self::root_inspector(command)
     }
     fn root_inspector(mut command:Command)->Result<Self>{
         if unsafe{getuid()}!=0||unsafe{geteuid()}!=0{return Err("root OS inspector admission differs".into());}
@@ -427,6 +431,12 @@ impl Drop for OwnedChild{fn drop(&mut self){
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn global_single_image_inspector_accepts_only_fixed_canonical_role_paths(){
+        let canonical=format!("{}/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::DRIVER);fixed_driver_image_path(Path::new(&canonical)).unwrap();
+        let namespace="driver-microphone-v9-fixture";let prefix=format!("{}/{namespace}",super::super::ROOT_TRANSACTIONS);
+        for role in ["candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone","prior/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone","failed/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone"]{fixed_driver_image_path(Path::new(&format!("{prefix}/{role}"))).unwrap();}
+        for path in [format!("{canonical}/extra"),format!("{canonical} (deleted)"),"/tmp/OpensteamerVirtualMicrophone".into(),format!("{prefix}/tools/worker"),format!("{prefix}/candidate.driver/../candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone"),format!("{}/driver-microphone-v9-/candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::ROOT_TRANSACTIONS),format!("{}/driver-microphone-v9-fixture.alias/candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::ROOT_TRANSACTIONS),format!("{}/driver-microphone-v9-fixture/extra/prior/OpensteamerVirtualMicrophone.driver/Contents/MacOS/OpensteamerVirtualMicrophone",super::super::ROOT_TRANSACTIONS),format!("{prefix}/candidate.driver/Contents/MacOS/OpensteamerVirtualMicrophone\0")]{assert!(fixed_driver_image_path(Path::new(&path)).is_err(),"accepted {path:?}");}
+    }
     #[test]fn metadata_fd6_is_ruby_only_mandatory_and_duplicate_targets_are_refused(){
         inherited_channels(&[(32,3),(33,6)],true).unwrap();inherited_channels(&[(32,3),(33,4),(34,5),(35,6)],true).unwrap();
         inherited_channels(&[(32,3),(33,4),(34,5)],false).unwrap();
