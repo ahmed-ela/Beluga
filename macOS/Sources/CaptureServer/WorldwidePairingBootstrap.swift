@@ -10,6 +10,7 @@ import RemoteSessionCore
 actor WorldwidePairingBootstrap {
     /// Emits the single active pairing record or the terminal bootstrap failure.
     nonisolated let completion: AsyncThrowingStream<RemotePairedDeviceRecord, Error>
+    nonisolated let invitationEvents: AsyncStream<BelugaPairingInvitationEvent>
 
     private let identity: RemoteDeviceIdentity
     private var participant: RemotePairingParticipant
@@ -19,6 +20,8 @@ actor WorldwidePairingBootstrap {
     private let invitation: RemoteInvitationCode
     private let completionContinuation:
         AsyncThrowingStream<RemotePairedDeviceRecord, Error>.Continuation
+    private let invitationContinuation: AsyncStream<BelugaPairingInvitationEvent>.Continuation
+    private var invitationExpiresAt: Date?
 
     private var signalingTask: Task<Void, Never>?
     private var agreement: RemotePairingAgreement?
@@ -39,6 +42,11 @@ actor WorldwidePairingBootstrap {
         )
         completion = pair.stream
         completionContinuation = pair.continuation
+        let presentation = AsyncStream<BelugaPairingInvitationEvent>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        invitationEvents = presentation.stream
+        invitationContinuation = presentation.continuation
         let invitation = try RemoteInvitationCode.generate()
         self.invitation = invitation
         self.identity = identity
@@ -105,10 +113,13 @@ actor WorldwidePairingBootstrap {
     private func handle(_ event: PairingBootstrapSignalingEvent) async throws {
         switch event {
         case .waiting(let invitationExpiresAt):
+            self.invitationExpiresAt = invitationExpiresAt
+            publishInvitationIfValid()
             let seconds = max(0, Int(invitationExpiresAt.timeIntervalSinceNow.rounded()))
             logger.info("Worldwide pairing invitation expires in about \(seconds) seconds")
 
         case .ready:
+            invitationContinuation.yield(.hidden)
             guard !helloSent else { return }
             helloSent = true
             try await signaling.send(.hello(participant.hello))
@@ -160,6 +171,7 @@ actor WorldwidePairingBootstrap {
                 )
                 agreement = nil
                 helloSent = false
+                publishInvitationIfValid()
                 logger.info(
                     "The iPhone left before durable pairing; waiting for a fresh secure attempt"
                 )
@@ -214,6 +226,8 @@ actor WorldwidePairingBootstrap {
         logger.info("Worldwide pairing committed; the Mac will now accept secure reconnects")
         completionContinuation.yield(record)
         completionContinuation.finish()
+        invitationContinuation.yield(.hidden)
+        invitationContinuation.finish()
         isFinished = true
         signalingTask?.cancel()
         signalingTask = nil
@@ -226,11 +240,24 @@ actor WorldwidePairingBootstrap {
         isFinished = true
         signalingTask?.cancel()
         signalingTask = nil
+        invitationContinuation.yield(.hidden)
+        invitationContinuation.finish()
         if let error {
             completionContinuation.finish(throwing: error)
         } else {
             completionContinuation.finish()
         }
+    }
+
+    private func publishInvitationIfValid() {
+        guard !isFinished, !helloSent, let invitationExpiresAt,
+              invitationExpiresAt > Date() else {
+            invitationContinuation.yield(.hidden)
+            return
+        }
+        invitationContinuation.yield(.available(BelugaPairingInvitation(
+            code: invitation, expiresAt: invitationExpiresAt
+        )))
     }
 }
 

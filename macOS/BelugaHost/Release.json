@@ -1,0 +1,12 @@
+{
+  "schema": "beluga.mac-client-release.v1",
+  "version": "0.2.0",
+  "build": 100,
+  "minimumSystemVersion": "14.0",
+  "bundleIdentifier": "com.elamin.AudioStreamer.CaptureServer",
+  "teamIdentifier": "MSMG8CJLB3",
+  "sparkleVersion": "2.10.0",
+  "repository": "ahmed-ela/Beluga",
+  "feedURL": "https://github.com/ahmed-ela/Beluga/releases/download/mac-update-stable/appcast.xml",
+  "publicEDKey": "1/xdC78VgHIKw+HVPx6aAFWwv+++/ggtTlMm6QLOkQc="
+}

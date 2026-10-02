@@ -18,11 +18,14 @@ let package = Package(
         .library(name: "WebRTCTransport", targets: ["WebRTCTransport"]),
         .executable(name: "CaptureCLI", targets: ["CaptureCLI"]),
         .executable(name: "CaptureServer", targets: ["CaptureServer"]),
+        .executable(name: "BelugaUpdater", targets: ["BelugaUpdater"]),
         .executable(name: "OpensteamerMediaBridge", targets: ["OpensteamerMediaBridge"]),
         .executable(name: "PCMClient", targets: ["PCMClient"]),
         .executable(name: "PCMPlayer", targets: ["PCMPlayer"])
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
+    ],
     targets: [
         .executableTarget(
             name: "CaptureCLI",
@@ -32,6 +35,8 @@ let package = Package(
         .executableTarget(
             name: "CaptureServer",
             dependencies: [
+                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
+                "BelugaUpdateCore",
                 "CaptureCore",
                 "MediaBridgeCore",
                 .target(
@@ -81,6 +86,24 @@ let package = Package(
             name: "ClientCore",
             dependencies: ["Streaming", "Utilities"],
             path: "shared/Sources/ClientCore"
+        ),
+        .target(
+            name: "BelugaUpdateCore",
+            path: "macOS/Sources/BelugaUpdateCore",
+            linkerSettings: [.linkedLibrary("bsm", .when(platforms: [.macOS]))]
+        ),
+        .executableTarget(
+            name: "BelugaUpdater",
+            dependencies: ["BelugaUpdateCore", "BelugaUpdateDriver"],
+            path: "macOS/Sources/BelugaUpdater"
+        ),
+        .target(
+            name: "BelugaUpdateDriver",
+            dependencies: [
+                "BelugaUpdateCore",
+                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS]))
+            ],
+            path: "macOS/Sources/BelugaUpdateDriver"
         ),
         .target(
             name: "CaptureCore",
@@ -205,7 +228,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureServerTests",
-            dependencies: ["CaptureServer", "WebRTCTransport", "MediaBridgeCore"],
+            dependencies: ["CaptureServer", "BelugaUpdateCore", "BelugaUpdateDriver", "WebRTCTransport", "MediaBridgeCore"],
             path: "macOS/Tests/CaptureServerTests"
         ),
         .testTarget(

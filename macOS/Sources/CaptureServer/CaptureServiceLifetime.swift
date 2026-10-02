@@ -6,6 +6,14 @@ import Server
 struct CaptureServiceShutdownConfirmation: Sendable, Equatable {
     let lanScreenCaptureIsConfirmed: Bool
     let worldwideNativeCaptureIsConfirmed: Bool
+    let additionalNativeCaptureIsConfirmed: Bool
+
+    init(lanScreenCaptureIsConfirmed: Bool, worldwideNativeCaptureIsConfirmed: Bool,
+         additionalNativeCaptureIsConfirmed: Bool = true) {
+        self.lanScreenCaptureIsConfirmed = lanScreenCaptureIsConfirmed
+        self.worldwideNativeCaptureIsConfirmed = worldwideNativeCaptureIsConfirmed
+        self.additionalNativeCaptureIsConfirmed = additionalNativeCaptureIsConfirmed
+    }
 
     static let confirmed = CaptureServiceShutdownConfirmation(
         lanScreenCaptureIsConfirmed: true,
@@ -14,6 +22,7 @@ struct CaptureServiceShutdownConfirmation: Sendable, Equatable {
 
     var allNativeCapturesAreConfirmed: Bool {
         lanScreenCaptureIsConfirmed && worldwideNativeCaptureIsConfirmed
+            && additionalNativeCaptureIsConfirmed
     }
 }
 
@@ -37,6 +46,7 @@ final class CaptureServiceLifetime: @unchecked Sendable {
     private let lock = NSLock()
     private let validityProbe: @Sendable () -> Bool
     private let teardownDidBegin: @Sendable () -> Void
+    private let additionalMedia: CaptureAdditionalMediaLifetime?
     private var invalidated = false
     private var server: TCPServer?
     private var screenService: ScreenVideoService?
@@ -50,10 +60,18 @@ final class CaptureServiceLifetime: @unchecked Sendable {
 
     init(
         validityProbe: @escaping @Sendable () -> Bool = { true },
-        teardownDidBegin: @escaping @Sendable () -> Void = {}
+        teardownDidBegin: @escaping @Sendable () -> Void = {},
+        additionalMedia: CaptureAdditionalMediaLifetime? = nil
     ) {
         self.validityProbe = validityProbe
         self.teardownDidBegin = teardownDidBegin
+        self.additionalMedia = additionalMedia
+    }
+
+    func activateAdditionalMedia() throws {
+        try whileValid {
+            if additionalMedia?.gate.activate() == true { additionalMedia?.becameOwned() }
+        }
     }
 
     var isValid: Bool {
@@ -219,6 +237,7 @@ final class CaptureServiceLifetime: @unchecked Sendable {
         guard !invalidated else { return }
         teardownDidBegin()
         invalidated = true
+        additionalMedia?.gate.revoke()
 
         remoteInputController?.invalidate()
         // Close local renewal admission synchronously before the async service teardown can yield.
@@ -232,7 +251,9 @@ final class CaptureServiceLifetime: @unchecked Sendable {
         let secondaryTestViewerControlServer =
             secondaryTestViewerControlServer
         let screenService = screenService
+        let additionalMedia = additionalMedia
         teardownTask = Task {
+            async let additionalConfirmation = additionalMedia?.shutdown() ?? true
             async let worldwideConfirmation = Self.stopWorldwideCoordinator(coordinator)
             async let secondaryConfirmation = Self.stopSecondaryTestViewer(
                 secondaryTestViewerCoordinator,
@@ -245,12 +266,14 @@ final class CaptureServiceLifetime: @unchecked Sendable {
             let confirmations = await (
                 lanConfirmation,
                 worldwideConfirmation,
-                secondaryConfirmation
+                secondaryConfirmation,
+                additionalConfirmation
             )
             return CaptureServiceShutdownConfirmation(
                 lanScreenCaptureIsConfirmed: confirmations.0,
                 worldwideNativeCaptureIsConfirmed:
-                    confirmations.1 && confirmations.2
+                    confirmations.1 && confirmations.2,
+                additionalNativeCaptureIsConfirmed: confirmations.3
             )
         }
     }

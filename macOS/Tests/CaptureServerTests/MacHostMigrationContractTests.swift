@@ -2383,7 +2383,7 @@ final class MacHostMigrationContractTests: XCTestCase {
             "macOS/scripts/verify-mac-host-launch-state.sh",
             "macOS/scripts/verify-mac-host-deployment.sh",
             "macOS/scripts/verify-live-mac-host-process.sh",
-            "macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift",
+            "macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift",
             "macOS/Tests/CaptureServerTests/WorldwideHostProcessLockTests.swift",
             "macOS/Tests/CaptureServerTests/MacHostDeploymentContractTests.swift",
             "macOS/Tests/CaptureServerTests/MacHostBundleIdentityTests.swift",

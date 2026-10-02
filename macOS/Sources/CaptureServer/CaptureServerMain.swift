@@ -1,3 +1,4 @@
+import BelugaUpdateCore
 import CaptureCore
 import Darwin
 import Foundation
@@ -12,10 +13,36 @@ import VirtualDisplayCore
 @main
 struct CaptureServerMain {
     /// Parses configuration, starts enabled services, and exits nonzero on any fatal failure.
+    @MainActor
     static func main() async {
+        switch BelugaHostLaunchMode.resolve(
+            arguments: CommandLine.arguments,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            bundlePath: Bundle.main.bundlePath,
+            configuredEndpoint: Bundle.main.object(forInfoDictionaryKey: "BelugaRendezvousURL") as? String
+        ) {
+        case .commandLine(let arguments):
+            await run(arguments: arguments)
+        case .menuBar(let arguments, let endpoint):
+            let application = BelugaMenuBarApplication(arguments: arguments, endpoint: endpoint) {
+                arguments, presentation, additionalMedia in
+                await run(arguments: arguments, presentation: presentation,
+                          presentsInvitationInConsole: false, additionalMedia: additionalMedia)
+            }
+            application.run()
+        }
+    }
+
+    @MainActor
+    static func run(
+        arguments: [String],
+        presentation: @escaping @Sendable (BelugaHostPresentation) -> Void = { _ in },
+        presentsInvitationInConsole: Bool = true,
+        additionalMedia: CaptureAdditionalMediaLifetime? = nil
+    ) async {
         do {
             if let clientMode = try WorldwideSecondaryTestViewerControlClientMode
-                .parseIfRequested(CommandLine.arguments) {
+                .parseIfRequested(arguments) {
                 try clientMode.run()
                 return
             }
@@ -24,7 +51,7 @@ struct CaptureServerMain {
             exit(1)
         }
         if let probe = ScreenVideoDisplayModeProbeMode.executionIfRequested(
-            CommandLine.arguments
+            arguments
         ) {
             if let output = probe.output,
                let data = output.data(using: .utf8) {
@@ -33,7 +60,7 @@ struct CaptureServerMain {
             exit(probe.exitStatus)
         }
         if let probeExitStatus = RestoredDesktopProbeMode.exitStatusIfRequested(
-            CommandLine.arguments
+            arguments
         ) {
             exit(probeExitStatus)
         }
@@ -49,7 +76,7 @@ struct CaptureServerMain {
         var mediaAutomationService: MacMediaAutomationService?
         defer { mediaAutomationService?.stop() }
         do {
-            let options = try CaptureServerOptions.parse(CommandLine.arguments)
+            let options = try CaptureServerOptions.parse(arguments)
             if options.showHelp {
                 print(CaptureServerOptions.usage)
                 return
@@ -70,13 +97,24 @@ struct CaptureServerMain {
                 return
             }
 
-            // The shared lock is also required by the display-only LAN mode: WindowServer must
-            // never be mutated while an installed worldwide host owns this runtime namespace.
-            if options.requiresExclusiveHostProcessLock {
-                worldwideHostProcessLock = try WorldwideHostProcessLock.acquire()
+            // Runtime admission is under the same lease used by the updater broker.
+            // Every app replacement target (including direct LAN CLI invocation) reads
+            // its durable update fence while holding that lease, before native effects.
+            // Bare nonexclusive CLI tools and the read-only diagnostics above retain
+            // their existing behavior; no protected legacy lock namespace is changed.
+            let updateContext = try BelugaUpdateRuntimeContext.resolve()
+            let validateUpdateTarget: (() throws -> Void)?
+            if let updateContext {
+                validateUpdateTarget = {
+                    try BelugaUpdateRuntimeAdmission.validateTarget(updateContext)
+                }
             } else {
-                worldwideHostProcessLock = nil
+                validateUpdateTarget = nil
             }
+            worldwideHostProcessLock = try BelugaUpdateRuntimeAdmission.acquire(
+                requiresExclusiveOwnership: options.requiresExclusiveHostProcessLock,
+                validateUpdateTarget: validateUpdateTarget
+            )
 
             let virtualDisplayTeardownDeadline: VirtualDisplayTeardownDeadline?
             if options.virtualPhoneDisplayEnabled {
@@ -156,7 +194,8 @@ struct CaptureServerMain {
 
                 serviceLifetime = CaptureServiceLifetime(
                     validityProbe: { owner.isAlive },
-                    teardownDidBegin: { teardownDeadline.arm() }
+                    teardownDidBegin: { teardownDeadline.arm() },
+                    additionalMedia: additionalMedia
                 )
                 activeServiceLifetime = serviceLifetime
                 let invalidationSignal = VirtualDisplayInvalidationSignal()
@@ -192,12 +231,15 @@ struct CaptureServerMain {
                 )
             } else {
                 serviceLifetime = CaptureServiceLifetime(
-                    teardownDidBegin: { processCleanupDeadline?.arm() }
+                    teardownDidBegin: { processCleanupDeadline?.arm() },
+                    additionalMedia: additionalMedia
                 )
                 activeServiceLifetime = serviceLifetime
                 virtualDisplayLifetimeTask = nil
                 virtualDisplayInvalidationEvents = nil
             }
+
+            try serviceLifetime.activateAdditionalMedia()
 
             let displaySelection = CaptureDisplaySelection(
                 explicitDisplayID: options.displayID,
@@ -316,6 +358,7 @@ struct CaptureServerMain {
                     makeNativeCaptureWatchdog: {
                         virtualDisplayTeardownDeadline?.makeNativeCaptureWatchdog()
                     },
+                    presentation: presentation,
                     logger: logger
                 )
                 try serviceLifetime.install(
@@ -339,13 +382,15 @@ struct CaptureServerMain {
                 case .invitation(let invitationCode):
                     // This is the sole intentional presentation of the pairing capability.
                     // Routine diagnostics must never repeat it or include derived channels.
-                    print("")
-                    print("Worldwide one-time pairing code")
-                    print("-------------------------------")
-                    print(invitationCode)
-                    print("Enter this code on the iPhone before it expires.")
-                    print("")
-                    fflush(stdout)
+                    if presentsInvitationInConsole {
+                        print("")
+                        print("Worldwide one-time pairing code")
+                        print("-------------------------------")
+                        print(invitationCode)
+                        print("Enter this code on the iPhone before it expires.")
+                        print("")
+                        fflush(stdout)
+                    }
                 case .paired:
                     logger.info("Worldwide host is available for the paired iPhone")
                 }

@@ -32,6 +32,8 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>BelugaRendezvousURL</key>
+	<string>wss://audiostreamer-rendezvous.elaminahmed03.workers.dev</string>
 	<key>OpensteamerMediaIntegrationVersion</key>
 	<integer>1</integer>
 	<key>NSAppleEventsUsageDescription</key>

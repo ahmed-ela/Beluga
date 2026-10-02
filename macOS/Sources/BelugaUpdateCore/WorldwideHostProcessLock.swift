@@ -7,13 +7,13 @@ import Foundation
 /// `openat`/`fstatat` relative to that descriptor, and the pathname is re-opened and compared before
 /// the lock is returned. A directory rename/replacement or lock-entry substitution therefore fails
 /// closed instead of allowing a second host to acquire a different inode under the same pathname.
-final class WorldwideHostProcessLock {
-    static let legacyRuntimeDirectoryName = "com.elamin.AudioStreamer.CaptureServer.runtime"
+package final class WorldwideHostProcessLock {
+    package static let legacyRuntimeDirectoryName = "com.elamin.AudioStreamer.CaptureServer.runtime"
     private static let fileName = "worldwide-host.lock"
 
     private let descriptorLock = NSLock()
     private var descriptor: Int32?
-    let generationNonce: String
+    package let generationNonce: String
 
     private init(descriptor: Int32, generationNonce: String) {
         self.descriptor = descriptor
@@ -24,7 +24,7 @@ final class WorldwideHostProcessLock {
         release()
     }
 
-    static func acquire(
+    package static func acquire(
         lockDirectoryURL: URL? = nil,
         afterDirectoryValidationForTesting: (() throws -> Void)? = nil,
         afterLockOpenForTesting: (() throws -> Void)? = nil
@@ -66,7 +66,7 @@ final class WorldwideHostProcessLock {
         }
     }
 
-    func release() {
+    package func release() {
         descriptorLock.lock()
         guard let descriptor else {
             descriptorLock.unlock()
@@ -371,14 +371,14 @@ final class WorldwideHostProcessLock {
     }
 }
 
-enum WorldwideHostProcessLockError: LocalizedError, Equatable {
+package enum WorldwideHostProcessLockError: LocalizedError, Equatable {
     case alreadyRunning
     case applicationSupportUnavailable
     case unsafeLockDirectory
     case unsafeLockFile
     case systemCall(operation: String, code: Int32)
 
-    var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .alreadyRunning:
             "Another Beluga worldwide host is already running for this macOS account."

@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import Foundation
 import XCTest
+@testable import BelugaUpdateCore
 @testable import CaptureServer
 
 /// Verifies cross-version exclusion, owner-only metadata, and canonical inode binding.

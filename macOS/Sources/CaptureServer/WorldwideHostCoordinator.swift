@@ -54,6 +54,7 @@ actor WorldwideHostCoordinator {
     private let teardownDidBegin: @Sendable () -> Void
     private let makeMediaServiceTeardownWatchdog: @Sendable () -> Task<Void, Never>?
     private let makeNativeCaptureWatchdog: @Sendable () -> Task<Void, Never>?
+    private let presentation: @Sendable (BelugaHostPresentation) -> Void
 
     private var lifecycle = WorldwideHostLifecycle()
     private var identity: RemoteDeviceIdentity?
@@ -62,6 +63,8 @@ actor WorldwideHostCoordinator {
     private var availabilityClient: (any WorldwideHostAvailabilityTransport)?
     private var mediaService: WorldwideScreenService?
     private var pairingTask: Task<Void, Never>?
+    private var pairingPresentationTask: Task<Void, Never>?
+    private var presentationRevision: UInt64 = 0
     private var availabilityTask: Task<Void, Never>?
     private var availabilityGeneration: UUID?
     private var mediaCompletionTask: Task<Void, Never>?
@@ -107,6 +110,7 @@ actor WorldwideHostCoordinator {
         teardownDidBegin: @escaping @Sendable () -> Void = {},
         makeMediaServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        presentation: @escaping @Sendable (BelugaHostPresentation) -> Void = { _ in },
         logger: Logger
     ) {
         let pair = AsyncThrowingStream<Void, Error>.makeStream(
@@ -137,6 +141,7 @@ actor WorldwideHostCoordinator {
         self.teardownDidBegin = teardownDidBegin
         self.makeMediaServiceTeardownWatchdog = makeMediaServiceTeardownWatchdog
         self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
+        self.presentation = presentation
         self.logger = logger
     }
 
@@ -164,6 +169,7 @@ actor WorldwideHostCoordinator {
         isStarted = true
 
         if let record {
+            publishPresentation(.pairedConnecting)
             startAvailabilityLoop()
             if record.pairingState == .active {
                 logger.info("Loaded the paired iPhone and started worldwide availability")
@@ -181,6 +187,12 @@ actor WorldwideHostCoordinator {
                 logger: logger
             )
             pairingBootstrap = bootstrap
+            publishPresentation(.inviting)
+            pairingPresentationTask = Task { [weak self, bootstrap] in
+                for await event in bootstrap.invitationEvents {
+                    await self?.pairingInvitationChanged(event, bootstrap: bootstrap)
+                }
+            }
             let code = try await bootstrap.start()
             guard !isStopped, pairingBootstrap === bootstrap else {
                 throw CancellationError()
@@ -253,8 +265,11 @@ actor WorldwideHostCoordinator {
             return
         }
         pairedRecord = record
+        pairingPresentationTask?.cancel()
+        pairingPresentationTask = nil
         pairingBootstrap = nil
         pairingTask = nil
+        publishPresentation(.pairedConnecting)
         startAvailabilityLoop()
     }
 
@@ -275,8 +290,11 @@ actor WorldwideHostCoordinator {
             }
             try lifecycle.durablePairingRecordAvailable()
             pairedRecord = record
+            pairingPresentationTask?.cancel()
+            pairingPresentationTask = nil
             pairingBootstrap = nil
             pairingTask = nil
+            publishPresentation(.pairedConnecting)
             logger.info(
                 "Pairing bootstrap ended after durable state was saved; " +
                 "continuing on authenticated availability recovery"
@@ -389,6 +407,7 @@ actor WorldwideHostCoordinator {
                 )
                 retryOrdinal = retryOrdinal == .max ? .max : retryOrdinal + 1
                 let sanitizedFailure = connectionTelemetryFailure(for: error).rawValue
+                publishPresentation(.unavailable)
                 logger.error(
                     "Worldwide availability disconnected; retrying in " +
                     "\(retryDelaySeconds) seconds " +
@@ -422,6 +441,7 @@ actor WorldwideHostCoordinator {
     ) async throws {
         switch event {
         case .waiting:
+            publishPresentation(mediaService == nil ? .pairedWaiting : .sessionPrepared)
             recordConnectionTelemetry(.hostWorkerWaitingForViewer)
             logger.debug("Worldwide availability is waiting for the paired iPhone")
 
@@ -436,6 +456,7 @@ actor WorldwideHostCoordinator {
                 lifecycle.availabilityPeerLeft(exchangeID: activeExchangeID)
             }
             try lifecycle.availabilityReady(exchangeID: exchangeID.wireValue)
+            publishPresentation(.preparingSession)
             try await sendPairingRecoveryIfNeeded(client: client)
 
         case .signal(.pairingCommit(let commit)):
@@ -460,6 +481,7 @@ actor WorldwideHostCoordinator {
 
         case .peerLeft(_, let exchangeID):
             lifecycle.availabilityPeerLeft(exchangeID: exchangeID.wireValue)
+            publishPresentation(mediaService == nil ? .pairedWaiting : .sessionPrepared)
             logger.debug("The paired iPhone left the availability exchange")
 
         case .serverError(let error):
@@ -610,6 +632,7 @@ actor WorldwideHostCoordinator {
                 exchangeID: exchangeID
             )
             logger.info("A fresh encrypted media rendezvous is ready for the paired iPhone")
+            publishPresentation(.sessionPrepared)
         } catch {
             await service.stop()
             if await service.hasUnconfirmedNativeCaptureStop() {
@@ -645,6 +668,7 @@ actor WorldwideHostCoordinator {
         mediaService = nil
         mediaCompletionTask = nil
         lifecycle.mediaEnded(exchangeID: exchangeID)
+        publishPresentation(.pairedWaiting)
         logger.info("Worldwide media ended; the Mac remains available for the paired iPhone")
     }
 
@@ -691,9 +715,12 @@ actor WorldwideHostCoordinator {
         shutdownIsInProgress = true
         defer { finishShutdown() }
         lifecycle.stop()
+        publishPresentation(.stopped)
 
         pairingTask?.cancel()
         pairingTask = nil
+        pairingPresentationTask?.cancel()
+        pairingPresentationTask = nil
         let availabilityTask = availabilityTask
         self.availabilityTask = nil
         availabilityGeneration = nil
@@ -737,6 +764,26 @@ actor WorldwideHostCoordinator {
             completionContinuation.finish()
         }
         return !nativeScreenStopIsUnconfirmed
+    }
+
+    private func pairingInvitationChanged(
+        _ event: BelugaPairingInvitationEvent, bootstrap: WorldwidePairingBootstrap
+    ) {
+        guard !isStopped, pairingBootstrap === bootstrap else { return }
+        switch event {
+        case .available(let invitation): publishPresentation(.inviting, invitation: invitation)
+        case .hidden: publishPresentation(.inviting)
+        }
+    }
+
+    private func publishPresentation(
+        _ phase: BelugaHostPresentationPhase, invitation: BelugaPairingInvitation? = nil
+    ) {
+        presentationRevision += 1
+        presentation(BelugaHostPresentation(
+            revision: presentationRevision, phase: phase,
+            pairedPhoneName: pairedRecord?.remoteDisplayName, invitation: invitation
+        ))
     }
 
     /// Retries an exact source retained by a failed native stop and preserves it on uncertainty.
