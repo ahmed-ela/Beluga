@@ -4,6 +4,14 @@ Beluga uses the following directly distributed runtime components. Their terms r
 independent of the Beluga project license. Keep this file with source and binary
 distributions that contain the corresponding component.
 
+## Sparkle updater
+
+Mac menu-bar client builds use Sparkle 2.10.0, pinned in `Package.resolved`.
+Source: <https://github.com/sparkle-project/Sparkle>.
+The complete upstream license is retained in
+`macOS/BelugaHost/Resources/Sparkle-LICENSE.txt` and must accompany the distributed
+framework. Older host artifacts without Sparkle do not acquire this dependency.
+
 ## LiveKit WebRTC XCFramework wrapper
 
 Source: <https://github.com/livekit/webrtc-xcframework>

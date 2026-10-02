@@ -269,20 +269,43 @@ archive-only TestFlight scheme. The endpoint-free Debug bundle is for developmen
 tests. Use the guarded side-by-side flow above for TestFlight, and do not override its automatic
 signing contract with manual signing flags.
 
-Build the signed Mac host from the repository root:
+Build the versioned Mac client from the repository root, using two existing,
+empty, owned `0700` directories outside the checkout and the exact Developer ID
+Application certificate SHA-1:
 
 ```sh
 BELUGA_MICROPHONE_REGRESSION_RECEIPT='/absolute/retained/receipt.json' \
 BELUGA_MICROPHONE_REGRESSION_RECEIPT_SHA256='independently-retained-lowercase-sha256' \
-OPENSTEAMER_HOST_CODESIGN_IDENTITY='Apple Development: Your Name (TEAMID)' \
-  macOS/scripts/build-beluga-host-app.sh
+  ruby macOS/scripts/build-beluga-mac-client.rb \
+    --output '/absolute/empty-private-output' \
+    --scratch '/absolute/empty-private-scratch' \
+    --identity 'EXACT_40_HEXADECIMAL_DEVELOPER_ID_CERTIFICATE_SHA1'
 ```
 
 Generate the source-bound offline receipt with the mandatory runner described in
 [Microphone regression guardrails](MICROPHONE_REGRESSION_GUARDRAILS.md). Reuse it
 only for unchanged source/tool/evidence identities; the builder refuses missing,
-stale, or altered proof before signing. This produces an artifact, not a live host
-or HAL-driver update.
+stale, or altered proof before signing. The reviewed updater configuration in
+`macOS/BelugaHost/Release.json` must also be complete. This produces a signed,
+verified app, not a notarized DMG, published release, live host, or HAL-driver
+update. The separate `macOS/scripts/package-beluga-mac-client.rb` prepares the
+notarized DMG and signed update feed; publishing remains a separate step. See
+[Mac-client delivery gates](MAC_CLIENT_ROADMAP.md) for current proof and limits.
+
+`macOS/scripts/build-beluga-host-app.sh` retains its historical LiveKit-only
+artifact contract. It intentionally refuses this Sparkle-enabled source before
+building or signing; do not loosen its verifier or reuse frozen legacy rollout
+controllers for the new distribution.
+
+The TestFlight release runner independently pins the current root `Package.swift`
+and `Package.resolved` bytes, including Sparkle's exact version/revision. It retains
+the encrypted build cache's original enrollment provenance and suppresses package
+updates. These offline input checks and Simulator tests do not prove Xcode's iOS
+workspace resolver graph: before a new upload, capture and positively verify the
+actual workspace lock produced/consumed by the guarded resolver. No such lock is
+currently checked in. Keep the existing resolved-file-only Xcode boundary; do not
+invent a digest, silently regenerate pins, or relabel the old cache. The focused
+offline input fixtures are `ruby scripts/test-testflight-package-inputs.rb`.
 
 Use the signed `Beluga Host.app` for pairing and macOS privacy permissions. A naked
 SwiftPM executable is useful for deterministic tests but is not a substitute for the signed
