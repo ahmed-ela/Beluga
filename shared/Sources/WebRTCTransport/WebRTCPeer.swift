@@ -6323,10 +6323,11 @@ public actor WebRTCPeer {
     /// independently revocable predicate. This message is a claim, not acoustic proof.
     public func requestMediaHandoffCommit(_ offer: WebRTCReceivedMediaHandoffOffer,
         phonePositionSeconds: Double, observedAtUptime: Double,
+        playbackAuthorization: WebRTCControlAuthorization,
         playbackIsCurrent: @Sendable () -> Bool) throws {
         try ensureOpen()
         guard role == .viewer else { throw WebRTCTransportError.invalidRole }
-        guard playbackIsCurrent(), refreshMediaHandoffContinuity(),
+        guard playbackAuthorization.isValid, playbackIsCurrent(), refreshMediaHandoffContinuity(),
               mediaHandoffTransactions.viewerCommit == nil, let state = latestReceivedRemoteMediaState,
               let commit = mediaHandoffOffers.prepareCommit(offer, phonePositionSeconds: phonePositionSeconds,
                   observedAtUptime: observedAtUptime, state: state, now: ProcessInfo.processInfo.systemUptime),
@@ -6334,7 +6335,15 @@ public actor WebRTCPeer {
             throw WebRTCTransportError.controlAuthorizationRevoked
         }
         do {
-            try delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffCommit(commit)))
+            guard playbackIsCurrent() else { throw WebRTCTransportError.controlAuthorizationRevoked }
+            try playbackAuthorization.withValidAuthorization {
+                // Do not invoke caller code while holding its token's lock. Recheck the bounded
+                // observation age here; synchronous revocation orders against this native send.
+                let now = ProcessInfo.processInfo.systemUptime
+                guard now >= observedAtUptime, now - observedAtUptime <= 0.75,
+                      now < offer.deadlineUptime else { throw WebRTCTransportError.controlAuthorizationRevoked }
+                try delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffCommit(commit)))
+            }
         } catch {
             if let completion = mediaHandoffTransactions.expireViewer(id: offer.id) { emit(.mediaHandoffCompleted(completion)) }
             throw error

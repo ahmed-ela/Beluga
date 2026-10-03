@@ -9,12 +9,15 @@ struct YouTubeHandoffRequest: Equatable, Sendable, Identifiable {
     let durationSeconds: Double
     let playbackRate: Double
     let deadlineUptime: Double
+    let positionObservedAtUptime: Double
     var id: UUID { operationID }
 
     init(operationID: UUID, videoID: String, positionSeconds: Double,
          durationSeconds: Double, playbackRate: Double, deadlineUptime: Double,
-         now: Double) throws {
+         now: Double, positionObservedAtUptime: Double? = nil) throws {
+        let observed = positionObservedAtUptime ?? now
         guard Self.validVideoID(videoID), now.isFinite, now >= 0,
+              observed.isFinite, observed >= 0, observed <= now,
               positionSeconds.isFinite, positionSeconds >= 0,
               durationSeconds.isFinite, durationSeconds > positionSeconds,
               durationSeconds <= 31_536_000,
@@ -27,6 +30,11 @@ struct YouTubeHandoffRequest: Equatable, Sendable, Identifiable {
         self.durationSeconds = durationSeconds
         self.playbackRate = playbackRate
         self.deadlineUptime = deadlineUptime
+        self.positionObservedAtUptime = observed
+    }
+
+    func expectedPosition(at now: Double) -> Double {
+        min(durationSeconds, positionSeconds + max(0, now - positionObservedAtUptime) * playbackRate)
     }
 
     static func validVideoID(_ value: String) -> Bool {
@@ -243,7 +251,7 @@ struct YouTubeHandoffOperation {
             latestPlayingAt = now
             guard evidence == nil else { return nil }
             guard let first = firstPlaying else {
-                if abs(position - request.positionSeconds) <= 2 {
+                if abs(position - request.expectedPosition(at: now)) <= 2 {
                     firstPlaying = (position, now); phase = .verifying
                 }
                 return nil
@@ -251,7 +259,7 @@ struct YouTubeHandoffOperation {
             let elapsed = now - first.now
             let advance = position - first.position
             guard elapsed <= 1.5,
-                  abs(position - (request.positionSeconds + elapsed * rate)) <= 2 else {
+                  abs(position - request.expectedPosition(at: now)) <= 2 else {
                 firstPlaying = nil; phase = .ready
                 return nil
             }

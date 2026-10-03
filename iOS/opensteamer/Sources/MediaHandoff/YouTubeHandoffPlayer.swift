@@ -13,9 +13,16 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     private let eventHandler: @MainActor (YouTubeHandoffPlayerEvent) -> Void
     private let now: @MainActor () -> Double
     private let htmlDocument: @MainActor (YouTubeHandoffRequest, UUID, String) -> String
+    let playbackAuthorization = WebRTCControlAuthorization()
+    private let stopMedia: @MainActor (WKWebView, @escaping @MainActor () -> Void) -> Void
+    private var cleanupHandlers: [@MainActor () -> Void] = []
+    private var closingWebView: WKWebView?
+    private var cleanupStarted = false
+    private(set) var cleanupCompleted = false
     private var presented = false
     private var sceneIsActive = false
-    private weak var webView: YouTubeHandoffWebView?
+    // Retain until exact stop acknowledgement even if SwiftUI removes the representable.
+    private var webView: YouTubeHandoffWebView?
     private var ownedNavigation: WKNavigation?
     private var baseURL: URL?
     private var pollTask: Task<Void, Never>?
@@ -25,9 +32,17 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     init(request: YouTubeHandoffRequest,
          now: @escaping @MainActor () -> Double = { ProcessInfo.processInfo.systemUptime },
          htmlDocument: (@MainActor (YouTubeHandoffRequest, UUID, String) -> String)? = nil,
+         stopMedia: (@MainActor (WKWebView, @escaping @MainActor () -> Void) -> Void)? = nil,
          eventHandler: @escaping @MainActor (YouTubeHandoffPlayerEvent) -> Void) {
         self.request = request; self.now = now; self.eventHandler = eventHandler
         self.htmlDocument = htmlDocument ?? Self.html
+        self.stopMedia = stopMedia ?? { view, completion in
+            // Retain the exact view and serialize the two acknowledgements. Enqueuing either
+            // API is not proof that media has stopped. No timeout may restore the audio lease.
+            view.setAllMediaPlaybackSuspended(true) {
+                view.pauseAllMediaPlayback { completion() }
+            }
+        }
         operation = YouTubeHandoffOperation(request: request, now: now())
         super.init()
     }
@@ -59,6 +74,10 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     func dismiss() { terminate(.dismissed) }
     func replace() { terminate(.replaced) }
 
+    func afterMediaStopped(_ completion: @escaping @MainActor () -> Void) {
+        if cleanupCompleted { completion() } else { cleanupHandlers.append(completion) }
+    }
+
     func makeWebView() -> YouTubeHandoffWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
@@ -89,6 +108,7 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
                 guard let self else { return }
                 self.synchronizeVisibility()
                 self.publish(self.operation.poll(now: self.now()))
+                self.updatePageTimeline()
                 if self.operation.isTerminal { return }
             }
         }
@@ -111,7 +131,15 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     }
 
     private func updatePageVisibility() {
+        updatePageTimeline()
         webView?.evaluateJavaScript("if (typeof window.belugaHandoffVisibility === 'function') { window.belugaHandoffVisibility(\(operation.isVisible ? "true" : "false")); }", completionHandler: nil)
+    }
+
+    private func updatePageTimeline() {
+        guard !operation.isTerminal, operation.phase != .localPlayback else { return }
+        let position = request.expectedPosition(at: now())
+        guard position.isFinite else { return }
+        webView?.evaluateJavaScript("if (typeof window.belugaHandoffTimeline === 'function') { window.belugaHandoffTimeline(\(position)); }", completionHandler: nil)
     }
 
     fileprivate func receive(_ message: WKScriptMessage) {
@@ -133,6 +161,10 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     private func terminate(_ reason: YouTubeHandoffFailure) { publish(operation.fail(reason)) }
 
     private func publish(_ event: YouTubeHandoffPlayerEvent?) {
+        if operation.isTerminal || operation.phase == .localPlayback
+            || operation.evidence.map({ !operation.isCurrent($0, now: now()) }) == true {
+            playbackAuthorization.revoke()
+        }
         macPauseStatus = operation.macPauseStatus
         phase = operation.phase
         if operation.isTerminal { closeWebView() }
@@ -141,17 +173,30 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
 
     private func closeWebView() {
         pollTask?.cancel(); pollTask = nil
-        guard let view = webView else { return }
+        guard !cleanupStarted else { return }
+        cleanupStarted = true
+        guard let view = webView else { finishCleanup(); return }
+        closingWebView = view
         webView = nil; ownedNavigation = nil
         view.onGeometryOrWindowChange = nil
         view.configuration.userContentController.removeScriptMessageHandler(forName: Self.handlerName)
         view.configuration.userContentController.removeAllUserScripts()
         view.navigationDelegate = nil; view.uiDelegate = nil
         view.isHidden = true
-        view.setAllMediaPlaybackSuspended(true, completionHandler: nil)
-        view.pauseAllMediaPlayback(completionHandler: nil)
         view.stopLoading()
-        view.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: nil)
+        stopMedia(view) { [self, view] in
+            guard closingWebView === view else { return }
+            view.loadHTMLString("<!doctype html><html><body></body></html>", baseURL: nil)
+            closingWebView = nil
+            finishCleanup()
+        }
+    }
+
+    private func finishCleanup() {
+        guard !cleanupCompleted else { return }
+        cleanupCompleted = true
+        let handlers = cleanupHandlers; cleanupHandlers.removeAll()
+        for handler in handlers { handler() }
     }
 
     private static func validBundleHost(_ value: String) -> Bool {
@@ -175,6 +220,14 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
           const page='\(pageID.uuidString.lowercased())', expected='\(request.videoID)';
           const position=\(request.positionSeconds), rate=\(request.playbackRate);
           let player=null, ready=false, visible=false, retired=false, sequence=0;
+          let anchor=null, anchorTime=0, aligned=false;
+          window.belugaHandoffTimeline=value=>{
+            if(retired || !Number.isFinite(value) || value<position) return;
+            const first=anchor===null;
+            anchor=value; anchorTime=performance.now();
+            if(first) start();
+          };
+          function target(){return anchor===null?null:anchor+(performance.now()-anchorTime)/1000*rate;}
           function currentVideo() {
             if(!ready) return expected;
             try { const u=new URL(player.getVideoUrl()); const ids=u.searchParams.getAll('v');
@@ -196,7 +249,8 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
             if(!ready || !visible || retired || document.visibilityState==='hidden') return;
             const rates=player.getAvailablePlaybackRates();
             if(!rates.some(r=>Math.abs(r-rate)<0.01)) { emit('unsupportedRate'); player.pauseVideo(); return; }
-            player.seekTo(position,true); player.setPlaybackRate(rate); player.playVideo();
+            const current=target(); if(current===null) return;
+            player.seekTo(current,true); player.setPlaybackRate(rate); player.playVideo();
           }
           window.belugaHandoffVisibility=value=>{
             if(retired || visible===value) return;
@@ -208,7 +262,13 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
             player=new YT.Player('player',{width:'100%',height:'100%',videoId:expected,
               playerVars:{playsinline:1,controls:1,autoplay:0,origin:'\(origin)'},
               events:{onReady:()=>{ready=true;player.cueVideoById({videoId:expected,startSeconds:position});emit('ready');start();},
-                onStateChange:()=>sample(),onPlaybackRateChange:()=>sample(),
+                onStateChange:()=>{
+                  if(!aligned && visible && player.getPlayerState()===1) {
+                    const current=target(); if(current===null) return;
+                    aligned=true; player.seekTo(current,true);
+                  }
+                  sample();
+                },onPlaybackRateChange:()=>sample(),
                 onAutoplayBlocked:()=>emit('blocked'),onError:()=>emit('error')}});
           };
           const timer=setInterval(sample,250);

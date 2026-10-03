@@ -143,18 +143,20 @@ final class YouTubeHandoffWebViewTests: XCTestCase {
         XCTAssertEqual(player.statusText, "The Mac’s pause status is uncertain. Check the Mac before trying another transfer.")
     }
 
-    private static func localDocument(_ request: YouTubeHandoffRequest, _ page: UUID, _ origin: String) -> String {
+    static func localDocument(_ request: YouTubeHandoffRequest, _ page: UUID, _ origin: String) -> String {
         // The real owner installs the handler and validates exact navigation/frame/origin.
         // A provider double emits no ready/sample until native visibility is replayed after load.
         """
         <!doctype html><html><body><script>
         const operation='\(request.operationID.uuidString.lowercased())',page='\(page.uuidString.lowercased())',video='\(request.videoID)';
-        let sent=false,sequence=0;
+        let sent=false,sequence=0,position=20;
+        window.belugaHandoffTimeline = value => {position=value;};
         function emit(kind,extra){window.webkit.messageHandlers.belugaYouTubeHandoff.postMessage(Object.assign({kind,operation,page,video,sequence:++sequence},extra||{}));}
         window.belugaHandoffVisibility = visible => {
           if (!visible || sent) return; sent=true;
-          emit('ready');emit('sample',{state:1,position:20,duration:200,rate:1});
-          setTimeout(()=>emit('sample',{state:1,position:20.3,duration:200,rate:1}),300);
+          const start=position;
+          emit('ready');emit('sample',{state:1,position:start,duration:200,rate:1});
+          setTimeout(()=>emit('sample',{state:1,position:start+0.3,duration:200,rate:1}),300);
         };
         </script></body></html>
         """

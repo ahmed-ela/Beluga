@@ -1439,6 +1439,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var focusedInputGeneration: UInt64?
     @Published private(set) var focusedInputIsSecure = false
     @Published private(set) var focusedWindowResizeState: FocusedWindowResizeState = .inactive
+    let mediaHandoff = YouTubeHandoffCoordinator()
 
     var focusedWindowInteractionState: FocusedWindowResizeState { focusedWindowResizeState }
 
@@ -1506,6 +1507,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var transportAuthorizationGeneration = UUID() {
         didSet {
             guard oldValue != transportAuthorizationGeneration else { return }
+            mediaHandoff.invalidate()
             retireStatisticsProofWork()
             // ICE may recover on the already-forwarded SDP without another offer. Retire sends
             // tied to the old transport generation while preserving the negotiation proof.
@@ -1960,6 +1962,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     deinit {
+        let mediaHandoff = mediaHandoff
+        Task { @MainActor in mediaHandoff.invalidate() }
         microphonePermissionReconciliationTask?.cancel()
         audioClientDiagnosticsTask?.cancel()
         audioDiagnosticsSampleTask?.cancel()
@@ -2468,6 +2472,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func handleAppBecameInactive() {
+        mediaHandoff.invalidate()
         guard lastHandledApplicationLifecyclePhase != .inactive else {
             return
         }
@@ -2488,6 +2493,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func handleAppEnteredBackground() {
+        mediaHandoff.invalidate()
         guard lastHandledApplicationLifecyclePhase != .background else {
             return
         }
@@ -2510,6 +2516,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     @objc private func applicationWillResignActive() {
+        mediaHandoff.invalidate()
         suspendRemoteInputForApplicationLifecycle()
     }
 
@@ -7434,6 +7441,55 @@ final class WorldwideSessionViewModel: ObservableObject {
         failSession("The secure media event stream closed.", generation: generation)
     }
 
+    private func receiveMediaHandoffOffer(_ offer: WebRTCReceivedMediaHandoffOffer,
+                                          peer sourcePeer: WebRTCPeer, generation: UUID) {
+        let transportGeneration = transportAuthorizationGeneration
+        let isCurrent: @MainActor () -> Bool = { [weak self, sourcePeer] in
+            guard let self else { return false }
+            return self.peer === sourcePeer && self.sessionGeneration == generation
+                && self.transportAuthorizationGeneration == transportGeneration
+                && self.sessionOwnsAudio && self.applicationIsActive
+                && RemoteMediaTransportAdmission.permitsIncomingState(
+                    isNegotiated: self.remoteMediaControlsNegotiated,
+                    isPeerConnected: self.isPeerConnected, isICEConnected: self.iceIsConnected,
+                    isControlChannelReady: self.isControlChannelReady,
+                    recoveryProofRequired: self.recoveryProofRequired)
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard isCurrent(), let item = currentRemoteMediaUpdate?.item,
+              remoteMediaStateTransportAuthorizationGeneration == transportGeneration,
+              item.contextID == offer.contextID, item.artwork?.videoID == offer.videoID,
+              item.playbackState == .playing,
+              let request = try? YouTubeHandoffRequest(operationID: offer.id, videoID: offer.videoID,
+                  positionSeconds: offer.positionSeconds, durationSeconds: offer.durationSeconds,
+                  playbackRate: offer.playbackRate, deadlineUptime: offer.deadlineUptime,
+                  now: now, positionObservedAtUptime: offer.receivedAtUptime) else {
+            Task { await sourcePeer.discardMediaHandoffOffer(offer) }; return
+        }
+        mediaHandoff.receive(request, connection: .init(isCurrent: isCurrent,
+            acquireAudio: { [audioLifecycle] invalidated in
+                // begin can synchronously invalidate while publishing its mute snapshot.
+                // Preserve that exact cleanup receipt even when begin consequently returns nil.
+                var observed: WorldwideMediaHandoffAudioLease?
+                let admitted = audioLifecycle.beginMediaHandoffPlayback { lease in
+                    observed = lease; invalidated()
+                }
+                guard let lease = admitted ?? observed else { return nil }
+                return .init(isValid: { lease.isValid },
+                             release: { audioLifecycle.endMediaHandoffPlayback(lease) })
+            }, commit: { evidence, authorization in
+                let observed = evidence.observedAtUptime
+                let deadline = min(request.deadlineUptime, observed + 0.75)
+                try await sourcePeer.requestMediaHandoffCommit(offer,
+                    phonePositionSeconds: evidence.positionSeconds, observedAtUptime: observed,
+                    playbackAuthorization: authorization, playbackIsCurrent: {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        return now >= observed && now < deadline
+                    })
+            }, cancel: { await sourcePeer.cancelMediaHandoffCommit(id: offer.id) },
+            discard: { await sourcePeer.discardMediaHandoffOffer(offer) }))
+    }
+
     private func handlePeerEvent(
         _ event: WebRTCTransportEvent,
         peer sourcePeer: WebRTCPeer,
@@ -7561,6 +7617,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .remoteMediaControlsAvailabilityChanged(let isAvailable):
             remoteMediaControlsNegotiated = isAvailable
             if !isAvailable {
+                mediaHandoff.invalidate()
                 clearRemoteMediaPresentation()
             }
             reconcileRemoteMediaCommandAvailability()
@@ -7595,10 +7652,14 @@ final class WorldwideSessionViewModel: ObservableObject {
             }
             reconcileRemoteMediaCommandAvailability()
 
-        case .mediaHandoffOfferReceived, .mediaHandoffCommitReceived, .mediaHandoffCompleted:
-            // This product does not advertise the handoff capability yet. The player, exact
-            // offer-bound Mac pause and owner-scoped audio policy must be integrated together
-            // before an incoming offer can start playback or gain command authority.
+        case .mediaHandoffOfferReceived(let offer):
+            receiveMediaHandoffOffer(offer, peer: sourcePeer, generation: generation)
+
+        case .mediaHandoffCompleted(let completion):
+            mediaHandoff.receiveCompletion(completion)
+
+        case .mediaHandoffCommitReceived:
+            // A viewer never accepts host-originated Pause commands.
             break
 
         case .remoteMediaCommandAcknowledgementReceived:

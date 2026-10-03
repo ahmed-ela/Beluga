@@ -1,8 +1,8 @@
 import SwiftUI
 import WebKit
 
-/// Unwired provider component. Its callback must be correlated with the exact transport offer;
-/// displaying this sheet alone never authorizes a Mac pause.
+/// The coordinator correlates this provider with an exact transport offer. Displaying the
+/// sheet alone never authorizes a Mac pause; native advancing playback is required first.
 struct YouTubeHandoffSheet: View {
     @ObservedObject var player: YouTubeHandoffPlayer
     @Environment(\.scenePhase) private var scenePhase

@@ -35,7 +35,7 @@ if (mutation) {
 
 function fixture() {
   const messages = [], actions = [], events = {}, timers = new Map();
-  let options;
+  let options, milliseconds = 0;
   const player = {
     videoURL: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', time: 20, state: 2, rate: 1,
     getVideoUrl() { return this.videoURL; }, getCurrentTime() { return this.time; },
@@ -50,14 +50,29 @@ function fixture() {
     createElement() { return {}; }, head: {appendChild(node) { assert.equal(node.src, 'https://www.youtube.com/iframe_api'); }}};
   const window = {webkit: {messageHandlers: {belugaYouTubeHandoff: {postMessage(value) { messages.push(value); }}}},
     addEventListener(name, callback) { events[name] = callback; }};
-  const context = {window, document, URL,
+  const context = {window, document, URL, performance: {now: () => milliseconds},
     YT: {Player: function (_, value) { options = value; return player; }},
     setInterval(callback) { timers.set(1, callback); return 1; }, clearInterval(id) { timers.delete(id); }};
   runInNewContext(script, context, {timeout: 1000});
+  window.belugaHandoffTimeline(20);
   window.onYouTubeIframeAPIReady();
   return {player, window, document, messages, actions, events, timers,
-    options, ready() { options.events.onReady(); }, sample() { timers.get(1)?.(); }};
+    options, advance(seconds) { milliseconds += seconds * 1000; },
+    ready() { options.events.onReady(); }, sample() { timers.get(1)?.(); }};
 }
+
+test('loading and user-play delay follow the advancing Mac timeline without widening drift', () => {
+  const f = fixture(); f.window.belugaHandoffVisibility(true); f.advance(8); f.ready();
+  assert.deepEqual(f.actions.find(a => a[0] === 'seek'), ['seek', 28, true]);
+  f.options.events.onAutoplayBlocked(); f.advance(4);
+  f.player.state = 1; f.options.events.onStateChange();
+  assert.deepEqual(f.actions.filter(a => a[0] === 'seek').at(-1), ['seek', 32, true]);
+  const seeks = f.actions.filter(a => a[0] === 'seek').length;
+  f.player.state = 2; f.options.events.onStateChange();
+  f.advance(10); f.player.state = 1; f.options.events.onStateChange();
+  assert.equal(f.actions.filter(a => a[0] === 'seek').length, seeks,
+    'normal local pause and play must not reseek or create new handoff authority');
+});
 
 test('production script keeps native controls, real identity and finite start position', () => {
   const f = fixture();

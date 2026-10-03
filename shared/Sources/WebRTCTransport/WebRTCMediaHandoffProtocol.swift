@@ -11,6 +11,7 @@ public struct WebRTCReceivedMediaHandoffOffer: Equatable, Sendable, CustomString
     public let durationSeconds: TimeInterval
     public let playbackRate: Double
     public let deadlineUptime: TimeInterval
+    public let receivedAtUptime: TimeInterval
     let envelope: WebRTCMediaHandoffOfferEnvelope
     let receiptToken: UUID
 
@@ -24,6 +25,7 @@ public struct WebRTCReceivedMediaHandoffOffer: Equatable, Sendable, CustomString
         durationSeconds = envelope.durationSeconds
         playbackRate = envelope.playbackRate
         deadlineUptime = receivedAtUptime + envelope.validForSeconds
+        self.receivedAtUptime = receivedAtUptime
     }
 
     public var description: String { "[Beluga media handoff offer]" }

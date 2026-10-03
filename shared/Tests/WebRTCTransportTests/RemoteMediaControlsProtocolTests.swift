@@ -134,6 +134,10 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
         try await exerciseHandoffCommit(boundary: "malformed")
     }
 
+    func testHandoffRevokedDuringValidationCannotReachSynchronousNativeSend() async throws {
+        try await exerciseHandoffCommit(boundary: "revoked-during-validation")
+    }
+
     private func exerciseHandoffCommit(boundary: String) async throws {
         let (host, viewer, recorder, _, hostTask, viewerTask) = try makeRemoteMediaFlow(supportsMediaHandoff: true)
         do {
@@ -153,18 +157,43 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             let initial = await recorder.snapshot(), offer = try XCTUnwrap(initial.handoffOffers.first)
             do {
                 try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
-                    observedAtUptime: ProcessInfo.processInfo.systemUptime, playbackIsCurrent: { false })
+                    observedAtUptime: ProcessInfo.processInfo.systemUptime,
+                    playbackAuthorization: WebRTCControlAuthorization(), playbackIsCurrent: { false })
                 XCTFail("Revoked player evidence sent a commit")
             } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
+            if boundary == "revoked-during-validation" {
+                let authorization = WebRTCControlAuthorization()
+                do {
+                    try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
+                        observedAtUptime: ProcessInfo.processInfo.systemUptime,
+                        playbackAuthorization: authorization, playbackIsCurrent: {
+                            authorization.revoke(); return true
+                        })
+                    XCTFail("A player retired after initial admission reached native send")
+                } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
+                // Same ordered channel barrier proves that no earlier handoff commit arrived.
+                try await viewer.requestRemoteMediaStateRefresh(id: UUID())
+                try await waitForRemoteMediaCondition { await recorder.snapshot().refreshRequests.count == 1 }
+                let final = await recorder.snapshot()
+                XCTAssertTrue(final.handoffCommits.isEmpty)
+                XCTAssertTrue(final.commands.isEmpty)
+                hostTask.cancel(); viewerTask.cancel()
+                let h = await host.close(reason: .normal), v = await viewer.close(reason: .normal)
+                _ = await hostTask.value; _ = await viewerTask.value
+                XCTAssertTrue(h); XCTAssertTrue(v)
+                return
+            }
             try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
-                observedAtUptime: ProcessInfo.processInfo.systemUptime, playbackIsCurrent: { true })
+                observedAtUptime: ProcessInfo.processInfo.systemUptime,
+                playbackAuthorization: WebRTCControlAuthorization(), playbackIsCurrent: { true })
             try await waitForRemoteMediaCondition { await recorder.snapshot().handoffCommits.count == 1 }
             let admitted = await recorder.snapshot(), commit = try XCTUnwrap(admitted.handoffCommits.first)
             XCTAssertEqual(commit.id, id); XCTAssertTrue(commit.isValid)
             XCTAssertTrue(admitted.commands.isEmpty)
             do {
                 try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
-                    observedAtUptime: ProcessInfo.processInfo.systemUptime, playbackIsCurrent: { true })
+                    observedAtUptime: ProcessInfo.processInfo.systemUptime,
+                    playbackAuthorization: WebRTCControlAuthorization(), playbackIsCurrent: { true })
                 XCTFail("A duplicate receipt sent another commit")
             } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
             if boundary == "success" {

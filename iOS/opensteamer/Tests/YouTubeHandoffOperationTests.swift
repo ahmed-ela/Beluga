@@ -47,6 +47,17 @@ final class YouTubeHandoffOperationTests: XCTestCase {
         XCTAssertNil(operation.evidence)
     }
 
+    func testSlowProviderRequiresAdvancingMacPositionNotOriginalPosition() throws {
+        for followsMac in [false, true] {
+            var operation = try makeOperation()
+            _ = try send(&operation, 1, now: 18, kind: "ready")
+            _ = try send(&operation, 2, now: 18.1, position: followsMac ? 28.1 : 20)
+            let event = try send(&operation, 3, now: 18.4, position: followsMac ? 28.4 : 20.3)
+            if followsMac { guard case .confirmed = event else { return XCTFail("Current timeline did not confirm") } }
+            else { XCTAssertNil(event); XCTAssertNil(operation.evidence) }
+        }
+    }
+
     func testOnlyAdvancingExactVisiblePlaybackConfirmsOnce() throws {
         var operation = try makeOperation()
         let evidence = try confirm(&operation)

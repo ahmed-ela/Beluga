@@ -98,10 +98,12 @@
 		E4CB7F7829AE95FD12B6B98F /* IPhone15SecondaryViewerDevelopmentPhysicalUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAF086BC42722EF1C50CE8EB /* IPhone15SecondaryViewerDevelopmentPhysicalUITests.swift */; };
 		E70EEBCEDCB6197A7AF99513 /* RemoteSessionCore in Frameworks */ = {isa = PBXBuildFile; productRef = C90C3F3FA906FF223BDF865B /* RemoteSessionCore */; };
 		EA28552E783109EE7CEB283A /* RemotePointerGestureSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */; };
+		EB2C1DA7121358BA2DF9C1DB /* YouTubeHandoffCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4C86AC06C89F7311C1B1F62 /* YouTubeHandoffCoordinatorTests.swift */; };
 		F5EC00BDA63D36E530D77711 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */; };
 		F6A34A96DBB573F8703BC7EE /* MediaNotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */; };
 		F8D2517FF85FB96B2BA6908E /* MediaNotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */; };
 		FBA65F445529781AD077585C /* ViewerPairedMacCatalogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2C4AA09B1C513A80467F38C /* ViewerPairedMacCatalogStore.swift */; };
+		FFC95526BFCA1D3D12A949D8 /* YouTubeHandoffCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A899121A976B28173E7E0640 /* YouTubeHandoffCoordinator.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -197,6 +199,7 @@
 		A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenViewerView.swift; sourceTree = "<group>"; };
 		A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemotePointerGestureSurface.swift; sourceTree = "<group>"; };
 		A4F9F8CF671205198FE2CCDB /* RemoteScrollGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteScrollGesturePolicy.swift; sourceTree = "<group>"; };
+		A899121A976B28173E7E0640 /* YouTubeHandoffCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffCoordinator.swift; sourceTree = "<group>"; };
 		AAD54029C9D53280FFDC1044 /* YouTubeHandoffPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffPlayer.swift; sourceTree = "<group>"; };
 		AADCE9D78978201BB910C650 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 		B49BCC0609B4E09681F3B505 /* MediaNotification.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MediaNotification.entitlements; sourceTree = "<group>"; };
@@ -204,6 +207,7 @@
 		B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
 		B75B3A61FEBE4D7625349A71 /* YouTubeHandoffSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffSheet.swift; sourceTree = "<group>"; };
 		B91C374837F36DA0427D311B /* MediaNotificationContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MediaNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C4C86AC06C89F7311C1B1F62 /* YouTubeHandoffCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffCoordinatorTests.swift; sourceTree = "<group>"; };
 		C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationScrub.swift; sourceTree = "<group>"; };
 		C7B1BF8B41EA3FE864A61077 /* RemoteMediaArtworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMediaArtworkTests.swift; sourceTree = "<group>"; };
 		C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -348,6 +352,7 @@
 		643D54C1D4926115B70AC1BF /* MediaHandoff */ = {
 			isa = PBXGroup;
 			children = (
+				A899121A976B28173E7E0640 /* YouTubeHandoffCoordinator.swift */,
 				9D01F7B34B09BC333E674D67 /* YouTubeHandoffOperation.swift */,
 				AAD54029C9D53280FFDC1044 /* YouTubeHandoffPlayer.swift */,
 				B75B3A61FEBE4D7625349A71 /* YouTubeHandoffSheet.swift */,
@@ -516,6 +521,7 @@
 				EF58ACCC60E0F1CDD3B085F1 /* WorldwideAudioLifecycleTests.swift */,
 				67AE668289636F568C11BDFA /* WorldwidePresentationTests.swift */,
 				D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */,
+				C4C86AC06C89F7311C1B1F62 /* YouTubeHandoffCoordinatorTests.swift */,
 				36C822410B7B5FBE72F28C55 /* YouTubeHandoffOperationTests.swift */,
 				1775DA5E4B6B22C625896DF4 /* YouTubeHandoffWebViewTests.swift */,
 			);
@@ -731,6 +737,7 @@
 				D1336366C939E9D02ECF6925 /* WorldwideScreenViewerView.swift in Sources */,
 				2BD739A3E11428C6AD380B49 /* WorldwideSessionViewModel.swift in Sources */,
 				B688FA73D8FD020CC64DF502 /* WorldwideViewerConnectionCoordinator.swift in Sources */,
+				FFC95526BFCA1D3D12A949D8 /* YouTubeHandoffCoordinator.swift in Sources */,
 				259B7CA72389A9D40ED6099B /* YouTubeHandoffOperation.swift in Sources */,
 				42063ED34D8C4D08D35CEB2C /* YouTubeHandoffPlayer.swift in Sources */,
 				316A3ABD354386C7E1AF29BF /* YouTubeHandoffSheet.swift in Sources */,
@@ -776,6 +783,7 @@
 				7A896917C5694180149B0C64 /* WorldwideAudioLifecycleTests.swift in Sources */,
 				751245F68F1D541B9E1102AB /* WorldwidePresentationTests.swift in Sources */,
 				D4EAE6BA0BBBC5807F6B32F6 /* WorldwideRemoteInputLifecycleTests.swift in Sources */,
+				EB2C1DA7121358BA2DF9C1DB /* YouTubeHandoffCoordinatorTests.swift in Sources */,
 				6666A009F50A5720A1549D5C /* YouTubeHandoffOperationTests.swift in Sources */,
 				AE4CB988E20AA72BE7388477 /* YouTubeHandoffWebViewTests.swift in Sources */,
 			);
