@@ -21,7 +21,33 @@ protocol MacRemoteMediaControlling: Sendable {
     func perform(
         _ prepared: MacPreparedRemoteMediaCommand
     ) async -> WebRTCRemoteMediaCommandResult
+    func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff?
+    func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
+                              phonePositionSeconds: Double) async -> WebRTCRemoteMediaCommandResult
     func refresh()
+}
+
+extension MacRemoteMediaControlling {
+    func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff? { nil }
+    func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
+                              phonePositionSeconds: Double) async -> WebRTCRemoteMediaCommandResult { .unsupported }
+}
+
+/// A host-native source preparation; the product transaction still needs an exact peer/offer
+/// binding and current phone-playback evidence before invoking its single Pause attempt.
+struct MacPreparedMediaHandoff: Sendable {
+    let contextID: String
+    fileprivate let owner: MacRemoteMediaCommandGate
+    fileprivate let authorization: MacRemoteMediaCommandGate.Authorization
+    fileprivate let source: MacYouTubeHandoffSource
+    fileprivate let snapshot: MacNowPlayingRuntimeSnapshot
+    fileprivate let isAuthorized: @Sendable () -> Bool
+    fileprivate let execution = MacPreparedRemoteMediaExecution()
+    var videoID: String { source.videoID }
+    var positionSeconds: Double { source.positionSeconds }
+    var durationSeconds: Double { source.durationSeconds }
+    var playbackRate: Double { source.playbackRate }
+    var deadlineUptime: Double { source.deadlineUptime }
 }
 
 /// Only the originating controller can create or execute this immutable admission.
@@ -110,6 +136,7 @@ struct MacNowPlayingRuntimeSnapshot: @unchecked Sendable {
     let metadata: MacNowPlayingMetadata
     /// Raw MediaRemote command values that the exact client reports as enabled.
     let enabledCommands: Set<Int>
+    var handoffSource: MacYouTubeHandoffSource? = nil
 
     var identityKey: String {
         client.clientIdentity + "\u{1e}" + metadata.identityComponent
@@ -152,9 +179,19 @@ protocol MacSystemNowPlayingRuntime: Sendable {
     func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
               isAuthorized: @escaping @Sendable () -> Bool,
               completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void)
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void)
 }
 
 extension MacSystemNowPlayingRuntime {
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        completion(.unsupported)
+    }
     func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
               isAuthorized: @escaping @Sendable () -> Bool,
               completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
@@ -769,6 +806,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     private let pollInterval: TimeInterval?
     private let operationTimeout: TimeInterval
     private let now: @Sendable () -> Date
+    private let uptime: @Sendable () -> Double
     private let onCommandEnqueued: (@Sendable () -> Void)?
     private let stateDiagnostics: @Sendable (String) -> Void
     private let stateTraceSession = UUID()
@@ -800,6 +838,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         pollInterval = 1
         operationTimeout = 2
         now = Date.init
+        uptime = { ProcessInfo.processInfo.systemUptime }
         onCommandEnqueued = nil
         stateDiagnostics = { print($0) }
     }
@@ -810,12 +849,14 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         operationTimeout: TimeInterval = 2,
         now: @escaping @Sendable () -> Date = Date.init,
         onCommandEnqueued: (@Sendable () -> Void)? = nil,
-        stateDiagnostics: @escaping @Sendable (String) -> Void = { print($0) }
+        stateDiagnostics: @escaping @Sendable (String) -> Void = { print($0) },
+        uptime: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.runtime = runtime
         self.pollInterval = pollInterval
         self.operationTimeout = operationTimeout
         self.now = now
+        self.uptime = uptime
         self.onCommandEnqueued = onCommandEnqueued
         self.stateDiagnostics = stateDiagnostics
     }
@@ -974,6 +1015,52 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 }
             }
             onCommandEnqueued?()
+        }
+    }
+
+    func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff? {
+        guard isAuthorized(), let authorization = gate.capture(contextID: contextID) else { return nil }
+        return await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self, self.gate.admits(authorization), isAuthorized(),
+                      self.currentContextID == contextID, let binding = self.catalogBindings[contextID],
+                      binding.item.playbackState == .playing, let source = binding.snapshot.handoffSource,
+                      source.isFreshForOffer(now: self.uptime()) else { continuation.resume(returning: nil); return }
+                continuation.resume(returning: .init(contextID: contextID, owner: self.gate,
+                    authorization: authorization, source: source, snapshot: binding.snapshot,
+                    isAuthorized: isAuthorized))
+            }
+        }
+    }
+
+    func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
+                              phonePositionSeconds: Double) async -> WebRTCRemoteMediaCommandResult {
+        guard let runtime, runtime.isAvailable else { return .unsupported }
+        guard prepared.owner === gate, gate.admits(prepared.authorization), prepared.isAuthorized(),
+              uptime() < prepared.deadlineUptime, phonePositionSeconds.isFinite,
+              phonePositionSeconds >= 0, phonePositionSeconds < prepared.durationSeconds,
+              prepared.execution.claim() else { return .staleContext }
+        return await withCheckedContinuation { continuation in
+            let resolver = MacSingleCompletion<WebRTCRemoteMediaCommandResult> { continuation.resume(returning: $0) }
+            queue.async { [weak self] in
+                guard let self, self.currentContextID == prepared.contextID,
+                      self.gate.admits(prepared.authorization), prepared.isAuthorized(),
+                      self.uptime() < prepared.deadlineUptime,
+                      self.catalogBindings[prepared.contextID]?.snapshot.client === prepared.snapshot.client else {
+                    resolver.resolve(.staleContext); return
+                }
+                let attempt = MacRemoteMediaCommandAttempt()
+                runtime.sendHandoffPause(source: prepared.source, phonePositionSeconds: phonePositionSeconds,
+                    snapshot: prepared.snapshot, isAuthorized: { [gate = self.gate, uptime = self.uptime] in
+                        attempt.isActive && gate.admits(prepared.authorization) && prepared.isAuthorized()
+                            && uptime() < prepared.deadlineUptime
+                    }, completion: { [weak self] result in
+                        attempt.invalidate(); resolver.resolve(result); self?.refresh()
+                    })
+                self.queue.asyncAfter(deadline: .now() + self.operationTimeout) {
+                    attempt.invalidate(); resolver.resolve(.failed)
+                }
+            }
         }
     }
 

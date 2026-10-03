@@ -1,12 +1,51 @@
 import Foundation
 import WebRTCTransport
 
+/// Opaque native source binding. Metadata/artwork cannot manufacture this descriptor.
+/// It is single-use for a later native Pause, not proof of playback on the receiving phone.
+final class MacYouTubeHandoffSource: @unchecked Sendable {
+    fileprivate let ownerID: UUID
+    fileprivate let client: MacNowPlayingClientToken
+    fileprivate let native: MacChromePlayerSnapshot
+    private let lock = NSLock()
+    private var consumed = false
+    let deadlineUptime: Double
+    var videoID: String { native.media.videoID }
+    var positionSeconds: Double { native.media.elapsedTime! }
+    var durationSeconds: Double { native.media.duration! }
+    var playbackRate: Double { native.media.playbackRate }
+    var observedAtUptime: Double { native.receivedAtUptime }
+
+    fileprivate init?(ownerID: UUID, client: MacNowPlayingClientToken, native: MacChromePlayerSnapshot) {
+        guard native.receivedAtUptime.isFinite, native.receivedAtUptime >= 0,
+              let position = native.media.elapsedTime,
+              MacChromeHandoffPauseCondition(source: native, phonePositionSeconds: position) != nil else { return nil }
+        self.ownerID = ownerID; self.client = client; self.native = native
+        deadlineUptime = native.receivedAtUptime + 30
+    }
+
+    func isFreshForOffer(now: Double) -> Bool {
+        lock.withLock {
+            !consumed && now.isFinite && now >= observedAtUptime && now - observedAtUptime < 2
+        }
+    }
+
+    fileprivate func claim(now: Double) -> Bool {
+        lock.withLock {
+            guard !consumed else { return false }
+            consumed = true
+            return now.isFinite && now >= observedAtUptime && now < deadlineUptime
+        }
+    }
+}
+
 final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked Sendable {
     private let backend: any MacChromeNowPlayingBackend
     private let queue: DispatchQueue
     private let permissionQueue = DispatchQueue(label: "com.elamin.opensteamer.chrome-permission", qos: .userInitiated)
     private let now: @Sendable () -> TimeInterval
     private let lock = NSLock()
+    private let handoffOwnerID = UUID()
     private var epoch: UInt64 = 0
     private var lifecycle: UInt64 = 0
     private var fetchPending = false
@@ -86,7 +125,8 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
                 }
                 current = (selected, token); selectionHint = selected; discoveryStatus = .available
                 return .snapshot(.init(client: token, sourceName: "YouTube", metadata: metadata,
-                                       enabledCommands: selected.media.enabledCommands))
+                    enabledCommands: selected.media.enabledCommands,
+                    handoffSource: MacYouTubeHandoffSource(ownerID: handoffOwnerID, client: token, native: selected)))
             }
             completion(result)
         }
@@ -178,6 +218,50 @@ final class MacChromeNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecked S
         lock.withLock {
             epoch &+= 1; lifecycle &+= 1; current = nil; selectionHint = nil; relativeConsumed = false
             confirmedSameItemSeek = false; discoveryStatus = .idle
+        }
+    }
+
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        guard source.ownerID == handoffOwnerID, source.client === snapshot.client,
+              isAuthorized(), let condition = MacChromeHandoffPauseCondition(
+                source: source.native, phonePositionSeconds: phonePositionSeconds) else {
+            completion(.staleContext); return
+        }
+        let admission = lock.withLock { () -> (MacChromePlayerSnapshot, UInt64)? in
+            guard !commandPending, !relativeConsumed, let current,
+                  current.token === source.client, current.player.hasSameItem(as: source.native),
+                  condition.matches(current.player.media), source.claim(now: now()) else { return nil }
+            commandPending = true
+            return (current.player, epoch)
+        }
+        guard let (expected, admitted) = admission else { completion(.staleContext); return }
+        let deadline = min(source.deadlineUptime, now() + 1.5,
+                           expected.receivedAtUptime + MacChromeAppleEventsBackend.maximumSnapshotAge)
+        let authorized: @Sendable () -> Bool = { [weak self] in
+            guard let self, isAuthorized(), self.now() < deadline else { return false }
+            return self.lock.withLock {
+                self.epoch == admitted && self.current?.token === source.client
+                    && self.current?.player.hasSameItem(as: source.native) == true
+            }
+        }
+        queue.async { [self] in
+            var result: WebRTCRemoteMediaCommandResult = .staleContext
+            if authorized() {
+                do { result = try backend.sendHandoffPause(expected: expected, condition: condition,
+                    deadline: deadline, isAuthorized: authorized) }
+                catch { result = .failed }
+            }
+            lock.withLock {
+                if epoch == admitted, current?.token === source.client,
+                   result == .failed || result == .staleContext || result == .noActiveMedia {
+                    epoch &+= 1; current = nil; relativeConsumed = false; confirmedSameItemSeek = false
+                }
+                commandPending = false
+            }
+            completion(result)
         }
     }
 

@@ -122,7 +122,8 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
                 func wrapped(_ source: Int) -> MacNowPlayingRuntimeSnapshot {
                     let entry = next[source]!
                     return MacNowPlayingRuntimeSnapshot(client: entry.token, sourceName: entry.snapshot.sourceName,
-                        metadata: entry.snapshot.metadata, enabledCommands: entry.snapshot.enabledCommands)
+                        metadata: entry.snapshot.metadata, enabledCommands: entry.snapshot.enabledCommands,
+                        handoffSource: entry.snapshot.handoffSource)
                 }
                 return .snapshot(.init(primary: wrapped(chosen),
                     additional: next.keys.sorted().filter { $0 != chosen }.map(wrapped)))
@@ -163,5 +164,26 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
     func stop() {
         lock.withLock { epoch &+= 1; lifecycle &+= 1; selected = nil; identity = nil; publications = [:]; wasPlaying.removeAll() }
         browser.stop(); music.stop()
+    }
+
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        let admission = lock.withLock { () -> (UInt64, MacNowPlayingRuntimeSnapshot)? in
+            guard selected == 0, let publication = publications[0], publication.token === snapshot.client,
+                  source === snapshot.handoffSource,
+                  publication.snapshot.metadata.identityComponent == snapshot.metadata.identityComponent else { return nil }
+            return (lifecycle, publication.snapshot)
+        }
+        guard let admission, isAuthorized() else { completion(.staleContext); return }
+        browser.sendHandoffPause(source: source, phonePositionSeconds: phonePositionSeconds, snapshot: admission.1,
+            isAuthorized: { [weak self] in
+                guard let self, isAuthorized() else { return false }
+                return self.lock.withLock {
+                    self.lifecycle == admission.0 && self.selected == 0
+                        && self.publications[0]?.token === snapshot.client
+                }
+            }, completion: completion)
     }
 }

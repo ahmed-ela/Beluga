@@ -99,6 +99,18 @@ embedding/autoplay, source re-anchoring while loading, post-commit local player
 controls and audio coexistence remain integration work. This is not a transfer
 or deployment claim. See the handoff component section in `TESTING_ORACLES.md`.
 
+Native source checkpoint (2026-10-03): the host now creates opaque, one-use
+descriptors from exact native Chrome observations, not artwork metadata. A
+specialized Pause path revalidates original source/timeline/phone position at
+the final renderer operation and requires paused-position readback. Stop,
+timeout, controller invalidation and revoked caller authority cancel queued work.
+Separate playback-continuity identifiers retire pause/resume, seek, buffering and
+rate-change ABA without changing normal source-selection or command identity.
+The actual controller/composite/backend and extracted script tests use explicit
+boundary doubles. No wire transaction, menu action or phone audio lifecycle is
+wired to this path yet; the product capability stays disabled. This is not a
+completed transfer, live-runtime verification or deployment.
+
 ## Product contract
 
 - One Mac app/process with the existing exclusive host lock and preserved Keychain/signing IDs.

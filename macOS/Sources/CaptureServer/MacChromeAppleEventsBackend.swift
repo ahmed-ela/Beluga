@@ -37,6 +37,7 @@ struct MacChromeScriptSnapshot: Codable, Equatable, Sendable {
     let canNext: Bool
     let canPrevious: Bool
     var canSeek: Bool? = nil
+    var playbackContinuityID: String? = nil
 
     var identity: MacChromeMediaIdentity {
         .init(documentID: documentID, itemID: itemID, itemGeneration: itemGeneration)
@@ -129,9 +130,15 @@ protocol MacChromeNowPlayingBackend: Sendable {
     func send(_ command: MacChromeCommand, positionSeconds: TimeInterval?, expected: MacChromePlayerSnapshot,
               deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
         -> WebRTCRemoteMediaCommandResult
+    func sendHandoffPause(expected: MacChromePlayerSnapshot, condition: MacChromeHandoffPauseCondition,
+                          deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
+        -> WebRTCRemoteMediaCommandResult
 }
 
 extension MacChromeNowPlayingBackend {
+    func sendHandoffPause(expected: MacChromePlayerSnapshot, condition: MacChromeHandoffPauseCondition,
+                          deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
+        -> WebRTCRemoteMediaCommandResult { .unsupported }
     func readSelection(preferred: MacChromePlayerSnapshot?, deadline: TimeInterval) -> MacChromeSelectionRead {
         var holding = preferred
         do {
@@ -368,6 +375,20 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
     func send(_ command: MacChromeCommand, positionSeconds: TimeInterval? = nil, expected: MacChromePlayerSnapshot,
               deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
         -> WebRTCRemoteMediaCommandResult {
+        try send(command, positionSeconds: positionSeconds, expected: expected, handoff: nil,
+                 deadline: deadline, isAuthorized: isAuthorized)
+    }
+
+    func sendHandoffPause(expected: MacChromePlayerSnapshot, condition: MacChromeHandoffPauseCondition,
+                          deadline: TimeInterval, isAuthorized: @escaping @Sendable () -> Bool) throws
+        -> WebRTCRemoteMediaCommandResult {
+        try send(.pause, positionSeconds: nil, expected: expected, handoff: condition,
+                 deadline: deadline, isAuthorized: isAuthorized)
+    }
+
+    private func send(_ command: MacChromeCommand, positionSeconds: TimeInterval?, expected: MacChromePlayerSnapshot,
+                      handoff: MacChromeHandoffPauseCondition?, deadline: TimeInterval,
+                      isAuthorized: @escaping @Sendable () -> Bool) throws -> WebRTCRemoteMediaCommandResult {
         guard command.accepts(positionSeconds: positionSeconds) else { return .failed }
         let deadline = min(deadline, expected.receivedAtUptime + Self.maximumSnapshotAge)
         try check(owner: expected.tab.owner, deadline: deadline, isAuthorized: isAuthorized)
@@ -377,6 +398,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         guard let selected = try readPlayer(expected.tab, deadline: deadline), selected.hasSameItem(as: expected)
         else { throw MacChromeBackendError.retiredItem }
         guard selected.media.enabledCommands.contains(command.rawValue) else { return .unsupported }
+        if let handoff, !handoff.matches(selected.media) { return .staleContext }
         let remainingFromObservation = (deadline - expected.receivedAtUptime) * 1000
         guard remainingFromObservation > 0 else { throw MacChromeBackendError.timedOut }
         let commandID = UUID().uuidString
@@ -384,6 +406,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             operation: "command", commandID: commandID, expected: expected.media.identity,
             command: command.scriptName,
             positionSeconds: positionSeconds,
+            handoff: handoff,
             expiresAtUnixMilliseconds: min(wallNow() * 1000 + (deadline - now()) * 1000,
                 expected.media.observedAtUnixMilliseconds + remainingFromObservation),
             expiresAtPageMilliseconds: expected.media.observedAtPageMilliseconds + remainingFromObservation)
@@ -415,6 +438,11 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
                     ? .applied : .failed
             }
             guard media.identity == expected.media.identity else { throw MacChromeBackendError.retiredItem }
+            if let handoff {
+                guard media.paused, media.duration == handoff.durationSeconds,
+                      let elapsed = media.elapsedTime, elapsed.isFinite,
+                      abs(elapsed - handoff.phonePositionSeconds) <= 2 else { return .failed }
+            }
             if command.isSeek {
                 guard let origin = response.seekFrom, let target = response.seekTarget,
                       let duration = media.duration, let elapsed = media.elapsedTime,
@@ -469,6 +497,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
         var expected: MacChromeMediaIdentity? = nil
         var command: String? = nil
         var positionSeconds: Double? = nil
+        var handoff: MacChromeHandoffPauseCondition? = nil
         var expiresAtUnixMilliseconds: Double? = nil
         var expiresAtPageMilliseconds: Double? = nil
     }
@@ -519,6 +548,7 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
               abs(wallNow() * 1000 - media.observedAtUnixMilliseconds) <= 5_000,
               media.observedAtPageMilliseconds.isFinite, media.observedAtPageMilliseconds >= 0,
               media.observedAtPageMilliseconds <= 9_007_199_254_740_991,
+              media.playbackContinuityID.map({ $0.count == 36 && UUID(uuidString: $0) != nil }) ?? true,
               [media.duration, media.elapsedTime].allSatisfy({ value in
                   value.map { $0.isFinite && $0 >= 0 && $0 <= 31_536_000 } ?? true
               }) else { throw MacChromeBackendError.invalidData }

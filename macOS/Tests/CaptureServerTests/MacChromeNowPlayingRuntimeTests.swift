@@ -21,12 +21,13 @@ private func chromeMedia(video: String = "abcdefghijk", paused: Bool = false,
                          item: String = "00000000-0000-4000-8000-000000000001", generation: Int64 = 1,
                          title: String = "Video", pageTime: Double = 50_000,
                          document: String = "00000000-0000-4000-8000-000000000002",
-                         duration: Double? = 120, elapsed: Double? = 15, canSeek: Bool? = true) -> MacChromeScriptSnapshot {
+                         duration: Double? = 120, elapsed: Double? = 15, canSeek: Bool? = true,
+                         continuity: String? = nil) -> MacChromeScriptSnapshot {
     .init(documentID: document, itemID: item, itemGeneration: generation,
           videoID: video, title: title, artist: "Channel", duration: duration, elapsedTime: elapsed,
           playbackRate: 1, paused: paused, observedAtUnixMilliseconds: 1_000_000,
           observedAtPageMilliseconds: pageTime, canPlay: paused, canPause: !paused,
-          canNext: true, canPrevious: true, canSeek: canSeek)
+          canNext: true, canPrevious: true, canSeek: canSeek, playbackContinuityID: continuity)
 }
 
 private func chromePlayer(tab: String = "2", media: MacChromeScriptSnapshot = chromeMedia(),
@@ -78,6 +79,46 @@ private struct ChromeRecoveryAbsentMusic: MacSystemNowPlayingRuntime {
     func stop() {}
 }
 
+/// Holds the actual specialized native call after controller admission. Deliberately does not
+/// help cancellation in stop(): the controller's own authorization must retire delayed work.
+private final class ChromeHeldHandoffRuntime: MacSystemNowPlayingRuntime, @unchecked Sendable {
+    let inner: MacChromeNowPlayingRuntime
+    let admitted: @Sendable () -> Void
+    let completed: @Sendable () -> Void
+    let pending = ChromeTestBox<(@Sendable () -> Void)?>(nil)
+    var isAvailable: Bool { true }
+    init(inner: MacChromeNowPlayingRuntime, admitted: @escaping @Sendable () -> Void,
+         completed: @escaping @Sendable () -> Void) {
+        self.inner = inner; self.admitted = admitted; self.completed = completed
+    }
+    func fetchSnapshot(completion: @escaping @Sendable (MacNowPlayingRuntimeSnapshotResult) -> Void) {
+        inner.fetchSnapshot(completion: completion)
+    }
+    func stop() {}
+    func send(rawCommand: Int, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        XCTFail("Handoff fell back to an ordinary command"); completion(.failed)
+    }
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        pending.set { [inner, completed] in
+            inner.sendHandoffPause(source: source, phonePositionSeconds: phonePositionSeconds,
+                snapshot: snapshot, isAuthorized: isAuthorized) { result in
+                    completion(result); completed()
+                }
+        }
+        admitted()
+    }
+    func release() {
+        var action: (@Sendable () -> Void)?
+        pending.update { action = $0; $0 = nil }
+        action?()
+    }
+}
+
 /// Executes actual production Apple Event descriptor queries against a changing fake target.
 private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sendable {
     struct Window {
@@ -110,6 +151,7 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
     var urlReads = 0
     var onURLRead: ((Int) -> Void)?
     var onProperty: ((OSType) -> Void)?
+    var onCommandRequest: (([String: Any]) -> Void)?
 
     func runningOwner() -> MacChromePlayerIdentity? { owner }
     func automationPermission(owner: MacChromePlayerIdentity, askUser: Bool) -> OSStatus {
@@ -151,6 +193,7 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
             var seekTarget: Double?
             if operation == "command" {
                 commandDispatches += 1
+                onCommandRequest?(request)
                 if let commandReply {
                     var payload: [String: Any] = ["schemaVersion": 1, "status": commandReply.status]
                     if let media = commandReply.media {
@@ -236,6 +279,188 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
 }
 
 final class MacChromeNowPlayingRuntimeTests: XCTestCase {
+    func testHandoffDescriptorRequiresNativeContinuityAndFreshPlayingSeekableSource() async throws {
+        let continuity = UUID().uuidString.lowercased()
+        for media in [chromeMedia(), chromeMedia(paused: true, continuity: continuity),
+                      chromeMedia(canSeek: false, continuity: continuity),
+                      chromeMedia(duration: nil, continuity: continuity)] {
+            let backend = ChromeTestBackend(); backend.snapshots = [chromePlayer(media: media)]
+            let value = try await snapshot(makeRuntime(backend))
+            XCTAssertNil(value.handoffSource)
+        }
+        let backend = ChromeTestBackend(); backend.snapshots = [chromePlayer(media: chromeMedia(continuity: continuity))]
+        let runtime = makeRuntime(backend), value = try await snapshot(runtime)
+        let source = try XCTUnwrap(value.handoffSource)
+        XCTAssertEqual(source.videoID, "abcdefghijk")
+        XCTAssertEqual(source.positionSeconds, 15)
+        XCTAssertTrue(source.isFreshForOffer(now: 10.5))
+        XCTAssertFalse(source.isFreshForOffer(now: 12))
+        XCTAssertFalse(source.isFreshForOffer(now: 9))
+        // A backend without the specialized native operation must not substitute plain Pause.
+        let result = await withCheckedContinuation { continuation in
+            runtime.sendHandoffPause(source: source, phonePositionSeconds: 15,
+                snapshot: value, isAuthorized: { true }) { continuation.resume(returning: $0) }
+        }
+        XCTAssertEqual(result, .unsupported)
+        XCTAssertTrue(backend.commands.isEmpty)
+    }
+
+    func testHandoffCrossesControllerCompositeNativeBackendOnceWithPauseReadback() async throws {
+        let client = ChromeTestClient(); client.media = chromeMedia(continuity: UUID().uuidString.lowercased())
+        let commandRequest = ChromeTestBox<[String: Any]?>(nil)
+        client.onCommandRequest = { commandRequest.set($0) }
+        let browser = MacChromeNowPlayingRuntime(backend: makeBackend(client), now: { 10 })
+        let composite = MacSupportedNowPlayingRuntime(browser: browser, music: ChromeRecoveryAbsentMusic())
+        let controller = MacSystemNowPlayingController(runtime: composite,
+            now: { Date(timeIntervalSince1970: 1000) }, stateDiagnostics: { _ in }, uptime: { 10 })
+        let published = expectation(description: "exact native source published")
+        let state = ChromeTestBox<WebRTCRemoteMediaStateUpdate?>(nil)
+        controller.start { update in
+            if update.item?.playbackState == .playing, state.get() == nil { state.set(update); published.fulfill() }
+        }
+        defer { controller.stop() }
+        await fulfillment(of: [published], timeout: 3)
+        let item = try XCTUnwrap(state.get()?.item)
+        let preparedValue = await controller.prepareHandoff(contextID: item.contextID, isAuthorized: { true })
+        let prepared = try XCTUnwrap(preparedValue)
+        XCTAssertEqual(prepared.videoID, "abcdefghijk")
+        let foreign = MacSystemNowPlayingController(runtime: composite, uptime: { 10 })
+        let foreignResult = await foreign.performHandoffPause(prepared, phonePositionSeconds: 15)
+        XCTAssertEqual(foreignResult, .staleContext)
+        let result = await controller.performHandoffPause(prepared, phonePositionSeconds: 15)
+        XCTAssertEqual(result, .applied)
+        XCTAssertTrue(client.media.paused)
+        let duplicate = await controller.performHandoffPause(prepared, phonePositionSeconds: 15)
+        XCTAssertEqual(duplicate, .staleContext)
+        XCTAssertEqual(client.commandDispatches, 1)
+        let request = try XCTUnwrap(commandRequest.get())
+        let condition = try XCTUnwrap(request["handoff"] as? [String: Any])
+        XCTAssertEqual(request["command"] as? String, "pause")
+        XCTAssertEqual(condition["phonePositionSeconds"] as? Double, 15)
+        XCTAssertEqual(condition["videoID"] as? String, "abcdefghijk")
+        XCTAssertFalse(client.permissionRequests.contains(true))
+    }
+
+    func testNativeHandoffDescriptorIsOneUseEvenBeforeNextPublication() async throws {
+        let client = ChromeTestClient(), original = chromeMedia(continuity: UUID().uuidString.lowercased())
+        client.media = original
+        let runtime = MacChromeNowPlayingRuntime(backend: makeBackend(client), now: { 10 })
+        let value = try await snapshot(runtime), source = try XCTUnwrap(value.handoffSource)
+        func pause() async -> WebRTCRemoteMediaCommandResult {
+            await withCheckedContinuation { continuation in
+                runtime.sendHandoffPause(source: source, phonePositionSeconds: 15,
+                    snapshot: value, isAuthorized: { true }) { continuation.resume(returning: $0) }
+            }
+        }
+        let first = await pause()
+        XCTAssertEqual(first, .applied)
+        // Even a provider returning exactly the old fields cannot revive consumed host authority.
+        client.media = original
+        let second = await pause()
+        XCTAssertEqual(second, .staleContext)
+        XCTAssertEqual(client.commandDispatches, 1)
+        XCTAssertFalse(source.isFreshForOffer(now: 10))
+    }
+
+    func testHandoffControllerRevocationAndTimeoutRetireDelayedNativeWork() async throws {
+        for boundary in ["invalidate", "stop", "external", "timeout"] {
+            let client = ChromeTestClient(); client.media = chromeMedia(continuity: UUID().uuidString.lowercased())
+            let browser = MacChromeNowPlayingRuntime(backend: makeBackend(client), now: { 10 })
+            let admitted = expectation(description: boundary + " admitted")
+            let completed = expectation(description: boundary + " native completion")
+            let runtime = ChromeHeldHandoffRuntime(inner: browser,
+                admitted: { admitted.fulfill() }, completed: { completed.fulfill() })
+            let controller = MacSystemNowPlayingController(runtime: runtime,
+                operationTimeout: boundary == "timeout" ? 0.05 : 2,
+                stateDiagnostics: { _ in }, uptime: { 10 })
+            let published = expectation(description: boundary + " published")
+            let item = ChromeTestBox<WebRTCRemoteMediaItem?>(nil)
+            controller.start { update in
+                if let value = update.item, item.get() == nil { item.set(value); published.fulfill() }
+            }
+            defer { controller.stop(); browser.stop() }
+            await fulfillment(of: [published], timeout: 3)
+            let authorization = WebRTCControlAuthorization()
+            let preparedValue = await controller.prepareHandoff(contextID: try XCTUnwrap(item.get()).contextID,
+                isAuthorized: { authorization.isValid })
+            let prepared = try XCTUnwrap(preparedValue)
+            let task = Task { await controller.performHandoffPause(prepared, phonePositionSeconds: 15) }
+            await fulfillment(of: [admitted], timeout: 3)
+            switch boundary {
+            case "invalidate": controller.invalidateCommands()
+            case "stop": controller.stop()
+            case "external": authorization.revoke()
+            default:
+                let result = await task.value
+                XCTAssertEqual(result, .failed)
+            }
+            runtime.release()
+            await fulfillment(of: [completed], timeout: 3)
+            let result = await task.value
+            XCTAssertEqual(result, boundary == "timeout" ? .failed : .staleContext)
+            XCTAssertEqual(client.commandDispatches, 0, boundary)
+        }
+    }
+
+    func testHandoffCannotCrossRuntimeOwnerAndRevokedOrExpiredQueuedWork() async throws {
+        for boundary in ["foreign", "stop", "revoke", "expiry"] {
+            let client = ChromeTestClient(); client.media = chromeMedia(continuity: UUID().uuidString.lowercased())
+            let clock = ChromeTestBox(10.0), queue = DispatchQueue(label: "handoff-native-queue")
+            let runtime = MacChromeNowPlayingRuntime(backend: makeBackend(client, now: { clock.get() }),
+                queue: queue, now: { clock.get() })
+            let value = try await snapshot(runtime), source = try XCTUnwrap(value.handoffSource)
+            let authority = WebRTCControlAuthorization()
+            let target = boundary == "foreign" ? MacChromeNowPlayingRuntime(backend: makeBackend(client), now: { 10 }) : runtime
+            queue.suspend()
+            let done = expectation(description: "old handoff rejected")
+            target.sendHandoffPause(source: source, phonePositionSeconds: 15,
+                snapshot: value, isAuthorized: { authority.isValid }) {
+                    XCTAssertEqual($0, .staleContext, boundary); done.fulfill()
+                }
+            if boundary == "stop" { runtime.stop() }
+            if boundary == "revoke" { authority.revoke() }
+            if boundary == "expiry" { clock.set(41) }
+            queue.resume()
+            await fulfillment(of: [done], timeout: 3)
+            XCTAssertEqual(client.commandDispatches, 0, boundary)
+        }
+    }
+
+    func testHandoffBackendRejectsChangedTimelineOrFarAwayPhoneBeforeCommand() throws {
+        let continuity = UUID().uuidString.lowercased()
+        for changed in [chromeMedia(continuity: UUID().uuidString.lowercased()),
+                        chromeMedia(elapsed: 80, continuity: continuity),
+                        chromeMedia(duration: 200, continuity: continuity),
+                        chromeMedia(paused: true, continuity: continuity)] {
+            let client = ChromeTestClient(); client.media = chromeMedia(continuity: continuity)
+            let backend = makeBackend(client), source = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+            let condition = try XCTUnwrap(MacChromeHandoffPauseCondition(source: source, phonePositionSeconds: 15))
+            client.media = changed
+            let result = try backend.sendHandoffPause(expected: source, condition: condition,
+                deadline: 11, isAuthorized: { true })
+            XCTAssertNotEqual(result, .applied); XCTAssertEqual(client.commandDispatches, 0)
+        }
+        let client = ChromeTestClient(); client.media = chromeMedia(continuity: continuity)
+        let backend = makeBackend(client), source = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+        let condition = try XCTUnwrap(MacChromeHandoffPauseCondition(source: source, phonePositionSeconds: 80))
+        XCTAssertEqual(try backend.sendHandoffPause(expected: source, condition: condition,
+            deadline: 11, isAuthorized: { true }), .staleContext)
+        XCTAssertEqual(client.commandDispatches, 0)
+    }
+
+    func testHandoffRequiresNativePauseAndPositionReadbackNotOnlyOKEnvelope() throws {
+        for mode in ["ignored", "position"] {
+            let client = ChromeTestClient(); client.media = chromeMedia(continuity: UUID().uuidString.lowercased())
+            let backend = makeBackend(client), source = try XCTUnwrap(backend.readSnapshots(deadline: 11).first)
+            let condition = try XCTUnwrap(MacChromeHandoffPauseCondition(source: source, phonePositionSeconds: 15))
+            if mode == "ignored" { client.ignoreCommands = true }
+            else { client.commandReply = ("ok", chromeMedia(paused: true, elapsed: 80)) }
+            XCTAssertEqual(try backend.sendHandoffPause(expected: source, condition: condition,
+                deadline: 11, isAuthorized: { true }), .failed)
+            XCTAssertEqual(client.commandDispatches, 1)
+        }
+    }
+
     func testThirtyNineYouTubeCandidatesDiscoverLatePlayingItemWithoutTruncation() throws {
         let client = ChromeTestClient()
         client.windows[0].tabs = (2...40).map { (String($0), chromeURL) }

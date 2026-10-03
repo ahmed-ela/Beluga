@@ -14,6 +14,24 @@ enum MacChromeMediaScript {
         uuid(e.documentID) && uuid(e.itemID) && Number.isSafeInteger(e.itemGeneration) && e.itemGeneration > 0;
       const sameExpected = (a,b) => a && b && a.documentID === b.documentID &&
         a.itemID === b.itemID && a.itemGeneration === b.itemGeneration;
+      const handoffValid = h => exact(h,["continuityID","videoID","positionSeconds","durationSeconds",
+        "playbackRate","observedAtPageMilliseconds","phonePositionSeconds"]) && uuid(h.continuityID) &&
+        typeof h.videoID === "string" && VIDEO.test(h.videoID) &&
+        Number.isFinite(h.durationSeconds) && h.durationSeconds > 0 && h.durationSeconds <= 31536000 &&
+        [h.positionSeconds,h.phonePositionSeconds].every(p => Number.isFinite(p) && p >= 0 && p < h.durationSeconds) &&
+        Number.isFinite(h.playbackRate) && h.playbackRate > 0 && h.playbackRate <= 16 &&
+        Number.isFinite(h.observedAtPageMilliseconds) && h.observedAtPageMilliseconds >= 0 &&
+        h.observedAtPageMilliseconds <= Number.MAX_SAFE_INTEGER;
+      const sameHandoff = (a,b) => (!a && !b) || (a && b &&
+        Object.keys(a).every(k => a[k] === b[k]) && Object.keys(a).length === Object.keys(b).length);
+      const handoffMatches = (h,m) => {
+        const elapsed = (m.observedAtPageMilliseconds - h.observedAtPageMilliseconds) / 1000;
+        return elapsed >= 0 && elapsed < 30 && m.playbackContinuityID === h.continuityID &&
+          m.videoID === h.videoID && !m.paused && m.canPause && m.canSeek &&
+          m.duration === h.durationSeconds && m.playbackRate === h.playbackRate &&
+          Math.abs(m.elapsedTime - (h.positionSeconds + elapsed * h.playbackRate)) <= 1 &&
+          Math.abs(m.elapsedTime - h.phonePositionSeconds) <= 2;
+      };
       const bounded = o => { try { return encoder.encode(JSON.stringify(o)).length <= 4096; } catch { return false; } };
       const output = (status, snapshot, record) => {
         const result = {schemaVersion:1,status};
@@ -52,9 +70,11 @@ enum MacChromeMediaScript {
           const fields = ["schemaVersion","operation","commandID","expected","command",
                 "expiresAtUnixMilliseconds","expiresAtPageMilliseconds"];
           if (request.command === "seekToPosition") fields.push("positionSeconds");
+          if (Object.hasOwn(request,"handoff")) fields.push("handoff");
           if (!exact(request,fields) ||
               !uuid(request.commandID) || !expectedValid(request.expected) ||
               !["play","pause","next","previous","seekForward30","seekBackward30","seekToPosition"].includes(request.command) ||
+              (Object.hasOwn(request,"handoff") && (request.command !== "pause" || !handoffValid(request.handoff))) ||
               (request.command === "seekToPosition" && (!Number.isFinite(request.positionSeconds) ||
                 request.positionSeconds < 0 || request.positionSeconds > 31536000)) ||
               !Number.isFinite(request.expiresAtUnixMilliseconds) ||
@@ -122,6 +142,15 @@ enum MacChromeMediaScript {
             s.video = video; s.invalidate();
             video.addEventListener("emptied",s.invalidate,{signal:s.videoEvents.signal});
           }
+          // A source can retain its item identity through manual seek/pause/rate changes.
+          // Keep this separate from normal command identity, including on an existing v1 page.
+          if (s.handoffVideo !== video) {
+            s.handoffEvents?.abort(); s.handoffEvents = new AbortController();
+            s.handoffVideo = video; s.playbackContinuityID = crypto.randomUUID();
+            const changed = () => { s.playbackContinuityID = crypto.randomUUID(); };
+            for (const name of ["seeking","ratechange","pause","play","waiting","ended","emptied"])
+              video.addEventListener(name,changed,{signal:s.handoffEvents.signal,passive:true});
+          }
           if (s.player !== player || s.href !== page.href || s.src !== video.currentSrc || s.videoID !== page.videoID) {
             s.player = player; s.href = page.href; s.src = video.currentSrc; s.videoID = page.videoID; s.invalidate();
           }
@@ -143,6 +172,7 @@ enum MacChromeMediaScript {
             Number.isFinite(ranges.start(0)) && ranges.start(0) <= 0.01 &&
             Number.isFinite(ranges.end(0)) && ranges.end(0) >= duration - 0.01;
           const snapshot = {documentID:s.documentID,itemID:s.itemID,itemGeneration:s.itemGeneration,
+            playbackContinuityID:s.playbackContinuityID,
             videoID:page.videoID,title,paused,playbackRate:paused ? 0 : rate,
             elapsedTime:elapsed,observedAtUnixMilliseconds:Date.now(),observedAtPageMilliseconds:performance.now(),
             canPlay:paused,canPause:!paused,canNext:!!next,canPrevious:!!previous,canSeek};
@@ -182,6 +212,7 @@ enum MacChromeMediaScript {
           if (!sameExpected(existing.expected,request.expected) ||
               (operation === "command" && (existing.command !== request.command ||
                 existing.positionSeconds !== request.positionSeconds ||
+                !sameHandoff(existing.handoff,request.handoff) ||
                 existing.expiresAtUnixMilliseconds !== request.expiresAtUnixMilliseconds ||
                 existing.expiresAtPageMilliseconds !== request.expiresAtPageMilliseconds))) return output("staleContext");
           return recordResult(existing,view);
@@ -199,6 +230,7 @@ enum MacChromeMediaScript {
         if (seek && !view.snapshot.canSeek) return output("unsupported",view.snapshot);
         const record = {expected:{...request.expected},command:request.command,status:"pending",
           positionSeconds:request.positionSeconds,
+          handoff:request.handoff,
           expiresAtUnixMilliseconds:request.expiresAtUnixMilliseconds,expiresAtPageMilliseconds:request.expiresAtPageMilliseconds,
           retainUntil:now + 60000,targetVideoID:chosen?.videoID};
         s.commands.set(request.commandID,record);
@@ -211,6 +243,12 @@ enum MacChromeMediaScript {
           record.status = "staleContext"; return output(record.status,fence?.snapshot);
         }
         if (expired(request)) { record.status = "failed"; return output(record.status,fence.snapshot); }
+        // Read the live continuity again: final DOM validation can synchronously dispatch
+        // an event after observe created its immutable snapshot.
+        if (request.handoff && (!handoffMatches(request.handoff,fence.snapshot) ||
+            s.playbackContinuityID !== request.handoff.continuityID)) {
+          record.status = "staleContext"; return output(record.status,fence.snapshot);
+        }
         try {
           if (relative) {
             s.click.call(chosen.node);

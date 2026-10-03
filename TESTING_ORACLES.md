@@ -669,6 +669,24 @@ removing the peer-disconnect continuity retirement must fail the native ABA case
 Retain existing media-command and native input-revocation tests alongside these
 checks. A non-authorizing offer is not a native source descriptor or Pause lease.
 
+The host-side `MacChromeNowPlayingRuntimeTests` handoff cases exercise opaque,
+one-use source preparation through the real controller, composite runtime and
+AppleEvent backend with an explicit native target double. Cover exact owner,
+deadline, controller stop/invalidation/timeout, caller revocation, source timeline
+changes, duplicate consumption and native paused/position readback. Removing the
+descriptor's consumption assignment must fail the direct-runtime replay test,
+not just the controller's independent one-use check. Retain the full existing
+Chrome, composite and controller suites to check ordinary media controls.
+
+`node --test scripts/test-native-youtube-handoff.mjs` executes the extracted
+production Chrome script with a DOM/media double. Cover pause/resume and seek
+ABA, late native timeline changes, final-validation event invalidation, strict
+pause-only constraints and ordinary Pause compatibility. Independently run
+`BELUGA_NATIVE_HANDOFF_MUTANT=timeline` and `events`; both must fail actual runtime
+assertions. This is not live Chrome consent, actual YouTube or phone-transfer
+proof. The native descriptor/Pause preparation alone does not establish a
+current peer, phone playback or an offer-correlated completion receipt.
+
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
 main-frame message bridge and teardown with inert local provider HTML, not a real
