@@ -73,6 +73,34 @@ against that API is not a compatible distributable dependency or runtime proof.
 No new microphone permission, local capture, Connect button or production session
 is introduced by this checkpoint.
 
+## Screen-control v2 — source checkpoint
+
+`ViewerScreenControlCodec` reads the existing Mac's JSON text protocol, with the
+4,096-byte bound, strict UTF-8/schema/duplicate checks and full nonzero UInt64
+request IDs. It validates then discards optional input capabilities; this
+receive-only implementation grants no keyboard/pointer authority. Unrelated
+host messages are bounded and ignored, not treated as media-control support.
+
+`ViewerScreenSession` owns one exact peer/control/track lifetime. An explicit Show
+requires foreground health, successful actual write and a matching Active ACK.
+Hide/background revoke local presentation leases immediately; stale ACKs, queued
+writes and scene generations cannot reopen them. Transient inactivity covers
+an acknowledged Show without automatically sending another one. Hide failure,
+health loss and expired operations close the lifetime. Keyframe requests do not
+replace the Show lease. One write plus one required Hide bounds queued work.
+
+The public 49-row actual-Swift control capture is SHA-256
+`515a9f854188a19203d5302da23e067d5afd856906534670857cdecc0c1eb8d1`.
+Its deterministic sorted keys are fixture canonicalization, not a production
+JSON ordering guarantee. The UInt64.max rows demonstrate wire capacity; the
+session refuses issuing that final ID, matching the current Mac peer's bound.
+
+These are protocol and lifecycle components, not a native Connect action. A
+Show ACK proves host capture admission, **not Android decoded or rendered pixels**.
+The native-library compatibility gate, actual DataChannel binding, foreground
+privacy cover/rendering integration and Android runtime tests remain release
+requirements. No live session or permission change is part of this checkpoint.
+
 ## Admission and privacy
 
 - Only the user’s Scan button launches the scanner. Google Play services owns

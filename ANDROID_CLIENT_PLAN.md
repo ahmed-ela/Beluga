@@ -131,7 +131,7 @@ public fixtures and exact dependency notices without changing Apple clients or
 the frozen Mac release candidate. Existing iPhone pairing compatibility remains
 a required physical test, not a consequence of compilation.
 
-The newest strict offline run passed 139 app JUnit cases (15 reconnect-storage
+The earlier storage-only strict offline run passed 139 app JUnit cases (15 reconnect-storage
 cases), 1,742 bootstrap-model assertions, debug assembly and lint with zero
 errors. A separate removal of the whole-catalog readback check caused its exact
 assertion to fail. Static APK readback verified debug signing, unchanged native
@@ -154,13 +154,23 @@ Static debug APK readback preserves the manifest, permissions and all 40 native/
 asset entries. None of these checks installs a client or proves Android runtime,
 Keystore durability, real WSS, media playback or deployment.
 
-The next coherent slice remains the selected-ACTIVE-Mac session composition:
-resend the retained activation acknowledgement, persist the reconnect counter
-before sending, authenticate the response, join the exact availability close,
-revalidate the selected committed record, then hand the credential and operation
-ownership to native media signaling. Do not expose raw preparations/keys or call
-an authenticated credential "connected." Only wire meaningful Connect UI after
-native WebRTC audio/video and cancellation/teardown are implemented.
+The selected-ACTIVE-Mac session composition now exists in source: retained
+activation, durable counter reservation, authenticated response, exact child
+availability close and selected-record readback precede credential transfer.
+The parent process/storage lifetime remains owned through real native teardown.
+That checkpoint passed 258 focused JVM cases and four affected protocol suites;
+it did not connect a real Android client or admit the native WebRTC library.
+
+The next source slice adds the Mac's exact base screen-control v2 codec and a
+bounded peer/control/track-bound Show/Hide lifecycle. Public actual-Swift fixtures
+cover 49 rows including full unsigned IDs and optional input-capability fields;
+capabilities are discarded without granting input. Delayed ACKs and native-write
+completion must pass the same operation/deadline/lifecycle checks, not merely
+a periodic timeout check. Hide/background revoke local presentation immediately.
+This remains a host-testable component; real SCTP, Android lifecycle/privacy
+cover, decoded stereo, final-pixel rendering and native cleanup still need proof.
+Only wire meaningful Connect UI after the native dependency and those integrations
+are ready. Never expose raw preparations/keys or call a credential "connected."
 
 **Do not add a disposable "check saved Mac" reconnect probe.** The current host
 persists its accepted reconnect sequence and prepares a media service before
