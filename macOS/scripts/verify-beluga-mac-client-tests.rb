@@ -180,7 +180,9 @@ class BelugaMacClientContractTests < Minitest::Test
   end
 
   def signed_metadata
-    "Identifier=#{C::BUNDLE_ID}\nCodeDirectory=v=20500 size=123 flags=0x10000(runtime) hashes=3\nAuthority=Developer ID Application: Reviewed Owner (#{C::TEAM})\nAuthority=Developer ID Certification Authority\nTeamIdentifier=#{C::TEAM}\nTimestamp=Oct 2, 2026 at 12:00:00 PM\n"
+    # The separator and Unicode timestamp are from real codesign -d --verbose=4
+    # output. CodeDirectory is not an ordinary key=value metadata field.
+    "Identifier=#{C::BUNDLE_ID}\nCodeDirectory v=20500 size=123 flags=0x10000(runtime) hashes=3+7 location=embedded\nAuthority=Developer ID Application: Reviewed Owner (#{C::TEAM})\nAuthority=Developer ID Certification Authority\nTeamIdentifier=#{C::TEAM}\nTimestamp=Oct 2, 2026 at 12:00:00\u202FPM\n"
   end
 
   def test_codesign_parser_rejects_duplicate_identity_development_adhoc_no_runtime_or_no_timestamp
@@ -190,6 +192,38 @@ class BelugaMacClientContractTests < Minitest::Test
      signed_metadata.sub('runtime', 'adhoc'), signed_metadata.sub(/^Timestamp=.*\n/, ''),
      signed_metadata.sub(C::TEAM, 'OTHERTEAM1')].each do |value|
       assert_raises(C::Refusal) { C.signature_fields!(value) }
+    end
+  end
+
+  def test_codesign_parser_accepts_real_space_record_and_utf8_bytes_without_mutating_input
+    [Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |encoding|
+      metadata = signed_metadata.dup.force_encoding(encoding).freeze
+      fields = C.signature_fields!(metadata)
+      assert_equal C::BUNDLE_ID, fields['Identifier']
+      assert_equal 'v=20500 size=123 flags=0x10000(runtime) hashes=3+7 location=embedded', fields['CodeDirectory']
+      assert_equal "Oct 2, 2026 at 12:00:00\u202FPM", fields['Timestamp']
+      assert_equal encoding, metadata.encoding
+      assert_equal signed_metadata.bytes, metadata.bytes
+    end
+    assert_raises(C::Refusal) { C.signature_fields!(signed_metadata.b + "\xFF".b) }
+    assert_raises(C::Refusal) { C.signature_fields!(nil) }
+  end
+
+  def test_codesign_parser_refuses_ambiguous_records_and_spoofed_runtime_flags
+    record = signed_metadata.lines.find { |line| line.start_with?('CodeDirectory ') }
+    [signed_metadata + record, signed_metadata + record.sub('CodeDirectory ', 'CodeDirectory='),
+     signed_metadata.sub('CodeDirectory ', 'CodeDirectory='),
+     signed_metadata.sub('CodeDirectory ', "CodeDirectory\t"),
+     signed_metadata + "Timestamp=Oct 2, 2026 at 1:00:00 PM\n",
+     signed_metadata.sub('0x10000(runtime)', '0x0(runtime)'),
+     signed_metadata.sub('0x10000(runtime)', '0x10000(not-runtime)'),
+     signed_metadata.sub('0x10000(runtime)', '0x10000(adhoc,runtime)'),
+     signed_metadata.sub('0x10000(runtime)', '0x10002(runtime)'),
+     signed_metadata.sub('flags=0x10000(runtime)', 'flags=0x10000(runtime) flags=0x0()')].each do |value|
+      assert_raises(C::Refusal) { C.signature_fields!(value) }
+    end
+    ['', ' ', "\t", 'none', 'NONE', ' none ', "\u202F"].each do |timestamp|
+      assert_raises(C::Refusal) { C.signature_fields!(signed_metadata.sub(/^Timestamp=.*$/, 'Timestamp=' + timestamp)) }
     end
   end
 

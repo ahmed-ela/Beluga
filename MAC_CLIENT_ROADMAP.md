@@ -98,6 +98,18 @@ The browser protocol must not change deployed /v1/rendezvous or /v2/availability
 
 ## Implementation evidence — 2026-10-02
 
+- The first source-bound release build exposed a packaging-parser defect: real
+  codesign emits `CodeDirectory v=...`, not the fixture's `CodeDirectory=...`.
+  The corrected UTF-8 parser preserves singleton-field checks and requires the
+  numeric runtime bit, exact runtime label, no ad-hoc flag, and a nonblank secure
+  timestamp. Its new actual-format/ambiguous-record tests fail against the old
+  parser; the corrected producer suite passes 39 cases/654 assertions under C
+  locale. Read-only checks also pass for all 14 real candidate code members and
+  its app signature. Native strict signature and Developer-ID checks are unchanged.
+  The preceding `e98e6c5` checkpoint passed all 26 offline stages (413 Mac,
+  27 shared signaling, 429 Simulator passes/22 physical-only exclusions, Rust and
+  driver checks), but that receipt is not release authority for the parser edit.
+  The failed candidate is retained, not deployed or relabeled as verified.
 - The existing mandatory release runner now includes the catalog/menu/lock and
   updater suites plus named packaging-contract and shared-signaling phases; no
   second release pipeline was added. All 27 current shared tests are required,

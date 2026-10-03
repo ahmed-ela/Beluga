@@ -403,9 +403,17 @@ module BelugaMacClient
 
   def self.signature_fields!(metadata)
     fields = {}
-    metadata.each_line do |line|
-      next unless /\A(?:Identifier|TeamIdentifier|Authority|Timestamp|CodeDirectory)=/.match?(line)
-      key, value = line.chomp.split('=', 2)
+    utf8_text(metadata, 'codesign metadata').each_line do |raw_line|
+      line = raw_line.chomp
+      if /\ACodeDirectory(?:[ =\t]|\z)/.match?(line)
+        # Unlike the other records, native codesign emits "CodeDirectory v=...".
+        # Do not normalize a fabricated key=value or tab-separated alias.
+        require!(line.start_with?('CodeDirectory '), 'malformed codesign CodeDirectory record')
+        key, value = 'CodeDirectory', line.delete_prefix('CodeDirectory ')
+      else
+        next unless /\A(?:Identifier|TeamIdentifier|Authority|Timestamp)=/.match?(line)
+        key, value = line.split('=', 2)
+      end
       if key == 'Authority'
         (fields[key] ||= []) << value
       else
@@ -414,7 +422,14 @@ module BelugaMacClient
       end
     end
     require!(fields['TeamIdentifier'] == TEAM && fields.fetch('Authority', []).first.to_s.match?(/\ADeveloper ID Application: .+ \(#{TEAM}\)\z/), 'not an exact-team Developer ID Application signature')
-    require!(fields.fetch('CodeDirectory', '').match?(/flags=0x[0-9a-f]+\([^)]*\bruntime\b/) && !fields.fetch('Timestamp', '').empty? && fields['Timestamp'] != 'none', 'hardened runtime/secure timestamp required')
+    directory = fields.fetch('CodeDirectory', '')
+    flags = /\Av=[0-9]+ size=[0-9]+ flags=0x([0-9a-f]+)\(([a-z0-9,-]*)\)(?: [^\r\n]*)?\z/.match(directory)
+    labels = flags ? flags[2].split(',') : []
+    require!(flags && directory.scan(/\bflags=/).length == 1 &&
+             (flags[1].to_i(16) & 0x10000) != 0 && (flags[1].to_i(16) & 0x2).zero? &&
+             labels.include?('runtime') && !labels.include?('adhoc') &&
+             !fields.fetch('Timestamp', '').match?(/\A[[:space:]]*(?:none)?[[:space:]]*\z/i),
+             'hardened runtime/secure timestamp required')
     fields
   end
 
