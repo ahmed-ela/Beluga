@@ -89,6 +89,13 @@ an acknowledged Show without automatically sending another one. Hide failure,
 health loss and expired operations close the lifetime. Keyframe requests do not
 replace the Show lease. One write plus one required Hide bounds queued work.
 
+A renderer that already holds its own exact post-swap receipt can request a fresh
+lease for the **same acknowledged Show** after transient inactivity. The model
+checks the original issuer, peer, control, track and Show-operation identity as
+well as current scene, health and deadlines. It cannot revive a buffer after Hide,
+backgrounding or a later Show. This permission is not a frame/draw receipt; a
+native owner must separately prove the retained buffer belongs to that Show.
+
 The public 49-row actual-Swift control capture is SHA-256
 `515a9f854188a19203d5302da23e067d5afd856906534670857cdecc0c1eb8d1`.
 Its deterministic sorted keys are fixture canonicalization, not a production

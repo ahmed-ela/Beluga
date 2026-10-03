@@ -198,6 +198,22 @@ final class ViewerScreenSession {
         }
         publishFailure(); return result;
     }
+    /**
+     * Permission to rebind the native owner's already-presented same-Show buffer after transient
+     * inactivity. The caller must hold its own exact post-swap receipt; this method proves no draw
+     * or buffer origin. Only scene generation may differ. It never restores or changes a Show.
+     */
+    PresentationLease rebindRetainedPresentation(PresentationLease previousLease, Object exactPeer,
+            Object exactControl, Object exactTrack) {
+        PresentationLease result;
+        synchronized (lock) {
+            if (!closed) observeNowLocked();
+            result = previousLease != null && previousLease.issuer == this && exact(exactPeer, exactControl)
+                    && track == exactTrack && canPresentLocked() && previousLease.operation == activeShow.operation
+                    ? new PresentationLease(this, activeShow.operation, presentationGeneration) : null;
+        }
+        publishFailure(); return result;
+    }
     boolean permits(PresentationLease lease, Object exactPeer, Object exactControl, Object exactTrack) {
         boolean result;
         synchronized (lock) {

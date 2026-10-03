@@ -172,6 +172,14 @@ cover, decoded stereo, final-pixel rendering and native cleanup still need proof
 Only wire meaningful Connect UI after the native dependency and those integrations
 are ready. Never expose raw preparations/keys or call a credential "connected."
 
+Retained-presentation permission now supports only an already-presented buffer
+from the same acknowledged Show across transient inactivity. The renderer must
+supply its own exact swap receipt; the model cannot prove a draw. Four added
+regressions (27 session tests total) cover same-Show return, old-Show refusal,
+foreign ownership/health and deadline/clock refusal. Removing the same-Show
+identity check in an isolated mutation makes the unchanged old-Show regression
+fail. This does not admit the native dependency or establish Android rendering.
+
 **Do not add a disposable "check saved Mac" reconnect probe.** The current host
 persists its accepted reconnect sequence and prepares a media service before
 sending the signed response; availability peer-left is not media teardown. A

@@ -98,6 +98,68 @@ public final class ViewerScreenSessionTest {
         assertVisible(f); // Fresh lease for the retained acknowledged Show, not a new Show.
     }
 
+    @Test public void retainedPresentationRebindsOnlySameShowAfterReturningActive() {
+        Fixture f = shown(); PresentationLease before = f.session.presentationLease();
+        f.session.scene(Scene.INACTIVE);
+        assertNull(f.session.rebindRetainedPresentation(before, f.peer, f.control, f.track));
+        assertFalse(f.session.permits(before, f.peer, f.control, f.track));
+        f.session.scene(Scene.ACTIVE);
+        PresentationLease rebound = f.session.rebindRetainedPresentation(before, f.peer, f.control, f.track);
+        assertNotNull(rebound); assertTrue(rebound != before);
+        assertTrue(f.session.permits(rebound, f.peer, f.control, f.track));
+        assertFalse(f.session.permits(before, f.peer, f.control, f.track));
+        assertEquals("1", f.session.snapshot().currentRequestID); assertEquals(1, f.transport.writes.size());
+        // Another transient scene transition still cannot make the preceding generation valid.
+        f.session.scene(Scene.INACTIVE); f.session.scene(Scene.ACTIVE);
+        assertFalse(f.session.permits(rebound, f.peer, f.control, f.track));
+        PresentationLease again = f.session.rebindRetainedPresentation(rebound, f.peer, f.control, f.track);
+        assertNotNull(again); assertTrue(f.session.permits(again, f.peer, f.control, f.track));
+        assertEquals(1, f.transport.writes.size()); assertTrue(f.failures.isEmpty());
+    }
+
+    @Test public void hideBackgroundAndNewShowCannotRebindAnOldPresentedLease() {
+        Fixture f = shown(); PresentationLease old = f.session.presentationLease();
+        f.session.hide(); assertNull(f.session.rebindRetainedPresentation(old, f.peer, f.control, f.track));
+        f.write(1).succeed(); f.ack("2", false);
+        assertNull(f.session.rebindRetainedPresentation(old, f.peer, f.control, f.track));
+        f.session.show(); f.write(2).succeed(); f.ack("3", true); assertVisible(f);
+        assertNull(f.session.rebindRetainedPresentation(old, f.peer, f.control, f.track));
+        assertEquals(3, f.transport.writes.size());
+        Fixture g = shown(); PresentationLease backgrounded = g.session.presentationLease();
+        g.session.scene(Scene.BACKGROUND); g.session.scene(Scene.ACTIVE);
+        assertNull(g.session.rebindRetainedPresentation(backgrounded, g.peer, g.control, g.track));
+        assertFalse(g.session.snapshot().presentationAllowed); assertEquals(State.HIDE_PENDING, g.session.snapshot().state);
+    }
+
+    @Test public void retainedRebindingRejectsForeignTokensIssuerAndClosedOrUnhealthyOwner() {
+        Fixture f = shown(); PresentationLease lease = f.session.presentationLease();
+        assertNull(f.session.rebindRetainedPresentation(null, f.peer, f.control, f.track));
+        assertNull(f.session.rebindRetainedPresentation(lease, new Object(), f.control, f.track));
+        assertNull(f.session.rebindRetainedPresentation(lease, f.peer, new Object(), f.track));
+        assertNull(f.session.rebindRetainedPresentation(lease, f.peer, f.control, new Object()));
+        Fixture foreign = shown();
+        assertNull(f.session.rebindRetainedPresentation(foreign.session.presentationLease(), f.peer, f.control, f.track));
+        assertTrue(f.session.snapshot().presentationAllowed); assertTrue(f.failures.isEmpty());
+        f.session.close(); assertNull(f.session.rebindRetainedPresentation(lease, f.peer, f.control, f.track));
+        assertTrue(f.failures.isEmpty());
+        Fixture unhealthy = shown(); PresentationLease previous = unhealthy.session.presentationLease();
+        unhealthy.session.loseHealth(unhealthy.peer, unhealthy.control);
+        assertNull(unhealthy.session.rebindRetainedPresentation(previous, unhealthy.peer, unhealthy.control, unhealthy.track));
+        assertClosed(unhealthy, Failure.HEALTH);
+    }
+
+    @Test public void retainedRebindingCannotBypassDeadlineOrClockRollbackBeforePoll() {
+        Fixture f = shown(); PresentationLease previous = f.session.presentationLease();
+        f.session.requestKeyFrame(); f.session.scene(Scene.INACTIVE); f.session.scene(Scene.ACTIVE);
+        f.clock.set(ViewerScreenSession.ACKNOWLEDGEMENT_NANOS);
+        assertNull(f.session.rebindRetainedPresentation(previous, f.peer, f.control, f.track));
+        assertClosed(f, Failure.TIMEOUT);
+        Fixture g = shown(); PresentationLease retained = g.session.presentationLease();
+        g.session.scene(Scene.INACTIVE); g.session.scene(Scene.ACTIVE); g.clock.set(-1);
+        assertNull(g.session.rebindRetainedPresentation(retained, g.peer, g.control, g.track));
+        assertClosed(g, Failure.CLOCK);
+    }
+
     @Test public void hideAcceptanceSynchronouslyRevokesEvenBeforeItsWriteOrAck() {
         Fixture f = shown(); PresentationLease before = f.session.presentationLease();
         assertEquals("2", f.session.hide());
