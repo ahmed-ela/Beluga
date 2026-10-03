@@ -261,7 +261,9 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
             if(retired) return;
             player=new YT.Player('player',{width:'100%',height:'100%',videoId:expected,
               playerVars:{playsinline:1,controls:1,autoplay:0,origin:'\(origin)'},
-              events:{onReady:()=>{ready=true;player.cueVideoById({videoId:expected,startSeconds:position});emit('ready');start();},
+              // API readiness can precede video metadata. It identifies this requested player,
+              // never playback: every sample still carries the actual provider video identity.
+              events:{onReady:()=>{ready=true;player.cueVideoById({videoId:expected,startSeconds:position});emit('ready',{video:expected});start();},
                 onStateChange:()=>{
                   if(!aligned && visible && player.getPlayerState()===1) {
                     const current=target(); if(current===null) return;

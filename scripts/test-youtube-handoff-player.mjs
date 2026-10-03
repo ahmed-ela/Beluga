@@ -26,6 +26,7 @@ if (mutation) {
     identity: ["? ids[0] : '';", "? expected : '';"],
     visibility: ["if(!ready || !visible || retired || document.visibilityState==='hidden') return;\n            const rates=", "if(!ready || retired) return;\n            const rates="],
     cleanup: ["clearInterval(timer);if(player)player.destroy();", "if(player)player.pauseVideo();"],
+    readiness: ["emit('ready',{video:expected});", "emit('ready');"],
   };
   const change = mutations[mutation];
   assert.ok(change, 'known mutation required');
@@ -92,6 +93,21 @@ test('visible-before-provider-ready starts only when provider is ready', () => {
   assert.equal(f.actions.length, 0);
   f.ready();
   assert.equal(f.actions.at(-1)[0], 'play');
+});
+
+test('API readiness precedes metadata but cannot manufacture playback identity', () => {
+  const f = fixture();
+  f.player.videoURL = '';
+  f.ready();
+  assert.equal(f.messages.at(-1).kind, 'ready');
+  assert.equal(f.messages.at(-1).video, 'dQw4w9WgXcQ');
+  f.window.belugaHandoffVisibility(true);
+  f.sample();
+  assert.equal(f.messages.at(-1).kind, 'sample');
+  assert.equal(f.messages.at(-1).video, '', 'unknown observed identity cannot inherit the request');
+  f.player.videoURL = 'https://www.youtube.com/watch?v=aaaaaaaaaaa';
+  f.sample();
+  assert.equal(f.messages.at(-1).video, 'aaaaaaaaaaa');
 });
 
 test('blocked autoplay and provider samples are observations, never a success claim', () => {

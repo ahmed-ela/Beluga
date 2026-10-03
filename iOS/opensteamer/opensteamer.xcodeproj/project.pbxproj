@@ -57,6 +57,7 @@
 		8553B3C7A16926908E26AFE9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = DF002ECF8773045115B13E3F /* Assets.xcassets */; };
 		881899A1F6D178BB816711C4 /* IOSOrdinaryPlayoutLivenessTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C1DE117468B2DA4EEECD94B /* IOSOrdinaryPlayoutLivenessTracker.swift */; };
 		8B3BB9E71658E51F6B5CD2BE /* PhysicalScreenSequenceScreenshotSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CE16C78E2A0A4B702D59EEB /* PhysicalScreenSequenceScreenshotSampler.swift */; };
+		8B83FE9A1E08595B2CE12105 /* YouTubeHandoffProviderProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C50E9F93D7F4750A3195EDD9 /* YouTubeHandoffProviderProbeTests.swift */; };
 		8C0C6B242C70FBED1C2FB4D0 /* PhysicalScreenSequenceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD05EFF5B0B4B73AE0B392EC /* PhysicalScreenSequenceProtocol.swift */; };
 		8CEE8A4F3BF37A783F2E66B9 /* ScreenVideoConnectionDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = F524855347D7B066F88321D0 /* ScreenVideoConnectionDescriptor.swift */; };
 		8CFD309C5EAD23E3B7142DB9 /* WorldwidePhysicalOracles.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD7C32B18437F49BE65ED68D /* WorldwidePhysicalOracles.swift */; };
@@ -208,6 +209,7 @@
 		B75B3A61FEBE4D7625349A71 /* YouTubeHandoffSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffSheet.swift; sourceTree = "<group>"; };
 		B91C374837F36DA0427D311B /* MediaNotificationContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MediaNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C4C86AC06C89F7311C1B1F62 /* YouTubeHandoffCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffCoordinatorTests.swift; sourceTree = "<group>"; };
+		C50E9F93D7F4750A3195EDD9 /* YouTubeHandoffProviderProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffProviderProbeTests.swift; sourceTree = "<group>"; };
 		C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationScrub.swift; sourceTree = "<group>"; };
 		C7B1BF8B41EA3FE864A61077 /* RemoteMediaArtworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMediaArtworkTests.swift; sourceTree = "<group>"; };
 		C9E111D70F8EAA03A7EE07F2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -523,6 +525,7 @@
 				D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */,
 				C4C86AC06C89F7311C1B1F62 /* YouTubeHandoffCoordinatorTests.swift */,
 				36C822410B7B5FBE72F28C55 /* YouTubeHandoffOperationTests.swift */,
+				C50E9F93D7F4750A3195EDD9 /* YouTubeHandoffProviderProbeTests.swift */,
 				1775DA5E4B6B22C625896DF4 /* YouTubeHandoffWebViewTests.swift */,
 			);
 			path = Tests;
@@ -785,6 +788,7 @@
 				D4EAE6BA0BBBC5807F6B32F6 /* WorldwideRemoteInputLifecycleTests.swift in Sources */,
 				EB2C1DA7121358BA2DF9C1DB /* YouTubeHandoffCoordinatorTests.swift in Sources */,
 				6666A009F50A5720A1549D5C /* YouTubeHandoffOperationTests.swift in Sources */,
+				8B83FE9A1E08595B2CE12105 /* YouTubeHandoffProviderProbeTests.swift in Sources */,
 				AE4CB988E20AA72BE7388477 /* YouTubeHandoffWebViewTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

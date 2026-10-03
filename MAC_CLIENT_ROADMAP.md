@@ -136,6 +136,34 @@ states. The completion is still supplied by a boundary double in local tests;
 the product receiver/menu and scoped audio owner remain unwired, and the feature
 remains disabled. No complete transfer or deployment is claimed.
 
+## Current handoff integration checkpoint — 2026-10-03
+
+This supersedes the earlier handoff component snapshots above, not their proof limits.
+The menu/service, current-peer iOS receiver, SwiftUI presentation, ordered commit/reply,
+and exact audio-owner cleanup are now wired in source. Negotiation remains **off by
+default**; no completed native Mac/physical-phone transfer or release is claimed.
+
+Two composed Simulator tests now use actual local WebRTC peers, the production VM
+event consumer, the real coordinator/WK bridge, and the actual audio lifecycle owner.
+Provider HTML, native audio endpoints, and native Mac completion are explicit doubles.
+The successful path sends one exact-source commit; transport retirement sends none,
+does not fall back to generic Pause, and cannot unmute an uncertain session. Both
+test factories must release their inert audio devices after exact WebKit cleanup.
+
+A separate opt-in real-YouTube Simulator probe found a startup defect: `onReady`
+arrives before `getVideoUrl()` contains a video ID. Readiness now names the requested
+player, while playback samples still require the actual exact provider identity.
+The unmodified production player confirms fresh advancing playback of the public
+YouTube API demo in a foreground scene. This proves provider playback in Simulator,
+not audible physical-phone output or a native Mac pause. Keep external network
+probes separate from deterministic CI, and never substitute a ready callback or
+an off-scene black snapshot for visible advancing-playback evidence.
+
+Latest selected Simulator run: 474 passes, zero failures, 22 exact hardware-only
+skips. Provider identity, visibility, cleanup and readiness script mutations fail
+their unchanged assertions. Full service/menu-to-provider-to-native transfer,
+physical audio coexistence and guarded release verification remain outstanding.
+
 ## Product contract
 
 - One Mac app/process with the existing exclusive host lock and preserved Keychain/signing IDs.

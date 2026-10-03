@@ -3642,6 +3642,8 @@ public actor WebRTCPeer {
     #if DEBUG && os(iOS)
     @TaskLocal private static var noHardwareIOSHostAudioDeviceForTesting:
         (any LKRTCAudioDevice & Sendable)?
+    @TaskLocal private static var noHardwareIOSViewerAudioDeviceForTesting:
+        (any LKRTCAudioDevice & Sendable)?
     #endif
 
     public nonisolated let events: AsyncStream<WebRTCTransportEvent>
@@ -4100,12 +4102,13 @@ public actor WebRTCPeer {
         let audioDeviceRetirementHandle:
             WebRTCIOSAudioDeviceRetirementHandle?
         #if DEBUG
-        let noHardwareHostDevice = Self.noHardwareIOSHostAudioDeviceForTesting
+        let noHardwareDevice = configuration.role == .host
+            ? Self.noHardwareIOSHostAudioDeviceForTesting : Self.noHardwareIOSViewerAudioDeviceForTesting
         #else
-        let noHardwareHostDevice: (any LKRTCAudioDevice & Sendable)? = nil
+        let noHardwareDevice: (any LKRTCAudioDevice & Sendable)? = nil
         #endif
         if configuration.role == .viewer,
-           configuration.mediaTopology == .full {
+           configuration.mediaTopology == .full, noHardwareDevice == nil {
             let ownedDevice = try WebRTCIOSAudioDeviceRetirementHandle
                 .makeDeviceAndHandle()
             constructionRetirementHandle = ownedDevice.handle
@@ -4120,14 +4123,14 @@ public actor WebRTCPeer {
         } else {
             stereoPlayoutDevice = nil
             audioDeviceRetirementHandle = nil
-            if let noHardwareHostDevice {
-                guard configuration.role == .host, configuration.mediaTopology == .full else {
+            if let noHardwareDevice {
+                guard configuration.mediaTopology == .full else {
                     throw WebRTCTransportError.invalidRole
                 }
                 nativeFactory = LKRTCPeerConnectionFactory(
                     encoderFactory: encoderFactory,
                     decoderFactory: decoderFactory,
-                    audioDevice: noHardwareHostDevice
+                    audioDevice: noHardwareDevice
                 )
             } else {
                 nativeFactory = LKRTCPeerConnectionFactory(
@@ -4243,7 +4246,7 @@ public actor WebRTCPeer {
         #endif
 
         #if !os(macOS)
-        if configuration.role == .host, noHardwareHostDevice == nil {
+        if configuration.role == .host, noHardwareDevice == nil {
             let audioDeviceModule = nativeFactory.audioDeviceModule
             guard audioDeviceModule.setPlatformVoiceProcessingAllowed(false) == 0,
                   audioDeviceModule.setManualRenderingMode(true) == 0,
@@ -4340,7 +4343,7 @@ public actor WebRTCPeer {
                     throw WebRTCTransportError.audioTrackCreationFailed
                 }
                 #else
-                let audioCapturer: MacExternalAudioCapturer? = noHardwareHostDevice == nil
+                let audioCapturer: MacExternalAudioCapturer? = noHardwareDevice == nil
                     ? MacExternalAudioCapturer(audioDeviceModule: nativeFactory.audioDeviceModule)
                     : nil
                 #endif
@@ -5379,6 +5382,20 @@ public actor WebRTCPeer {
             throw WebRTCTransportError.invalidRole
         }
         return try $noHardwareIOSHostAudioDeviceForTesting.withValue(audioDevice) {
+            try WebRTCPeer(configuration: configuration)
+        }
+    }
+
+    /// Local receiver/composition tests retain real SDP, ICE, SCTP and protocol gates without
+    /// constructing the production native audio endpoint. Never acoustic or microphone proof.
+    nonisolated static func makeNoHardwareViewerForTesting(
+        configuration: WebRTCTransportConfiguration,
+        audioDevice: any LKRTCAudioDevice & Sendable
+    ) throws -> WebRTCPeer {
+        guard configuration.role == .viewer, configuration.mediaTopology == .full else {
+            throw WebRTCTransportError.invalidRole
+        }
+        return try $noHardwareIOSViewerAudioDeviceForTesting.withValue(audioDevice) {
             try WebRTCPeer(configuration: configuration)
         }
     }

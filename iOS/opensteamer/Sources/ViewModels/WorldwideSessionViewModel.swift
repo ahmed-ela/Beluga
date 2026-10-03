@@ -1439,7 +1439,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var focusedInputGeneration: UInt64?
     @Published private(set) var focusedInputIsSecure = false
     @Published private(set) var focusedWindowResizeState: FocusedWindowResizeState = .inactive
-    let mediaHandoff = YouTubeHandoffCoordinator()
+    let mediaHandoff: YouTubeHandoffCoordinator
 
     var focusedWindowInteractionState: FocusedWindowResizeState { focusedWindowResizeState }
 
@@ -1844,8 +1844,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         (@MainActor (RemoteMediaCommandDispatch) async throws -> Void)?
     #endif
 
-    init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
+    init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController(),
+         mediaHandoff: YouTubeHandoffCoordinator = YouTubeHandoffCoordinator()) {
         self.audioLifecycle = audioLifecycle
+        self.mediaHandoff = mediaHandoff
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationWillResignActive),

@@ -3,6 +3,8 @@ import Dispatch
 import IOSWebRTCAudioDeviceShim
 @preconcurrency import MediaPlayer
 import RemoteSessionCore
+import UIKit
+import WebKit
 import XCTest
 @testable import opensteamer
 @testable import WebRTCTransport
@@ -33,6 +35,228 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
     private enum PrematureMacHostedCallChallengeOutcome: Equatable {
         case localSuccess
         case localFailure
+    }
+
+    func testComposedHandoffReceiverUsesRealPeerAndScopedAudioOwner() async throws {
+        try await exerciseComposedHandoff(retireBeforePlayback: false)
+    }
+
+    func testComposedHandoffTransportRetirementCannotSendMacPause() async throws {
+        try await exerciseComposedHandoff(retireBeforePlayback: true)
+    }
+
+    /// Real ordered local peers -> production VM consumer -> coordinator -> visible WK ->
+    /// typed commit -> VM completion. Only provider HTML, native audio endpoints and the
+    /// native Mac pause result are doubles. This is not provider/acoustic/physical proof.
+    private func exerciseComposedHandoff(retireBeforePlayback: Bool) async throws {
+        let hostDevice = PhysicalNoHardwareAudioDevice()
+        let viewerDevice = PhysicalNoHardwareAudioDevice()
+        try await exerciseComposedHandoff(retireBeforePlayback: retireBeforePlayback,
+            hostDevice: hostDevice, viewerDevice: viewerDevice)
+        // Native ADM teardown follows release of the peer factory, not merely close().
+        try await waitForComposedHandoff("both scoped native factories released") {
+            !hostDevice.snapshot.delegateBound && !viewerDevice.snapshot.delegateBound
+        }
+    }
+
+    private func exerciseComposedHandoff(retireBeforePlayback: Bool,
+        hostDevice: PhysicalNoHardwareAudioDevice, viewerDevice: PhysicalNoHardwareAudioDevice) async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let fixture = makeFixture()
+        let coordinator = YouTubeHandoffCoordinator(makePlayer: {
+            YouTubeHandoffPlayer(request: $0,
+                htmlDocument: YouTubeHandoffWebViewTests.localDocument, eventHandler: $1)
+        })
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller,
+                                                  mediaHandoff: coordinator)
+        let presenter = UUID()
+        coordinator.registerPresenter(presenter, priority: 0)
+        let host = try WebRTCPeer.makeNoHardwareHostForTesting(configuration: .init(
+            role: .host, iceServers: [], supportsRemoteMediaControls: true,
+            supportsMediaHandoff: true), audioDevice: hostDevice)
+        let viewer = try WebRTCPeer.makeNoHardwareViewerForTesting(configuration: .init(
+            role: .viewer, iceServers: [], supportsRemoteMediaControls: true,
+            supportsMediaHandoff: true), audioDevice: viewerDevice)
+        XCTAssertNil(viewer.iOSAudioTransactionDeviceBinding)
+        XCTAssertTrue(viewModel.debugInstallScreenSessionForTests(peer: viewer,
+            provenance: .unauthenticated, bindAudioTransactionDevice: false))
+        viewModel.handleAppBecameActive()
+        fixture.controller.prepare(serverName: "Local handoff fixture")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        let nativeCounts = [fixture.playback.activateCount, fixture.playback.recoverCount,
+                            fixture.playback.deactivateCount]
+        let microphoneAllowed = fixture.controller.microphoneActivationIsAllowed()
+        let signaling = try RendezvousSignalingClient(endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        // No signaling connection is opened. Real peer SDP/ICE goes directly to the other
+        // local peer. Only real remote-media events enter the production VM consumer.
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        let consumer = viewModel.debugStartPeerEventLoopForTests(events: events.stream, signaling: signaling)
+        var errors: [String] = []
+        var refreshIDs: [UUID] = []
+        var commits: [WebRTCReceivedMediaHandoffCommit] = []
+        var genericCommands = 0
+        var revision: UInt64 = 0
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        func publish(_ refresh: WebRTCReceivedRemoteMediaStateRefreshRequest? = nil) async throws {
+            revision += 1
+            let item = WebRTCRemoteMediaItem(contextID: "composed-exact-source", sourceName: "YouTube",
+                title: "Local provider double", playbackState: .playing,
+                elapsedTime: 20 + ProcessInfo.processInfo.systemUptime - startedAt,
+                duration: 200, playbackRate: 1,
+                capabilities: .init(canPlay: true, canPause: true, canSkipForward: false,
+                    canSkipBackward: false, canSeekToPosition: true), artwork: .init(videoID: "dQw4w9WgXcQ"))
+            try await host.sendRemoteMediaState(.init(revision: revision, item: item), respondingTo: refresh)
+        }
+        let hostTask = Task { @MainActor in
+            do {
+                for await event in host.events {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .outboundSignal(let payload): try await viewer.handle(payload)
+                    case .remoteMediaStateRefreshRequested(let refresh):
+                        refreshIDs.append(refresh.id)
+                        try await publish(refresh)
+                    case .mediaHandoffCommitReceived(let commit):
+                        commits.append(commit)
+                        // Deliberate native-result double, never a real Mac pause claim.
+                        try await host.acknowledgeMediaHandoffCommit(commit, result: .macPaused)
+                    case .remoteMediaCommandReceived: genericCommands += 1
+                    default: break
+                    }
+                }
+            } catch { errors.append("host: \(error)") }
+        }
+        let viewerTask = Task { @MainActor in
+            do {
+                for await event in viewer.events {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .outboundSignal(let payload): try await host.handle(payload)
+                    case .remoteMediaControlsAvailabilityChanged, .remoteMediaStateChanged,
+                         .mediaHandoffOfferReceived, .mediaHandoffCompleted:
+                        events.continuation.yield(event)
+                    default: break
+                    }
+                }
+            } catch { errors.append("viewer: \(error)") }
+        }
+        var updater: Task<Void, Never>?
+        var player: YouTubeHandoffPlayer?
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        var failure: (any Error)?
+        do {
+            XCTAssertNotNil(consumer)
+            try await host.start()
+            try await waitForComposedHandoff("both local transports") {
+                let h = await host.isTransportHealthyForMediaForTesting
+                let v = await viewer.isTransportHealthyForMediaForTesting
+                return h && v
+            }
+            try await waitForComposedHandoff("correlated state admitted by real VM receiver") {
+                viewModel.debugMediaPipelineDiagnosticsForTests().lastEventAdmitted == true
+            }
+            XCTAssertFalse(refreshIDs.isEmpty)
+            // Keep the exact original source fresh while the provider document loads.
+            updater = Task { @MainActor in
+                do {
+                    while !Task.isCancelled {
+                        try await publish()
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                } catch is CancellationError {} catch { errors.append("state: \(error)") }
+            }
+            let id = try await host.sendMediaHandoffOffer(contextID: "composed-exact-source")
+            try await waitForComposedHandoff("real offer presents a player") {
+                coordinator.presentation != nil
+            }
+            let presented = try XCTUnwrap(coordinator.presentation)
+            let ownedPlayer = presented.player
+            player = ownedPlayer
+            XCTAssertEqual(ownedPlayer.id, id)
+            XCTAssertEqual(presented.presenterID, presenter)
+            XCTAssertNotNil(fixture.controller.mediaHandoffAudioSuppressionID)
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            XCTAssertTrue(commits.isEmpty, "Offer receipt alone cannot pause the Mac")
+            let webView = ownedPlayer.makeWebView()
+            window.rootViewController = UIViewController()
+            window.rootViewController!.view.addSubview(webView)
+            webView.frame = CGRect(x: 0, y: 0, width: 390, height: 600)
+            window.makeKeyAndVisible()
+            if retireBeforePlayback {
+                viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+                XCTAssertNil(coordinator.presentation)
+                XCTAssertFalse(ownedPlayer.playbackAuthorization.isValid)
+                ownedPlayer.setPresentation(isPresented: true, sceneIsActive: true)
+                XCTAssertTrue(webView.isHidden)
+                XCTAssertNotEqual(ownedPlayer.phase, .localPlayback)
+            } else {
+                ownedPlayer.setPresentation(isPresented: true, sceneIsActive: true)
+                try await waitForComposedHandoff("provider evidence -> exact commit -> completion") {
+                    ownedPlayer.phase == .localPlayback
+                }
+                XCTAssertEqual(commits.count, 1)
+                XCTAssertEqual(commits.first?.id, id)
+                XCTAssertEqual(commits.first?.contextID, "composed-exact-source")
+                XCTAssertEqual(commits.first?.videoID, "dQw4w9WgXcQ")
+                XCTAssertEqual(ownedPlayer.macPauseStatus, .paused)
+                XCTAssertFalse(fixture.remoteAudio.isEnabled)
+                XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
+                XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
+                    fixture.playback.deactivateCount])
+                coordinator.dismiss(presented.id)
+            }
+            var cleanupAcknowledged = false
+            ownedPlayer.afterMediaStopped { cleanupAcknowledged = true }
+            try await waitForComposedHandoff("actual WebKit stop acknowledgment releases exact owner") {
+                cleanupAcknowledged && fixture.controller.mediaHandoffAudioSuppressionID == nil
+            }
+            XCTAssertEqual(fixture.remoteAudio.isEnabled, !retireBeforePlayback,
+                           "Cleanup cannot restore audio into an uncertain transport")
+            // An ordered refresh reply drains any earlier commit. No arbitrary sleep proves absence.
+            let barrier = UUID()
+            try await viewer.requestRemoteMediaStateRefresh(id: barrier)
+            try await waitForComposedHandoff("ordered same-channel barrier") { refreshIDs.contains(barrier) }
+            XCTAssertEqual(commits.count, retireBeforePlayback ? 0 : 1)
+            XCTAssertEqual(genericCommands, 0, "Handoff must never fall back to ordinary Pause")
+            let diagnostic = await viewer.iOSPlayoutDiagnostics()
+            XCTAssertNil(diagnostic, "No production audio device may be constructed by this fixture")
+            XCTAssertEqual(viewerDevice.snapshot.recordingStarts, 0)
+            XCTAssertEqual(hostDevice.snapshot.recordingStarts, 0)
+            XCTAssertTrue(errors.isEmpty, errors.joined(separator: "; "))
+        } catch { failure = error }
+        updater?.cancel(); await updater?.value
+        coordinator.invalidate()
+        if let player {
+            var stopped = false
+            player.afterMediaStopped { stopped = true }
+            do { try await waitForComposedHandoff("failure-safe WK cleanup") { stopped } }
+            catch { if failure == nil { failure = error } }
+        }
+        window.isHidden = true
+        viewModel.disconnect()
+        events.continuation.finish(); await consumer?.value
+        hostTask.cancel(); viewerTask.cancel()
+        let hostClosed = await host.close(reason: .normal)
+        let viewerClosed = await viewer.close(reason: .normal)
+        await hostTask.value; await viewerTask.value
+        fixture.controller.stop()
+        XCTAssertTrue(hostClosed); XCTAssertTrue(viewerClosed)
+        if let failure { throw failure }
+    }
+
+    private func waitForComposedHandoff(_ description: String,
+        condition: @MainActor () async -> Bool) async throws {
+        for _ in 0..<500 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("Missing bounded composed-handoff condition: \(description)")
+        throw WebRTCTransportError.transportNotHealthy
     }
 
     func testMediaHandoffMutesOnlyOwnedDownlinkWithoutChangingMicrophoneOrNativeSession() throws {

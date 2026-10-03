@@ -742,7 +742,7 @@ proof. Its supplied completion is not a live Mac pause or a connected transfer.
 
 `node --test scripts/test-youtube-handoff-player.mjs` executes the extracted
 production player script with a provider double. Independently rerun with
-`BELUGA_HANDOFF_SCRIPT_MUTANT=identity`, `visibility`, and `cleanup`; each must
+`BELUGA_HANDOFF_SCRIPT_MUTANT=identity`, `visibility`, `cleanup`, and `readiness`; each must
 fail its intended behavioral assertion, not extraction, compilation or setup.
 These mutants change script bytes only in memory. Restore any native Swift
 mutation exactly and rerun the affected suites; never distribute a mutant.
@@ -768,8 +768,31 @@ exempt muted frozen callbacks and require the unchanged liveness assertion to
 fail. Restore exactly and run all three signed Simulator audio suites plus the
 pinned Rust tests in `MICROPHONE_REGRESSION_GUARDRAILS.md`. These owner/track doubles
 do not prove concurrent native WK audio output, microphone capture or a completed
-phone handoff. The lease API remains unwired until the current-peer player owner
-provides synchronous invalidation/cleanup and the remaining runtime gates pass.
+phone handoff. The lease API is now wired through the current-peer coordinator;
+its real-WebKit cleanup acknowledgement is still not acoustic/device coexistence proof.
+
+The two `WorldwideAudioLifecycleTests.testComposedHandoff...` tests join actual
+local SDP/ICE/SCTP peers to the production VM event receiver, coordinator, WK bridge
+and audio owner. Explicit boundary doubles remain for provider HTML, native audio
+endpoints and native Mac completion. Use the DEBUG-only no-hardware host/viewer
+factories, not ordinary native audio endpoints. Assert one exact-source commit on
+success, no generic Pause, no commit before playback, same-channel refresh-barrier
+proof after cancellation, scoped cleanup, and no unmute into an uncertain transport.
+Release both factories and require their device delegates to retire. These tests
+do not connect cloud signaling, bind an audio transaction device or authorize a mic.
+
+`YouTubeHandoffProviderProbeTests` is separately opt-in: set the test-runner variable
+`OPENSTEAMER_LIVE_YOUTUBE_PROBE=1` only on the approved development Simulator.
+It uses the production HTML and real YouTube IFrame API demo, with no fake playback
+event, peer or native Mac completion. Require fresh exact advancing playback
+evidence, a foreground UIWindowScene, visible iframe geometry and retained pixel
+attachments; default CI skips this network-dependent probe. A changed demo duration
+fails the pinned probe, never widens production drift/duration tolerances. API
+readiness can precede video metadata and names only the requested player; actual
+playback samples must not inherit that requested identity. Deliberately revert
+the readiness-specific message identity and require the script oracle to fail.
+Always wait for actual WebKit stop acknowledgement. This probe proves provider
+playback, not audible physical-phone output or a completed source handoff.
 
 Keep the capability disabled in both product frontends until native source
 binding, current-phone menu/presentation integration, exact offer-bound native
