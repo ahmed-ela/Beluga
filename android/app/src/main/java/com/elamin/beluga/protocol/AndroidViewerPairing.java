@@ -26,6 +26,17 @@ public final class AndroidViewerPairing {
     /** Read-only lifecycle gate; only exact session completion may release this lease. */
     static boolean isAttemptInFlight() { return IN_FLIGHT.get() != null; }
 
+    // Package-owned process admission is shared with the saved-Mac media session.
+    // Normal availability closure must not release this longer-lived lease.
+    static Object acquireAttempt() {
+        Object lease = new Object();
+        if (!IN_FLIGHT.compareAndSet(null, lease)) throw new IllegalStateException("Beluga connection unavailable");
+        return lease;
+    }
+    static void releaseAttempt(Object lease) {
+        if (lease != null) IN_FLIGHT.compareAndSet(lease, null);
+    }
+
     public enum Status { PAIRED, CANCELLED, FAILED, CLEANUP_UNPROVEN }
     public enum Failure { NONE, CANCELLED, PREPARATION, PROTOCOL, NETWORK, OVERFLOW, TIMEOUT, DRAIN, RELEASE }
 
@@ -85,8 +96,7 @@ public final class AndroidViewerPairing {
             throw new IllegalArgumentException("Invalid Beluga pairing request");
         Context application = context.getApplicationContext();
         if (application == null) throw new IllegalArgumentException("Beluga application context unavailable");
-        Object lease = new Object();
-        if (!IN_FLIGHT.compareAndSet(null, lease)) throw new IllegalStateException("Beluga pairing unavailable");
+        Object lease = acquireAttempt();
         ViewerPairingSession session;
         CompletionStage<ViewerPairingSession.Result> completion;
         try {

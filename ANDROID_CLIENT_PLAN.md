@@ -5,8 +5,9 @@ checkout includes a Kotlin/Compose pairing preview under `android/`: explicit
 QR/manual confirmation, encrypted local identity and saved-Mac catalog, durable
 NEW-Mac pairing, authenticated WSS, and selected-record reconnect crypto/storage.
 INTERNET is enabled for explicit pairing; app camera/microphone permissions remain
-absent. Selecting a saved Mac does not yet connect: availability/session handoff,
-native media and controls remain unimplemented. No physical Android pairing,
+absent. Selecting a saved Mac does not yet connect: a dormant availability/session
+handoff now exists in source, but native media and controls remain unavailable.
+No physical Android pairing,
 Keystore/filesystem/TLS behavior, support or distribution is claimed.
 `android/protocol` remains independently JVM-testable. The browser `/v3/audio-share` receiver is a separate listen-only
 bearer-link feature and must not be relabeled as a paired Android client.
@@ -68,6 +69,14 @@ That was the initial parser checkpoint. Retained public Swift fixtures now cover
 handshake transcripts/keys/commits (45 rows), bootstrap envelopes, Unicode name
 compatibility and saved-pair reconnect (98 rows), with mandatory exact-byte JVM
 checks. Host-JVM results are not Android runtime or device proof.
+
+The October 3 media handoff adds 40 synthetic actual Swift session-message rows,
+including direction-bound ciphertext and slash-escaped sorted JSON. Android tests
+consume those exact bytes without changing the existing host protocol. The
+selected-record worker keeps a parent media lifetime across exact child availability
+closure and holds storage/process ownership until actual receiver teardown. This
+does not expose a saved-Mac Connect action or complete native receiving. The current
+prebuilt native dependency still needs a compatible 16 KB build and runtime proof.
 
 ## Mac-side prerequisite: preserve multiple phones
 

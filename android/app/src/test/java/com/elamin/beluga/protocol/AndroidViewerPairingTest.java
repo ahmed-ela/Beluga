@@ -9,6 +9,27 @@ import org.junit.Test;
 
 /** Pure projection checks only. No Context, Keystore, storage, session or transport execution. */
 public final class AndroidViewerPairingTest {
+    @Test public void pairingAndConnectionShareExactProcessLease() {
+        assertFalse(AndroidViewerPairing.isAttemptInFlight());
+        Object first = AndroidViewerPairing.acquireAttempt();
+        try {
+            assertTrue(AndroidViewerPairing.isAttemptInFlight());
+            AndroidViewerPairing.releaseAttempt(new Object());
+            AndroidViewerPairing.releaseAttempt(null);
+            assertTrue(AndroidViewerPairing.isAttemptInFlight());
+            try { AndroidViewerPairing.acquireAttempt(); org.junit.Assert.fail("Duplicate admitted"); }
+            catch (IllegalStateException expected) { }
+        } finally { AndroidViewerPairing.releaseAttempt(first); }
+        Object second = AndroidViewerPairing.acquireAttempt();
+        try {
+            AndroidViewerPairing.releaseAttempt(first);
+            assertTrue(AndroidViewerPairing.isAttemptInFlight());
+        } finally { AndroidViewerPairing.releaseAttempt(second); }
+        assertFalse(AndroidViewerPairing.isAttemptInFlight());
+    }
+    @Test public void absentConnectionResultCannotReleaseProcessLease() {
+        assertFalse(AndroidViewerConnection.permitsProcessRelease(null));
+    }
     @Test public void terminalFailureHasNoPairingMetadataOrSecretDiagnostics() {
         for (ViewerPairingSession.Failure failure : ViewerPairingSession.Failure.values()) {
             if (failure == ViewerPairingSession.Failure.NONE) continue;

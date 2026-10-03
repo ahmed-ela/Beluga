@@ -63,7 +63,7 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 
 /**
- * Profile-bound pairing or saved-pair availability WSS transport. HTTP101 is only transport evidence.
+ * Profile-bound pairing, availability or media-signaling WSS transport. HTTP101 is only transport evidence.
  * Listener callbacks must return promptly and never block awaiting a transport completion.
  * There is no reconnect, protocol parser, persistence, media, logging or permission request here.
  */
@@ -83,7 +83,8 @@ public final class NettyPairingWssTransport {
 
     private enum Profile {
         PAIRING("/v1/rendezvous", SUBPROTOCOL),
-        AVAILABILITY("/v2/availability", AVAILABILITY_SUBPROTOCOL);
+        AVAILABILITY("/v2/availability", AVAILABILITY_SUBPROTOCOL),
+        SESSION("/v1/rendezvous", null);
         final String path, subprotocol;
         Profile(String path, String subprotocol) { this.path = path; this.subprotocol = subprotocol; }
     }
@@ -163,6 +164,13 @@ public final class NettyPairingWssTransport {
         URI url = availabilityEndpoint(endpoint);
         HttpHeaders headers = availabilityUpgradeHeaders(join);
         return connectValidated(url, Profile.AVAILABILITY, headers, listener);
+    }
+
+    /** Fresh authenticated media rendezvous has no mode header or negotiated subprotocol. */
+    public static NettyPairingWssTransport connectSession(String endpoint,
+            ViewerMediaSignalingCodec.JoinHeaders join, Listener listener) throws TransportFailure {
+        return connectValidated(endpoint(endpoint, Profile.SESSION), Profile.SESSION,
+                sessionUpgradeHeaders(join), listener);
     }
 
     private static NettyPairingWssTransport connectValidated(URI url, Profile profile,
@@ -375,8 +383,10 @@ public final class NettyPairingWssTransport {
 
     private static void validateUpgrade(FullHttpResponse response, Profile profile) throws TransportFailure {
         List<String> protocols = response.headers().getAll(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL);
+        boolean validProtocol = profile.subprotocol == null ? protocols.isEmpty()
+                : protocols.size() == 1 && profile.subprotocol.equals(protocols.get(0));
         if (!response.decoderResult().isSuccess() || response.status().code() != 101
-                || protocols.size() != 1 || !profile.subprotocol.equals(protocols.get(0))
+                || !validProtocol
                 || response.headers().contains(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS)
                 || response.headers().contains(HttpHeaderNames.LOCATION)
                 || response.content().isReadable() || !response.trailingHeaders().isEmpty()) {
@@ -591,6 +601,16 @@ public final class NettyPairingWssTransport {
                 .set("X-AudioStreamer-Mode", "availability");
     }
 
+    static HttpHeaders sessionUpgradeHeaders(ViewerMediaSignalingCodec.JoinHeaders join)
+            throws TransportFailure {
+        if (join == null || !"viewer".equals(join.role()) || !crockfordChannel(join.channelID())
+                || !urlProof(join.admissionProofForUpgradeHeader())) throw failure(FailureCode.INVALID_HEADERS);
+        return new DefaultHttpHeaders()
+                .set("X-AudioStreamer-Channel", join.channelID())
+                .set("X-AudioStreamer-Role", "viewer")
+                .set("X-AudioStreamer-Admission", join.admissionProofForUpgradeHeader());
+    }
+
     private static boolean crockfordChannel(String value) {
         if (value == null || value.length() != 52) return false;
         for (int i = 0; i < value.length(); i++) if ("0123456789ABCDEFGHJKMNPQRSTVWXYZ".indexOf(value.charAt(i)) < 0) return false;
@@ -650,6 +670,14 @@ public final class NettyPairingWssTransport {
             CompletableFuture<Void> testLoopDrain, CompletableFuture<Void> testRegistrationDrain,
             CompletableFuture<Void> testFirstNativeClose) throws TransportFailure {
         return embedded(channel, Profile.AVAILABILITY, availabilityUpgradeHeaders(join), listener,
+                testLoopDrain, testRegistrationDrain, testFirstNativeClose);
+    }
+
+    static NettyPairingWssTransport embeddedSession(Channel channel,
+            ViewerMediaSignalingCodec.JoinHeaders join, Listener listener,
+            CompletableFuture<Void> testLoopDrain, CompletableFuture<Void> testRegistrationDrain,
+            CompletableFuture<Void> testFirstNativeClose) throws TransportFailure {
+        return embedded(channel, Profile.SESSION, sessionUpgradeHeaders(join), listener,
                 testLoopDrain, testRegistrationDrain, testFirstNativeClose);
     }
 

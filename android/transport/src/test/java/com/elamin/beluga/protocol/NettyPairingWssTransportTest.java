@@ -150,6 +150,33 @@ public final class NettyPairingWssTransportTest {
         }
     }
 
+    @Test public void mediaSessionNegotiatesV1WithoutModeOrSubprotocol() throws Exception {
+        try (Fixture fixture = new Fixture(2)) {
+            assertTrue(fixture.request.startsWith("GET /v1/rendezvous HTTP/1.1\r\n"));
+            String lower = fixture.request.toLowerCase(java.util.Locale.ROOT);
+            assertFalse(lower.contains("sec-websocket-protocol"));
+            assertFalse(lower.contains("x-audiostreamer-mode"));
+            assertFalse(lower.contains("x-audiostreamer-viewer-admission"));
+            fixture.open();
+            assertEquals(1, fixture.listener.opens);
+            assertTrue(fixture.transport.whenOpen().toCompletableFuture().isDone());
+            assertFalse(fixture.transport.whenOpen().toCompletableFuture().isCompletedExceptionally());
+        }
+    }
+
+    @Test public void mediaSessionRejectsAnyUnsolicitedNegotiatedProtocol() throws Exception {
+        for (String offered : new String[] {NettyPairingWssTransport.SUBPROTOCOL,
+                NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL, "", "other"}) {
+            try (Fixture fixture = new Fixture(2)) {
+                FullHttpResponse response = fixture.response();
+                response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, offered);
+                fixture.channel.writeInbound(response); fixture.channel.runPendingTasks();
+                assertFailure(fixture.transport.whenOpen(), NettyPairingWssTransport.FailureCode.UPGRADE_REFUSED);
+                assertEquals(0, fixture.listener.opens);
+            }
+        }
+    }
+
     @Test public void availabilityMissingWrongBootstrapCommaAndDuplicateProtocolsNeverOpen() throws Exception {
         for (int mode = 0; mode < 7; mode++) {
             try (Fixture fixture = new Fixture(true)) {
@@ -607,10 +634,16 @@ public final class NettyPairingWssTransportTest {
         final String subprotocol;
         final String request, accept;
         Fixture() throws Exception { this(false); }
-        Fixture(boolean availability) throws Exception {
+        Fixture(boolean availability) throws Exception { this(availability ? 1 : 0); }
+        Fixture(int profile) throws Exception {
+            boolean availability = profile == 1;
             availabilityHeaders = availability ? availabilityJoin() : null;
-            subprotocol = availability ? NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL : NettyPairingWssTransport.SUBPROTOCOL;
-            transport = availability
+            subprotocol = profile == 2 ? null
+                    : availability ? NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL : NettyPairingWssTransport.SUBPROTOCOL;
+            transport = profile == 2
+                    ? NettyPairingWssTransport.embeddedSession(channel, mediaJoin(),
+                            listener, loopDrain, dnsDrain, firstNativeClose)
+                    : availability
                     ? NettyPairingWssTransport.embeddedAvailability(channel, availabilityHeaders,
                             listener, loopDrain, dnsDrain, firstNativeClose)
                     : NettyPairingWssTransport.embedded(channel, join(PairingCanonicalCodec.Role.VIEWER),
@@ -635,7 +668,7 @@ public final class NettyPairingWssTransportTest {
             result.headers().set(HttpHeaderNames.UPGRADE, "websocket");
             result.headers().set(HttpHeaderNames.CONNECTION, "Upgrade");
             result.headers().set(HttpHeaderNames.SEC_WEBSOCKET_ACCEPT, accept);
-            result.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, subprotocol);
+            if (subprotocol != null) result.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, subprotocol);
             return result;
         }
         void open() {
@@ -720,6 +753,29 @@ public final class NettyPairingWssTransportTest {
     }
 
     private static ViewerAvailabilityEnvelopeCodec.JoinHeaders availabilityJoin() throws Exception {
+        try (ViewerAvailabilityLocator locator = publicActiveRecord().availabilityLocator()) {
+            return locator.copyJoinHeaders();
+        }
+    }
+
+    private static ViewerMediaSignalingCodec.JoinHeaders mediaJoin() throws Exception {
+        Map<String, byte[]> pairing = publicPairingFixture();
+        Map<String, byte[]> reconnect = publicFixture("/public-swift-saved-pair-reconnect-v1.tsv",
+                "3c8ef42139c81e4cff10fcc1957aa0460a7548792ce7e952498966eff51c629e", 98);
+        UUID id = UUID.fromString(new String(publicValue(pairing, "input.viewer-device-id"), StandardCharsets.US_ASCII));
+        ViewerPairingAuthenticator.ViewerIdentity identity = ViewerPairingAuthenticator.viewerIdentity(id,
+                publicValue(pairing, "input.viewer-signing-seed"));
+        try (ViewerPairingAuthenticator.ReconnectPreparation preparation = publicActiveRecord().authenticateRetainedReconnect(
+                identity, publicValue(reconnect, "reconnect.first.input.viewer-ephemeral-private"),
+                publicValue(reconnect, "reconnect.first.input.viewer-nonce"),
+                ReconnectMessages.decodeRequest(publicValue(reconnect, "reconnect.first.request.full")));
+             ViewerMediaSignalingCodec codec = ViewerMediaSignalingCodec.create(preparation.complete(
+                     ReconnectMessages.decodeResponse(publicValue(reconnect, "reconnect.first.response.full"))))) {
+            return codec.copyJoinHeaders();
+        }
+    }
+
+    private static ViewerPairingAuthenticator.ViewerPairRecord publicActiveRecord() throws Exception {
         // Actual authenticated ACTIVE record path, using only retained PUBLIC synthetic inputs.
         // This does not simulate Android durable admission or a selected saved-Mac owner.
         Map<String, byte[]> rows = publicPairingFixture();
@@ -740,14 +796,16 @@ public final class NettyPairingWssTransportTest {
                 (PairingPayloadDecoder.CommitPayload) PairingPayloadDecoder.decode(publicValue(rows, "commit.proposal.payload")), identity).record();
         ViewerPairingAuthenticator.ViewerPairRecord active = accepted.acceptCompletion(
                 (PairingPayloadDecoder.CommitPayload) PairingPayloadDecoder.decode(publicValue(rows, "commit.completion.payload")), identity).record();
-        try (ViewerAvailabilityLocator locator = active.availabilityLocator()) {
-            return locator.copyJoinHeaders();
-        }
+        return active;
     }
 
     private static Map<String, byte[]> publicPairingFixture() throws Exception {
+        return publicFixture("/public-swift-engine-v1.tsv",
+                "7d8a58cd34400271d0c68ac1e263450c4ad4978337ae1bb87246362a6d0ec06a", 45);
+    }
+    private static Map<String, byte[]> publicFixture(String path, String digestPin, int countPin) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (InputStream input = NettyPairingWssTransportTest.class.getResourceAsStream("/public-swift-engine-v1.tsv")) {
+        try (InputStream input = NettyPairingWssTransportTest.class.getResourceAsStream(path)) {
             assertNotNull("Exact PUBLIC synthetic Swift resource required", input);
             byte[] chunk = new byte[4096]; int count;
             while ((count = input.read(chunk)) != -1) {
@@ -759,7 +817,7 @@ public final class NettyPairingWssTransportTest {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(file);
         StringBuilder hex = new StringBuilder();
         for (byte value : digest) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-        assertEquals("7d8a58cd34400271d0c68ac1e263450c4ad4978337ae1bb87246362a6d0ec06a", hex.toString());
+        assertEquals(digestPin, hex.toString());
         Map<String, byte[]> rows = new TreeMap<>(); String previous = "";
         for (String line : new String(file, StandardCharsets.US_ASCII).split("\n")) {
             if (line.startsWith("#")) continue;
@@ -769,7 +827,7 @@ public final class NettyPairingWssTransportTest {
             assertEquals(fields[1], Base64.getEncoder().encodeToString(value));
             assertNull(rows.put(fields[0], value)); previous = fields[0];
         }
-        assertEquals(45, rows.size()); return rows;
+        assertEquals(countPin, rows.size()); return rows;
     }
 
     private static byte[] publicValue(Map<String, byte[]> rows, String name) {

@@ -431,7 +431,10 @@ ANDROID_CLIENT_COMPATIBILITY_PATHS=(
 for relative_path in \
   android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
   android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
-  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java; do
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodecTest.java \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerConnectionSessionTest.java; do
   if [[ -f "$ROOT_DIR/$relative_path" ]] && \
       rg -q 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path"; then
     ANDROID_CLIENT_COMPATIBILITY_PATHS+=("$relative_path")
@@ -564,6 +567,18 @@ require_scoped_content_rejected android-client-availability-test-aad-wrong-path 
 require_scoped_content_rejected android-client-availability-test-label-display \
   android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
   'String displayName = "AudioStreamer.Availability.Envelope.AAD.v1";' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-media-aad-version \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java \
+  'byte[] prefix = ascii("AudioStreamer.Signaling.Envelope.AAD.v2\0");' AudioStreamer.Signaling.Envelope.AAD.v2
+require_scoped_content_rejected android-client-media-aad-display \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java \
+  'String displayName = "AudioStreamer.Signaling.Envelope.AAD.v1";' AudioStreamer.Signaling.Envelope.AAD.v1
+require_scoped_content_rejected android-client-media-aad-wrong-path \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/UnreviewedMediaCodec.java \
+  'byte[] prefix = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0");' AudioStreamer.Signaling.Envelope.AAD.v1
+require_scoped_content_rejected android-client-connection-test-aad-direction \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerConnectionSessionTest.java \
+  'byte[] aad = ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {2},' AudioStreamer.Availability.Envelope.AAD.v1
 
 require_scoped_content_rejected physical-identity-wrong-path \
   iOS/opensteamer/Tests/UnreviewedTests.swift \

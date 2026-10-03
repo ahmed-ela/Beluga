@@ -118,11 +118,24 @@ final class AndroidViewerSecureStore {
         private ViewerReconnectStorageLifecycle.Reserved reconnectReserved;
         private ViewerReconnectStorageLifecycle.CloseReceipt reconnectCloseReceipt;
         private CompletableFuture<Void> reconnectCloseResult;
+        private ReconnectPeer reconnectPeer;
         private Binding(AndroidViewerSecureStore store, Owner owner, Transport transport, UUID slot) {
             this.store = store; this.owner = owner; this.transport = transport; this.slot = slot;
         }
         ViewerStorageCloseDrain closeDrainForTrustedPorts() { return closeDrain; }
         @Override public String toString() { return "<redacted exact storage owner binding>"; }
+    }
+    /** Public identities pinned when the exact selected ACTIVE binding is acquired. */
+    static final class ReconnectPeer {
+        final UUID viewerID, hostID;
+        private final byte[] viewerPublicKey, hostPublicKey;
+        private ReconnectPeer(ViewerPairingAuthenticator.ViewerPairRecord record) {
+            viewerID = record.viewerDeviceID(); hostID = record.hostDeviceID();
+            viewerPublicKey = record.viewerSigningPublicKey(); hostPublicKey = record.hostSigningPublicKey();
+        }
+        byte[] copyViewerPublicKey() { return viewerPublicKey.clone(); }
+        byte[] copyHostPublicKey() { return hostPublicKey.clone(); }
+        @Override public String toString() { return "<selected Beluga media peer identity>"; }
     }
     static final class WriteResult {
         final StoreStamp before, after;
@@ -287,11 +300,23 @@ final class AndroidViewerSecureStore {
                 Binding binding = new Binding(this, exactOwner, exactTransport, selected.slot);
                 binding.reconnectInitial = initial;
                 binding.reconnect = new ViewerReconnectStorageLifecycle(exactOwner, exactTransport, initial, trustedNativeClose);
+                binding.reconnectPeer = new ReconnectPeer(selected.record);
                 synchronized (exactOwner) {
                     ViewerStorageCatalog.demand(!exactOwner.isRetired());
                     OWNERS.put(directory.getPath(), binding);
                 }
                 return binding;
+            }
+        }
+    }
+
+    /** Only before availability retirement; the parent retains this public, exact-record value. */
+    ReconnectPeer reconnectPeer(Binding binding) throws Failure {
+        synchronized (SERIAL) {
+            requireReconnectBinding(binding);
+            synchronized (binding.owner) {
+                ViewerStorageCatalog.demand(!binding.owner.isRetired() && binding.reconnectPeer != null);
+                return binding.reconnectPeer;
             }
         }
     }
@@ -309,6 +334,28 @@ final class AndroidViewerSecureStore {
                     return locator;
                 }
             } catch (AuthFailure refused) { throw new Failure(); }
+        }
+    }
+
+    /** Exact retained ACTIVE acknowledgement, before reserving the next reconnect counter. */
+    byte[] retainedReconnectActivation(Binding binding) throws Failure {
+        synchronized (SERIAL) {
+            requireReconnectBinding(binding);
+            try (Image image = load()) {
+                ViewerStorageCatalog.demand(binding.reconnectInitial.same(image.catalog.stamp(binding.slot))
+                        && binding.slot.equals(image.catalog.selectedSlot));
+                Entry selected = image.catalog.entry(binding.slot);
+                ViewerStorageCatalog.demand(selected.record.phase() == RecordPhase.ACTIVE
+                        && selected.admissionRevision == 1);
+                byte[] retained = selected.record.recoveryAction().unsentRetainedPayload();
+                synchronized (binding.owner) {
+                    if (retained == null || binding.owner.isRetired()) {
+                        if (retained != null) Arrays.fill(retained, (byte) 0);
+                        throw new Failure();
+                    }
+                    return retained;
+                }
+            }
         }
     }
 

@@ -11,8 +11,8 @@ teardown can report pairing success. The UI then reloads the actual saved Macs.
 
 This is source integration, not a distributed or physically validated Android
 client. Android ART, real TLS/Keystore/filesystem behavior, QR UI, host pairing
-and device lifecycle still need runtime validation. Reconnect/media, microphone,
-remote control and Move media to phone are not implemented here. Selecting a
+and device lifecycle still need runtime validation. Native media, microphone,
+remote control and Move media to phone are not available here. Selecting a
 saved Mac does not connect. An interrupted pending/accepted pairing is not
 silently resumed, overwritten or deleted. **Format valid, saved and connected
 are different states.**
@@ -20,15 +20,18 @@ are different states.**
 The minimum is now Android 8.1 (API 27), matching the secure-store contract and
 the networking package's tested DEX floor. The earlier format-only API 23 APK
 and the isolated API 27 packaging experiment are historical artifacts, not
-this candidate. Dependency locks and verification metadata are unchanged.
+this candidate. Media JSON decoding adds pinned Gson 2.11.0 and its Error Prone
+annotations 2.27.0 dependency with exact locks, verification and license notices.
 The sections explicitly labeled historical below describe those earlier runs;
 they do not claim runtime validation for this candidate.
 
 The source also reserves reconnect counters through the encrypted writer and
 exact catalog readback, with cancellation and close-drain fencing. It now adds
 the viewer-only availability WSS profile, exchange-bound encryption/parser and
-one-use response completion. These pieces are not exposed as a native saved-Mac
-connection: session/ownership handoff and native media remain unfinished. The
+one-use response completion. A package-private worker now composes retained
+activation, durable reconnect reservation, authenticated response, exact availability
+closure and media handoff. These pieces are not exposed as a native saved-Mac
+connection: a compatible native receiver and runtime validation remain unfinished. The
 previous storage checkpoint's 139 app JUnit cases, bootstrap-model assertions
 and debug APK/static readback are historical evidence, not validation of these
 new changes. Actual Android storage, TLS, pairing and media require runtime proof.
@@ -36,6 +39,39 @@ new changes. Actual Android storage, TLS, pairing and media require runtime proo
 A reconnect is not an inert health check: the Mac prepares fresh media before
 returning its response. Therefore this preview deliberately has no disposable
 "check connection" action that would abandon an authorized media session.
+
+## Selected-Mac media handoff — source checkpoint
+
+- `AndroidViewerConnection` opens only already-enrolled storage and binds the exact
+  selected ACTIVE Mac and catalog/selection revisions. Pairing and media share one
+  process lease. An unproven close cannot admit a successor or library mutation.
+- The child availability connection sends the retained activation before reserving
+  the reconnect counter. Only an authenticated response followed by exact socket,
+  storage-drain and committed-record readback can transfer the fresh credential.
+  Closing that child does not revoke the longer-lived parent media session.
+- Parent cancellation immediately closes the credential and revokes delivery. A
+  late native factory result must still be owned and drained. Storage binding and
+  process admission remain held through native teardown; unknown allocation/close
+  does not become a successful cancellation.
+- Media uses `/v1/rendezvous` with the three existing routing/role/admission headers,
+  **no Mode header and no WebSocket subprotocol**. READY supplies bounded ephemeral
+  STUN/TURN configuration. It does not establish authenticated or decoded media.
+- `ViewerMediaSignalingCodec` uses the deployed direction-bound AEAD layout and
+  replay window, not the availability domain framing. Strict bounded JSON parsing
+  rejects duplicate keys, wrong roles/directions, malformed encodings and schema
+  extensions. Exact duplicate READY cannot reset sequence/replay state.
+- The public 40-row Swift capture is SHA-256
+  `121c509e314c599ca9239715a3e1924513f29700f440d4bfe84bcb9b09b33510`.
+  It contains synthetic actual Swift wire messages, not captured user sessions.
+  JVM tests cover byte-exact ciphertext/wire interoperability, fault paths and fake
+  media lifecycle. They do not establish Android Keystore, native WebRTC, PCM,
+  screen rendering, physical pairing, release installation or distribution.
+
+The retained M150 WebRTC library remains outside this APK: its 64-bit ELF RELRO
+end alignment fails the documented 16 KB criterion. Private source compilation
+against that API is not a compatible distributable dependency or runtime proof.
+No new microphone permission, local capture, Connect button or production session
+is introduced by this checkpoint.
 
 ## Admission and privacy
 
@@ -80,6 +116,7 @@ returning its response. Therefore this preview deliberately has no disposable
 | Google Code Scanner | 16.1.0 | Official Google scanner dependency; delegated explicit camera UI with no app camera permission. |
 | JUnit | 4.13.2 | Stable host-unit-test runner. |
 | Application crypto | org.bouncycastle:bcprov-jdk15to18:1.86 | Exact verified lightweight raw-protocol primitives; no global provider registration. Exact app/protocol rows are enrolled; tooling BC1.79 is unchanged. |
+| Media JSON | com.google.code.gson:gson:2.11.0 | Strict streaming parser with closed, bounded application schemas; transitive annotations 2.27.0 are pinned and verified. |
 
 Compile/target SDK36, Build Tools36.0.0, minimum API27, Java17 app and Java11
 protocol bytecode are explicit. Direct versions are pinned; all configurations

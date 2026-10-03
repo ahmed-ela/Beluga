@@ -4,6 +4,8 @@ plugins {
 
 dependencies {
     implementation("org.bouncycastle:bcprov-jdk15to18:1.86")
+    // Streaming JSON only; schemas impose explicit duplicate, depth and resource limits.
+    implementation("com.google.code.gson:gson:2.11.0")
 }
 
 val pairingFixtures = rootProject.layout.projectDirectory.dir("../shared/ProtocolFixtures")

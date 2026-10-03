@@ -493,6 +493,7 @@ is_android_client_compatibility_content_match() {
       android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java|\
       android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java|\
       android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java|\
+      android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java|\
       android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java|\
       android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java|\
       android/transport/src/main/java/com/elamin/beluga/protocol/ProcessPairingDnsResolver.java|\
@@ -503,6 +504,8 @@ is_android_client_compatibility_content_match() {
       android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java|\
       android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java|\
       android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java|\
+      android/app/src/test/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodecTest.java|\
+      android/app/src/test/java/com/elamin/beluga/protocol/ViewerConnectionSessionTest.java|\
       android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java|\
       android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java) ;;
     *) return 1 ;;
@@ -518,6 +521,7 @@ is_android_client_compatibility_content_match() {
     'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingCanonicalCodec.java:AudioStreamer.Pairing.:byte[] domain = ("AudioStreamer.Pairing." + fixedSuffix + ".v1").getBytes(StandardCharsets.US_ASCII);'|\
     'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java:AudioStreamer.RemoteSession.HKDF-SHA256.v1:private static final byte[] SALT = ascii("AudioStreamer.RemoteSession.HKDF-SHA256.v1\0");'|\
     'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java:AudioStreamer.Signaling.Envelope.AAD.v1:private static final byte[] AAD_DOMAIN = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java:AudioStreamer.Signaling.Envelope.AAD.v1:byte[] prefix = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0");'|\
     'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java:AudioStreamer.Availability.Route.Salt.v1:routeSalt = ReconnectMessages.domain("AudioStreamer.Availability.Route.Salt.v1", uuid(pairID), transcript);'|\
     'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java:AudioStreamer.Availability.Route.v1:route = derive(root, routeSalt, "AudioStreamer.Availability.Route.v1");'|\
     'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java:AudioStreamer.Availability.Channel.v2:channelBytes = derive(route, transcript, "AudioStreamer.Availability.Channel.v2");'|\
@@ -580,10 +584,13 @@ is_android_client_compatibility_content_match() {
     'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:audiostreamer-host-admission:assertFalse(lower.contains("x-audiostreamer-host-admission"));'|\
     'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:audiostreamer.Availability.v1:if (mode == 5) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, "audiostreamer.Availability.v1");'|\
     'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:audiostreamer-mode:assertFalse(fixture.request.toLowerCase(java.util.Locale.ROOT).contains("x-audiostreamer-mode"));'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:audiostreamer-mode:assertFalse(lower.contains("x-audiostreamer-mode"));'|\
     'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:hash.update("AudioStreamer.RemoteInvitation.Checksum.v1\0".getBytes(StandardCharsets.US_ASCII));'|\
     'android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java:AudioStreamer.WorldwideInvitation.Admitted.v1:byte[] domain = ascii("AudioStreamer.WorldwideInvitation.Admitted.v1\0");'|\
     'android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:MessageDigest hash = MessageDigest.getInstance("SHA-256"); hash.update(ascii("AudioStreamer.RemoteInvitation.Checksum.v1\0"));'|\
     'android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java:AudioStreamer.Signaling.Envelope.AAD.v1:byte[] domain = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0"), channel = value("derived.channel");'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodecTest.java:AudioStreamer.Signaling.Envelope.AAD.v1:ByteArrayOutputStream result = new ByteArrayOutputStream(); result.write(bytes("AudioStreamer.Signaling.Envelope.AAD.v1\0"));'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/ViewerConnectionSessionTest.java:AudioStreamer.Availability.Envelope.AAD.v1:byte[] aad = ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {1},'|\
     'android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java:AudioStreamer.Availability.Envelope.AAD.v1:return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {1}, value("derived.channel"),'|\
     'android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:MessageDigest digest = MessageDigest.getInstance("SHA-256"); digest.update(ascii("AudioStreamer.RemoteInvitation.Checksum.v1\0"));'|\
     'android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:MessageDigest digest = MessageDigest.getInstance("SHA-256"); digest.update(ascii("AudioStreamer.RemoteInvitation.Checksum.v1\0"));'|\

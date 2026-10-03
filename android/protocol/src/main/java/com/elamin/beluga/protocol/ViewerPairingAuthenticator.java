@@ -331,6 +331,10 @@ public final class ViewerPairingAuthenticator {
         public UUID viewerDeviceID() { return localID; }
         public UUID hostDeviceID() { return remoteID; }
         public String hostDisplayName() { return remoteName; }
+        // Public identity assertions only, for the exact selected record's media handoff.
+        // Neither getter exports its root, seed, reconnect secret or transport capability.
+        byte[] viewerSigningPublicKey() { return localKey.clone(); }
+        byte[] hostSigningPublicKey() { return remoteKey.clone(); }
         public double createdAtEpochSeconds() { return createdAt; }
         public RecordPhase phase() { return phase; }
         public String nextOutboundReconnectSequence() { return unsignedDecimal(nextOutbound); }

@@ -1,0 +1,10 @@
+Gson 2.11.0
+Copyright Google Inc. and Gson contributors.
+https://github.com/google/gson/tree/gson-parent-2.11.0
+
+Licensed under the Apache License, Version 2.0.
+A complete copy is included in this application's assets at:
+third-party/netty-4.2.18.Final/license/LICENSE.jctools.txt
+
+This application uses the streaming JSON reader. Its own protocol
+schemas impose additional depth, size, duplicate-field and value restrictions.
