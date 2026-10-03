@@ -30,6 +30,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
     @producer_methods = Gate.mac_producer_inventory(File.dirname(File.dirname(File.realpath(__FILE__))))
     write(File.join(@root, 'macOS/scripts/verify-beluga-mac-client-tests.rb'),
           @producer_methods.map { |method| "def #{method}\nend\n" }.join)
+    write(File.join(@root, 'macOS/scripts/retained-beluga-mac-client-tests.rb'), '# included cases are flattened in the synthetic main inventory')
     write(File.join(@root, 'shared/Vendor/LiveKitWebRTC/LiveKitWebRTC.xcframework.zip'), 'fixture vendor bytes')
     write(File.join(@root, 'iOS/opensteamer/Frameworks/OpensteamerAudioTransactionAuthority.xcframework/Info.plist'), 'fixture Rust artifact')
     crate = File.join(@root, 'iOS/opensteamer/Rust/AudioTransactionAuthority')

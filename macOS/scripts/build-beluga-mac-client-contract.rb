@@ -294,6 +294,11 @@ module BelugaMacClient
       BelugaMacClient.require!(@initial.first == BelugaMacClient.snapshot(@receipt), 'receipt changed while selecting release tools')
       toolchain
     end
+
+    def evidence_binding
+      BelugaMacClient.require!(@initial && @initial.first == BelugaMacClient.snapshot(@receipt), 'receipt must be verified before binding its evidence')
+      { 'path' => @receipt.dup.freeze, 'sha256' => @expected.dup.freeze }.freeze
+    end
   end
 
   def self.source!

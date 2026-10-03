@@ -15,9 +15,13 @@ begin
     parser.on('--notary-profile NAME') { |value| options[:profile] = value }
     parser.on('--sparkle-tools PATH') { |value| options[:tools] = value }
     parser.on('--keychain-account NAME') { |value| options[:account] = value }
+    parser.on('--retained-admission PATH') { |value| options[:retained] = value }
+    parser.on('--retained-sha256 SHA256') { |value| options[:retained_sha] = value }
   end.parse!
   C = BelugaMacClient
-  C.require!(ARGV.empty? && options.keys.sort == %i[account app identity output profile tools], 'all six package options are required')
+  required = %i[account app identity output profile tools]
+  C.require!(ARGV.empty? && (required - options.keys).empty? &&
+    (options.keys - required - %i[retained retained_sha]).empty?, 'all six package options are required; only the paired retained options are optional')
   config = C.config! # No output mutation or authentication until complete config.
   receipt = C::MicrophoneReceipt.new
   receipt.verify!
@@ -26,6 +30,11 @@ begin
   output = C.empty_owned_directory!(options[:output])
   C.require!(!output.start_with?("#{C::ROOT}/") && !output.start_with?("#{app}/"), 'package output must be outside source/app')
   C.require!(/\A[0-9A-Fa-f]{40}\z/.match?(options[:identity]), 'exact Developer ID identity SHA1 is required')
+  mode = C.package_evidence_mode!(app, options[:retained], options[:retained_sha])
+  retained = if mode == :retained
+    C::AdmittedRetainedProduct.open(options[:retained], options[:retained_sha], receipt: receipt,
+      app: app, identity: options[:identity].upcase)
+  end
   %i[profile account].each { |key| C.require!(/\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\z/.match?(options[key]), 'Keychain profile/account identifier is malformed') }
   tools = C.canonical!(options[:tools])
   C.tools!(tools)
@@ -36,12 +45,19 @@ begin
   sparkle_info = C.plist(File.join(tools, '../Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/Versions/B/Resources/Info.plist').then { |path| File.realpath(path) })
   C.require!(sparkle_info['CFBundleShortVersionString'] == C::SPARKLE_VERSION && sparkle_info['CFBundleVersion'] == '2064', 'tool distribution is not Sparkle 2.10.0')
   tool_bindings = [C.snapshot(signer), C.snapshot(public_reader)]
-  verification = C.verify_app!(app, config)
+  verification = C.verify_app!(app, config, product_binding: retained)
   candidate_identity = C.candidate_identity!(verification.fetch('candidateIdentity'), config: config)
   build_report_path = File.join(File.dirname(app), 'build.json')
-  C.regular!(build_report_path)
-  build = JSON.parse(File.read(build_report_path))
-  C.require!(build['schema'] == 'beluga.mac-client-build.v1' && build['status'] == 'SIGNED_VERIFIED_NOT_NOTARIZED' && build['commit'] == source['commit'] && build['tree'] == source['tree'] && build['app'] == app && build['appSHA256'] == verification['appSHA256'] && build['identitySHA1'] == options[:identity].upcase, 'source-bound build report differs from app/identity')
+  unless retained
+    build_snapshot = C.snapshot(build_report_path)
+    build = JSON.parse(File.read(build_report_path), object_class: C::UniqueObject)
+    C.require!(build_snapshot == C.snapshot(build_report_path) && build['schema'] == 'beluga.mac-client-build.v1' && build['status'] == 'SIGNED_VERIFIED_NOT_NOTARIZED' && build['commit'] == source['commit'] && build['tree'] == source['tree'] && build['app'] == app && build['appSHA256'] == verification['appSHA256'] && build['identitySHA1'] == options[:identity].upcase, 'source-bound build report differs from app/identity')
+  end
+  verify_authority = lambda do
+    C.require!(C.package_evidence_mode!(app, options[:retained], options[:retained_sha]) == mode, 'package evidence mode changed')
+    retained ? retained.verify!(app) : C.require!(C.snapshot(build_report_path) == build_snapshot, 'successful build report changed')
+  end
+  verify_authority.call
   # generate_keys -p is lookup-only: it never generates, rotates, exports, or
   # persists a private key. The private key stays inside the Sparkle process.
   public_key = C.run(public_reader, '--account', options[:account], '-p').strip
@@ -59,6 +75,7 @@ begin
   C.run('/usr/bin/codesign', '--verify', '--strict', '--verbose=2', dmg)
   receipt.verify!
   C.require!(C.source! == source && C.config! == config, 'source/configuration changed before notary submission')
+  verify_authority.call
   submission = JSON.parse(C.run('/usr/bin/xcrun', 'notarytool', 'submit', dmg, '--keychain-profile', options[:profile], '--wait', '--timeout', '20m', '--output-format', 'json', timeout: 1230))
   File.write(File.join(output, 'notary.json'), JSON.pretty_generate(submission) + "\n", mode: 'wx', perm: 0o600)
   C.require!(submission['status'] == 'Accepted' && submission['id'].is_a?(String) && /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/.match?(submission['id']), 'notarization did not reach Accepted; preserve failed evidence and do not publish')
@@ -100,9 +117,13 @@ begin
   C.require!(File.size(dmg) == size && Digest::SHA256.file(dmg).hexdigest == dmg_hash && [C.snapshot(signer), C.snapshot(public_reader)] == tool_bindings, 'payload/tools changed during signing')
   receipt.verify!
   C.require!(C.source! == source && C.config! == config && C.tree_digest(app) == verification['appSHA256'], 'source/app changed before distribution handoff')
+  verify_authority.call
+  product_source = retained ? retained.product_source : source
   report = {
     'schema' => 'beluga.mac-client-package.v1', 'status' => 'NOTARIZED_STAPLED_SIGNED_DISTRIBUTION_READY',
-    'version' => config['version'], 'build' => config['build'], 'commit' => source['commit'], 'tree' => source['tree'],
+    'version' => config['version'], 'build' => config['build'], 'commit' => product_source['commit'], 'tree' => product_source['tree'],
+    'currentTooling' => source,
+    'provenance' => retained ? retained.provenance : { 'kind' => 'successful-build', 'path' => build_report_path, 'sha256' => build_snapshot.last },
     'dmg' => dmg, 'dmgSHA256' => dmg_hash, 'dmgLength' => size, 'notarySubmissionID' => submission['id'],
     'appSHA256' => verification['appSHA256'], 'appcast' => appcast, 'appcastSHA256' => Digest::SHA256.file(appcast).hexdigest,
     'candidateIdentity' => candidate_identity,

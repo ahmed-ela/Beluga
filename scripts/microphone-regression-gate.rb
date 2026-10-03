@@ -549,11 +549,23 @@ module MicrophoneRegressionGate
     test_appcast_contains_exact_signed_payload_version_arm64_and_public_github_release_url
     test_package_binds_final_mounted_candidate_metadata_before_whole_feed_signing
     test_release_builder_binds_tools_before_identity_and_scrubs_every_swift_child
+    test_keeps_original_product_and_current_tooling_sources_separate
+    test_a_success_report_or_machine_journal_claim_cannot_replace_failed_observation
+    test_retained_collector_uses_raw_blob_sha256_and_actual_receipt_modes
+    test_retained_collector_refuses_ignored_dependency_mode_bytes_and_membership_drift
+    test_retained_collector_reader_pins_exact_bytes_digest_bound_and_inode
+    test_retained_factory_requires_actual_current_receipt_before_reading_evidence
+    test_retained_native_source_boundary_rejects_raw_hash_or_data_parser
+    test_package_authority_requires_exactly_one_build_or_complete_retained_binding
+    test_retained_admitted_provenance_cannot_mutate_product_or_tooling_fences
+    test_retained_boundary_rechecks_ignored_input_inventory_and_tested_tool_bytes
+    test_retained_product_log_requires_one_exact_success_terminal
   ].freeze
 
   def self.mac_producer_inventory(root)
-    source = utf8_text(File.binread(File.join(root, 'macOS/scripts/verify-beluga-mac-client-tests.rb')),
-                       'Mac producer source')
+    source = %w[verify-beluga-mac-client-tests.rb retained-beluga-mac-client-tests.rb].map do |name|
+      utf8_text(File.binread(File.join(root, 'macOS/scripts', name)), 'Mac producer source')
+    end.join("\n")
     methods = source.scan(/^\s*def (test\w+)(?:\(|\s|$)/).flatten
     require!(!methods.empty? && methods.uniq.length == methods.length && (MAC_PRODUCER_PINNED - methods).empty?,
              'Mac producer harness inventory is incomplete or duplicated')

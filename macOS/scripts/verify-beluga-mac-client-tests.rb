@@ -5,12 +5,15 @@ require 'minitest/autorun'
 require 'rexml/document'
 require 'tmpdir'
 require_relative 'build-beluga-mac-client-contract'
+require_relative 'retained-beluga-mac-client-tests'
 
 class BelugaMacClientContractTests < Minitest::Test
+  include BelugaMacClientRetainedTests
   C = BelugaMacClient
   def setup
     @directory = File.realpath(Dir.mktmpdir('beluga-mac-client-policy.'))
     File.chmod(0o700, @directory)
+    setup_retained_model
   end
 
   def teardown

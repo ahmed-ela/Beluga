@@ -98,6 +98,28 @@ The browser protocol must not change deployed /v1/rendezvous or /v2/availability
 
 ## Implementation evidence — 2026-10-02
 
+- Retained-artifact recovery is an explicit alternative in the existing client
+  verifier/packager, not a fabricated successful `build.json`. A reviewed private
+  manifest and independent digest bind the failed official invocation, exact
+  original product, current tooling, both receipts, signed app tree, three product
+  logs and an explicitly retrospective trusted-root observation. The original
+  final checks remain recorded as incomplete. The current full offline receipt
+  stays mandatory; the historical receipt is never treated as current authority.
+  The collector compares exact reviewed Git blobs and actual receipt permission
+  tuples, refuses every non-tooling/product or ignored-dependency difference,
+  and fences evidence identities, source inputs and tested tools at verification
+  and packaging boundaries. All native artifact/signature/layout checks remain.
+  Package inputs are successful build report **or** retained admission, never both.
+  No old product bytes or sealed source identifiers are changed or re-signed.
+  Focused tests exercise malformed/ambiguous evidence, source confusion, ignored
+  drift, filesystem replacement, immutable provenance and exact success terminals.
+  Actual retained-artifact admission, notarization and deployment remain pending.
+  For artifact-only readback, the existing verifier accepts the app plus
+  `--retained-admission`, `--retained-sha256` and `--identity`; it requires the
+  ordinary current-receipt environment. Packaging accepts the first two optional
+  arguments alongside its existing six required options. Keep the manifest,
+  retrospective observation and verification reports private and independently
+  reviewed; do not generate claims of original build success from these inputs.
 - The first source-bound release build exposed a packaging-parser defect: real
   codesign emits `CodeDirectory v=...`, not the fixture's `CodeDirectory=...`.
   The corrected UTF-8 parser preserves singleton-field checks and requires the

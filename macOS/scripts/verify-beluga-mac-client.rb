@@ -1,9 +1,19 @@
 #!/usr/bin/ruby
 # frozen_string_literal: true
 require_relative 'build-beluga-mac-client-contract'
+require_relative 'retained-beluga-mac-client'
+require 'optparse'
 
 module BelugaMacClient
-  def self.verify_app!(app, config = config!)
+  def self.product_source_for!(app, binding)
+    return source! if binding.nil?
+    require!(binding.instance_of?(AdmittedRetainedProduct), 'product source requires filesystem-admitted retained evidence')
+    binding.verify!(app)
+    binding.product_source
+  end
+
+  def self.verify_app!(app, config = config!, product_binding: nil)
+    expected_source = product_source_for!(app, product_binding)
     canonical!(app)
     before = tree_digest(app)
     aliases_and_tree!(app)
@@ -27,7 +37,7 @@ module BelugaMacClient
     expected.each { |key, value| require!(info[key] == value, "Info.plist field differs: #{key}") }
     require!(config!(File.join(app, 'Contents/Resources/Release.json')) == config, 'bundled release configuration differs')
     bound_source = JSON.parse(File.read(File.join(app, 'Contents/Resources/BuildSource.json')))
-    require!(bound_source == source!, 'signed source binding differs from clean checked-out release source')
+    require!(bound_source == expected_source, 'signed source binding differs from admitted product source')
     broker = File.join(app, BROKER)
     broker_info!(plist(File.join(broker, 'Contents/Info.plist')), config: config)
     require!(config!(File.join(broker, 'Contents/Resources/Release.json')) == config, 'broker release configuration differs')
@@ -92,6 +102,7 @@ module BelugaMacClient
     run(File.join(ROOT, 'macOS/scripts/verify-no-private-virtual-display-imports.sh'), host)
     aliases_and_tree!(app)
     candidate_identity = candidate_identity_for_app!(app, config: config, expected_tree_sha256: before)
+    require!(product_source_for!(app, product_binding) == expected_source, 'product/source evidence changed during native verification')
     { 'schema' => 'beluga.mac-client-verification.v1', 'status' => 'VERIFIED_DISTRIBUTION_APP',
       'version' => config['version'], 'build' => config['build'], 'appSHA256' => before,
       'candidateIdentity' => candidate_identity,
@@ -101,9 +112,23 @@ end
 
 if $PROGRAM_NAME == __FILE__
   begin
-    BelugaMacClient.require!(ARGV.length == 1, 'usage: ruby verify-beluga-mac-client.rb /absolute/Beluga\ Host.app')
-    puts JSON.pretty_generate(BelugaMacClient.verify_app!(ARGV.first))
-  rescue BelugaMacClient::Refusal, SystemCallError, JSON::ParserError => error
+    options = {}
+    OptionParser.new do |parser|
+      parser.on('--retained-admission PATH') { |value| options[:retained] = value }
+      parser.on('--retained-sha256 SHA256') { |value| options[:sha256] = value }
+      parser.on('--identity SHA1') { |value| options[:identity] = value }
+    end.parse!
+    BelugaMacClient.require!(ARGV.length == 1 && (options.empty? || options.keys.sort == %i[identity retained sha256]),
+      'usage: ruby verify-beluga-mac-client.rb APP [--retained-admission PATH --retained-sha256 SHA256 --identity SHA1]')
+    binding = unless options.empty?
+      BelugaMacClient.require!(BelugaMacClient.package_evidence_mode!(ARGV.first, options[:retained], options[:sha256]) == :retained, 'retained verification requires unambiguous evidence')
+      BelugaMacClient::AdmittedRetainedProduct.open(options[:retained], options[:sha256], receipt: BelugaMacClient::MicrophoneReceipt.new,
+        app: ARGV.first, identity: options[:identity].upcase)
+    end
+    result = BelugaMacClient.verify_app!(ARGV.first, product_binding: binding)
+    result = result.merge('provenance' => binding.provenance) if binding
+    puts JSON.pretty_generate(result)
+  rescue BelugaMacClient::Refusal, OptionParser::ParseError, SystemCallError, JSON::ParserError => error
     warn "verify-beluga-mac-client: #{error.message}"
     exit 1
   end
