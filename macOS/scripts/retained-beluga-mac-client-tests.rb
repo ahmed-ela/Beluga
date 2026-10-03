@@ -423,6 +423,34 @@ module BelugaMacClientRetainedTests
     end
   end
 
+  def test_retained_collector_reader_accepts_exact_empty_log_and_preserves_digest_guards
+    path = retained_collector_write(@directory, 'empty-history.log', ''.b)
+    sha = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    reader = BelugaMacClient::RetainedEvidence::Reader.new
+    bytes = reader.read(path, expected: sha, limit: 0)
+    assert_instance_of String, bytes
+    assert_equal Encoding::BINARY, bytes.encoding
+    assert_equal ''.b, bytes
+    assert_equal sha, Digest::SHA256.hexdigest(bytes)
+    assert_equal ''.b, reader.read(path, expected: sha)
+    assert reader.verify!
+    assert_raises(R) { reader.read(path, expected: '0' * 64) }
+    File.binwrite(path, 'x')
+    assert_raises(R) { reader.read(path, expected: sha, limit: 1) }
+    assert_raises(R) { reader.verify! }
+  end
+
+  def test_retained_collector_reader_empty_bytes_do_not_hide_inode_replacement
+    path = retained_collector_write(@directory, 'empty-record', ''.b)
+    reader = BelugaMacClient::RetainedEvidence::Reader.new
+    sha = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    assert_equal ''.b, reader.read(path, expected: sha)
+    File.rename(path, File.join(@directory, 'original-empty-record'))
+    retained_collector_write(@directory, 'empty-record', ''.b)
+    assert_raises(R) { reader.read(path, expected: sha) }
+    assert_raises(R) { reader.verify! }
+  end
+
   def test_retained_collector_reader_pins_exact_bytes_digest_bound_and_inode
     path = retained_collector_write(@directory, 'record', 'retained bytes')
     reader = BelugaMacClient::RetainedEvidence::Reader.new

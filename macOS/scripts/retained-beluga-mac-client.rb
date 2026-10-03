@@ -116,7 +116,7 @@ module BelugaMacClient
         stat = BelugaMacClient.regular!(path)
         BelugaMacClient.require!(stat.uid == Process.uid && stat.size <= limit, 'retained evidence owner or size differs')
         before = BelugaMacClient.snapshot(path)
-        bytes = File.binread(path, limit + 1)
+        bytes = File.binread(path, limit + 1) || ''.b
         BelugaMacClient.require!(bytes.bytesize <= limit && before == BelugaMacClient.snapshot(path) &&
           before.last == Digest::SHA256.hexdigest(bytes) && (!expected || before.last == expected), 'retained evidence changed')
         BelugaMacClient.require!(!@files.key?(path) || @files[path] == before, 'retained evidence replaced')
