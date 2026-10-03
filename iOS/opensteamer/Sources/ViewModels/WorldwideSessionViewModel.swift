@@ -7595,6 +7595,12 @@ final class WorldwideSessionViewModel: ObservableObject {
             }
             reconcileRemoteMediaCommandAvailability()
 
+        case .mediaHandoffOfferReceived:
+            // This product does not advertise the handoff capability yet. The player, exact
+            // offer-bound Mac pause and owner-scoped audio policy must be integrated together
+            // before an incoming offer can start playback or gain command authority.
+            break
+
         case .remoteMediaCommandAcknowledgementReceived:
             // The host state stream remains authoritative; acknowledgements only terminate the
             // command request and must not optimistically rewrite Now Playing metadata.

@@ -28,6 +28,9 @@ public struct WebRTCTransportConfiguration: Sendable {
     /// Explicit local opt-in for the versioned Mac Now Playing control protocol.
     /// Both peers must independently enable and negotiate it before any wire message is sent.
     public let supportsRemoteMediaControls: Bool
+    /// Experimental offer descriptions only. Product owners must not opt in until their
+    /// playback, offer-bound pause and audio coexistence transaction is implemented.
+    public let supportsMediaHandoff: Bool
     /// Optional, content-free telemetry to the authenticated peer only; requires exact SDP echo.
     public let supportsAudioClientDiagnostics: Bool
 
@@ -38,6 +41,7 @@ public struct WebRTCTransportConfiguration: Sendable {
         maximumVideoBitrate: Int? = nil,
         mediaTopology: WebRTCTransportMediaTopology = .full,
         supportsRemoteMediaControls: Bool = false,
+        supportsMediaHandoff: Bool = false,
         supportsAudioClientDiagnostics: Bool = true
     ) {
         self.role = role
@@ -46,6 +50,7 @@ public struct WebRTCTransportConfiguration: Sendable {
         self.maximumVideoBitrate = maximumVideoBitrate
         self.mediaTopology = mediaTopology
         self.supportsRemoteMediaControls = supportsRemoteMediaControls
+        self.supportsMediaHandoff = supportsMediaHandoff
         self.supportsAudioClientDiagnostics = supportsAudioClientDiagnostics
     }
 }
@@ -182,6 +187,8 @@ public enum WebRTCTransportEvent: Sendable {
     case remoteMediaControlsAvailabilityChanged(Bool)
     /// Authoritative Mac system Now Playing state. A nil item clears a prior source.
     case remoteMediaStateChanged(WebRTCReceivedRemoteMediaState)
+    /// Non-authorizing source offer; receipt consumption does not prove phone playback.
+    case mediaHandoffOfferReceived(WebRTCReceivedMediaHandoffOffer)
     /// A current viewer requests a fresh snapshot after its native presentation is ready.
     case remoteMediaStateRefreshRequested(WebRTCReceivedRemoteMediaStateRefreshRequest)
     /// A validated viewer command that the Mac host must execute and acknowledge at most once.

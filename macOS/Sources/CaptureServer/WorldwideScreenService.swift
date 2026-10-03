@@ -2334,7 +2334,8 @@ actor WorldwideScreenService {
                 sourcePeerGeneration: sourcePeerGeneration
             )
 
-        case .remoteMediaStateChanged,
+        case .mediaHandoffOfferReceived,
+             .remoteMediaStateChanged,
              .remoteMediaCommandAcknowledgementReceived:
             // These messages are host-originated and are consumed only by the iPhone viewer.
             break

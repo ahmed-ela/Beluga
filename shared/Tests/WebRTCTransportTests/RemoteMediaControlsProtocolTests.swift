@@ -22,6 +22,9 @@ private actor RemoteMediaFlowRecorder {
     private(set) var acknowledgements:
         [WebRTCRemoteMediaCommandAcknowledgement] = []
     private(set) var forwardingErrors: [String] = []
+    private(set) var handoffOffers: [WebRTCReceivedMediaHandoffOffer] = []
+
+    func record(_ offer: WebRTCReceivedMediaHandoffOffer) { handoffOffers.append(offer) }
 
     func mark(_ milestone: RemoteMediaFlowMilestone) -> Bool {
         milestones.insert(milestone).inserted
@@ -61,10 +64,11 @@ private actor RemoteMediaFlowRecorder {
         forwardingErrors: [String],
         receivedStates: [WebRTCReceivedRemoteMediaState],
         receivedCommands: [WebRTCReceivedRemoteMediaCommand],
-        refreshRequests: [WebRTCReceivedRemoteMediaStateRefreshRequest]
+        refreshRequests: [WebRTCReceivedRemoteMediaStateRefreshRequest],
+        handoffOffers: [WebRTCReceivedMediaHandoffOffer]
     ) {
         (states, commands, acknowledgements, forwardingErrors,
-         receivedStates, receivedCommands, refreshRequests)
+         receivedStates, receivedCommands, refreshRequests, handoffOffers)
     }
 }
 
@@ -108,6 +112,64 @@ private final class RemoteMediaCallbackResults: @unchecked Sendable {
 }
 
 final class RemoteMediaControlsProtocolTests: XCTestCase {
+    func testRealPeerHandoffOfferIsOneUseNonAuthorizingAndExactSourceBound() async throws {
+        try await exerciseHandoffReceipt(malformedControlBeforeConsumption: false)
+    }
+
+    func testMalformedOrderedControlRevokesPendingHandoffReceipt() async throws {
+        try await exerciseHandoffReceipt(malformedControlBeforeConsumption: true)
+    }
+
+    private func exerciseHandoffReceipt(malformedControlBeforeConsumption: Bool) async throws {
+        let (host, viewer, recorder, _, hostTask, viewerTask) = try makeRemoteMediaFlow(supportsMediaHandoff: true)
+        do {
+            try await host.start()
+            try await waitForRemoteMediaCondition {
+                let hostReady = await host.isTransportHealthyForMediaForTesting
+                let viewerReady = await viewer.isTransportHealthyForMediaForTesting
+                return hostReady && viewerReady
+            }
+            let negotiated = await viewer.mediaHandoffIsNegotiated()
+            XCTAssertTrue(negotiated)
+            let item = WebRTCRemoteMediaItem(contextID: "same-video", sourceName: "YouTube", title: "Test",
+                playbackState: .playing, elapsedTime: 20, duration: 200, playbackRate: 1,
+                capabilities: .init(canPlay: true, canPause: true, canSkipForward: false,
+                    canSkipBackward: false, canSeekToPosition: true), artwork: .init(videoID: "dQw4w9WgXcQ"))
+            try await host.sendRemoteMediaState(.init(revision: 1, item: item))
+            let id = try await host.sendMediaHandoffOffer(contextID: item.contextID)
+            try await waitForRemoteMediaCondition { await recorder.snapshot().handoffOffers.count == 1 }
+            let snapshot = await recorder.snapshot()
+            let offer = try XCTUnwrap(snapshot.handoffOffers.first)
+            XCTAssertEqual(offer.id, id)
+            if malformedControlBeforeConsumption {
+                // Exercises the actual receiver parser, not a test-only offer-state clear.
+                await viewer.receiveMalformedControlMessageForTesting()
+            } else {
+                let received = try await viewer.consumeMediaHandoffOffer(offer)
+                XCTAssertEqual(received.update.item, item)
+            }
+            do {
+                _ = try await viewer.consumeMediaHandoffOffer(offer)
+                XCTFail("A consumed or protocol-invalidated receipt cannot authorize consumption")
+            } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
+            // Ordered refresh is a delivery barrier; offer consumption sends no Pause command.
+            try await viewer.requestRemoteMediaStateRefresh(id: UUID())
+            try await waitForRemoteMediaCondition { await recorder.snapshot().refreshRequests.count == 1 }
+            let final = await recorder.snapshot()
+            XCTAssertTrue(final.commands.isEmpty)
+            XCTAssertTrue(final.forwardingErrors.isEmpty)
+        } catch {
+            hostTask.cancel(); viewerTask.cancel()
+            _ = await host.close(reason: .protocolError); _ = await viewer.close(reason: .protocolError)
+            _ = await hostTask.value; _ = await viewerTask.value
+            throw error
+        }
+        hostTask.cancel(); viewerTask.cancel()
+        let hostClosed = await host.close(reason: .normal), viewerClosed = await viewer.close(reason: .normal)
+        _ = await hostTask.value; _ = await viewerTask.value
+        XCTAssertTrue(hostClosed); XCTAssertTrue(viewerClosed)
+    }
+
     func testPipelineStagePreservesOrderedPlaybackBitsWithoutSourceMetadata() throws {
         let playing = WebRTCRemoteMediaItem(contextID: "private-first-source", sourceName: "private-app",
             title: "private-title", playbackState: .playing, elapsedTime: 10, duration: 50,
@@ -1293,7 +1355,7 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
         }
     }
 
-    private func makeRemoteMediaFlow(automaticallyAcknowledge: Bool = false) throws -> (
+    private func makeRemoteMediaFlow(automaticallyAcknowledge: Bool = false, supportsMediaHandoff: Bool = false) throws -> (
         WebRTCPeer, WebRTCPeer, RemoteMediaFlowRecorder, RemoteMediaFlowExpectations,
         Task<Void, Never>, Task<Void, Never>
     ) {
@@ -1301,14 +1363,16 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
             configuration: WebRTCTransportConfiguration(
                 role: .host,
                 iceServers: [],
-                supportsRemoteMediaControls: true
+                supportsRemoteMediaControls: true,
+                supportsMediaHandoff: supportsMediaHandoff
             )
         )
         let viewer = try WebRTCPeer.makeHeadlessViewerForTesting(
             configuration: WebRTCTransportConfiguration(
                 role: .viewer,
                 iceServers: [],
-                supportsRemoteMediaControls: true
+                supportsRemoteMediaControls: true,
+                supportsMediaHandoff: supportsMediaHandoff
             )
         )
         let recorder = RemoteMediaFlowRecorder()
@@ -1362,6 +1426,8 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
                         if await recorder.record(update) {
                             expectations.fulfill(.stateReceived)
                         }
+                    case .mediaHandoffOfferReceived(let offer):
+                        await recorder.record(offer)
                     case .remoteMediaCommandAcknowledgementReceived(
                         let acknowledgement
                     ):

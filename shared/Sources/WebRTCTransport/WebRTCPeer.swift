@@ -3660,6 +3660,7 @@ public actor WebRTCPeer {
     private let mediaTopology: WebRTCTransportMediaTopology
     private let configuredMaximumVideoBitrate: Int?
     private let remoteMediaControlsCapabilityIsLocallyAvailable: Bool
+    private let mediaHandoffCapabilityIsLocallyAvailable: Bool
     private let eventContinuation: AsyncStream<WebRTCTransportEvent>.Continuation
     private let screenClientDiagnosticsEventContinuation:
         AsyncStream<WebRTCScreenClientDiagnosticsEvent>.Continuation
@@ -3856,6 +3857,9 @@ public actor WebRTCPeer {
     // never sent to an older peer sharing the strict v2 control-channel envelope.
     private var remoteMediaControlsNegotiationEpoch: UInt64?
     private var remoteMediaCatalogNegotiated = false
+    private var mediaHandoffNegotiated = false
+    private var mediaHandoffOffers = MediaHandoffOffers()
+    private var mediaHandoffContinuity: UUID?
     private var pendingRemoteMediaAuthorization:
         WebRTCRemoteMediaAuthorization?
     private var activeRemoteMediaAuthorization:
@@ -3990,6 +3994,8 @@ public actor WebRTCPeer {
         mediaTopology = configuration.mediaTopology
         remoteMediaControlsCapabilityIsLocallyAvailable =
             configuration.supportsRemoteMediaControls
+        mediaHandoffCapabilityIsLocallyAvailable = configuration.supportsRemoteMediaControls
+            && configuration.supportsMediaHandoff && configuration.mediaTopology == .full
         // A viewer can receive the host-created optional channel. A host advertises support only
         // after native allocation of that channel succeeds below.
         screenClientDiagnosticsCapabilityIsLocallyAvailable =
@@ -4693,6 +4699,8 @@ public actor WebRTCPeer {
                 remoteMediaControlsNegotiationEpoch = offerEpoch
                 remoteMediaCatalogNegotiated = RemoteMediaCatalogSDP.negotiated(
                     hostOfferSDP: sdp, viewerAnswerSDP: answerSDP)
+                mediaHandoffNegotiated = mediaHandoffCapabilityIsLocallyAvailable
+                    && MediaHandoffSDP.negotiated(hostOfferSDP: sdp, viewerAnswerSDP: answerSDP)
                 // The outbound answer is enqueued first. Application code cannot arm native
                 // controls until it has forwarded that exact answer through signaling.
                 emit(.remoteMediaControlsAvailabilityChanged(true))
@@ -4774,6 +4782,10 @@ public actor WebRTCPeer {
             let negotiatedRemoteMediaCatalog = pendingScreenMediaHostOfferSDP.map {
                 RemoteMediaCatalogSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
             } ?? false
+            let negotiatedMediaHandoff = mediaHandoffCapabilityIsLocallyAvailable
+                && (pendingScreenMediaHostOfferSDP.map {
+                    MediaHandoffSDP.negotiated(hostOfferSDP: $0, viewerAnswerSDP: sdp)
+                } ?? false)
             try installRemoteICEUsernameFragments(from: sdp)
             remoteDescriptionIsSet = true
             try await flushRemoteCandidates(expectedEpoch: offerEpoch)
@@ -4802,6 +4814,7 @@ public actor WebRTCPeer {
                 activeRemoteMediaAuthorization = authorization
                 remoteMediaControlsNegotiationEpoch = offerEpoch
                 remoteMediaCatalogNegotiated = negotiatedRemoteMediaCatalog
+                mediaHandoffNegotiated = negotiatedMediaHandoff
                 // Commit only after answer parsing, candidate application, and offer retirement.
                 emit(.remoteMediaControlsAvailabilityChanged(true))
             }
@@ -5740,6 +5753,10 @@ public actor WebRTCPeer {
         isTransportHealthyForMedia()
     }
 
+    func receiveMalformedControlMessageForTesting() {
+        receiveControlChannelData(Data("{".utf8))
+    }
+
     func failNextRemoteMediaAcknowledgementSendsForTesting(
         _ count: Int = 1
     ) {
@@ -6215,6 +6232,73 @@ public actor WebRTCPeer {
         try delegateProxy.sendControlData(encoded.data)
         highestSentRemoteMediaStateRevision = update.revision
         lastSentRemoteMediaStateUpdate = encoded.update
+        if refreshMediaHandoffContinuity() {
+            mediaHandoffOffers.recordSentState(encoded.update, now: ProcessInfo.processInfo.systemUptime)
+        }
+    }
+
+    public func mediaHandoffIsNegotiated() -> Bool {
+        mediaHandoffCapabilityIsLocallyAvailable && mediaHandoffNegotiated && remoteMediaControlsAreNegotiated()
+    }
+
+    private func refreshMediaHandoffContinuity() -> Bool {
+        guard mediaHandoffIsNegotiated(), isTransportHealthyForMedia(),
+              let current = delegateProxy.currentMediaHandoffContinuity() else {
+            mediaHandoffOffers.clearTransient()
+            mediaHandoffContinuity = nil
+            return false
+        }
+        if mediaHandoffContinuity != current {
+            mediaHandoffOffers.clearTransient()
+            mediaHandoffContinuity = current
+        }
+        return true
+    }
+
+    /// Sends a non-authorizing description from the last successfully published primary item.
+    /// Product integration must establish native source authority before calling this API.
+    @discardableResult
+    public func sendMediaHandoffOffer(contextID: String) throws -> UUID {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard refreshMediaHandoffContinuity(), let state = lastSentRemoteMediaStateUpdate,
+              let authorization = activeRemoteMediaAuthorization,
+              let offer = mediaHandoffOffers.prepareSent(contextID: contextID, update: state,
+                  authorization: authorization, now: ProcessInfo.processInfo.systemUptime) else {
+            throw WebRTCTransportError.transportNotHealthy
+        }
+        do {
+            try delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffOffer(offer)))
+        } catch {
+            mediaHandoffOffers.sentFailed(id: offer.id)
+            throw error
+        }
+        return offer.id
+    }
+
+    /// Consumes only this receipt; not proof of phone playback and never a Mac-pause operation.
+    /// A product transaction must independently bind its actual playback and host pause receipt.
+    public func consumeMediaHandoffOffer(_ offer: WebRTCReceivedMediaHandoffOffer) throws -> WebRTCReceivedRemoteMediaState {
+        try ensureOpen()
+        guard role == .viewer else { throw WebRTCTransportError.invalidRole }
+        guard refreshMediaHandoffContinuity(), let state = latestReceivedRemoteMediaState,
+              mediaHandoffOffers.consume(offer, state: state, now: ProcessInfo.processInfo.systemUptime) else {
+            throw WebRTCTransportError.controlAuthorizationRevoked
+        }
+        return state
+    }
+
+    public func discardMediaHandoffOffer(_ offer: WebRTCReceivedMediaHandoffOffer) {
+        mediaHandoffOffers.discard(offer)
+    }
+
+    private func receiveMediaHandoffOffer(_ envelope: WebRTCMediaHandoffOfferEnvelope) {
+        guard role == .viewer, refreshMediaHandoffContinuity(),
+              envelope.authorization == activeRemoteMediaAuthorization,
+              let state = latestReceivedRemoteMediaState,
+              let receipt = mediaHandoffOffers.receive(envelope, state: state,
+                  now: ProcessInfo.processInfo.systemUptime) else { return }
+        emit(.mediaHandoffOfferReceived(receipt))
     }
 
     /// Requests a fresh snapshot for one bounded application readiness attempt.
@@ -9690,6 +9774,8 @@ public actor WebRTCPeer {
                 receiveInputFeedback(feedback)
             case .remoteMediaState(let envelope):
                 receiveRemoteMediaState(envelope)
+            case .mediaHandoffOffer(let envelope):
+                receiveMediaHandoffOffer(envelope)
             case .remoteMediaStateRefresh(let envelope):
                 receiveRemoteMediaStateRefresh(envelope)
             case .remoteMediaCommand(let envelope):
@@ -9718,6 +9804,8 @@ public actor WebRTCPeer {
                 receiveScreenMediaCancellation(cancellation)
             }
         } catch {
+            mediaHandoffOffers.clearTransient()
+            mediaHandoffContinuity = nil
             invalidateInputSession(reason: "Invalid control-channel message.")
             resetMacHostedCallEvidenceTransportState()
             failCloseScreenMediaSuspension(
@@ -9789,6 +9877,9 @@ public actor WebRTCPeer {
         lastReceivedRemoteMediaDiagnosticStage = .init(update: update)
         let state = WebRTCReceivedRemoteMediaState(envelope: envelope)
         latestReceivedRemoteMediaState = isTransportHealthyForMedia() ? state : nil
+        if refreshMediaHandoffContinuity() {
+            mediaHandoffOffers.recordReceivedState(update, now: ProcessInfo.processInfo.systemUptime)
+        }
         emit(.remoteMediaStateChanged(state))
     }
 
@@ -10225,6 +10316,9 @@ public actor WebRTCPeer {
         remoteMediaAcknowledgementRetryToken = nil
         remoteMediaControlsNegotiationEpoch = nil
         remoteMediaCatalogNegotiated = false
+        mediaHandoffNegotiated = false
+        mediaHandoffOffers = MediaHandoffOffers()
+        mediaHandoffContinuity = nil
         pendingRemoteMediaAuthorization = nil
         activeRemoteMediaAuthorization = nil
         nextRemoteMediaCommandID = 1
@@ -11318,6 +11412,7 @@ public actor WebRTCPeer {
             screenClientDiagnosticsCapabilityIsLocallyAvailable
         let advertisesMacHostedCallEvidence = mediaTopology == .full
         let remoteMediaAuthorization = pendingRemoteMediaAuthorization
+        let advertisesMediaHandoff = mediaHandoffCapabilityIsLocallyAvailable
         let sdp = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, any Error>) in
             peerConnection.offer(for: mediaConstraints) { [peerConnection] description, error in
@@ -11340,7 +11435,8 @@ public actor WebRTCPeer {
                 let remoteMediaSDP = remoteMediaAuthorization.map {
                     RemoteMediaControlsSDP.advertisingHostSupport(
                         in: suspensionSDP,
-                        authorization: $0
+                        authorization: $0,
+                        supportsMediaHandoff: advertisesMediaHandoff
                     )
                 } ?? suspensionSDP
                 let diagnosticsSDP = advertisesScreenClientDiagnostics
@@ -11382,6 +11478,7 @@ public actor WebRTCPeer {
         let advertisesMacHostedCallEvidence = mediaTopology == .full
         let advertisesRemoteMediaControls =
             remoteMediaControlsCapabilityIsLocallyAvailable
+        let advertisesMediaHandoff = mediaHandoffCapabilityIsLocallyAvailable
         let answerSDP = try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<String, any Error>) in
             peerConnection.answer(for: mediaConstraints) { [peerConnection] description, error in
@@ -11409,7 +11506,8 @@ public actor WebRTCPeer {
                 let remoteMediaSDP = advertisesRemoteMediaControls
                     ? RemoteMediaControlsSDP.advertisingViewerSupport(
                         in: suspensionSDP,
-                        remoteOfferSDP: remoteOfferSDP
+                        remoteOfferSDP: remoteOfferSDP,
+                        supportsMediaHandoff: advertisesMediaHandoff
                     )
                     : suspensionSDP
                 let diagnosticsSDP = advertisesScreenClientDiagnostics
@@ -13049,6 +13147,7 @@ public actor WebRTCPeer {
 
 /// Strict versioned union carried by the ordered WebRTC control data channel.
 enum ControlChannelMessage: Codable, Equatable, Sendable {
+    case mediaHandoffOffer(WebRTCMediaHandoffOfferEnvelope)
     static let currentVersion = 2
 
     case command(WebRTCControlRequest)
@@ -13079,6 +13178,7 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
     case screenMediaCancellation(WebRTCScreenMediaCancellation)
 
     private enum Kind: String, Codable {
+        case mediaHandoffOffer
         case command
         case acknowledgement = "ack"
         case input
@@ -13100,6 +13200,7 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case mediaHandoffOffer
         case version
         case kind
         case command
@@ -13132,6 +13233,8 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
             )
         }
         switch try container.decode(Kind.self, forKey: .kind) {
+        case .mediaHandoffOffer:
+            self = .mediaHandoffOffer(try container.decode(WebRTCMediaHandoffOfferEnvelope.self, forKey: .mediaHandoffOffer))
         case .command:
             self = .command(try container.decode(WebRTCControlRequest.self, forKey: .command))
         case .acknowledgement:
@@ -13249,6 +13352,9 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.currentVersion, forKey: .version)
         switch self {
+        case .mediaHandoffOffer(let offer):
+            try container.encode(Kind.mediaHandoffOffer, forKey: .kind)
+            try container.encode(offer, forKey: .mediaHandoffOffer)
         case .command(let command):
             try container.encode(Kind.command, forKey: .kind)
             try container.encode(command, forKey: .command)

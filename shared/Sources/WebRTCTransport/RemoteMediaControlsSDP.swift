@@ -17,17 +17,20 @@ enum RemoteMediaControlsSDP {
 
     static func advertisingHostSupport(
         in sessionDescription: String,
-        authorization: WebRTCRemoteMediaAuthorization
+        authorization: WebRTCRemoteMediaAuthorization,
+        supportsMediaHandoff: Bool = false
     ) -> String {
-        RemoteMediaCatalogSDP.advertising(in: insertingCapabilityIfNeeded(
+        let result = RemoteMediaCatalogSDP.advertising(in: insertingCapabilityIfNeeded(
             in: sessionDescription,
             authorization: authorization
         ), authorization: authorization)
+        return supportsMediaHandoff ? MediaHandoffSDP.advertising(in: result, authorization: authorization) : result
     }
 
     static func advertisingViewerSupport(
         in sessionDescription: String,
-        remoteOfferSDP: String
+        remoteOfferSDP: String,
+        supportsMediaHandoff: Bool = false
     ) -> String {
         guard let authorization = advertisedAuthorization(in: remoteOfferSDP) else {
             return sessionDescription
@@ -36,8 +39,10 @@ enum RemoteMediaControlsSDP {
             in: sessionDescription,
             authorization: authorization
         )
-        return RemoteMediaCatalogSDP.advertisedAuthorization(in: remoteOfferSDP) == authorization
+        let result = RemoteMediaCatalogSDP.advertisedAuthorization(in: remoteOfferSDP) == authorization
             ? RemoteMediaCatalogSDP.advertising(in: answer, authorization: authorization) : answer
+        return supportsMediaHandoff && MediaHandoffSDP.advertisedAuthorization(in: remoteOfferSDP) == authorization
+            ? MediaHandoffSDP.advertising(in: result, authorization: authorization) : result
     }
 
     static func negotiatedAuthorization(
