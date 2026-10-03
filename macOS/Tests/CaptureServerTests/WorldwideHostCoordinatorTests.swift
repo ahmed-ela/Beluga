@@ -12,6 +12,21 @@ import XCTest
 /// child returns unexpectedly. Explicit shutdown is the sole path where child cancellation and a
 /// normal completion event are accepted.
 final class WorldwideHostCoordinatorTests: XCTestCase {
+    func testMediaHandoffCannotUseFabricatedTargetWithoutExactActiveMediaOwner() async throws {
+        let memory = CoordinatorMemoryPairingDataStore()
+        let presentations = LockedValues<BelugaHostPresentation>()
+        let coordinator = makeCoordinator(store: WorldwidePairingStore(dataStore: memory),
+            catalogMutationIsAuthorized: { true }, presentation: { presentations.append($0) })
+        let target = BelugaConnectedPhoneMediaTarget(phoneID: UUID(), selectionEpoch: UUID(), exchangeID: "TESTONLY")
+        for stage in 0..<3 {
+            if stage == 1 { _ = try await coordinator.start(resetPairing: false) }
+            if stage == 2 { await coordinator.stop() }
+            do { _ = try await coordinator.moveMediaToConnectedPhone(target: target); XCTFail("No active media owner") }
+            catch { XCTAssertTrue(error is WorldwidePhoneCatalogRuntimeError) }
+            XCTAssertNil(presentations.values.last?.connectedMediaTarget)
+        }
+    }
+
     func testUnselectedPresentationCarriesFreshTicketAgainAfterExplicitSelectionChange() async throws {
         let memory = CoordinatorMemoryPairingDataStore()
         let presentations = LockedValues<BelugaHostPresentation>()

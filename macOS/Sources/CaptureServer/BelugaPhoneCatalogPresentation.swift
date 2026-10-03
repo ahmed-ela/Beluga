@@ -51,11 +51,31 @@ enum BelugaPhoneCatalogCommand: Sendable, Equatable {
     case forget(UUID)
 }
 
+/// A menu target, not native Pause authority. The coordinator rechecks its exact media owner.
+struct BelugaConnectedPhoneMediaTarget: Equatable, Sendable, CustomStringConvertible,
+    CustomDebugStringConvertible {
+    let phoneID: UUID
+    let selectionEpoch: UUID
+    let exchangeID: String
+    var description: String { "[Beluga connected-phone media target]" }
+    var debugDescription: String { description }
+}
+
 struct BelugaPhoneCatalogCommands: Sendable {
     let perform: @Sendable (BelugaPhoneCatalogCommand, WorldwidePhoneCatalogAction) async throws -> Void
+    let moveMedia: (@Sendable (BelugaConnectedPhoneMediaTarget) async throws -> UUID)?
+
+    init(moveMedia: (@Sendable (BelugaConnectedPhoneMediaTarget) async throws -> UUID)? = nil,
+         perform: @escaping @Sendable (BelugaPhoneCatalogCommand, WorldwidePhoneCatalogAction) async throws -> Void) {
+        self.perform = perform
+        self.moveMedia = moveMedia
+    }
 
     static func owned(by coordinator: WorldwideHostCoordinator) -> Self {
-        Self { [weak coordinator] command, ticket in
+        Self(moveMedia: { [weak coordinator] target in
+            guard let coordinator else { throw WorldwidePhoneCatalogRuntimeError.ownerNotAuthorized }
+            return try await coordinator.moveMediaToConnectedPhone(target: target)
+        }) { [weak coordinator] command, ticket in
             guard let coordinator else { throw WorldwidePhoneCatalogRuntimeError.ownerNotAuthorized }
             switch command {
             case .pairAnother: _ = try await coordinator.pairAnotherPhone(action: ticket)

@@ -812,6 +812,28 @@ actor WorldwideHostCoordinator {
 
     // MARK: - Media sessions
 
+    private var connectedMediaTarget: BelugaConnectedPhoneMediaTarget? {
+        guard !isStopped, !shutdownIsInProgress, catalogOwnerIsValid(),
+              currentPresentationPhase == .sessionPrepared, mediaService != nil,
+              let exchangeID = lifecycle.mediaExchangeID,
+              let record = pairedRecord, record.pairingState == .active,
+              phoneCatalog?.selectedRecord == record else { return nil }
+        return .init(phoneID: record.remoteDeviceID, selectionEpoch: selectionEpoch, exchangeID: exchangeID)
+    }
+
+    /// Never reinterpret a delayed menu click as permission to address a newer phone/session.
+    /// This returns an offer ID, not a completed transfer; the phone shows native completion.
+    func moveMediaToConnectedPhone(target: BelugaConnectedPhoneMediaTarget) async throws -> UUID {
+        guard !Task.isCancelled, connectedMediaTarget == target, let service = mediaService else {
+            throw WorldwidePhoneCatalogRuntimeError.staleSelection
+        }
+        let id = try await service.moveMediaToConnectedPhone()
+        guard !Task.isCancelled, connectedMediaTarget == target, mediaService === service else {
+            throw WorldwidePhoneCatalogRuntimeError.staleSelection
+        }
+        return id
+    }
+
     /// Authenticates a reconnect request and prepares one fresh WebRTC media rendezvous.
     ///
     /// The replay high-water mark is persisted before the response leaves the Mac, so a
@@ -1057,7 +1079,8 @@ actor WorldwideHostCoordinator {
         )
         presentation(BelugaHostPresentation(
             revision: presentationRevision, phase: phase,
-            pairedPhoneName: pairedRecord?.remoteDisplayName, invitation: invitation, phones: phones
+            pairedPhoneName: pairedRecord?.remoteDisplayName, invitation: invitation, phones: phones,
+            connectedMediaTarget: connectedMediaTarget
         ))
     }
 

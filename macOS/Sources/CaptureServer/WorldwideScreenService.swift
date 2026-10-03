@@ -2199,17 +2199,19 @@ actor WorldwideScreenService {
     /// Actual phone playback transfer, not routing the Mac audio track to another speaker.
     /// Product callers must surface unsupported/unavailable results; never fall back to streaming.
     func moveMediaToConnectedPhone() async throws -> UUID {
-        guard !isStopped, transportAllowsCapture, pendingMediaHandoff == nil, let sourcePeer = peer,
-              let item = latestRemoteMediaItem, item.playbackState == .playing,
+        let generation = peerGeneration
+        guard !Task.isCancelled, !isStopped, transportAllowsCapture, pendingMediaHandoff == nil,
+              let sourcePeer = peer, let item = latestRemoteMediaItem, item.playbackState == .playing,
               await sourcePeer.mediaHandoffIsNegotiated() else { throw WebRTCTransportError.transportNotHealthy }
-        guard !isStopped, transportAllowsCapture, pendingMediaHandoff == nil, peer === sourcePeer,
+        guard !Task.isCancelled, !isStopped, transportAllowsCapture, pendingMediaHandoff == nil,
+              peer === sourcePeer, peerGeneration == generation,
               latestRemoteMediaItem?.contextID == item.contextID else { throw WebRTCTransportError.controlAuthorizationRevoked }
-        let generation = peerGeneration, id = UUID(), authorization = WebRTCControlAuthorization()
+        let id = UUID(), authorization = WebRTCControlAuthorization()
         pendingMediaHandoff = .init(id: id, peer: sourcePeer, peerGeneration: generation,
             authorization: authorization)
         let prepared = await remoteMediaController.prepareHandoff(contextID: item.contextID,
             isAuthorized: { authorization.isValid })
-        guard let prepared, pendingMediaHandoff?.id == id, authorization.isValid,
+        guard !Task.isCancelled, let prepared, pendingMediaHandoff?.id == id, authorization.isValid,
               peer === sourcePeer, peerGeneration == generation, transportAllowsCapture,
               latestRemoteMediaItem?.contextID == prepared.contextID else {
             retireMediaHandoff(id: id); throw WebRTCTransportError.controlAuthorizationRevoked
@@ -2224,7 +2226,7 @@ actor WorldwideScreenService {
         do {
             let sent = try await sourcePeer.sendMediaHandoffOffer(contextID: prepared.contextID,
                 id: id, source: prepared.sourceDescription)
-            guard sent == id, pendingMediaHandoff?.id == id, authorization.isValid,
+            guard !Task.isCancelled, sent == id, pendingMediaHandoff?.id == id, authorization.isValid,
                   peer === sourcePeer, peerGeneration == generation, transportAllowsCapture else {
                 throw WebRTCTransportError.controlAuthorizationRevoked
             }

@@ -705,6 +705,20 @@ authorization/boot workflow, never a personal phone as an implicit substitute.
 The service entry point must remain unadvertised until the phone player, menu,
 scoped audio policy and full service-to-native/runtime transfer gates are proven.
 
+`BelugaMediaHandoffMenuTests` cover the actual menu model's exact connected-phone
+target, one in-flight request, pre-dispatch cancellation, replacement-session and
+shutdown races, sanitized refusal and truthful offer-only status. The coordinator
+bridges the menu to its exact active media service after checking phone selection,
+selection epoch, media exchange and process ownership; it never substitutes a newer
+service for a delayed target. The service rechecks cancellation and its captured peer
+generation around negotiation, native preparation and wire dispatch. Keep existing
+menu, phone-catalog, host-coordinator and media-controller suites alongside these
+cases. Remove the menu's exact-target comparison and require the unchanged stale
+target test to fail; restore the bytes before the final run. Menu command doubles
+and the idle coordinator refusal test are not live positive-dispatch, rendered
+popover, phone-receiver or completed-transfer proof. Do not label an offer ID as a
+successful transfer, and retain default-off wire negotiation until integration passes.
+
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
 main-frame message bridge and teardown with inert local provider HTML, not a real

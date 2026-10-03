@@ -15,6 +15,10 @@ final class BelugaMenuBarModel: ObservableObject {
     @Published var showingAudioShare = false
     @Published private(set) var isChangingPhone = false
     @Published private(set) var phoneChangeMessage: String?
+    @Published private(set) var isRequestingMediaHandoff = false
+    @Published private(set) var mediaHandoffMessage: String?
+    private var mediaHandoffTask: Task<Void, Never>?
+    private var mediaHandoffRequestID: UUID?
     private var expirationTask: Task<Void, Never>?
     private var phoneCommands: BelugaPhoneCatalogCommands?
     private var phoneCommandTask: Task<Void, Never>?
@@ -29,6 +33,9 @@ final class BelugaMenuBarModel: ObservableObject {
 
     func apply(_ update: BelugaHostPresentation, now: Date = Date()) {
         guard !didFinish, update.revision > presentation.revision else { return }
+        if update.connectedMediaTarget != presentation.connectedMediaTarget {
+            retireMediaHandoffRequest()
+        }
         expirationTask?.cancel()
         presentation = update
         guard let invitation = update.invitation else { return }
@@ -46,6 +53,7 @@ final class BelugaMenuBarModel: ObservableObject {
 
     func finished() {
         didFinish = true
+        retireMediaHandoffRequest()
         phoneCommands = nil
         phoneCommandID = nil
         phoneCommandTask?.cancel()
@@ -68,6 +76,46 @@ final class BelugaMenuBarModel: ObservableObject {
     func installPhoneCommands(_ commands: BelugaPhoneCatalogCommands) {
         guard !didFinish else { return }
         phoneCommands = commands
+    }
+
+    var canMoveMedia: Bool {
+        !didFinish && hasStarted && !isChangingPhone && !isRequestingMediaHandoff
+            && presentation.phase == .sessionPrepared
+            && presentation.connectedMediaTarget != nil && phoneCommands?.moveMedia != nil
+    }
+
+    @discardableResult
+    func moveMedia(to target: BelugaConnectedPhoneMediaTarget) -> Task<Void, Never>? {
+        guard canMoveMedia, target == presentation.connectedMediaTarget,
+              let move = phoneCommands?.moveMedia else { return nil }
+        let requestID = UUID()
+        mediaHandoffRequestID = requestID
+        isRequestingMediaHandoff = true
+        mediaHandoffMessage = nil
+        let task = Task { [weak self] in
+            guard let self, !Task.isCancelled, self.mediaHandoffRequestID == requestID,
+                  self.presentation.connectedMediaTarget == target else { return }
+            var sent = false
+            do { _ = try await move(target); sent = true } catch { }
+            guard !Task.isCancelled, !self.didFinish, self.mediaHandoffRequestID == requestID,
+                  self.presentation.connectedMediaTarget == target else { return }
+            self.mediaHandoffRequestID = nil
+            self.mediaHandoffTask = nil
+            self.isRequestingMediaHandoff = false
+            self.mediaHandoffMessage = sent
+                ? "Handoff requested. Open Beluga on the phone and tap Play if asked. Check the phone for confirmation."
+                : "Handoff unavailable. Keep a supported YouTube video playing and Beluga open on the connected phone, then try again."
+        }
+        mediaHandoffTask = task
+        return task
+    }
+
+    private func retireMediaHandoffRequest() {
+        mediaHandoffTask?.cancel()
+        mediaHandoffTask = nil
+        mediaHandoffRequestID = nil
+        isRequestingMediaHandoff = false
+        mediaHandoffMessage = nil
     }
 
     @discardableResult
@@ -325,6 +373,16 @@ private struct BelugaMenuBarView: View {
                     Text("Selected phone: \(phone)").font(.caption)
                 }
                 phoneControls
+                if let target = model.presentation.connectedMediaTarget {
+                    Button("Move media to phone") { model.moveMedia(to: target) }
+                        .disabled(!model.canMoveMedia || updater.isUpdateInProgress)
+                    if model.isRequestingMediaHandoff {
+                        Text("Requesting playback on the phone…").font(.caption)
+                    }
+                    if let message = model.mediaHandoffMessage {
+                        Text(message).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 if let invitation = model.presentation.invitation {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         if invitation.isValid(at: context.date) {

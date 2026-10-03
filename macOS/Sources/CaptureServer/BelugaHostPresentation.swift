@@ -51,14 +51,17 @@ struct BelugaHostPresentation: Sendable, CustomStringConvertible, CustomDebugStr
     let pairedPhoneName: String?
     let invitation: BelugaPairingInvitation?
     let phones: BelugaPhoneCatalogPresentation
+    let connectedMediaTarget: BelugaConnectedPhoneMediaTarget?
 
     init(revision: UInt64, phase: BelugaHostPresentationPhase, pairedPhoneName: String?,
-         invitation: BelugaPairingInvitation?, phones: BelugaPhoneCatalogPresentation = .unavailable) {
+         invitation: BelugaPairingInvitation?, phones: BelugaPhoneCatalogPresentation = .unavailable,
+         connectedMediaTarget: BelugaConnectedPhoneMediaTarget? = nil) {
         self.revision = revision
         self.phase = phase
         self.pairedPhoneName = pairedPhoneName.map(BelugaPairedPhonePresentation.safeName)
         self.invitation = invitation
         self.phones = phones
+        self.connectedMediaTarget = connectedMediaTarget
     }
 
     static let starting = BelugaHostPresentation(
