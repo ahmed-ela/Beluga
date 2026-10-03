@@ -588,7 +588,11 @@ final class MacChromeAppleEventsBackend: MacChromeNowPlayingBackend, @unchecked 
             try check(owner: owner, deadline: deadline, isAuthorized: isAuthorized)
             if let error = reply.paramDescriptor(forKeyword: keyErrorNumber), error.int32Value != 0 {
                 let message = reply.paramDescriptor(forKeyword: keyErrorString)?.stringValue ?? ""
-                if error.int32Value == -10000, message.utf8.count <= 8_192,
+                // Recognize native Chrome's observed code 12 alongside the existing -10000 case.
+                // Keep message validation so an unrelated error never becomes permission advice.
+                if (error.int32Value == -10000 || error.int32Value == 12),
+                   event.eventClass == 0x43725375, event.eventID == 0x45784A61,
+                   message.utf8.count <= 8_192,
                    message.lowercased().contains("javascript"), message.lowercased().contains("turned off") {
                     throw MacChromeBackendError.javascriptPermissionRequired
                 }

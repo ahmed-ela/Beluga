@@ -1001,12 +1001,31 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
     }
 
     func testJavaScriptPermissionErrorIsContentFreeAndDistinct() throws {
-        let client = ChromeTestClient()
-        client.scriptError = (-10000, "Executing JavaScript through AppleScript is turned off.")
-        XCTAssertThrowsError(try makeBackend(client).readSnapshots(deadline: 11)) {
-            XCTAssertEqual($0 as? MacChromeBackendError, .javascriptPermissionRequired)
+        for code: OSStatus in [-10000, 12] {
+            let client = ChromeTestClient()
+            client.scriptError = (code, "Executing JavaScript through AppleScript is turned off.")
+            XCTAssertThrowsError(try makeBackend(client).readSnapshots(deadline: 11)) {
+                XCTAssertEqual($0 as? MacChromeBackendError, .javascriptPermissionRequired, "code=\(code)")
+            }
+            XCTAssertEqual(client.permissionRequests, [false])
+            XCTAssertEqual(client.commandDispatches, 0)
         }
-        XCTAssertEqual(client.permissionRequests, [false])
+    }
+
+    func testUnrelatedScriptErrorsDoNotBecomeJavaScriptPermissionRequests() throws {
+        for (code, message): (OSStatus, String) in [
+            (12, "An unrelated script failure"),
+            (13, "Executing JavaScript through AppleScript is turned off."),
+            (12, "Executing JavaScript through AppleScript is turned off." + String(repeating: "x", count: 8192))
+        ] {
+            let client = ChromeTestClient()
+            client.scriptError = (code, message)
+            XCTAssertThrowsError(try makeBackend(client).readSnapshots(deadline: 11)) {
+                XCTAssertEqual($0 as? MacChromeBackendError, .unavailable)
+            }
+            XCTAssertEqual(client.permissionRequests, [false])
+            XCTAssertEqual(client.commandDispatches, 0)
+        }
     }
 
     func testOnlyOrdinaryExactYouTubeWatchURLsAreEligible() {
