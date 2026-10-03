@@ -13,12 +13,12 @@ goal; they are not completed features or a second duplicate goal.
   live connected phone. Saved pairing or completed negotiation alone does not
   enable it. Bind each request/result to that exact phone and media-session
   generation; disconnect, reconnect, or switching phones invalidates old work.
-- Product choice awaiting the user's clarification: (a) route/play the existing
-  Mac audio stream through Beluga on the phone, or (b) continue the selected
-  source in a phone player at its current position and pause that source on the
-  Mac. These are different operations. Do not implement a misleading no-op menu
-  button or silently choose one. Existing Mac-audio downlink is already automatic
-  on a healthy connection; it is not a cross-app media handoff.
+- Product choice resolved on 2026-10-03: **option 2**, continue the selected
+  source in a phone player at its current position, then pause that exact source
+  on the Mac only after confirmed phone playback. Existing Mac-audio downlink
+  is not this feature. Opening an app or link is not playback confirmation.
+  Start with a finite, seekable YouTube video; unsupported providers remain
+  explicitly unavailable rather than silently changing the action into streaming.
 - Preserve the existing selected-source ownership rule. A newly playing tab
   must not steal the source chosen for a move. An action must not pause unrelated
   Mac media or report success from merely sending a command/opening a URL.
@@ -38,7 +38,7 @@ goal; they are not completed features or a second duplicate goal.
 
 Added delivery gates:
 
-- [ ] Confirm media-move semantics and define receiver acknowledgement/failure behavior.
+- [x] Confirm media-move semantics and define receiver acknowledgement/failure behavior.
 - [ ] Connected-phone menu action, exact-session fencing, source continuity and real effect.
 - [ ] Host multi-phone migration/revocation without losing the existing iPhone pairing.
 - [ ] Android QR, secure identity/catalog, durable reconnect and saved-Mac selection.
@@ -54,6 +54,50 @@ interruption/private-route gates. For a real source handoff, the existing select
 YouTube item provides a bounded video ID and position, but external app opening
 does not prove playback. Apple Music has no established portable handoff link in
 the current metadata. Unsupported/needs-user-action must remain explicit.
+
+### Media-transfer acceptance contract
+
+This contract is not an implementation or deployment claim. The first source
+slice keeps the new optional capability **off by default** until its complete
+host-menu, phone-player and audio-lifecycle integration passes the gates below.
+
+- The offer names the selected primary source, exact authenticated negotiation,
+  one-use operation, provider video ID, bounded position/rate/duration and a fixed
+  deadline. A replay, duplicate delivery or later snapshot cannot renew it.
+- The phone must observe the exact video playing with advancing time near the
+  requested position in its visible, current player. Ready, URL-open, a Mac state
+  update, a paused frame and a sent command do not establish phone playback.
+- Autoplay refusal offers a visible Play action. Failure, timeout, dismissal,
+  backgrounding, disconnection or source replacement leaves the Mac untouched.
+  Position/rate changes while loading must cancel or explicitly re-anchor the
+  transfer, not pause a source that has since moved elsewhere in its timeline.
+- The pause must be correlated to the still-current offer at the host, then use
+  the existing exact Chrome process/tab/document/item native authorization and
+  actual pause readback. An ordinary Pause acknowledgement alone is not a
+  correlated handoff completion receipt.
+- Local playback and the existing Mac-audio downlink must have an explicit,
+  owner-scoped coexistence policy. Do not change AVAudioSession, default routes,
+  microphone intent, interruption admission or screen-presentation authority as
+  a shortcut. Direct track muting is not sufficient because the lifecycle owner
+  reapplies its gate. Cancellation must restore only the same session's state.
+- Model/transport tests, actual WebView playback, Simulator integration, physical
+  phone playback and a released artifact are distinct proof levels. Do not enable
+  a menu item or advertise Android support from an unwired player/protocol alone.
+
+Use the supported [YouTube IFrame API](https://developers.google.com/youtube/iframe_api_reference)
+and the app's actual [embedded-player identity](https://developers.google.com/youtube/terms/required-minimum-functionality#embedded-player-api-client-identity).
+Keep its controls visible, do not bypass autoplay restrictions, and leave the
+Mac playing when embedding or position confirmation fails.
+
+Component checkpoint (2026-10-03): source now contains default-off negotiated
+offers, exact one-use receiver receipts, and a SwiftUI/WKWebView YouTube player
+with revocable, advancing-time playback observations. The actual native local
+WebView bridge and lifecycle tests pass in Simulator. Neither frontend enables
+the capability, no menu action is wired, and consuming an offer sends no Pause.
+The player has not been verified against a real YouTube stream; unsupported
+embedding/autoplay, source re-anchoring while loading, post-commit local player
+controls and audio coexistence remain integration work. This is not a transfer
+or deployment claim. See the handoff component section in `TESTING_ORACLES.md`.
 
 ## Product contract
 

@@ -658,6 +658,37 @@ uncertainty also revokes absolute Play/Pause authority. Cover 39 eligible tabs, 
 capacity, unknown selected versus unrelated renderers, cursor churn, paused-resume
 handoff races, and current-item command operation despite unrelated timeouts.
 
+### Default-off phone media handoff components
+
+`MediaHandoffProtocolTests` and the actual headless ordered-channel case in
+`RemoteMediaControlsProtocolTests` cover optional exact-nonce negotiation,
+fresh primary-source descriptions, one-use receipts, replay/deadline rejection
+and synchronous native continuity loss before actor event delivery. Removing
+the receive-side consumption clear must fail the duplicate-consumption assertion;
+removing the peer-disconnect continuity retirement must fail the native ABA case.
+Retain existing media-command and native input-revocation tests alongside these
+checks. A non-authorizing offer is not a native source descriptor or Pause lease.
+
+Run the signed Simulator `YouTubeHandoffOperationTests` and
+`YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
+main-frame message bridge and teardown with inert local provider HTML, not a real
+YouTube stream. An interrupted confirmation must remain revoked even if playback
+quickly resumes. Ready, no time advancement, wrong video/page/position, hidden
+presentation and stale evidence cannot confirm a new handoff.
+
+`node --test scripts/test-youtube-handoff-player.mjs` executes the extracted
+production player script with a provider double. Independently rerun with
+`BELUGA_HANDOFF_SCRIPT_MUTANT=identity`, `visibility`, and `cleanup`; each must
+fail its intended behavioral assertion, not extraction, compilation or setup.
+These mutants change script bytes only in memory. Restore any native Swift
+mutation exactly and rerun the affected suites; never distribute a mutant.
+
+Keep the capability disabled in both product frontends until native source
+binding, current-phone menu/presentation integration, exact offer-bound native
+pause/readback, and owner-scoped audio coexistence are implemented. Actual
+provider playback, native phone output and the completed source handoff remain
+separate runtime gates. Model, script and local WK tests are not that evidence.
+
 Permission-only helper IPC must
 work without an extension or connected peer, reject media-state injection, tolerate
 ordinary consent latency, recover from a transient listener failure, and retire on
