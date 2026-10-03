@@ -83,8 +83,7 @@ module BelugaMacClient
       require!(!arches.empty? && arches.uniq == arches && (arches - %w[arm64 x86_64]).empty? && arches.include?('arm64'), 'embedded code architecture mismatch')
       require!(!loading['compiledArm64'] || arches == ['arm64'], 'host/bridge/broker architecture mismatch')
       build_metadata = run('/usr/bin/vtool', '-show-build', path)
-      versions = build_metadata.scan(/^\s*(?:minos|version)\s+(\d+(?:\.\d+){1,2})\s*$/).flatten
-      require!(versions.length == arches.length, 'missing per-slice deployment target')
+      versions = deployment_versions!(build_metadata, path: path, architectures: arches)
       require!(versions.all? { |version| ((version.split('.').map(&:to_i) + [0, 0, 0])[0, 3] <=> [14, 0, 0]) <= 0 }, 'embedded code requires a newer macOS')
       require!(!loading['compiledArm64'] || versions == ['14.0'], 'host/bridge/broker deployment target must be exactly 14.0')
       install_id = loading['installID']

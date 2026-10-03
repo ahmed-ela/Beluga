@@ -98,6 +98,16 @@ The browser protocol must not change deployed /v1/rendezvous or /v2/availability
 
 ## Implementation evidence — 2026-10-02
 
+- Actual retained-artifact admission passed the evidence collector, then native
+  verification exposed a second metadata-parser defect: vtool's linker/compiler
+  `version` lines were counted as macOS deployment targets alongside `minos`.
+  The corrected parser binds each exact binary path and architecture to one
+  macOS build/minimum command and validates its tool records separately. Missing,
+  duplicate, foreign-platform and malformed slices fail closed; the existing
+  macOS14 ceiling and exact14 target for our three executables are unchanged.
+  The 69-case producer suite passes 1035 assertions, and read-only diagnostics
+  pass for all14 retained code members' targets, loading contracts and signatures.
+  These are not a fresh full release receipt, successful packaging or deployment.
 - Retained-artifact recovery is an explicit alternative in the existing client
   verifier/packager, not a fabricated successful `build.json`. A reviewed private
   manifest and independent digest bind the failed official invocation, exact

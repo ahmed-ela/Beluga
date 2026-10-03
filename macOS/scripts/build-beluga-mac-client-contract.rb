@@ -469,6 +469,63 @@ module BelugaMacClient
     run('/usr/bin/otool', '-l', path).scan(/\bcmd LC_RPATH\s+cmdsize \d+\s+path (.+?) \(offset \d+\)/).flatten
   end
 
+  # vtool prints linker/compiler `version` fields after LC_BUILD_VERSION.minos.
+  # Bind the deployment target to its command and exact architecture instead of
+  # treating every version-looking line as another minimum OS version.
+  def self.deployment_versions!(metadata, path:, architectures:)
+    require!(path.is_a?(String) && path.start_with?('/') && !path.match?(/[\r\n\0]/), 'invalid vtool binary path')
+    require!(architectures.is_a?(Array) && !architectures.empty? &&
+      architectures.uniq == architectures && (architectures - %w[arm64 x86_64]).empty?, 'invalid vtool architecture set')
+    text = utf8_text(metadata, 'vtool build metadata')
+    require!(text.bytesize <= 65_536 && text.end_with?("\n"), 'missing or oversized vtool build metadata')
+    header = /\A#{Regexp.escape(path)}(?: \(architecture (arm64|x86_64)\))?:\z/
+    slices = {}
+    current = nil
+    text.each_line do |line|
+      line = line.chomp
+      match = header.match(line)
+      if match
+        arch = match[1]
+        require!(arch || architectures.length == 1, 'unbound universal vtool slice')
+        arch ||= architectures.first
+        require!(architectures.include?(arch) && !slices.key?(arch), 'duplicate or unexpected vtool slice')
+        current = slices[arch] = []
+      else
+        require!(current && !line.strip.empty?, 'missing or malformed vtool slice header')
+        current << line.strip
+      end
+    end
+    require!(slices.keys.sort == architectures.sort, 'missing per-slice deployment target')
+    version = '[0-9]+(?:\\.[0-9]+){1,2}'
+    architectures.map do |arch|
+      fields = slices.fetch(arch)
+      require!(fields.first && fields.first.match?(/\ALoad command [0-9]+\z/), 'missing vtool load command')
+      case fields[1]
+      when 'cmd LC_BUILD_VERSION'
+        size = /\Acmdsize ([0-9]{1,4})\z/.match(fields[2].to_s)
+        minimum = /\Aminos (#{version})\z/.match(fields[4].to_s)
+        count = /\Antools ([0-9]{1,2})\z/.match(fields[6].to_s)
+        require!(size && minimum && count && fields[3] == 'platform MACOS' &&
+          /\Asdk #{version}\z/.match?(fields[5].to_s), 'malformed or non-macOS build command')
+        tools = count[1].to_i
+        require!(tools <= 64 && size[1].to_i == 24 + 8 * tools && fields.length == 7 + 2 * tools,
+          'ambiguous vtool build/tool records')
+        fields.drop(7).each_slice(2) do |tool, tool_version|
+          require!(/\Atool [A-Z0-9_]+\z/.match?(tool) && /\Aversion #{version}\z/.match?(tool_version),
+            'malformed vtool compiler/linker version')
+        end
+        minimum[1]
+      when 'cmd LC_VERSION_MIN_MACOSX'
+        minimum = /\Aversion (#{version})\z/.match(fields[3].to_s)
+        require!(fields.length == 5 && fields[2] == 'cmdsize 16' && minimum &&
+          /\Asdk #{version}\z/.match?(fields[4].to_s), 'malformed legacy macOS minimum command')
+        minimum[1]
+      else
+        raise Refusal, 'unsupported vtool deployment command'
+      end
+    end
+  end
+
   def self.dependencies!(records, expected_relative, install_id: nil)
     slices = []
     counts = []

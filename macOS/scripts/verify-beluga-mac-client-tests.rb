@@ -188,6 +188,51 @@ class BelugaMacClientContractTests < Minitest::Test
     "Identifier=#{C::BUNDLE_ID}\nCodeDirectory v=20500 size=123 flags=0x10000(runtime) hashes=3+7 location=embedded\nAuthority=Developer ID Application: Reviewed Owner (#{C::TEAM})\nAuthority=Developer ID Certification Authority\nTeamIdentifier=#{C::TEAM}\nTimestamp=Oct 2, 2026 at 12:00:00\u202FPM\n"
   end
 
+  def vtool_slice(path: '/private/Beluga Host.app/binary', arch: nil, minimum: '14.0', tool: 'LD', tool_version: '1267.0')
+    header = path + (arch ? " (architecture #{arch})" : '') + ":\n"
+    header + "Load command 11\n      cmd LC_BUILD_VERSION\n  cmdsize 32\n platform MACOS\n    minos #{minimum}\n      sdk 26.5\n   ntools 1\n     tool #{tool}\n  version #{tool_version}\n"
+  end
+
+  def test_vtool_targets_are_bound_to_slices_and_do_not_count_linker_versions
+    path = '/private/Beluga Host.app/binary'
+    thin = vtool_slice.freeze
+    assert_equal ['14.0'], C.deployment_versions!(thin, path: path, architectures: ['arm64'])
+    fat = vtool_slice(arch: 'x86_64', minimum: '10.15', tool: '4', tool_version: '22.0') +
+      vtool_slice(arch: 'arm64', minimum: '11.0', tool: '4', tool_version: '22.0')
+    assert_equal ['11.0', '10.15'], C.deployment_versions!(fat, path: path, architectures: %w[arm64 x86_64])
+    no_tools = vtool_slice.sub('cmdsize 32', 'cmdsize 24').sub("ntools 1\n     tool LD\n  version 1267.0", 'ntools 0')
+    assert_equal ['14.0'], C.deployment_versions!(no_tools, path: path, architectures: ['arm64'])
+    legacy = "#{path}:\nLoad command 8\n      cmd LC_VERSION_MIN_MACOSX\n  cmdsize 16\n  version 10.13\n      sdk 10.15\n"
+    assert_equal ['10.13'], C.deployment_versions!(legacy, path: path, architectures: ['x86_64'])
+    assert_equal ['15.0'], C.deployment_versions!(vtool_slice(minimum: '15.0'), path: path, architectures: ['arm64'])
+    assert_equal vtool_slice, thin
+  end
+
+  def test_vtool_refuses_missing_duplicate_foreign_or_malformed_slice_metadata
+    path = '/private/Beluga Host.app/binary'
+    thin = vtool_slice
+    [nil, '', thin.b + "\xFF".b, thin.sub(path, '/other/binary'),
+     thin.sub('platform MACOS', 'platform IOS'), thin.sub('platform MACOS', 'platform MACCATALYST'),
+     thin.sub('LC_BUILD_VERSION', 'LC_VERSION_MIN_IPHONEOS'),
+     thin.sub("    minos 14.0\n", ''), thin.sub('minos 14.0', "minos 14.0\n    minos 13.0"),
+     thin.sub('minos 14.0', 'minos invalid'), thin.sub('minos 14.0', 'minos 14.0.1.2'),
+     thin.sub('ntools 1', 'ntools 0'), thin.sub('ntools 1', 'ntools 2'),
+     thin.sub('ntools 1', 'ntools 999999999999999999999999999'),
+     thin.sub('cmdsize 32', 'cmdsize 24'), thin.sub('version 1267.0', 'minos 13.0'),
+     thin + "Load command 12\n      cmd LC_VERSION_MIN_MACOSX\n  cmdsize 16\n  version 13.0\n      sdk 14.0\n",
+     thin + "warning: missing metadata\n"].each do |output|
+      assert_raises(C::Refusal) { C.deployment_versions!(output, path: path, architectures: ['arm64']) }
+    end
+    fat = vtool_slice(arch: 'x86_64') + vtool_slice(arch: 'arm64')
+    [thin, vtool_slice(arch: 'arm64') * 2, fat.sub('architecture x86_64', 'architecture arm64e'),
+     fat.sub('architecture x86_64', 'architecture i386'), fat + vtool_slice(arch: 'arm64')].each do |output|
+      assert_raises(C::Refusal) { C.deployment_versions!(output, path: path, architectures: %w[arm64 x86_64]) }
+    end
+    [[], %w[arm64 arm64], %w[arm64e], nil].each do |architectures|
+      assert_raises(C::Refusal) { C.deployment_versions!(thin, path: path, architectures: architectures) }
+    end
+  end
+
   def test_codesign_parser_rejects_duplicate_identity_development_adhoc_no_runtime_or_no_timestamp
     assert_equal C::BUNDLE_ID, C.signature_fields!(signed_metadata)['Identifier']
     [signed_metadata + "Identifier=other\n", signed_metadata + "TeamIdentifier=#{C::TEAM}\n",
