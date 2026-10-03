@@ -263,6 +263,34 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('duplicate') { Gate.validate_mac_log(mac_log(@mac_methods + [@mac_methods.first]), @mac_methods) }
   end
 
+  def test_utf8_text_boundaries_preserve_valid_bytes_and_reject_malformed_bytes
+    [Encoding::US_ASCII, Encoding::ASCII_8BIT].each do |encoding|
+      bytes = "◇ π ✔".dup.force_encoding(encoding).freeze
+      assert_equal "◇ π ✔", Gate.utf8_text(bytes, 'fixture')
+      assert_equal "◇ π ✔".bytes, bytes.bytes
+      assert_equal encoding, bytes.encoding
+      mac = (mac_log + "◇ Test run started.\n✔ Test run with 0 tests passed after 0.001 seconds.\n").force_encoding(encoding).freeze
+      assert_equal @mac_methods, Gate.validate_mac_log(mac, @mac_methods)
+      assert_equal encoding, mac.encoding
+      mac_discovery = ("# π\n" + @mac_methods.join("\n")).force_encoding(encoding)
+      assert_equal @mac_methods, Gate.mac_inventory(mac_discovery)
+    end
+    rejects('is not text') { Gate.utf8_text(nil, 'fixture') }
+    invalid = "\xFF".b
+    rejects('not valid UTF-8') { Gate.mac_inventory(invalid) }
+    rejects('not valid UTF-8') { Gate.validate_mac_log(mac_log.b + invalid, @mac_methods) }
+  end
+
+  def test_simulator_source_inventory_requires_valid_utf8_without_locale_transcoding
+    path = File.join(@root, 'iOS/opensteamer/Tests/AudioTests.swift')
+    source = "// π 🦈\n".b + File.binread(path)
+    File.binwrite(path, source)
+    assert_equal @sim_methods, Gate.simulator_inventory(@root)
+    assert_equal source, File.binread(path)
+    File.binwrite(path, source + "\xFF".b)
+    rejects('not valid UTF-8') { Gate.simulator_inventory(@root) }
+  end
+
   def test_xunit_requires_exact_non_skipping_behavioral_results
     cases = @mac_methods.map { |id| klass, name = id.split('/'); %Q{<testcase classname="#{klass}" name="#{name}"/>} }
     assert_equal @mac_methods, Gate.validate_xunit('<testsuite>' + cases.join + '</testsuite>', @mac_methods)

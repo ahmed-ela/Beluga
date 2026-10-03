@@ -121,6 +121,14 @@ module MicrophoneRegressionGate
     raise RuntimeError, message unless condition
   end
 
+  # Source and Swift Testing logs are UTF-8 even under the scrubbed C locale.
+  def self.utf8_text(bytes, label)
+    require!(bytes.is_a?(String), label + ' is not text')
+    text = bytes.dup.force_encoding(Encoding::UTF_8)
+    require!(text.valid_encoding?, label + ' is not valid UTF-8')
+    text
+  end
+
   def self.exact_keys!(value, keys, label)
     require!(value.is_a?(Hash) && value.keys.sort == keys.sort, "#{label} has an unrecognized field set")
   end
@@ -172,7 +180,7 @@ module MicrophoneRegressionGate
   def self.simulator_inventory(root)
     methods = []
     Dir.glob(File.join(root, 'iOS/opensteamer/Tests/**/*.swift')).sort.each do |path|
-      text = File.read(path)
+      text = utf8_text(File.binread(path), 'Simulator test source')
       matches = []
       text.to_enum(:scan, /\b(?:final\s+)?class\s+(\w+)\s*:\s*XCTestCase\b/).each do
         match = Regexp.last_match
@@ -245,6 +253,7 @@ module MicrophoneRegressionGate
   end
 
   def self.validate_mac_log(text, expected)
+    text = utf8_text(text, 'Mac test result')
     lines = text.lines.map(&:chomp)
     starts = lines.each_index.select { |index| lines[index].match?(/\ATest Suite 'Selected tests' started at .+\.\z/) }
     ends = lines.each_index.select { |index| lines[index].match?(/\ATest Suite 'Selected tests' passed at .+\.\z/) }
@@ -276,6 +285,7 @@ module MicrophoneRegressionGate
   end
 
   def self.mac_inventory(text)
+    text = utf8_text(text, 'Mac test discovery')
     methods = text.lines.map(&:strip).select { |line| line.match?(/\A\w+\.\w+\/test\w+\z/) }
     require!(!methods.empty? && methods.uniq.length == methods.length, 'empty or duplicate Mac discovery')
     MAC_CLASSES.each { |name| require!(methods.any? { |id| id.start_with?(name + '/') }, "missing Mac test class: #{name}") }

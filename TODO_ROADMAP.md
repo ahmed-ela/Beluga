@@ -44,6 +44,11 @@ passed the corresponding physical release gate.
 
 ## Notification controls
 
+- [ ] Ship scoped iPhone auto-lock prevention while the active Mac-screen view shows the host's
+  primary playing YouTube watch video. Paused/stopped, audio-only, hidden/inactive, disconnected
+  and stale-state cases must release the idle timer. Source/Simulator proof and TestFlight
+  availability are separate from physical screen-sleep validation.
+
 - [x] Integrate the bounded browser/Music catalog, shared source-specific Play/Pause
   and ±30-second commands, and the App Group notification extension in source.
   See [notification media controls](docs/notification-media-controls.md) for authority,

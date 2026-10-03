@@ -11,6 +11,7 @@
 		103C41100893D8012C60ADE6 /* ViewerPairingPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */; };
 		19DAC364217DD39D74EA628F /* MediaNotificationContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B91C374837F36DA0427D311B /* MediaNotificationContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1B68820CF3936A71D2B7BCEA /* PhysicalScreenSequenceOracleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82C1960DA0B4FF5EE2B3F7CF /* PhysicalScreenSequenceOracleTests.swift */; };
+		1DDD04A138D5D3982BC984D8 /* ScreenVideoIdleTimer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14E58B85B88BC4D731757749 /* ScreenVideoIdleTimer.swift */; };
 		1E220F17ECE4F06A1552C770 /* PhysicalOracleEvaluatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA37DD740FBC007D8FFBCA52 /* PhysicalOracleEvaluatorTests.swift */; };
 		237AC40EAB83BAD40B0B2964 /* MediaNotificationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDEF370B9E9DFB71FE481F9E /* MediaNotificationModels.swift */; };
 		2A22F44ECDB811632D6B3812 /* ScreenVideoRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCF50C685C4CBFD9F3AC8546 /* ScreenVideoRenderer.swift */; };
@@ -23,6 +24,7 @@
 		3A5EB408BB3A725650ACE3EF /* NotificationViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29668F249D8DE7F958C15E34 /* NotificationViewController.swift */; };
 		40AFC270DF77FF0D0BAB3BB3 /* WebRTCRemoteScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */; };
 		410A20E5A1359F7ACEC16FEE /* RemoteMediaArtworkNetworkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2929FAEAC7A483ECCCDA903 /* RemoteMediaArtworkNetworkTests.swift */; };
+		430D86CBBA9810E9EF987DAE /* ScreenVideoIdleTimerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B54F8647CCBD3A9D7C68F440 /* ScreenVideoIdleTimerTests.swift */; };
 		442A7D004ECD12C8DCF14225 /* MediaNotificationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E46ECD3A741BE3F41BD29377 /* MediaNotificationStoreTests.swift */; };
 		49F1CBD5FC9B1DF0215D2B4B /* MediaNotificationScrub.swift in Sources */ = {isa = PBXBuildFile; fileRef = C679EBD1E7939FC30A044DF2 /* MediaNotificationScrub.swift */; };
 		4D7160E2C12B45C36CA6F0B5 /* WorldwideCallActivityObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE7AAEDB7B667B93413D7D8E /* WorldwideCallActivityObserver.swift */; };
@@ -93,6 +95,7 @@
 		EA28552E783109EE7CEB283A /* RemotePointerGestureSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4AE757E2363D02C7C78F641 /* RemotePointerGestureSurface.swift */; };
 		F5EC00BDA63D36E530D77711 /* WorldwideAudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */; };
 		F6A34A96DBB573F8703BC7EE /* MediaNotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */; };
+		F6A57388879C9541983B95B2 /* ScreenVideoIdleTimerViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F708B6FEC8614023D4B7B201 /* ScreenVideoIdleTimerViewTests.swift */; };
 		F8D2517FF85FB96B2BA6908E /* MediaNotificationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F042190199D4ED9936EB585 /* MediaNotificationStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -139,6 +142,7 @@
 		093577922497DF95FEAFD8EF /* BackgroundPlaybackCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundPlaybackCoordinator.swift; sourceTree = "<group>"; };
 		0B08A0C97FDDE54F9FD2A8EE /* RemoteKeyboardInputProxyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputProxyTests.swift; sourceTree = "<group>"; };
 		132D234332E7CDAD5F0F3213 /* ServerInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerInfo.swift; sourceTree = "<group>"; };
+		14E58B85B88BC4D731757749 /* ScreenVideoIdleTimer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoIdleTimer.swift; sourceTree = "<group>"; };
 		1B1898404A854E897D4E51A1 /* MediaNotificationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationCoordinator.swift; sourceTree = "<group>"; };
 		1D379672507C0BAD1D36EF33 /* PhysicalScreenSequenceOracle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalScreenSequenceOracle.swift; sourceTree = "<group>"; };
 		1D8B7D553630E727E5BA02A0 /* WorldwideAudioLifecycleController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideAudioLifecycleController.swift; sourceTree = "<group>"; };
@@ -187,6 +191,7 @@
 		A4F9F8CF671205198FE2CCDB /* RemoteScrollGesturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteScrollGesturePolicy.swift; sourceTree = "<group>"; };
 		AADCE9D78978201BB910C650 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 		B49BCC0609B4E09681F3B505 /* MediaNotification.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MediaNotification.entitlements; sourceTree = "<group>"; };
+		B54F8647CCBD3A9D7C68F440 /* ScreenVideoIdleTimerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoIdleTimerTests.swift; sourceTree = "<group>"; };
 		B627D77889C9E574BD3AF2F5 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		B740987453823FD64F7C0982 /* RemoteKeyboardInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteKeyboardInputView.swift; sourceTree = "<group>"; };
 		B91C374837F36DA0427D311B /* MediaNotificationContent.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = MediaNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -214,6 +219,7 @@
 		F36373D0CB1979AF2ABF3A1F /* WorldwideViewerConnectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorldwideViewerConnectionCoordinator.swift; sourceTree = "<group>"; };
 		F3DDCE4C6F7143536E9111F3 /* ScreenVisualOraclePhysicalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVisualOraclePhysicalUITests.swift; sourceTree = "<group>"; };
 		F524855347D7B066F88321D0 /* ScreenVideoConnectionDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoConnectionDescriptor.swift; sourceTree = "<group>"; };
+		F708B6FEC8614023D4B7B201 /* ScreenVideoIdleTimerViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenVideoIdleTimerViewTests.swift; sourceTree = "<group>"; };
 		FB6E5C0C5FD82651759A73F3 /* WebRTCRemoteScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebRTCRemoteScreenView.swift; sourceTree = "<group>"; };
 		FD05EFF5B0B4B73AE0B392EC /* PhysicalScreenSequenceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalScreenSequenceProtocol.swift; sourceTree = "<group>"; };
 		FE5308EFBD1542023CA23117 /* SampleBufferScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SampleBufferScreenView.swift; sourceTree = "<group>"; };
@@ -428,6 +434,7 @@
 				CC8E4343323AB6F87940C484 /* MediaNotificationSimulatorFixture.swift */,
 				76F2CC18DCFD9E1ACAC69A25 /* OpensteamerApp.swift */,
 				E21F5AD974B8BC968D754A01 /* RemoteMediaArtwork.swift */,
+				14E58B85B88BC4D731757749 /* ScreenVideoIdleTimer.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -481,6 +488,8 @@
 				F2929FAEAC7A483ECCCDA903 /* RemoteMediaArtworkNetworkTests.swift */,
 				C7B1BF8B41EA3FE864A61077 /* RemoteMediaArtworkTests.swift */,
 				25ECEB6D6E00D5B159214DD9 /* RemoteMediaSurfaceDiagnosticsTests.swift */,
+				B54F8647CCBD3A9D7C68F440 /* ScreenVideoIdleTimerTests.swift */,
+				F708B6FEC8614023D4B7B201 /* ScreenVideoIdleTimerViewTests.swift */,
 				6958FC2CA2AB682B2500A8CA /* ViewerPairingPersistenceTests.swift */,
 				ECB116DB67832023573C8889 /* WebRTCAudioPlaybackSessionTests.swift */,
 				EF58ACCC60E0F1CDD3B085F1 /* WorldwideAudioLifecycleTests.swift */,
@@ -684,6 +693,7 @@
 				70C2F5089C84108917111CF0 /* ScreenSessionViewModel.swift in Sources */,
 				D2FB014BB9E23EC04BBBE548 /* ScreenVideoClient.swift in Sources */,
 				8CEE8A4F3BF37A783F2E66B9 /* ScreenVideoConnectionDescriptor.swift in Sources */,
+				1DDD04A138D5D3982BC984D8 /* ScreenVideoIdleTimer.swift in Sources */,
 				2A22F44ECDB811632D6B3812 /* ScreenVideoRenderer.swift in Sources */,
 				627187065AADC178DAECE8BE /* ScreenViewerView.swift in Sources */,
 				C8262450EBF279627543D271 /* ServerInfo.swift in Sources */,
@@ -733,6 +743,8 @@
 				410A20E5A1359F7ACEC16FEE /* RemoteMediaArtworkNetworkTests.swift in Sources */,
 				5F6310C5C74FD76205C2BDD6 /* RemoteMediaArtworkTests.swift in Sources */,
 				2D314AECD89DC6E2F17B5C55 /* RemoteMediaSurfaceDiagnosticsTests.swift in Sources */,
+				430D86CBBA9810E9EF987DAE /* ScreenVideoIdleTimerTests.swift in Sources */,
+				F6A57388879C9541983B95B2 /* ScreenVideoIdleTimerViewTests.swift in Sources */,
 				103C41100893D8012C60ADE6 /* ViewerPairingPersistenceTests.swift in Sources */,
 				303BED46E3673163FCA92B36 /* WebRTCAudioPlaybackSessionTests.swift in Sources */,
 				7A896917C5694180149B0C64 /* WorldwideAudioLifecycleTests.swift in Sources */,
@@ -877,7 +889,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 93;
+				CURRENT_PROJECT_VERSION = 94;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = Sources/Support/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1130,7 +1142,7 @@
 				BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
 				CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 93;
+				CURRENT_PROJECT_VERSION = 94;
 				DEVELOPMENT_TEAM = MSMG8CJLB3;
 				INFOPLIST_FILE = MediaNotificationContent/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

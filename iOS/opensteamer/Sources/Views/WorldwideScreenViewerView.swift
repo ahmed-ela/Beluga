@@ -337,6 +337,14 @@ struct WorldwideScreenViewerView: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+        .modifier(ScreenVideoIdleTimerModifier(
+            playback: viewModel.screenVideoPlaybackEvidence,
+            isViewingScreen: allowsRemoteInputPresentation
+                && viewModel.screenPresentationIsVisible(lease)
+                && presentedRemoteVideoTrack != nil
+                && renderedVideoSize != nil
+                && screenMediaFence?.forceCover != true
+        ))
         .task {
             guard Self.allowsScreenPresentation(in: scenePhase) else {
                 rejectPresentationAndDismiss()
