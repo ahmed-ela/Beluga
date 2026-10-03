@@ -38,7 +38,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
     }
 
     func testComposedHandoffReceiverUsesRealPeerAndScopedAudioOwner() async throws {
-        try await exerciseComposedHandoff(retireBeforePlayback: false)
+        #if targetEnvironment(simulator)
+        let actualProvider = ProcessInfo.processInfo.environment["OPENSTEAMER_LIVE_YOUTUBE_PROBE"] == "1"
+        #else
+        let actualProvider = false
+        #endif
+        try await exerciseComposedHandoff(retireBeforePlayback: false, actualProvider: actualProvider)
     }
 
     func testComposedHandoffTransportRetirementCannotSendMacPause() async throws {
@@ -46,26 +51,27 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
     }
 
     /// Real ordered local peers -> production VM consumer -> coordinator -> visible WK ->
-    /// typed commit -> VM completion. Only provider HTML, native audio endpoints and the
-    /// native Mac pause result are doubles. This is not provider/acoustic/physical proof.
-    private func exerciseComposedHandoff(retireBeforePlayback: Bool) async throws {
+    /// typed commit -> VM completion. Provider HTML is normally a double; the explicit
+    /// Simulator opt-in uses real YouTube. Native audio and Mac completion remain doubles.
+    private func exerciseComposedHandoff(retireBeforePlayback: Bool, actualProvider: Bool = false) async throws {
         let hostDevice = PhysicalNoHardwareAudioDevice()
         let viewerDevice = PhysicalNoHardwareAudioDevice()
         try await exerciseComposedHandoff(retireBeforePlayback: retireBeforePlayback,
-            hostDevice: hostDevice, viewerDevice: viewerDevice)
+            actualProvider: actualProvider, hostDevice: hostDevice, viewerDevice: viewerDevice)
         // Native ADM teardown follows release of the peer factory, not merely close().
         try await waitForComposedHandoff("both scoped native factories released") {
             !hostDevice.snapshot.delegateBound && !viewerDevice.snapshot.delegateBound
         }
     }
 
-    private func exerciseComposedHandoff(retireBeforePlayback: Bool,
+    private func exerciseComposedHandoff(retireBeforePlayback: Bool, actualProvider: Bool,
         hostDevice: PhysicalNoHardwareAudioDevice, viewerDevice: PhysicalNoHardwareAudioDevice) async throws {
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive })
         let fixture = makeFixture()
         let coordinator = YouTubeHandoffCoordinator(makePlayer: {
-            YouTubeHandoffPlayer(request: $0,
+            if actualProvider { return YouTubeHandoffPlayer(request: $0, eventHandler: $1) }
+            return YouTubeHandoffPlayer(request: $0,
                 htmlDocument: YouTubeHandoffWebViewTests.localDocument, eventHandler: $1)
         })
         let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller,
@@ -100,15 +106,17 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         var commits: [WebRTCReceivedMediaHandoffCommit] = []
         var genericCommands = 0
         var revision: UInt64 = 0
+        let videoID = actualProvider ? "M7lc1UVf-VE" : "dQw4w9WgXcQ"
+        let duration: Double = actualProvider ? 1344 : 200
         let startedAt = ProcessInfo.processInfo.systemUptime
         func publish(_ refresh: WebRTCReceivedRemoteMediaStateRefreshRequest? = nil) async throws {
             revision += 1
             let item = WebRTCRemoteMediaItem(contextID: "composed-exact-source", sourceName: "YouTube",
-                title: "Local provider double", playbackState: .playing,
+                title: actualProvider ? "YouTube API demo" : "Local provider double", playbackState: .playing,
                 elapsedTime: 20 + ProcessInfo.processInfo.systemUptime - startedAt,
-                duration: 200, playbackRate: 1,
+                duration: duration, playbackRate: 1,
                 capabilities: .init(canPlay: true, canPause: true, canSkipForward: false,
-                    canSkipBackward: false, canSeekToPosition: true), artwork: .init(videoID: "dQw4w9WgXcQ"))
+                    canSkipBackward: false, canSeekToPosition: true), artwork: .init(videoID: videoID))
             try await host.sendRemoteMediaState(.init(revision: revision, item: item), respondingTo: refresh)
         }
         let hostTask = Task { @MainActor in
@@ -146,6 +154,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         }
         var updater: Task<Void, Never>?
         var player: YouTubeHandoffPlayer?
+        var visibleWebView: WKWebView?
         let window = UIWindow(windowScene: scene)
         window.frame = scene.coordinateSpace.bounds
         var failure: (any Error)?
@@ -183,6 +192,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             XCTAssertFalse(fixture.remoteAudio.isEnabled)
             XCTAssertTrue(commits.isEmpty, "Offer receipt alone cannot pause the Mac")
             let webView = ownedPlayer.makeWebView()
+            visibleWebView = webView
             window.rootViewController = UIViewController()
             window.rootViewController!.view.addSubview(webView)
             webView.frame = CGRect(x: 0, y: 0, width: 390, height: 600)
@@ -202,12 +212,16 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 XCTAssertEqual(commits.count, 1)
                 XCTAssertEqual(commits.first?.id, id)
                 XCTAssertEqual(commits.first?.contextID, "composed-exact-source")
-                XCTAssertEqual(commits.first?.videoID, "dQw4w9WgXcQ")
+                XCTAssertEqual(commits.first?.videoID, videoID)
                 XCTAssertEqual(ownedPlayer.macPauseStatus, .paused)
                 XCTAssertFalse(fixture.remoteAudio.isEnabled)
                 XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
                 XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
                     fixture.playback.deactivateCount])
+                if actualProvider {
+                    await attachActualComposedHandoffEvidence(webView: webView, player: ownedPlayer,
+                        commits: commits, genericCommands: genericCommands)
+                }
                 coordinator.dismiss(presented.id)
             }
             var cleanupAcknowledged = false
@@ -228,7 +242,13 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             XCTAssertEqual(viewerDevice.snapshot.recordingStarts, 0)
             XCTAssertEqual(hostDevice.snapshot.recordingStarts, 0)
             XCTAssertTrue(errors.isEmpty, errors.joined(separator: "; "))
-        } catch { failure = error }
+        } catch {
+            failure = error
+            if actualProvider, let visibleWebView, let player {
+                await attachActualComposedHandoffEvidence(webView: visibleWebView, player: player,
+                    commits: commits, genericCommands: genericCommands)
+            }
+        }
         updater?.cancel(); await updater?.value
         coordinator.invalidate()
         if let player {
@@ -247,6 +267,21 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         fixture.controller.stop()
         XCTAssertTrue(hostClosed); XCTAssertTrue(viewerClosed)
         if let failure { throw failure }
+    }
+
+    private func attachActualComposedHandoffEvidence(webView: WKWebView, player: YouTubeHandoffPlayer,
+        commits: [WebRTCReceivedMediaHandoffCommit], genericCommands: Int) async {
+        let page = try? await webView.evaluateJavaScript("JSON.stringify({visibility:document.visibilityState,ready:document.readyState,frames:Array.from(document.querySelectorAll('iframe')).map(f=>({src:f.src,bounds:f.getBoundingClientRect().toJSON()}))})")
+        let diagnostic = XCTAttachment(string: "actualProvider=true phase=\(player.phase) exactCommits=\(commits.count) videoIDs=\(commits.map(\.videoID)) genericCommands=\(genericCommands) nativeMacResult=TEST_DOUBLE page=\(String(describing: page))")
+        diagnostic.name = "actual-provider-composed-receiver"
+        diagnostic.lifetime = .keepAlways
+        add(diagnostic)
+        if let image = try? await webView.takeSnapshot(configuration: nil) {
+            let screenshot = XCTAttachment(image: image)
+            screenshot.name = "actual-provider-composed-visible-webview"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
     }
 
     private func waitForComposedHandoff(_ description: String,

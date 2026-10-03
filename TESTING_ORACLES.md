@@ -780,6 +780,16 @@ success, no generic Pause, no commit before playback, same-channel refresh-barri
 proof after cancellation, scoped cleanup, and no unmute into an uncertain transport.
 Release both factories and require their device delegates to retire. These tests
 do not connect cloud signaling, bind an audio transaction device or authorize a mic.
+On the approved development Simulator, the same explicit
+`OPENSTEAMER_LIVE_YOUTUBE_PROBE=1` opt-in also replaces the successful composed
+receiver test's provider double with production HTML and the real pinned YouTube
+demo. It retains the exact-source commit, scoped audio-owner and stop-ack assertions,
+and captures the real player pixels and page state. The cancellation case remains
+deterministic. Native audio endpoints, source-state publication and Mac completion
+are still doubles: this joins real provider playback to the production phone
+receiver and wire transaction, not the native Mac menu/pause or acoustic boundaries.
+Run the same focused pair without the opt-in to retain deterministic CI coverage;
+no new default-CI skip or hardware-only skip allowance is introduced.
 
 `YouTubeHandoffProviderProbeTests` is separately opt-in: set the test-runner variable
 `OPENSTEAMER_LIVE_YOUTUBE_PROBE=1` only on the approved development Simulator.
