@@ -733,6 +733,30 @@ fail its intended behavioral assertion, not extraction, compilation or setup.
 These mutants change script bytes only in memory. Restore any native Swift
 mutation exactly and rerun the affected suites; never distribute a mutant.
 
+The `WorldwideAudioLifecycleTests.testMediaHandoff...` cases cover the separate
+local-player downlink lease. A single exact owner may suppress decoded Mac audio;
+neither acquisition nor release changes microphone intent, native audio-session
+policy, proof admission or the explicit route-resume latch. Interruption, call,
+transport, runtime-proof and track changes revoke the owner. Revocation keeps
+the mute until that owner acknowledges player cleanup, so recovery cannot unmute
+under a still-closing player. Stale owners cannot release a replacement session
+or player, and synchronous snapshot/cleanup callbacks cannot return retired
+authority. Remove the exact-owner release check and require the stale-release
+assertions to fail.
+
+The ordinary playout watchdog exempts only intentionally suppressed decoded PCM,
+not frozen native callbacks or invalid profiles. Suppression identity and a
+separate change generation fence observations and counter floors; acquiring and
+releasing entirely between samples must not look like an unchanged nil owner.
+The suspended real-VM diagnostics tests cover acquire, release, replacement and
+that nil-to-nil round trip. Remove the generation check to expose stale publication;
+exempt muted frozen callbacks and require the unchanged liveness assertion to
+fail. Restore exactly and run all three signed Simulator audio suites plus the
+pinned Rust tests in `MICROPHONE_REGRESSION_GUARDRAILS.md`. These owner/track doubles
+do not prove concurrent native WK audio output, microphone capture or a completed
+phone handoff. The lease API remains unwired until the current-peer player owner
+provides synchronous invalidation/cleanup and the remaining runtime gates pass.
+
 Keep the capability disabled in both product frontends until native source
 binding, current-phone menu/presentation integration, exact offer-bound native
 pause/readback, and owner-scoped audio coexistence are implemented. Actual

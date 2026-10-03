@@ -8984,6 +8984,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     ) async {
         let expectedPolicyGeneration = audioPolicyGeneration
         let expectedTransportGeneration = transportAuthorizationGeneration
+        let expectedHandoffSuppressionID = audioLifecycle.mediaHandoffAudioSuppressionID
+        let expectedHandoffGeneration = audioLifecycle.mediaHandoffAudioGeneration
         guard !Task.isCancelled, !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
               generation == sessionGeneration,
               peer === sourcePeer,
@@ -8996,6 +8998,8 @@ final class WorldwideSessionViewModel: ObservableObject {
               peer === sourcePeer,
               audioPolicyGeneration == expectedPolicyGeneration,
               transportAuthorizationGeneration == expectedTransportGeneration,
+              audioLifecycle.mediaHandoffAudioSuppressionID == expectedHandoffSuppressionID,
+              audioLifecycle.mediaHandoffAudioGeneration == expectedHandoffGeneration,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let oracle = publishIOSPlayoutOracle(
             diagnostics,
@@ -9009,7 +9013,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             from: sourcePeer,
             generation: generation,
             policyGeneration: expectedPolicyGeneration,
-            collectedAt: statistics.collectedAt
+            collectedAt: statistics.collectedAt,
+            mediaHandoffAudioSuppressionID: expectedHandoffSuppressionID,
+            mediaHandoffAudioGeneration: expectedHandoffGeneration
         )
     }
 
@@ -9048,14 +9054,18 @@ final class WorldwideSessionViewModel: ObservableObject {
         from sourcePeer: WebRTCPeer,
         generation: UUID,
         policyGeneration: UUID,
-        collectedAt: Date
+        collectedAt: Date,
+        mediaHandoffAudioSuppressionID: UUID?,
+        mediaHandoffAudioGeneration: UUID
     ) {
         let result = ordinaryPlayoutLivenessTracker.observe(
             sessionGeneration: generation,
             audioPolicyGeneration: policyGeneration,
             peerIdentity: ObjectIdentifier(sourcePeer),
             collectedAt: collectedAt,
-            oracle: oracle
+            oracle: oracle,
+            mediaHandoffAudioSuppressionID: mediaHandoffAudioSuppressionID,
+            mediaHandoffAudioGeneration: mediaHandoffAudioGeneration
         )
         switch result {
         case .waiting:

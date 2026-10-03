@@ -35,6 +35,318 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         case localFailure
     }
 
+    func testMediaHandoffMutesOnlyOwnedDownlinkWithoutChangingMicrophoneOrNativeSession() throws {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+        let nativeCounts = [fixture.playback.activateCount, fixture.playback.recoverCount,
+            fixture.playback.deactivateCount, fixture.playback.prepareManualAudioDisabledCount]
+        let microphoneAllowed = fixture.controller.microphoneActivationIsAllowed()
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in
+            XCTFail("Stable playback must not invalidate its local owner")
+        })
+        XCTAssertTrue(lease.isValid)
+        XCTAssertNotNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertTrue(fixture.controller.snapshot.isRemoteAudioAvailable)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Mac audio paused — phone player")
+        XCTAssertFalse(fixture.background.publications.last!.isPlaying)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.updateServerName("Same Mac")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertFalse(fixture.remoteAudio.isEnabled, "Owner publications must not undo the scoped mute")
+        XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
+        XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
+            fixture.playback.deactivateCount, fixture.playback.prepareManualAudioDisabledCount])
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+        XCTAssertFalse(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
+        XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
+            fixture.playback.deactivateCount, fixture.playback.prepareManualAudioDisabledCount])
+        fixture.controller.stop()
+    }
+
+    func testMediaHandoffRequiresPreparedHealthyProvenAudioAndFreshCallState() throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        defer { fixture.controller.stop() }
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.prepare(serverName: "Mac mini")
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.transportBecameHealthy()
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.updateRuntimePlayout(isReady: true)
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        fixture.callActivity.stageLiveNonEndedCallCountWithoutCallback(1)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() },
+                     "An unprocessed CallKit edge must still reject a new player")
+    }
+
+    func testMediaHandoffStaleReleaseCannotUnmuteReplacementOwnerOrSession() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let first = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        let firstID = fixture.controller.mediaHandoffAudioSuppressionID
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(first))
+        let second = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        XCTAssertNotEqual(fixture.controller.mediaHandoffAudioSuppressionID, firstID)
+        XCTAssertFalse(fixture.controller.endMediaHandoffPlayback(first))
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertTrue(second.isValid)
+        fixture.controller.stop()
+        XCTAssertFalse(second.isValid)
+        fixture.controller.prepare(serverName: "Replacement Mac")
+        let newTrack = RemoteAudioStub()
+        fixture.controller.remoteAudioBecameAvailable(newTrack)
+        fixture.controller.transportBecameHealthy()
+        let current = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        XCTAssertFalse(fixture.controller.endMediaHandoffPlayback(second))
+        XCTAssertFalse(newTrack.isEnabled)
+        XCTAssertTrue(current.isValid)
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(current))
+        XCTAssertTrue(newTrack.isEnabled)
+    }
+
+    func testMediaHandoffRevocationKeepsMuteThroughRecoveryUntilExactPlayerCleanup() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        var invalidations = 0
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { lease in
+            invalidations += 1
+            XCTAssertFalse(lease.isValid)
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        })
+        fixture.controller.transportBecameUncertain()
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNotNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertFalse(fixture.remoteAudio.isEnabled, "Recovery cannot race the still-closing local player")
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+    }
+
+    func testMediaHandoffReleasingAfterRouteLossNeverClearsExplicitResume() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        var invalidations = 0
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in invalidations += 1 })
+        fixture.events.onRouteChanged?("Audio route changed: device unavailable")
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertFalse(lease.isValid)
+        XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        let recoverCount = fixture.playback.recoverCount
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCount)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+    }
+
+    func testMediaHandoffRevokesOnInterruptionCallProofLossAndTrackReplacement() throws {
+        for boundary in ["interruption", "call", "proof", "services", "track"] {
+            let fixture = makeFixture()
+            fixture.playback.requiresRuntimePlayoutProof = true
+            fixture.controller.prepare(serverName: "Mac mini")
+            fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+            fixture.controller.transportBecameHealthy()
+            fixture.controller.updateRuntimePlayout(isReady: true)
+            var invalidations = 0
+            let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { lease in
+                invalidations += 1
+                XCTAssertFalse(lease.isValid)
+                XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            })
+            switch boundary {
+            case "interruption": fixture.events.onInterruptionBegan?(.unavailable)
+            case "call": fixture.callActivity.setNonEndedCallCount(1)
+            case "proof": fixture.controller.updateRuntimePlayout(isReady: false)
+            case "services": fixture.events.onMediaServicesLost?()
+            default:
+                let replacement = RemoteAudioStub(initiallyEnabled: true)
+                fixture.controller.remoteAudioBecameAvailable(replacement)
+                XCTAssertFalse(replacement.isEnabled)
+            }
+            XCTAssertEqual(invalidations, 1, boundary)
+            XCTAssertFalse(lease.isValid, boundary)
+            fixture.controller.updateServerName("Same Mac")
+            XCTAssertEqual(invalidations, 1, boundary)
+            fixture.controller.stop()
+            XCTAssertEqual(invalidations, 1, boundary)
+        }
+    }
+
+    func testMediaHandoffInvalidationAllowsReentrantExactCleanupWithoutOpeningUnhealthyTrack() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        var cleanupCount = 0
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { lease in
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            XCTAssertFalse(lease.isValid)
+            XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            cleanupCount += 1
+        })
+        fixture.controller.transportBecameUncertain()
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+    }
+
+    func testMediaHandoffAdmissionDoesNotReturnOwnerRetiredBySnapshotReentrancy() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        fixture.controller.onSnapshotChanged = { _ in
+            if fixture.controller.mediaHandoffAudioSuppressionID != nil { fixture.controller.stop() }
+        }
+        var invalidations = 0
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in invalidations += 1 })
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Inactive")
+    }
+
+    func testMediaHandoffMuteDoesNotMaskFrozenCallbacksOrLaterUnmutedDecodeFailure() {
+        let session = UUID(), policy = UUID(), mute = UUID()
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+        func observe(_ time: Double, callbacks: UInt64, suppressed: UUID?) -> IOSOrdinaryPlayoutLivenessResult {
+            tracker.observe(sessionGeneration: session, audioPolicyGeneration: policy,
+                peerIdentity: ObjectIdentifier(self), collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(sessionGeneration: session, audioPolicyGeneration: policy,
+                    callbacks: callbacks, frames: callbacks * 480, pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000, inboundEnergy: time + 1),
+                mediaHandoffAudioSuppressionID: suppressed)
+        }
+        XCTAssertEqual(observe(0, callbacks: 10, suppressed: mute), .waiting)
+        XCTAssertEqual(observe(1, callbacks: 11, suppressed: mute), .healthy)
+        XCTAssertEqual(observe(4.6, callbacks: 12, suppressed: mute), .healthy,
+                       "Deliberately muted PCM must not cause native recovery")
+        XCTAssertEqual(observe(5, callbacks: 12, suppressed: mute), .waiting)
+        XCTAssertEqual(observe(8.6, callbacks: 12, suppressed: mute), .recover(.callbacksFrozen))
+        XCTAssertEqual(observe(9, callbacks: 13, suppressed: nil), .waiting)
+        XCTAssertEqual(observe(10, callbacks: 14, suppressed: nil), .waiting)
+        XCTAssertEqual(observe(13.6, callbacks: 15, suppressed: nil), .recover(.inboundEnergyWithoutPCM),
+                       "Releasing the mute restores the full decoded-audio watchdog")
+    }
+
+    func testMediaHandoffMuteOwnerChangeStartsFreshLivenessWindow() {
+        let session = UUID(), policy = UUID(), first = UUID(), second = UUID()
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+        func observe(_ time: Double, suppressed: UUID?) -> IOSOrdinaryPlayoutLivenessResult {
+            tracker.observe(sessionGeneration: session, audioPolicyGeneration: policy,
+                peerIdentity: ObjectIdentifier(self), collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(sessionGeneration: session, audioPolicyGeneration: policy,
+                    callbacks: 10, frames: 4_800, pcmNonzero: 1_000, pcmAbsolute: 1_000_000, inboundEnergy: 1),
+                mediaHandoffAudioSuppressionID: suppressed)
+        }
+        XCTAssertEqual(observe(0, suppressed: first), .waiting)
+        XCTAssertEqual(observe(1, suppressed: first), .waiting)
+        XCTAssertEqual(observe(4, suppressed: second), .waiting)
+        XCTAssertEqual(observe(5, suppressed: second), .waiting)
+        XCTAssertEqual(observe(8.6, suppressed: second), .recover(.callbacksFrozen))
+    }
+
+    func testMediaHandoffRoundTripBetweenSamplesResetsLivenessWindow() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let session = UUID(), policy = UUID()
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+        func observe(_ time: Double) -> IOSOrdinaryPlayoutLivenessResult {
+            tracker.observe(sessionGeneration: session, audioPolicyGeneration: policy,
+                peerIdentity: ObjectIdentifier(self), collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(sessionGeneration: session, audioPolicyGeneration: policy,
+                    callbacks: 10, frames: 4_800, pcmNonzero: 1_000, pcmAbsolute: 1_000_000, inboundEnergy: 1),
+                mediaHandoffAudioSuppressionID: fixture.controller.mediaHandoffAudioSuppressionID,
+                mediaHandoffAudioGeneration: fixture.controller.mediaHandoffAudioGeneration)
+        }
+        let previousGeneration = fixture.controller.mediaHandoffAudioGeneration
+        XCTAssertEqual(observe(0), .waiting)
+        XCTAssertEqual(observe(1), .waiting)
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        let mutedGeneration = fixture.controller.mediaHandoffAudioGeneration
+        XCTAssertNotEqual(mutedGeneration, previousGeneration)
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertNotEqual(fixture.controller.mediaHandoffAudioGeneration, mutedGeneration)
+        XCTAssertNotEqual(fixture.controller.mediaHandoffAudioGeneration, previousGeneration)
+        XCTAssertEqual(observe(4.6), .waiting, "No stale suspicion crosses an unsampled local player")
+        XCTAssertEqual(observe(5), .waiting)
+        XCTAssertEqual(observe(8.6), .recover(.callbacksFrozen))
+    }
+
+    func testMediaHandoffStatsReadCannotCrossSuppressionChangesIncludingRoundTrip() async throws {
+        for boundary in ["acquire", "release", "replacement", "roundTrip"] {
+            let fixture = makeFixture()
+            let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+            let peer = try makeAudioRacePeer()
+            fixture.controller.onPlaybackRecoveryRequested = {}
+            fixture.controller.prepare(serverName: "Mac mini")
+            fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+            fixture.controller.transportBecameHealthy()
+            viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+            var lease: WorldwideMediaHandoffAudioLease?
+            if boundary == "release" || boundary == "replacement" {
+                lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+            }
+            let started = expectation(description: "suspended read")
+            let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+            viewModel.debugInstallIOSPlayoutDiagnosticsReader { _ in
+                started.fulfill()
+                return await gate.wait()
+            }
+            let refresh = Task { @MainActor in await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer) }
+            await fulfillment(of: [started], timeout: 2)
+            await gate.waitUntilBlocked()
+            if let lease { XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease)) }
+            if boundary != "release" {
+                lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+            }
+            if boundary == "roundTrip", let acquiredLease = lease {
+                XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(acquiredLease))
+                lease = nil
+            }
+            await gate.open(healthyIOSPlayoutDiagnostics())
+            await refresh.value
+            XCTAssertNil(viewModel.audioPlayoutOracle, boundary)
+            if let lease { _ = fixture.controller.endMediaHandoffPlayback(lease) }
+            viewModel.disconnect()
+            await peer.close()
+        }
+    }
+
     func testWorldwidePlaybackConfigurationUsesOnlyValidExplicitOptions() {
         let configuration = WebRTCAudioPlaybackSession.playbackConfiguration()
 
