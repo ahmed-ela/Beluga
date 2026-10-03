@@ -916,6 +916,17 @@ actor WorldwideScreenService {
     private var screenStartupDiagnostics = WorldwideScreenStartupDiagnostics()
     private var keyFrameControlTask: Task<Void, Never>?
     private var remoteMediaCommandTask: Task<Void, Never>?
+    private struct PendingMediaHandoff {
+        let id: UUID
+        let peer: WebRTCPeer
+        let peerGeneration: UInt64
+        let authorization: WebRTCControlAuthorization
+        var prepared: MacPreparedMediaHandoff?
+        var executionStarted = false
+    }
+    private var pendingMediaHandoff: PendingMediaHandoff?
+    private var mediaHandoffExpiryTask: Task<Void, Never>?
+    private var mediaHandoffExecutionTask: Task<Void, Never>?
     private let remoteMediaTraceSession = UUID()
     private var remoteMediaStateTraceGate = RemoteMediaStateTrace.Gate()
     private var remoteMediaCommandCapacity =
@@ -2178,10 +2189,95 @@ actor WorldwideScreenService {
     }
 
     private func resetRemoteMediaCommandQueue() {
+        retireMediaHandoff()
         remoteMediaCommandTask?.cancel()
         remoteMediaCommandTask = nil
         remoteMediaCommandCapacity.reset()
         remoteMediaController.invalidateCommands()
+    }
+
+    /// Actual phone playback transfer, not routing the Mac audio track to another speaker.
+    /// Product callers must surface unsupported/unavailable results; never fall back to streaming.
+    func moveMediaToConnectedPhone() async throws -> UUID {
+        guard !isStopped, transportAllowsCapture, pendingMediaHandoff == nil, let sourcePeer = peer,
+              let item = latestRemoteMediaItem, item.playbackState == .playing,
+              await sourcePeer.mediaHandoffIsNegotiated() else { throw WebRTCTransportError.transportNotHealthy }
+        guard !isStopped, transportAllowsCapture, pendingMediaHandoff == nil, peer === sourcePeer,
+              latestRemoteMediaItem?.contextID == item.contextID else { throw WebRTCTransportError.controlAuthorizationRevoked }
+        let generation = peerGeneration, id = UUID(), authorization = WebRTCControlAuthorization()
+        pendingMediaHandoff = .init(id: id, peer: sourcePeer, peerGeneration: generation,
+            authorization: authorization)
+        let prepared = await remoteMediaController.prepareHandoff(contextID: item.contextID,
+            isAuthorized: { authorization.isValid })
+        guard let prepared, pendingMediaHandoff?.id == id, authorization.isValid,
+              peer === sourcePeer, peerGeneration == generation, transportAllowsCapture,
+              latestRemoteMediaItem?.contextID == prepared.contextID else {
+            retireMediaHandoff(id: id); throw WebRTCTransportError.controlAuthorizationRevoked
+        }
+        // Store before the wire send: a fast phone reply may arrive during the peer actor hop.
+        pendingMediaHandoff?.prepared = prepared
+        mediaHandoffExpiryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, prepared.deadlineUptime - ProcessInfo.processInfo.systemUptime))) }
+            catch { return }
+            await self?.retireMediaHandoff(id: id)
+        }
+        do {
+            let sent = try await sourcePeer.sendMediaHandoffOffer(contextID: prepared.contextID,
+                id: id, source: prepared.sourceDescription)
+            guard sent == id, pendingMediaHandoff?.id == id, authorization.isValid,
+                  peer === sourcePeer, peerGeneration == generation, transportAllowsCapture else {
+                throw WebRTCTransportError.controlAuthorizationRevoked
+            }
+            return id
+        } catch {
+            retireMediaHandoff(id: id)
+            await sourcePeer.discardSentMediaHandoffOffer(id: id)
+            throw error
+        }
+    }
+
+    private func retireMediaHandoff(id: UUID? = nil, cancelExecution: Bool = true) {
+        guard let pending = pendingMediaHandoff, id == nil || pending.id == id else { return }
+        pending.authorization.revoke()
+        pendingMediaHandoff = nil
+        mediaHandoffExpiryTask?.cancel(); mediaHandoffExpiryTask = nil
+        if cancelExecution { mediaHandoffExecutionTask?.cancel() }
+        mediaHandoffExecutionTask = nil
+        Task { await pending.peer.discardSentMediaHandoffOffer(id: pending.id) }
+    }
+
+    private func receiveMediaHandoffCommit(_ commit: WebRTCReceivedMediaHandoffCommit,
+                                          sourcePeer: WebRTCPeer, sourcePeerGeneration: UInt64) async {
+        if pendingMediaHandoff?.id == commit.id, pendingMediaHandoff?.executionStarted == true { return }
+        guard !isStopped, transportAllowsCapture, peer === sourcePeer, peerGeneration == sourcePeerGeneration,
+              let pending = pendingMediaHandoff, pending.peer === sourcePeer,
+              pending.peerGeneration == sourcePeerGeneration, pending.id == commit.id,
+              !pending.executionStarted, pending.authorization.isValid, commit.isValid,
+              let prepared = pending.prepared, prepared.contextID == commit.contextID,
+              prepared.videoID == commit.videoID, latestRemoteMediaItem?.contextID == prepared.contextID else {
+            // This branch has not invoked the native source operation.
+            try? await sourcePeer.acknowledgeMediaHandoffCommit(commit, result: .notApplied)
+            return
+        }
+        pendingMediaHandoff?.executionStarted = true
+        mediaHandoffExecutionTask = Task { [weak self, remoteMediaController] in
+            let result = await remoteMediaController.performHandoffPause(prepared,
+                phonePositionSeconds: commit.phonePositionSeconds, executionIsAuthorized: { commit.isValid })
+            await self?.finishMediaHandoff(commit, result: result, sourcePeer: sourcePeer,
+                sourcePeerGeneration: sourcePeerGeneration)
+        }
+    }
+
+    private func finishMediaHandoff(_ commit: WebRTCReceivedMediaHandoffCommit,
+                                   result: WebRTCRemoteMediaCommandResult,
+                                   sourcePeer: WebRTCPeer, sourcePeerGeneration: UInt64) async {
+        guard !Task.isCancelled, !isStopped, pendingMediaHandoff?.id == commit.id,
+              peer === sourcePeer, peerGeneration == sourcePeerGeneration, transportAllowsCapture else { return }
+        retireMediaHandoff(id: commit.id, cancelExecution: false)
+        // A failed readback may follow an already-dispatched Pause. Do not claim no effect,
+        // retry Pause, or automatically resume the Mac on an ambiguous native outcome.
+        try? await sourcePeer.acknowledgeMediaHandoffCommit(commit,
+            result: result == .applied ? .macPaused : .outcomeUnknown)
     }
 
     /// Updates transport health, routes protocol requests, and emits sanitized diagnostics.
@@ -2334,7 +2430,10 @@ actor WorldwideScreenService {
                 sourcePeerGeneration: sourcePeerGeneration
             )
 
-        case .mediaHandoffOfferReceived,
+        case .mediaHandoffCommitReceived(let commit):
+            await receiveMediaHandoffCommit(commit, sourcePeer: sourcePeer, sourcePeerGeneration: sourcePeerGeneration)
+
+        case .mediaHandoffOfferReceived, .mediaHandoffCompleted,
              .remoteMediaStateChanged,
              .remoteMediaCommandAcknowledgementReceived:
             // These messages are host-originated and are consumed only by the iPhone viewer.

@@ -3860,6 +3860,9 @@ public actor WebRTCPeer {
     private var mediaHandoffNegotiated = false
     private var mediaHandoffOffers = MediaHandoffOffers()
     private var mediaHandoffContinuity: UUID?
+    private var mediaHandoffTransactions = MediaHandoffTransactions()
+    private var mediaHandoffHostTimeout: Task<Void, Never>?
+    private var mediaHandoffViewerTimeout: Task<Void, Never>?
     private var pendingRemoteMediaAuthorization:
         WebRTCRemoteMediaAuthorization?
     private var activeRemoteMediaAuthorization:
@@ -6244,27 +6247,38 @@ public actor WebRTCPeer {
     private func refreshMediaHandoffContinuity() -> Bool {
         guard mediaHandoffIsNegotiated(), isTransportHealthyForMedia(),
               let current = delegateProxy.currentMediaHandoffContinuity() else {
+            invalidateMediaHandoffTransactions()
             mediaHandoffOffers.clearTransient()
             mediaHandoffContinuity = nil
             return false
         }
         if mediaHandoffContinuity != current {
+            invalidateMediaHandoffTransactions()
             mediaHandoffOffers.clearTransient()
             mediaHandoffContinuity = current
         }
         return true
     }
 
+    private func invalidateMediaHandoffTransactions() {
+        mediaHandoffHostTimeout?.cancel(); mediaHandoffHostTimeout = nil
+        mediaHandoffViewerTimeout?.cancel(); mediaHandoffViewerTimeout = nil
+        if let completion = mediaHandoffTransactions.clear() { emit(.mediaHandoffCompleted(completion)) }
+    }
+
     /// Sends a non-authorizing description from the last successfully published primary item.
     /// Product integration must establish native source authority before calling this API.
     @discardableResult
-    public func sendMediaHandoffOffer(contextID: String) throws -> UUID {
+    public func sendMediaHandoffOffer(contextID: String, id: UUID = UUID(),
+                                     source: WebRTCMediaHandoffSourceDescription? = nil) throws -> UUID {
         try ensureOpen()
         guard role == .host else { throw WebRTCTransportError.invalidRole }
-        guard refreshMediaHandoffContinuity(), let state = lastSentRemoteMediaStateUpdate,
+        guard refreshMediaHandoffContinuity(), !mediaHandoffTransactions.hostIsBusy,
+              let state = lastSentRemoteMediaStateUpdate,
               let authorization = activeRemoteMediaAuthorization,
               let offer = mediaHandoffOffers.prepareSent(contextID: contextID, update: state,
-                  authorization: authorization, now: ProcessInfo.processInfo.systemUptime) else {
+                  authorization: authorization, now: ProcessInfo.processInfo.systemUptime,
+                  id: id, source: source) else {
             throw WebRTCTransportError.transportNotHealthy
         }
         do {
@@ -6274,6 +6288,10 @@ public actor WebRTCPeer {
             throw error
         }
         return offer.id
+    }
+
+    public func discardSentMediaHandoffOffer(id: UUID) {
+        mediaHandoffOffers.sentFailed(id: id)
     }
 
     /// Consumes only this receipt; not proof of phone playback and never a Mac-pause operation.
@@ -6293,12 +6311,109 @@ public actor WebRTCPeer {
     }
 
     private func receiveMediaHandoffOffer(_ envelope: WebRTCMediaHandoffOfferEnvelope) {
-        guard role == .viewer, refreshMediaHandoffContinuity(),
+        guard role == .viewer, refreshMediaHandoffContinuity(), mediaHandoffTransactions.viewerCommit == nil,
               envelope.authorization == activeRemoteMediaAuthorization,
               let state = latestReceivedRemoteMediaState,
               let receipt = mediaHandoffOffers.receive(envelope, state: state,
                   now: ProcessInfo.processInfo.systemUptime) else { return }
         emit(.mediaHandoffOfferReceived(receipt))
+    }
+
+    /// The product player must supply a current advancing-playback observation and an
+    /// independently revocable predicate. This message is a claim, not acoustic proof.
+    public func requestMediaHandoffCommit(_ offer: WebRTCReceivedMediaHandoffOffer,
+        phonePositionSeconds: Double, observedAtUptime: Double,
+        playbackIsCurrent: @Sendable () -> Bool) throws {
+        try ensureOpen()
+        guard role == .viewer else { throw WebRTCTransportError.invalidRole }
+        guard playbackIsCurrent(), refreshMediaHandoffContinuity(),
+              mediaHandoffTransactions.viewerCommit == nil, let state = latestReceivedRemoteMediaState,
+              let commit = mediaHandoffOffers.prepareCommit(offer, phonePositionSeconds: phonePositionSeconds,
+                  observedAtUptime: observedAtUptime, state: state, now: ProcessInfo.processInfo.systemUptime),
+              playbackIsCurrent(), mediaHandoffTransactions.beginViewer(commit) else {
+            throw WebRTCTransportError.controlAuthorizationRevoked
+        }
+        do {
+            try delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffCommit(commit)))
+        } catch {
+            if let completion = mediaHandoffTransactions.expireViewer(id: offer.id) { emit(.mediaHandoffCompleted(completion)) }
+            throw error
+        }
+        mediaHandoffViewerTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            await self?.expireMediaHandoffViewer(id: offer.id)
+        }
+    }
+
+    /// Cancellation revokes unexecuted work. It cannot prove an already-sent Pause did not run.
+    public func cancelMediaHandoffCommit(id: UUID) {
+        guard role == .viewer, let commit = mediaHandoffTransactions.viewerCommit, commit.id == id else { return }
+        try? delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffCancellation(commit)))
+        expireMediaHandoffViewer(id: id)
+    }
+
+    private func expireMediaHandoffViewer(id: UUID) {
+        guard let completion = mediaHandoffTransactions.expireViewer(id: id) else { return }
+        mediaHandoffViewerTimeout?.cancel(); mediaHandoffViewerTimeout = nil
+        emit(.mediaHandoffCompleted(completion))
+    }
+
+    private func receiveMediaHandoffCommit(_ envelope: WebRTCMediaHandoffCommitEnvelope) {
+        guard role == .host, refreshMediaHandoffContinuity(), envelope.isValid,
+              envelope.authorization == activeRemoteMediaAuthorization else { return }
+        if let prior = mediaHandoffTransactions.hostCommit, prior.envelope == envelope {
+            if let reply = mediaHandoffTransactions.hostReply {
+                try? delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffCompletion(reply)))
+            }
+            return
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard !mediaHandoffTransactions.hostIsBusy, let state = lastSentRemoteMediaStateUpdate,
+              let deadline = mediaHandoffOffers.consumeSent(envelope, state: state, now: now),
+              let continuity = mediaHandoffContinuity else { return }
+        let receipt = WebRTCReceivedMediaHandoffCommit(envelope: envelope, deadlineUptime: min(deadline, now + 2),
+            continuityIsCurrent: { [delegateProxy] in delegateProxy.currentMediaHandoffContinuity() == continuity })
+        guard receipt.isValid, mediaHandoffTransactions.admitHost(receipt) else { return }
+        mediaHandoffHostTimeout?.cancel()
+        mediaHandoffHostTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, receipt.deadlineUptime - ProcessInfo.processInfo.systemUptime))) }
+            catch { return }
+            try? await self?.acknowledgeMediaHandoffCommit(receipt, result: .outcomeUnknown)
+        }
+        emit(.mediaHandoffCommitReceived(receipt))
+    }
+
+    /// Call only after matching the prepared native source and its exact operation outcome.
+    /// Generic media-command ACKs never complete a handoff, and an expired execution is unknown.
+    public func acknowledgeMediaHandoffCommit(_ commit: WebRTCReceivedMediaHandoffCommit,
+                                              result: WebRTCMediaHandoffResult) throws {
+        try ensureOpen()
+        guard role == .host else { throw WebRTCTransportError.invalidRole }
+        guard refreshMediaHandoffContinuity(), commit.envelope.authorization == activeRemoteMediaAuthorization else {
+            throw WebRTCTransportError.controlAuthorizationRevoked
+        }
+        let outcome = mediaHandoffTransactions.hostReply == nil && !commit.isValid ? .outcomeUnknown : result
+        guard let reply = mediaHandoffTransactions.finishHost(commit, result: outcome) else {
+            throw WebRTCTransportError.controlAuthorizationRevoked
+        }
+        mediaHandoffHostTimeout?.cancel(); mediaHandoffHostTimeout = nil
+        try delegateProxy.sendControlData(JSONEncoder().encode(ControlChannelMessage.mediaHandoffCompletion(reply)))
+    }
+
+    private func receiveMediaHandoffCompletion(_ envelope: WebRTCMediaHandoffCompletionEnvelope) {
+        guard role == .viewer, refreshMediaHandoffContinuity(), envelope.commit.isValid,
+              envelope.commit.authorization == activeRemoteMediaAuthorization,
+              let completion = mediaHandoffTransactions.receiveCompletion(envelope) else { return }
+        mediaHandoffViewerTimeout?.cancel(); mediaHandoffViewerTimeout = nil
+        emit(.mediaHandoffCompleted(completion))
+    }
+
+    private func receiveMediaHandoffCancellation(_ envelope: WebRTCMediaHandoffCommitEnvelope) {
+        guard role == .host, refreshMediaHandoffContinuity(),
+              envelope.authorization == activeRemoteMediaAuthorization,
+              let commit = mediaHandoffTransactions.hostCommit, commit.envelope == envelope,
+              mediaHandoffTransactions.hostReply == nil else { return }
+        try? acknowledgeMediaHandoffCommit(commit, result: .outcomeUnknown)
     }
 
     /// Requests a fresh snapshot for one bounded application readiness attempt.
@@ -9776,6 +9891,12 @@ public actor WebRTCPeer {
                 receiveRemoteMediaState(envelope)
             case .mediaHandoffOffer(let envelope):
                 receiveMediaHandoffOffer(envelope)
+            case .mediaHandoffCommit(let envelope):
+                receiveMediaHandoffCommit(envelope)
+            case .mediaHandoffCompletion(let envelope):
+                receiveMediaHandoffCompletion(envelope)
+            case .mediaHandoffCancellation(let envelope):
+                receiveMediaHandoffCancellation(envelope)
             case .remoteMediaStateRefresh(let envelope):
                 receiveRemoteMediaStateRefresh(envelope)
             case .remoteMediaCommand(let envelope):
@@ -9804,6 +9925,7 @@ public actor WebRTCPeer {
                 receiveScreenMediaCancellation(cancellation)
             }
         } catch {
+            invalidateMediaHandoffTransactions()
             mediaHandoffOffers.clearTransient()
             mediaHandoffContinuity = nil
             invalidateInputSession(reason: "Invalid control-channel message.")
@@ -10317,6 +10439,7 @@ public actor WebRTCPeer {
         remoteMediaControlsNegotiationEpoch = nil
         remoteMediaCatalogNegotiated = false
         mediaHandoffNegotiated = false
+        invalidateMediaHandoffTransactions()
         mediaHandoffOffers = MediaHandoffOffers()
         mediaHandoffContinuity = nil
         pendingRemoteMediaAuthorization = nil
@@ -13148,6 +13271,9 @@ public actor WebRTCPeer {
 /// Strict versioned union carried by the ordered WebRTC control data channel.
 enum ControlChannelMessage: Codable, Equatable, Sendable {
     case mediaHandoffOffer(WebRTCMediaHandoffOfferEnvelope)
+    case mediaHandoffCommit(WebRTCMediaHandoffCommitEnvelope)
+    case mediaHandoffCompletion(WebRTCMediaHandoffCompletionEnvelope)
+    case mediaHandoffCancellation(WebRTCMediaHandoffCommitEnvelope)
     static let currentVersion = 2
 
     case command(WebRTCControlRequest)
@@ -13179,6 +13305,7 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
 
     private enum Kind: String, Codable {
         case mediaHandoffOffer
+        case mediaHandoffCommit, mediaHandoffCompletion, mediaHandoffCancellation
         case command
         case acknowledgement = "ack"
         case input
@@ -13201,6 +13328,7 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case mediaHandoffOffer
+        case mediaHandoffCommit, mediaHandoffCompletion, mediaHandoffCancellation
         case version
         case kind
         case command
@@ -13235,6 +13363,12 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         switch try container.decode(Kind.self, forKey: .kind) {
         case .mediaHandoffOffer:
             self = .mediaHandoffOffer(try container.decode(WebRTCMediaHandoffOfferEnvelope.self, forKey: .mediaHandoffOffer))
+        case .mediaHandoffCommit:
+            self = .mediaHandoffCommit(try container.decode(WebRTCMediaHandoffCommitEnvelope.self, forKey: .mediaHandoffCommit))
+        case .mediaHandoffCompletion:
+            self = .mediaHandoffCompletion(try container.decode(WebRTCMediaHandoffCompletionEnvelope.self, forKey: .mediaHandoffCompletion))
+        case .mediaHandoffCancellation:
+            self = .mediaHandoffCancellation(try container.decode(WebRTCMediaHandoffCommitEnvelope.self, forKey: .mediaHandoffCancellation))
         case .command:
             self = .command(try container.decode(WebRTCControlRequest.self, forKey: .command))
         case .acknowledgement:
@@ -13355,6 +13489,15 @@ enum ControlChannelMessage: Codable, Equatable, Sendable {
         case .mediaHandoffOffer(let offer):
             try container.encode(Kind.mediaHandoffOffer, forKey: .kind)
             try container.encode(offer, forKey: .mediaHandoffOffer)
+        case .mediaHandoffCommit(let commit):
+            try container.encode(Kind.mediaHandoffCommit, forKey: .kind)
+            try container.encode(commit, forKey: .mediaHandoffCommit)
+        case .mediaHandoffCompletion(let completion):
+            try container.encode(Kind.mediaHandoffCompletion, forKey: .kind)
+            try container.encode(completion, forKey: .mediaHandoffCompletion)
+        case .mediaHandoffCancellation(let commit):
+            try container.encode(Kind.mediaHandoffCancellation, forKey: .kind)
+            try container.encode(commit, forKey: .mediaHandoffCancellation)
         case .command(let command):
             try container.encode(Kind.command, forKey: .kind)
             try container.encode(command, forKey: .command)

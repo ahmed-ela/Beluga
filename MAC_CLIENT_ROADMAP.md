@@ -107,9 +107,22 @@ timeout, controller invalidation and revoked caller authority cancel queued work
 Separate playback-continuity identifiers retire pause/resume, seek, buffering and
 rate-change ABA without changing normal source-selection or command identity.
 The actual controller/composite/backend and extracted script tests use explicit
-boundary doubles. No wire transaction, menu action or phone audio lifecycle is
-wired to this path yet; the product capability stays disabled. This is not a
-completed transfer, live-runtime verification or deployment.
+boundary doubles. The product capability stays disabled. This is not a completed
+transfer, live-runtime verification or deployment.
+
+Transaction checkpoint (2026-10-03): optional ordered-channel commit,
+cancellation and completion messages now bind to the exact offer and current
+connection. The host service retains its native source before sending an offer,
+cross-checks native source scalars against the publication, preserves the native
+deadline, and passes transport revocation into final native execution. A generic
+Pause ACK cannot complete this transaction. Missing replies, expiry, invalid
+control messages or uncertain native readback resolve as outcome unknown, with
+no automatic Pause replay or Mac resume. The menu does not call this entry point
+yet, the iOS receiver still deliberately ignores the feature, and owner-scoped
+audio coexistence remains unwired. Headless real-peer tests prove transport
+behavior with supplied playback/outcome boundaries, not actual phone playback or
+the complete service-to-native transfer. Current iOS compile proof is separate
+from a fresh Simulator runtime run and physical device proof.
 
 ## Product contract
 

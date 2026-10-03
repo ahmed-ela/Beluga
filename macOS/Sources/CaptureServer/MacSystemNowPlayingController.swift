@@ -23,14 +23,16 @@ protocol MacRemoteMediaControlling: Sendable {
     ) async -> WebRTCRemoteMediaCommandResult
     func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff?
     func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
-                              phonePositionSeconds: Double) async -> WebRTCRemoteMediaCommandResult
+                              phonePositionSeconds: Double,
+                              executionIsAuthorized: @escaping @Sendable () -> Bool) async -> WebRTCRemoteMediaCommandResult
     func refresh()
 }
 
 extension MacRemoteMediaControlling {
     func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff? { nil }
     func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
-                              phonePositionSeconds: Double) async -> WebRTCRemoteMediaCommandResult { .unsupported }
+                              phonePositionSeconds: Double,
+                              executionIsAuthorized: @escaping @Sendable () -> Bool = { true }) async -> WebRTCRemoteMediaCommandResult { .unsupported }
 }
 
 /// A host-native source preparation; the product transaction still needs an exact peer/offer
@@ -48,6 +50,10 @@ struct MacPreparedMediaHandoff: Sendable {
     var durationSeconds: Double { source.durationSeconds }
     var playbackRate: Double { source.playbackRate }
     var deadlineUptime: Double { source.deadlineUptime }
+    var sourceDescription: WebRTCMediaHandoffSourceDescription {
+        .init(videoID: videoID, positionSeconds: positionSeconds, durationSeconds: durationSeconds,
+              playbackRate: playbackRate, observedAtUptime: source.observedAtUptime, deadlineUptime: deadlineUptime)
+    }
 }
 
 /// Only the originating controller can create or execute this immutable admission.
@@ -1034,16 +1040,17 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     }
 
     func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
-                              phonePositionSeconds: Double) async -> WebRTCRemoteMediaCommandResult {
+                              phonePositionSeconds: Double,
+                              executionIsAuthorized: @escaping @Sendable () -> Bool = { true }) async -> WebRTCRemoteMediaCommandResult {
         guard let runtime, runtime.isAvailable else { return .unsupported }
-        guard prepared.owner === gate, gate.admits(prepared.authorization), prepared.isAuthorized(),
+        guard executionIsAuthorized(), prepared.owner === gate, gate.admits(prepared.authorization), prepared.isAuthorized(),
               uptime() < prepared.deadlineUptime, phonePositionSeconds.isFinite,
               phonePositionSeconds >= 0, phonePositionSeconds < prepared.durationSeconds,
               prepared.execution.claim() else { return .staleContext }
         return await withCheckedContinuation { continuation in
             let resolver = MacSingleCompletion<WebRTCRemoteMediaCommandResult> { continuation.resume(returning: $0) }
             queue.async { [weak self] in
-                guard let self, self.currentContextID == prepared.contextID,
+                guard executionIsAuthorized(), let self, self.currentContextID == prepared.contextID,
                       self.gate.admits(prepared.authorization), prepared.isAuthorized(),
                       self.uptime() < prepared.deadlineUptime,
                       self.catalogBindings[prepared.contextID]?.snapshot.client === prepared.snapshot.client else {
@@ -1052,7 +1059,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 let attempt = MacRemoteMediaCommandAttempt()
                 runtime.sendHandoffPause(source: prepared.source, phonePositionSeconds: phonePositionSeconds,
                     snapshot: prepared.snapshot, isAuthorized: { [gate = self.gate, uptime = self.uptime] in
-                        attempt.isActive && gate.admits(prepared.authorization) && prepared.isAuthorized()
+                        attempt.isActive && executionIsAuthorized() && gate.admits(prepared.authorization) && prepared.isAuthorized()
                             && uptime() < prepared.deadlineUptime
                     }, completion: { [weak self] result in
                         attempt.invalidate(); resolver.resolve(result); self?.refresh()

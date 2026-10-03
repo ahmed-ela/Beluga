@@ -687,6 +687,24 @@ assertions. This is not live Chrome consent, actual YouTube or phone-transfer
 proof. The native descriptor/Pause preparation alone does not establish a
 current peer, phone playback or an offer-correlated completion receipt.
 
+`MediaHandoffTransactionTests` and the real-peer handoff cases in
+`RemoteMediaControlsProtocolTests` cover exact commit/reply binding, fresh caller
+playback samples, cancellation, missing replies, malformed-message revocation,
+one-use host offer consumption and native-source scalar/deadline cross-checks.
+Remove the host `consumeSent` clear and require the unchanged replay and rejected
+timeline assertions to fail. Restore exact bytes and rerun the affected suites.
+A supplied `.macPaused` in a transport test is explicitly a boundary double, not
+native Pause evidence. Production completion must flow through the original
+native preparation and actual readback. Assert that no ordinary Pause command
+is emitted by the new protocol. Keep existing native input revocation and
+diagnostics-backlog isolation coverage alongside the new cases.
+
+Build the current iOS target against the expanded event union. Build-only success
+does not replace runtime tests; use the existing development Simulator under its
+authorization/boot workflow, never a personal phone as an implicit substitute.
+The service entry point must remain unadvertised until the phone player, menu,
+scoped audio policy and full service-to-native/runtime transfer gates are proven.
+
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
 main-frame message bridge and teardown with inert local provider HTML, not a real

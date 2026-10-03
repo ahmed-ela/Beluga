@@ -363,7 +363,7 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
     }
 
     func testHandoffControllerRevocationAndTimeoutRetireDelayedNativeWork() async throws {
-        for boundary in ["invalidate", "stop", "external", "timeout"] {
+        for boundary in ["invalidate", "stop", "external", "commit", "timeout"] {
             let client = ChromeTestClient(); client.media = chromeMedia(continuity: UUID().uuidString.lowercased())
             let browser = MacChromeNowPlayingRuntime(backend: makeBackend(client), now: { 10 })
             let admitted = expectation(description: boundary + " admitted")
@@ -381,15 +381,18 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
             defer { controller.stop(); browser.stop() }
             await fulfillment(of: [published], timeout: 3)
             let authorization = WebRTCControlAuthorization()
+            let commitAuthorization = WebRTCControlAuthorization()
             let preparedValue = await controller.prepareHandoff(contextID: try XCTUnwrap(item.get()).contextID,
                 isAuthorized: { authorization.isValid })
             let prepared = try XCTUnwrap(preparedValue)
-            let task = Task { await controller.performHandoffPause(prepared, phonePositionSeconds: 15) }
+            let task = Task { await controller.performHandoffPause(prepared, phonePositionSeconds: 15,
+                executionIsAuthorized: { commitAuthorization.isValid }) }
             await fulfillment(of: [admitted], timeout: 3)
             switch boundary {
             case "invalidate": controller.invalidateCommands()
             case "stop": controller.stop()
             case "external": authorization.revoke()
+            case "commit": commitAuthorization.revoke()
             default:
                 let result = await task.value
                 XCTAssertEqual(result, .failed)

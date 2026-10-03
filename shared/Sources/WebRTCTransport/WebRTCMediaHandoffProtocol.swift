@@ -130,17 +130,20 @@ struct MediaHandoffOffers {
 
     mutating func prepareSent(contextID: String, update: WebRTCRemoteMediaStateUpdate,
                               authorization: WebRTCRemoteMediaAuthorization,
-                              now: TimeInterval) -> WebRTCMediaHandoffOfferEnvelope? {
+                              now: TimeInterval, id: UUID = UUID(),
+                              source: WebRTCMediaHandoffSourceDescription? = nil) -> WebRTCMediaHandoffOfferEnvelope? {
         if let pending = sent, now >= pending.deadline { sent = nil }
         guard sent == nil, fresh(sentStateAt, now: now), nextSentSequence < UInt64.max,
               let item = WebRTCMediaHandoffOfferEnvelope.eligiblePrimary(in: update),
               item.contextID == contextID, let videoID = item.artwork?.videoID,
-              let position = item.elapsedTime, let duration = item.duration else { return nil }
+              let position = item.elapsedTime, let duration = item.duration,
+              source.map({ $0.matches(item, now: now) }) ?? true else { return nil }
         let envelope = WebRTCMediaHandoffOfferEnvelope(authorization: authorization,
-            sequence: nextSentSequence, id: UUID(), observedRevision: update.revision,
+            sequence: nextSentSequence, id: id, observedRevision: update.revision,
             contextID: contextID, videoID: videoID, positionSeconds: position,
             durationSeconds: duration, playbackRate: item.playbackRate,
-            validForSeconds: WebRTCMediaHandoffOfferEnvelope.maximumLifetime)
+            validForSeconds: min(WebRTCMediaHandoffOfferEnvelope.maximumLifetime,
+                source.map { $0.deadlineUptime - now } ?? WebRTCMediaHandoffOfferEnvelope.maximumLifetime))
         guard envelope.isValid else { return nil }
         nextSentSequence += 1
         sent = Timeline(envelope: envelope, now: now)
@@ -149,6 +152,30 @@ struct MediaHandoffOffers {
 
     mutating func sentFailed(id: UUID) {
         if sent?.envelope.id == id { sent = nil }
+    }
+
+    /// A matching commit consumes the sent offer before validation: refreshed snapshots
+    /// cannot revive a rejected timeline. The native source remains independently guarded.
+    mutating func consumeSent(_ commit: WebRTCMediaHandoffCommitEnvelope,
+                             state: WebRTCRemoteMediaStateUpdate,
+                             now: TimeInterval) -> TimeInterval? {
+        guard var pending = sent, commit.matches(pending.envelope) else { return nil }
+        sent = nil
+        guard fresh(sentStateAt, now: now), pending.observe(state, now: now) else { return nil }
+        let expected = pending.envelope.positionSeconds + (now - pending.origin) * pending.envelope.playbackRate
+        guard abs(commit.phonePositionSeconds - expected) <= 2 + 2 * pending.envelope.playbackRate else { return nil }
+        return pending.deadline
+    }
+
+    mutating func prepareCommit(_ receipt: WebRTCReceivedMediaHandoffOffer,
+                               phonePositionSeconds: Double, observedAtUptime: Double,
+                               state: WebRTCReceivedRemoteMediaState,
+                               now: Double) -> WebRTCMediaHandoffCommitEnvelope? {
+        let commit = WebRTCMediaHandoffCommitEnvelope(offer: receipt.envelope, phonePositionSeconds: phonePositionSeconds)
+        guard commit.isValid, now.isFinite, observedAtUptime.isFinite,
+              now >= observedAtUptime, now - observedAtUptime <= 0.75,
+              consume(receipt, state: state, now: now) else { return nil }
+        return commit
     }
 
     mutating func receive(_ envelope: WebRTCMediaHandoffOfferEnvelope,

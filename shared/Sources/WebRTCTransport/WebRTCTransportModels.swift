@@ -189,6 +189,9 @@ public enum WebRTCTransportEvent: Sendable {
     case remoteMediaStateChanged(WebRTCReceivedRemoteMediaState)
     /// Non-authorizing source offer; receipt consumption does not prove phone playback.
     case mediaHandoffOfferReceived(WebRTCReceivedMediaHandoffOffer)
+    /// Exact one-use host execution admission; native source/readback still required.
+    case mediaHandoffCommitReceived(WebRTCReceivedMediaHandoffCommit)
+    case mediaHandoffCompleted(WebRTCMediaHandoffCompletion)
     /// A current viewer requests a fresh snapshot after its native presentation is ready.
     case remoteMediaStateRefreshRequested(WebRTCReceivedRemoteMediaStateRefreshRequest)
     /// A validated viewer command that the Mac host must execute and acknowledge at most once.

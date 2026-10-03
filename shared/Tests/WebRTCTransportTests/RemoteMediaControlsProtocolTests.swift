@@ -23,8 +23,12 @@ private actor RemoteMediaFlowRecorder {
         [WebRTCRemoteMediaCommandAcknowledgement] = []
     private(set) var forwardingErrors: [String] = []
     private(set) var handoffOffers: [WebRTCReceivedMediaHandoffOffer] = []
+    private(set) var handoffCommits: [WebRTCReceivedMediaHandoffCommit] = []
+    private(set) var handoffCompletions: [WebRTCMediaHandoffCompletion] = []
 
     func record(_ offer: WebRTCReceivedMediaHandoffOffer) { handoffOffers.append(offer) }
+    func record(_ commit: WebRTCReceivedMediaHandoffCommit) { handoffCommits.append(commit) }
+    func record(_ completion: WebRTCMediaHandoffCompletion) { handoffCompletions.append(completion) }
 
     func mark(_ milestone: RemoteMediaFlowMilestone) -> Bool {
         milestones.insert(milestone).inserted
@@ -65,10 +69,12 @@ private actor RemoteMediaFlowRecorder {
         receivedStates: [WebRTCReceivedRemoteMediaState],
         receivedCommands: [WebRTCReceivedRemoteMediaCommand],
         refreshRequests: [WebRTCReceivedRemoteMediaStateRefreshRequest],
-        handoffOffers: [WebRTCReceivedMediaHandoffOffer]
+        handoffOffers: [WebRTCReceivedMediaHandoffOffer],
+        handoffCommits: [WebRTCReceivedMediaHandoffCommit],
+        handoffCompletions: [WebRTCMediaHandoffCompletion]
     ) {
         (states, commands, acknowledgements, forwardingErrors,
-         receivedStates, receivedCommands, refreshRequests, handoffOffers)
+         receivedStates, receivedCommands, refreshRequests, handoffOffers, handoffCommits, handoffCompletions)
     }
 }
 
@@ -112,6 +118,90 @@ private final class RemoteMediaCallbackResults: @unchecked Sendable {
 }
 
 final class RemoteMediaControlsProtocolTests: XCTestCase {
+    func testRealPeerHandoffCommitAndExactNativeResultAreSeparateFromOrdinaryPause() async throws {
+        try await exerciseHandoffCommit(boundary: "success")
+    }
+
+    func testRealPeerHandoffCancellationRevokesUnexecutedNativeReceipt() async throws {
+        try await exerciseHandoffCommit(boundary: "cancel")
+    }
+
+    func testRealPeerHandoffMissingHostReplyIsUnknownNotSuccess() async throws {
+        try await exerciseHandoffCommit(boundary: "timeout")
+    }
+
+    func testMalformedOrderedControlRevokesAdmittedHandoffExecution() async throws {
+        try await exerciseHandoffCommit(boundary: "malformed")
+    }
+
+    private func exerciseHandoffCommit(boundary: String) async throws {
+        let (host, viewer, recorder, _, hostTask, viewerTask) = try makeRemoteMediaFlow(supportsMediaHandoff: true)
+        do {
+            try await host.start()
+            try await waitForRemoteMediaCondition {
+                let h = await host.isTransportHealthyForMediaForTesting
+                let v = await viewer.isTransportHealthyForMediaForTesting
+                return h && v
+            }
+            let item = WebRTCRemoteMediaItem(contextID: "handoff-source", sourceName: "YouTube", title: "Test",
+                playbackState: .playing, elapsedTime: 20, duration: 200, playbackRate: 1,
+                capabilities: .init(canPlay: true, canPause: true, canSkipForward: false,
+                    canSkipBackward: false, canSeekToPosition: true), artwork: .init(videoID: "dQw4w9WgXcQ"))
+            try await host.sendRemoteMediaState(.init(revision: 1, item: item))
+            let id = try await host.sendMediaHandoffOffer(contextID: item.contextID)
+            try await waitForRemoteMediaCondition { await recorder.snapshot().handoffOffers.count == 1 }
+            let initial = await recorder.snapshot(), offer = try XCTUnwrap(initial.handoffOffers.first)
+            do {
+                try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
+                    observedAtUptime: ProcessInfo.processInfo.systemUptime, playbackIsCurrent: { false })
+                XCTFail("Revoked player evidence sent a commit")
+            } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
+            try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
+                observedAtUptime: ProcessInfo.processInfo.systemUptime, playbackIsCurrent: { true })
+            try await waitForRemoteMediaCondition { await recorder.snapshot().handoffCommits.count == 1 }
+            let admitted = await recorder.snapshot(), commit = try XCTUnwrap(admitted.handoffCommits.first)
+            XCTAssertEqual(commit.id, id); XCTAssertTrue(commit.isValid)
+            XCTAssertTrue(admitted.commands.isEmpty)
+            do {
+                try await viewer.requestMediaHandoffCommit(offer, phonePositionSeconds: 20,
+                    observedAtUptime: ProcessInfo.processInfo.systemUptime, playbackIsCurrent: { true })
+                XCTFail("A duplicate receipt sent another commit")
+            } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
+            if boundary == "success" {
+                // Boundary double supplies a result: this proves transport, not real Mac pause.
+                try await host.acknowledgeMediaHandoffCommit(commit, result: .macPaused)
+                try await host.acknowledgeMediaHandoffCommit(commit, result: .macPaused)
+            } else if boundary == "cancel" {
+                await viewer.cancelMediaHandoffCommit(id: id)
+            } else if boundary == "malformed" {
+                await host.receiveMalformedControlMessageForTesting()
+                XCTAssertFalse(commit.isValid)
+                do {
+                    try await host.acknowledgeMediaHandoffCommit(commit, result: .macPaused)
+                    XCTFail("An invalidated execution fabricated a completion")
+                } catch let error as WebRTCTransportError { XCTAssertEqual(error, .controlAuthorizationRevoked) }
+            }
+            try await waitForRemoteMediaCondition { await recorder.snapshot().handoffCompletions.count == 1 }
+            try await viewer.requestRemoteMediaStateRefresh(id: UUID())
+            try await waitForRemoteMediaCondition { await recorder.snapshot().refreshRequests.count == 1 }
+            let final = await recorder.snapshot()
+            XCTAssertEqual(final.handoffCompletions, [.init(id: id,
+                result: boundary == "success" ? .macPaused : .outcomeUnknown)])
+            XCTAssertEqual(final.handoffCommits.count, 1)
+            XCTAssertFalse(commit.isValid)
+            XCTAssertTrue(final.commands.isEmpty); XCTAssertTrue(final.forwardingErrors.isEmpty)
+        } catch {
+            hostTask.cancel(); viewerTask.cancel()
+            _ = await host.close(reason: .protocolError); _ = await viewer.close(reason: .protocolError)
+            _ = await hostTask.value; _ = await viewerTask.value
+            throw error
+        }
+        hostTask.cancel(); viewerTask.cancel()
+        let h = await host.close(reason: .normal), v = await viewer.close(reason: .normal)
+        _ = await hostTask.value; _ = await viewerTask.value
+        XCTAssertTrue(h); XCTAssertTrue(v)
+    }
+
     func testRealPeerHandoffOfferIsOneUseNonAuthorizingAndExactSourceBound() async throws {
         try await exerciseHandoffReceipt(malformedControlBeforeConsumption: false)
     }
@@ -1393,6 +1483,8 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
                         }
                     case .remoteMediaStateRefreshRequested(let refresh):
                         await recorder.record(refresh)
+                    case .mediaHandoffCommitReceived(let commit):
+                        await recorder.record(commit)
                     case .remoteMediaCommandReceived(let request):
                         if await recorder.record(request) {
                             expectations.fulfill(.commandReceived)
@@ -1428,6 +1520,8 @@ final class RemoteMediaControlsProtocolTests: XCTestCase {
                         }
                     case .mediaHandoffOfferReceived(let offer):
                         await recorder.record(offer)
+                    case .mediaHandoffCompleted(let completion):
+                        await recorder.record(completion)
                     case .remoteMediaCommandAcknowledgementReceived(
                         let acknowledgement
                     ):
