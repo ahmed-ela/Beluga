@@ -15,7 +15,7 @@ struct YouTubeHandoffSheet: View {
                 YouTubeHandoffWebViewContainer(player: player)
                     .frame(minWidth: 200, minHeight: 220)
                     .accessibilityLabel("YouTube video player")
-                Text(statusText)
+                Text(player.statusText)
                     .font(.callout)
                     .accessibilityAddTraits(.updatesFrequently)
                     .padding(.horizontal)
@@ -36,19 +36,6 @@ struct YouTubeHandoffSheet: View {
 
     private func updateVisibility() {
         player.setPresentation(isPresented: isPresented, sceneIsActive: scenePhase == .active)
-    }
-
-    private var statusText: String {
-        switch player.phase {
-        case .preparing: "Loading YouTube…"
-        case .ready: "Waiting for playback at the Mac’s position…"
-        case .playRequired: "Tap Play in the YouTube player to continue."
-        case .verifying: "Confirming playback on this iPhone…"
-        case .confirmed: "Playback confirmed on this iPhone."
-        case .failed(.timedOut): "The handoff expired. The Mac was not instructed to pause."
-        case .failed(.notVisible), .failed(.dismissed), .failed(.replaced): "Handoff stopped."
-        case .failed: "This video could not be confirmed. The Mac was not instructed to pause."
-        }
     }
 }
 

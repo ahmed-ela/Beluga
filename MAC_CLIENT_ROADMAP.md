@@ -95,8 +95,8 @@ with revocable, advancing-time playback observations. The actual native local
 WebView bridge and lifecycle tests pass in Simulator. Neither frontend enables
 the capability, no menu action is wired, and consuming an offer sends no Pause.
 The player has not been verified against a real YouTube stream; unsupported
-embedding/autoplay, source re-anchoring while loading, post-commit local player
-controls and audio coexistence remain integration work. This is not a transfer
+embedding/autoplay, source re-anchoring while loading, live completion wiring
+and audio coexistence remain integration work. This is not a transfer
 or deployment claim. See the handoff component section in `TESTING_ORACLES.md`.
 
 Native source checkpoint (2026-10-03): the host now creates opaque, one-use
@@ -123,6 +123,18 @@ audio coexistence remains unwired. Headless real-peer tests prove transport
 behavior with supplied playback/outcome boundaries, not actual phone playback or
 the complete service-to-native transfer. Current iOS compile proof is separate
 from a fresh Simulator runtime run and physical device proof.
+
+Player completion checkpoint (2026-10-03): the local player now reserves one
+Mac-pause request only from current exact playback evidence, waits for the same
+operation's correlated result, and distinguishes a confirmed Mac pause from an
+unknown or rejected outcome. Missing replies and pending playback interruptions
+stop local playback without claiming the Mac stayed untouched or automatically
+retrying/resuming it. After confirmed completion, ordinary local pause, seek,
+rate changes and buffering no longer re-enter handoff verification; the old
+evidence cannot authorize another request. The SwiftUI sheet uses these explicit
+states. The completion is still supplied by a boundary double in local tests;
+the product receiver/menu and scoped audio owner remain unwired, and the feature
+remains disabled. No complete transfer or deployment is claimed.
 
 ## Product contract
 

@@ -712,6 +712,20 @@ YouTube stream. An interrupted confirmation must remain revoked even if playback
 quickly resumes. Ready, no time advancement, wrong video/page/position, hidden
 presentation and stale evidence cannot confirm a new handoff.
 
+Player completion tests reserve only current evidence, reject unrequested,
+foreign, repeated and late completions, preserve unknown outcomes after
+interruption/cancellation, and require fresh continuing playback at the exact
+successful reply. After success, normal local controls must not re-enter the
+pre-transfer timeline checks or authorize another Mac pause. The original
+deadline is never renewed; an unanswered reservation also has a three-second
+local reply bound. Failure text distinguishes no request from uncertain or
+confirmed native outcomes. Remove the operation-ID completion check and require
+the foreign-result assertion to fail. Independently bypass the committed-player
+receive branch and require both model and actual local WK control tests to fail.
+The WK test observes published native phases and drains through a final ordered
+bridge message; JavaScript evaluation completion alone is not native-delivery
+proof. Its supplied completion is not a live Mac pause or a connected transfer.
+
 `node --test scripts/test-youtube-handoff-player.mjs` executes the extracted
 production player script with a provider double. Independently rerun with
 `BELUGA_HANDOFF_SCRIPT_MUTANT=identity`, `visibility`, and `cleanup`; each must

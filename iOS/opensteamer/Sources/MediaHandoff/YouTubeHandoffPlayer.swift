@@ -1,11 +1,14 @@
 import SwiftUI
 import WebKit
+import WebRTCTransport
 
 @MainActor
 final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     nonisolated let request: YouTubeHandoffRequest
     nonisolated var id: UUID { request.operationID }
     @Published private(set) var phase: YouTubeHandoffPhase = .preparing
+    @Published private(set) var macPauseStatus: YouTubeHandoffMacPauseStatus = .notRequested
+    var statusText: String { phase.statusText(macPause: macPauseStatus) }
     private var operation: YouTubeHandoffOperation
     private let eventHandler: @MainActor (YouTubeHandoffPlayerEvent) -> Void
     private let now: @MainActor () -> Double
@@ -34,6 +37,18 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
         let result = operation.isCurrent(evidence, now: now())
         publish(nil)
         return result
+    }
+
+    func beginMacPause(using evidence: YouTubePhonePlaybackEvidence) -> Bool {
+        synchronizeVisibility()
+        let result = operation.beginMacPause(using: evidence, now: now())
+        publish(nil)
+        return result
+    }
+
+    func receiveMacPauseCompletion(_ completion: WebRTCMediaHandoffCompletion) {
+        synchronizeVisibility()
+        publish(operation.completeMacPause(operationID: completion.id, result: completion.result, now: now()))
     }
 
     func setPresentation(isPresented: Bool, sceneIsActive: Bool) {
@@ -118,6 +133,7 @@ final class YouTubeHandoffPlayer: NSObject, ObservableObject, Identifiable {
     private func terminate(_ reason: YouTubeHandoffFailure) { publish(operation.fail(reason)) }
 
     private func publish(_ event: YouTubeHandoffPlayerEvent?) {
+        macPauseStatus = operation.macPauseStatus
         phase = operation.phase
         if operation.isTerminal { closeWebView() }
         if let event { eventHandler(event) }

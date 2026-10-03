@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import WebRTCTransport
 @testable import opensteamer
 
 final class YouTubeHandoffOperationTests: XCTestCase {
@@ -146,5 +147,138 @@ final class YouTubeHandoffOperationTests: XCTestCase {
             positionSeconds: .nan, durationSeconds: 200, playbackRate: 1, deadlineUptime: 40, now: 10))
         var operation = try makeOperation()
         XCTAssertEqual(operation.poll(now: 9), .failed(.clockChanged))
+    }
+
+    func testOnlyReservedExactCompletionMovesPlaybackAndCannotBeReplayed() throws {
+        var operation = try makeOperation()
+        let proof = try confirm(&operation)
+        XCTAssertNil(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 10.5))
+        XCTAssertEqual(operation.phase, .confirmed)
+        XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+        XCTAssertFalse(operation.beginMacPause(using: proof, now: 10.5))
+        XCTAssertNil(operation.completeMacPause(operationID: UUID(), result: .macPaused, now: 10.6))
+        XCTAssertEqual(operation.phase, .awaitingMacPause)
+        XCTAssertEqual(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 10.6), .movedToPhone)
+        XCTAssertEqual(operation.macPauseStatus, .paused)
+        XCTAssertEqual(operation.phase, .localPlayback)
+        XCTAssertNil(operation.evidence)
+        XCTAssertFalse(operation.isCurrent(proof, now: 10.7))
+        XCTAssertFalse(operation.beginMacPause(using: proof, now: 10.7))
+        for result in [WebRTCMediaHandoffResult.macPaused, .notApplied, .outcomeUnknown] {
+            XCTAssertNil(operation.completeMacPause(operationID: operation.request.id, result: result, now: 10.7))
+            XCTAssertEqual(operation.macPauseStatus, .paused)
+            XCTAssertEqual(operation.phase, .localPlayback)
+        }
+    }
+
+    func testCommittedPlayerAllowsLocalControlsPastOfferDeadlineWithoutNewAuthority() throws {
+        var operation = try makeOperation()
+        let proof = try confirm(&operation)
+        XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+        XCTAssertEqual(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 10.6), .movedToPhone)
+        for (index, state) in [2, 1, 3, 0].enumerated() {
+            let now = 60.0 + Double(index)
+            var sample = body(operation, 4 + index, position: 80, state: state)
+            sample["rate"] = 2
+            XCTAssertNil(operation.receive(try XCTUnwrap(YouTubeHandoffBridgeMessage(body: sample)), now: now))
+            XCTAssertNil(operation.poll(now: now))
+            XCTAssertEqual(operation.phase, .localPlayback)
+            XCTAssertFalse(operation.isCurrent(proof, now: now))
+            XCTAssertFalse(operation.beginMacPause(using: proof, now: now))
+        }
+        XCTAssertEqual(try send(&operation, 8, now: 64, video: "aaaaaaaaaaa"), .failed(.wrongVideo))
+        XCTAssertEqual(operation.macPauseStatus, .paused)
+        XCTAssertEqual(operation.phase.statusText(macPause: operation.macPauseStatus),
+                       "The Mac source was paused. Playback on this iPhone has stopped.")
+    }
+
+    func testPendingPlaybackInterruptionCannotReviveAfterSuccessReply() throws {
+        for interruption in ["pause", "buffering", "seek", "blocked", "duration", "rate"] {
+            var operation = try makeOperation()
+            let proof = try confirm(&operation)
+            XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+            var interrupted = body(operation, 4, kind: interruption == "blocked" ? "blocked" : "sample",
+                position: interruption == "seek" ? 80 : 20.4,
+                state: interruption == "pause" ? 2 : interruption == "buffering" ? 3 : 1)
+            if interruption == "duration" { interrupted["duration"] = 100 }
+            if interruption == "rate" { interrupted["rate"] = 2 }
+            guard case .failed = operation.receive(try XCTUnwrap(YouTubeHandoffBridgeMessage(body: interrupted)), now: 10.6) else {
+                XCTFail("Pending playback must fail on \(interruption)"); continue
+            }
+            XCTAssertEqual(operation.macPauseStatus, .unknown, interruption)
+            XCTAssertNil(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 10.7))
+            _ = try send(&operation, 5, now: 10.8, position: 20.7)
+            XCTAssertFalse(operation.isCurrent(proof, now: 10.8))
+            XCTAssertTrue(operation.isTerminal)
+        }
+    }
+
+    func testCompletionRequiresFreshContinuingPhonePlaybackNotFreshOriginalProof() throws {
+        var operation = try makeOperation()
+        let proof = try confirm(&operation)
+        XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+        _ = try send(&operation, 4, now: 11.4, position: 21.3)
+        XCTAssertFalse(operation.isCurrent(proof, now: 11.4), "Old proof must not authorize another send")
+        XCTAssertEqual(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 11.5), .movedToPhone)
+
+        var silent = try makeOperation()
+        let staleProof = try confirm(&silent)
+        XCTAssertTrue(silent.beginMacPause(using: staleProof, now: 10.5))
+        XCTAssertEqual(silent.completeMacPause(operationID: silent.request.id, result: .macPaused, now: 11.5), .failed(.playbackInterrupted))
+        XCTAssertEqual(silent.macPauseStatus, .paused, "Retain the received native result without claiming continuing phone playback")
+        XCTAssertFalse(silent.isCurrent(staleProof, now: 11.5))
+    }
+
+    func testMissingCompletionTimesOutUnknownAndDoesNotRenewOriginalDeadline() throws {
+        var operation = try makeOperation()
+        let proof = try confirm(&operation)
+        XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+        XCTAssertNil(operation.poll(now: 13.49))
+        XCTAssertEqual(operation.poll(now: 13.5), .failed(.macPauseUnknown))
+        XCTAssertEqual(operation.macPauseStatus, .unknown)
+        XCTAssertNil(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 13.6))
+
+        let request = try YouTubeHandoffRequest(operationID: UUID(), videoID: "dQw4w9WgXcQ",
+            positionSeconds: 20, durationSeconds: 200, playbackRate: 1, deadlineUptime: 10.8, now: 10)
+        var short = YouTubeHandoffOperation(request: request, now: 10)
+        _ = short.visibilityChanged(true, now: 10)
+        let shortProof = try confirm(&short)
+        XCTAssertTrue(short.beginMacPause(using: shortProof, now: 10.5))
+        XCTAssertEqual(short.poll(now: 10.8), .failed(.macPauseUnknown))
+        XCTAssertEqual(short.macPauseStatus, .unknown)
+
+        var neverSent = try makeOperation()
+        _ = try confirm(&neverSent)
+        XCTAssertEqual(neverSent.poll(now: 40), .failed(.timedOut))
+        XCTAssertEqual(neverSent.macPauseStatus, .notRequested)
+    }
+
+    func testEveryPendingFailureHasUncertainStatusAndNoAutomaticRecovery() throws {
+        for reason in [YouTubeHandoffFailure.dismissed, .replaced, .notVisible, .wrongVideo,
+                       .invalidBridge, .playerUnavailable, .clockChanged] {
+            var operation = try makeOperation()
+            let proof = try confirm(&operation)
+            XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+            XCTAssertEqual(operation.fail(reason), .failed(reason))
+            XCTAssertEqual(operation.macPauseStatus, .unknown)
+            XCTAssertEqual(operation.phase.statusText(macPause: operation.macPauseStatus),
+                           "The Mac’s pause status is uncertain. Check the Mac before trying another transfer.")
+            XCTAssertNil(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 10.6))
+            XCTAssertFalse(operation.beginMacPause(using: proof, now: 10.6))
+        }
+    }
+
+    func testRejectedAndUnknownResultsStopPlayerWithoutClaimingMacStayedPlaying() throws {
+        for result in [WebRTCMediaHandoffResult.notApplied, .outcomeUnknown] {
+            var operation = try makeOperation()
+            let proof = try confirm(&operation)
+            XCTAssertTrue(operation.beginMacPause(using: proof, now: 10.5))
+            XCTAssertEqual(operation.completeMacPause(operationID: operation.request.id, result: result, now: 10.6),
+                           .failed(result == .notApplied ? .macPauseNotApplied : .macPauseUnknown))
+            XCTAssertEqual(operation.macPauseStatus, result == .notApplied ? .notApplied : .unknown)
+            XCTAssertFalse(operation.phase.statusText(macPause: operation.macPauseStatus).contains("No Mac pause was requested"))
+            XCTAssertFalse(operation.isCurrent(proof, now: 10.6))
+            XCTAssertNil(operation.completeMacPause(operationID: operation.request.id, result: .macPaused, now: 10.7))
+        }
     }
 }

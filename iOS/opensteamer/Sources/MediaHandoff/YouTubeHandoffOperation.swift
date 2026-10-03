@@ -1,5 +1,6 @@
 import Foundation
 import CoreFoundation
+import WebRTCTransport
 
 struct YouTubeHandoffRequest: Equatable, Sendable, Identifiable {
     let operationID: UUID
@@ -39,11 +40,40 @@ struct YouTubeHandoffRequest: Equatable, Sendable, Identifiable {
 enum YouTubeHandoffFailure: String, Error, Equatable, Sendable {
     case invalidRequest, timedOut, notVisible, dismissed, replaced
     case playerUnavailable, wrongVideo, invalidBridge, clockChanged, unsupportedRate, positionChanged
+    case playbackInterrupted, macPauseNotApplied, macPauseUnknown
 }
 
 enum YouTubeHandoffPhase: Equatable, Sendable {
     case preparing, ready, playRequired, verifying, confirmed
+    case awaitingMacPause, localPlayback
     case failed(YouTubeHandoffFailure)
+
+    func statusText(macPause: YouTubeHandoffMacPauseStatus) -> String {
+        switch self {
+        case .preparing: return "Loading YouTube…"
+        case .ready: return "Waiting for playback at the Mac’s position…"
+        case .playRequired: return "Tap Play in the YouTube player to continue."
+        case .verifying: return "Confirming playback on this iPhone…"
+        case .confirmed: return "Playback detected on this iPhone. The Mac has not been asked to pause yet."
+        case .awaitingMacPause: return "Waiting for the Mac to confirm its pause…"
+        case .localPlayback: return "Playback moved to this iPhone. The Mac source was paused."
+        case .failed:
+            switch macPause {
+            case .pending, .unknown:
+                return "The Mac’s pause status is uncertain. Check the Mac before trying another transfer."
+            case .paused:
+                return "The Mac source was paused. Playback on this iPhone has stopped."
+            case .notApplied:
+                return "The Mac did not apply the handoff pause. Playback on this iPhone has stopped."
+            case .notRequested:
+                return "Handoff stopped. No Mac pause was requested."
+            }
+        }
+    }
+}
+
+enum YouTubeHandoffMacPauseStatus: Equatable, Sendable {
+    case notRequested, pending, paused, notApplied, unknown
 }
 
 /// Provider playback observations, not WebRTC/offer authority or proof of acoustic output.
@@ -60,6 +90,7 @@ struct YouTubePhonePlaybackEvidence: Equatable, Sendable {
 enum YouTubeHandoffPlayerEvent: Equatable, Sendable {
     case playRequired
     case confirmed(YouTubePhonePlaybackEvidence)
+    case movedToPhone
     case failed(YouTubeHandoffFailure)
 }
 
@@ -124,6 +155,7 @@ struct YouTubeHandoffOperation {
     private(set) var phase: YouTubeHandoffPhase = .preparing
     private(set) var isVisible = false
     private(set) var evidence: YouTubePhonePlaybackEvidence?
+    private(set) var macPauseStatus: YouTubeHandoffMacPauseStatus = .notRequested
     private var hasBeenVisible = false
     private var isReady = false
     private var lastNow: Double
@@ -132,6 +164,7 @@ struct YouTubeHandoffOperation {
     private var latestPlayingAt: Double?
     private var latestState: Int?
     private var evidenceRevoked = false
+    private var replyDeadlineUptime: Double?
 
     init(request: YouTubeHandoffRequest, pageID: UUID = UUID(), now: Double) {
         self.request = request; self.pageID = pageID; lastNow = now
@@ -164,6 +197,16 @@ struct YouTubeHandoffOperation {
         guard !isTerminal, message.sequence > sequence else { return nil }
         sequence = message.sequence
         guard message.videoID == request.videoID else { return fail(.wrongVideo) }
+        // After the exact commit has completed, provider controls own the local timeline.
+        // Ordinary pause, seek, rate changes and buffering must not reopen handoff authority.
+        if phase == .localPlayback {
+            switch message.kind {
+            case .error: return fail(.playerUnavailable)
+            case .unsupportedRate: return fail(.unsupportedRate)
+            case .blocked: return .playRequired
+            case .ready, .sample: return nil
+            }
+        }
         switch message.kind {
         case .error: return fail(.playerUnavailable)
         case .unsupportedRate: return fail(.unsupportedRate)
@@ -173,6 +216,7 @@ struct YouTubeHandoffOperation {
         case .blocked:
             firstPlaying = nil; latestPlayingAt = nil; latestState = nil
             if evidence != nil { evidenceRevoked = true }
+            if macPauseStatus == .pending { return fail(.playbackInterrupted) }
             if evidence == nil { phase = .playRequired }
             return .playRequired
         case .sample:
@@ -188,6 +232,7 @@ struct YouTubeHandoffOperation {
                 // Recovery cannot turn an earlier confirmation back into Pause authority.
                 // A fresh handoff must produce its own new playback observation.
                 if evidence != nil { evidenceRevoked = true }
+                if macPauseStatus == .pending { return fail(.playbackInterrupted) }
                 if evidence == nil { phase = .ready }
                 return nil
             }
@@ -227,15 +272,54 @@ struct YouTubeHandoffOperation {
     /// observation is revocable, not itself an offer-consumption or Mac-pause authority.
     mutating func isCurrent(_ proof: YouTubePhonePlaybackEvidence, now: Double) -> Bool {
         if let failure = observeTime(now) { _ = fail(failure) }
-        guard !isTerminal, isVisible, !evidenceRevoked, evidence == proof, now < request.deadlineUptime,
+        guard !isTerminal, macPauseStatus == .notRequested || macPauseStatus == .pending,
+              isVisible, !evidenceRevoked, evidence == proof, now < request.deadlineUptime,
               now >= proof.observedAtUptime, now - proof.observedAtUptime <= 0.75,
               latestState == 1, let last = latestPlayingAt,
               now >= last, now - last <= 0.75 else { return false }
         return true
     }
 
+    /// Reserve before crossing to the peer actor, since its reply can beat send completion.
+    /// The caller must cancel the exact transport request if local playback subsequently fails.
+    mutating func beginMacPause(using proof: YouTubePhonePlaybackEvidence, now: Double) -> Bool {
+        guard macPauseStatus == .notRequested, isCurrent(proof, now: now) else { return false }
+        macPauseStatus = .pending
+        replyDeadlineUptime = min(request.deadlineUptime, now + 3)
+        phase = .awaitingMacPause
+        return true
+    }
+
+    /// The owner must supply only the current peer's correlated handoff completion, never a
+    /// generic Pause ACK. This local state machine adds no native or transport authority.
+    mutating func completeMacPause(operationID: UUID, result: WebRTCMediaHandoffResult,
+                                   now: Double) -> YouTubeHandoffPlayerEvent? {
+        guard operationID == request.operationID, macPauseStatus == .pending else { return nil }
+        if let failure = observeTime(now) { return fail(failure) }
+        replyDeadlineUptime = nil
+        switch result {
+        case .macPaused:
+            macPauseStatus = .paused
+            guard isVisible, !evidenceRevoked, latestState == 1,
+                  let last = latestPlayingAt, now >= last, now - last <= 0.75 else {
+                return fail(.playbackInterrupted)
+            }
+            evidenceRevoked = true; evidence = nil; firstPlaying = nil
+            phase = .localPlayback
+            return .movedToPhone
+        case .notApplied:
+            macPauseStatus = .notApplied
+            return fail(.macPauseNotApplied)
+        case .outcomeUnknown:
+            macPauseStatus = .unknown
+            return fail(.macPauseUnknown)
+        }
+    }
+
     mutating func fail(_ failure: YouTubeHandoffFailure) -> YouTubeHandoffPlayerEvent? {
         guard !isTerminal else { return nil }
+        if macPauseStatus == .pending { macPauseStatus = .unknown }
+        replyDeadlineUptime = nil; evidenceRevoked = true
         phase = .failed(failure); isVisible = false
         firstPlaying = nil; latestPlayingAt = nil; latestState = nil
         return .failed(failure)
@@ -245,6 +329,7 @@ struct YouTubeHandoffOperation {
         guard !isTerminal else { return nil }
         guard now.isFinite, now >= lastNow else { return .clockChanged }
         lastNow = now
-        return evidence == nil && now >= request.deadlineUptime ? .timedOut : nil
+        if let replyDeadlineUptime, now >= replyDeadlineUptime { return .macPauseUnknown }
+        return phase != .localPlayback && now >= request.deadlineUptime ? .timedOut : nil
     }
 }
