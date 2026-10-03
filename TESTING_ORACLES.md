@@ -804,6 +804,33 @@ the readiness-specific message identity and require the script oracle to fail.
 Always wait for actual WebKit stop acknowledgement. This probe proves provider
 playback, not audible physical-phone output or a completed source handoff.
 
+`NativeYouTubeHandoffOracleTests` is an explicitly approved Mac-only boundary probe,
+not a release gate or an end-to-end phone test. Supply `BELUGA_HANDOFF_ORACLE_BROWSER`
+and `BELUGA_HANDOFF_ORACLE_PID` only for a signature-verified private Chrome copy
+inside `/Volumes/t7/beluga-native-handoff.*`, with a new signed-out profile and muted
+test audio. Never use the normal browser, its profile, or an ordinary second host.
+The only injected boundary is browser discovery: every native event uses the real
+production controller/runtime/backend and is fenced to the exact private path, PID
+and kernel start tuple. Direct executable launches do not have a LaunchServices
+launchDate, so the test retains/rechecks the full kernel seconds/microseconds tuple,
+not a fabricated date or PID alone. The fixture also rejects wrong event targets,
+unknown commands, non-production send options, and timeouts above the existing bound.
+
+Preflight must preserve the normal browser and host generations and watch default
+routes with a read-only sticky monitor through clean zero-notification teardown.
+The pinned YouTube demo must already be visibly playing. Browser scripting consent
+is separate: never enable it in the normal profile or silently bypass its gate.
+Chrome's real disabled-scripting reply can be code 12, not only -10000; both must
+map to content-free `javascriptPermissionRequired`, without any automatic prompt
+or media command. Unrelated/oversized errors must not become permission advice.
+
+This optional probe supplies the receiving position as `TEST_INPUT`; it does not
+claim a real phone commit. A native pass requires actual exact-source pause/readback,
+one command, no duplicate dispatch, unchanged owner and no permission prompts. Do
+not equate an env-off skip, a disabled-scripting failure, or this isolated boundary
+pass with the completed menu/service/phone/native-pause or acoustic handoff. The
+deterministic `NativeYouTubeHandoffIsolationTests` run without a browser or UI events.
+
 Keep the capability disabled in both product frontends until native source
 binding, current-phone menu/presentation integration, exact offer-bound native
 pause/readback, and owner-scoped audio coexistence are implemented. Actual
