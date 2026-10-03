@@ -17,11 +17,15 @@ begin
     parser.on('--keychain-account NAME') { |value| options[:account] = value }
     parser.on('--retained-admission PATH') { |value| options[:retained] = value }
     parser.on('--retained-sha256 SHA256') { |value| options[:retained_sha] = value }
+    parser.on('--resume-notarized-dmg PATH') { |value| raise BelugaMacClient::Refusal, 'duplicate resume option' if options.key?(:resume_dmg); options[:resume_dmg] = value }
+    parser.on('--resume-dmg-sha256 SHA256') { |value| raise BelugaMacClient::Refusal, 'duplicate resume option' if options.key?(:resume_sha); options[:resume_sha] = value }
+    parser.on('--resume-notary-id UUID') { |value| raise BelugaMacClient::Refusal, 'duplicate resume option' if options.key?(:resume_id); options[:resume_id] = value }
   end.parse!
   C = BelugaMacClient
   required = %i[account app identity output profile tools]
   C.require!(ARGV.empty? && (required - options.keys).empty? &&
-    (options.keys - required - %i[retained retained_sha]).empty?, 'all six package options are required; only the paired retained options are optional')
+    (options.keys - required - %i[retained retained_sha resume_dmg resume_sha resume_id]).empty?, 'all six package options are required; only paired retained options or the complete resume trio are optional')
+  resume = C.package_resume_options!(options)
   config = C.config! # No output mutation or authentication until complete config.
   receipt = C::MicrophoneReceipt.new
   receipt.verify!
@@ -58,34 +62,47 @@ begin
     retained ? retained.verify!(app) : C.require!(C.snapshot(build_report_path) == build_snapshot, 'successful build report changed')
   end
   verify_authority.call
+  dmg_name = "Beluga-Mac-#{config['version']}-#{config['build']}.dmg"
+  dmg = File.join(output, dmg_name)
+  resume_binding = resume && C.resume_dmg_binding!(resume, output: output, app: app, dmg_name: dmg_name)
   # generate_keys -p is lookup-only: it never generates, rotates, exports, or
   # persists a private key. The private key stays inside the Sparkle process.
   public_key = C.run(public_reader, '--account', options[:account], '-p').strip
   C.require!(public_key == config['publicEDKey'], 'Keychain updater public key differs from signed app/configuration')
-  stage = File.join(output, 'image-root')
-  FileUtils.mkdir(stage, mode: 0o700)
-  staged_app = File.join(stage, 'Beluga Host.app')
-  C.run('/usr/bin/ditto', '--noqtn', app, staged_app)
-  File.symlink('/Applications', File.join(stage, 'Applications'))
-  C.require!(C.tree_digest(staged_app) == verification['appSHA256'], 'DMG staging altered app bytes/aliases')
-  dmg_name = "Beluga-Mac-#{config['version']}-#{config['build']}.dmg"
-  dmg = File.join(output, dmg_name)
-  C.run('/usr/bin/hdiutil', 'create', '-volname', "Beluga #{config['version']}", '-srcfolder', stage, '-fs', 'APFS', '-format', 'ULFO', dmg)
-  C.run('/usr/bin/codesign', '--sign', options[:identity].upcase, '--timestamp', dmg)
-  C.run('/usr/bin/codesign', '--verify', '--strict', '--verbose=2', dmg)
-  receipt.verify!
-  C.require!(C.source! == source && C.config! == config, 'source/configuration changed before notary submission')
-  verify_authority.call
-  submission = JSON.parse(C.run('/usr/bin/xcrun', 'notarytool', 'submit', dmg, '--keychain-profile', options[:profile], '--wait', '--timeout', '20m', '--output-format', 'json', timeout: 1230))
+  if resume_binding
+    # Copy only; never rebuild, re-sign, re-staple or submit the retained image.
+    C.copy_resume_dmg!(resume_binding, dmg)
+    receipt.verify!
+    C.require!(C.source! == source && C.config! == config, 'source/configuration changed before notary readback')
+    verify_authority.call
+    notary_info = C.run('/usr/bin/xcrun', 'notarytool', 'info', resume_binding.fetch('notarySubmissionID'),
+      '--keychain-profile', options[:profile], '--output-format', 'json', timeout: 120)
+    submission = C.accepted_notary_info!(notary_info,
+      submission_id: resume_binding.fetch('notarySubmissionID'), dmg_name: dmg_name)
+  else
+    stage = File.join(output, 'image-root')
+    FileUtils.mkdir(stage, mode: 0o700)
+    staged_app = File.join(stage, 'Beluga Host.app')
+    C.run('/usr/bin/ditto', '--noqtn', app, staged_app)
+    File.symlink('/Applications', File.join(stage, 'Applications'))
+    C.require!(C.tree_digest(staged_app) == verification['appSHA256'], 'DMG staging altered app bytes/aliases')
+    C.run('/usr/bin/hdiutil', 'create', '-volname', "Beluga #{config['version']}", '-srcfolder', stage, '-fs', 'APFS', '-format', 'ULFO', dmg)
+    C.run('/usr/bin/codesign', '--sign', options[:identity].upcase, '--timestamp', dmg)
+    C.run('/usr/bin/codesign', '--verify', '--strict', '--verbose=2', dmg)
+    receipt.verify!
+    C.require!(C.source! == source && C.config! == config, 'source/configuration changed before notary submission')
+    verify_authority.call
+    submission = JSON.parse(C.run('/usr/bin/xcrun', 'notarytool', 'submit', dmg, '--keychain-profile', options[:profile], '--wait', '--timeout', '20m', '--output-format', 'json', timeout: 1230))
+  end
   File.write(File.join(output, 'notary.json'), JSON.pretty_generate(submission) + "\n", mode: 'wx', perm: 0o600)
   C.require!(submission['status'] == 'Accepted' && submission['id'].is_a?(String) && /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/.match?(submission['id']), 'notarization did not reach Accepted; preserve failed evidence and do not publish')
-  C.run('/usr/bin/xcrun', 'stapler', 'staple', dmg)
+  C.run('/usr/bin/xcrun', 'stapler', 'staple', dmg) unless resume_binding
+  C.verify_dmg_signature!(dmg, identity: options[:identity].upcase, identifier: File.basename(dmg, '.dmg'))
   C.run('/usr/bin/xcrun', 'stapler', 'validate', dmg)
   C.run('/usr/sbin/spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose=2', dmg)
   C.run('/usr/bin/hdiutil', 'verify', dmg)
   # Verify the final read-only mounted DMG, not just the source used to create it.
-  mount = File.join(output, 'mount')
-  FileUtils.mkdir(mount, mode: 0o700)
+  mount = C.private_package_mount!
   mounted = false
   begin
     C.run('/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, dmg)
@@ -104,6 +121,7 @@ begin
   end
   dmg_hash = Digest::SHA256.file(dmg).hexdigest
   size = File.size(dmg)
+  C.require!(!resume_binding || dmg_hash == resume_binding.fetch('sha256'), 'resumed notarized image changed during verification')
   C.require!([C.snapshot(signer), C.snapshot(public_reader)] == tool_bindings, 'Sparkle tools changed before signing')
   signature = C.run(signer, '--account', options[:account], '-p', dmg).strip
   C.run(signer, '--account', options[:account], '--verify', dmg, signature)
@@ -118,6 +136,7 @@ begin
   receipt.verify!
   C.require!(C.source! == source && C.config! == config && C.tree_digest(app) == verification['appSHA256'], 'source/app changed before distribution handoff')
   verify_authority.call
+  C.verify_resume_dmg_binding!(resume_binding) if resume_binding
   product_source = retained ? retained.product_source : source
   report = {
     'schema' => 'beluga.mac-client-package.v1', 'status' => 'NOTARIZED_STAPLED_SIGNED_DISTRIBUTION_READY',
@@ -132,6 +151,16 @@ begin
     'feedPromotion' => 'Publish and verify the immutable versioned DMG first; promote the signed stable-channel appcast last.',
     'published' => false, 'liveInstalled' => false, 'microphonePCMProven' => false
   }
+  if resume_binding
+    report['recovery'] = {
+      'kind' => 'copied-notarized-dmg', 'originalDMG' => resume_binding.fetch('path'),
+      'originalDMGSHA256' => resume_binding.fetch('sha256'), 'notarySubmissionID' => submission['id'],
+      'notaryInfoSHA256' => Digest::SHA256.file(File.join(output, 'notary.json')).hexdigest,
+      'rebuiltApp' => false, 'resignedDMG' => false, 'resubmittedNotary' => false,
+      'originalPackageCompletionClaimed' => false,
+      'notaryInfoBinding' => 'Accepted submission ID/name; not a post-staple image-digest assertion'
+    }
+  end
   File.write(File.join(output, 'package.json'), JSON.pretty_generate(report) + "\n", mode: 'wx', perm: 0o600)
   puts JSON.pretty_generate(report)
 rescue BelugaMacClient::Refusal, OptionParser::ParseError, SystemCallError, JSON::ParserError => error

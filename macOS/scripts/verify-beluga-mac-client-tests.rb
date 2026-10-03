@@ -670,6 +670,160 @@ class BelugaMacClientContractTests < Minitest::Test
     assert_operator xml, :<, whole_feed_signing
   end
 
+  def resume_options(path = '/private/tmp/synthetic/Beluga-Mac-0.2.0-100.dmg', sha = 'a' * 64)
+    { resume_dmg: path.dup, resume_sha: sha.dup, resume_id: '11111111-2222-4333-8444-555555555555'.dup }
+  end
+
+  def resume_fixture
+    original = File.join(@directory, 'original')
+    output = File.join(@directory, 'output')
+    app = File.join(@directory, 'Beluga Host.app')
+    [original, output, app].each { |path| Dir.mkdir(path, 0o700) }
+    name = 'Beluga-Mac-0.2.0-100.dmg'
+    path = File.join(original, name)
+    File.binwrite(path, "synthetic signed image\0\xff".b, perm: 0o600)
+    options = C.package_resume_options!(resume_options(path, Digest::SHA256.file(path).hexdigest))
+    binding = C.resume_dmg_binding!(options, output: output, app: app, dmg_name: name)
+    [binding, output, app, name]
+  end
+
+  def test_notarized_resume_options_require_exact_complete_typed_trio_and_copy_inputs
+    assert_nil C.package_resume_options!({})
+    valid = resume_options
+    result = C.package_resume_options!(valid)
+    assert_equal valid, result
+    assert result.frozen?
+    valid[:resume_dmg].replace('/changed')
+    assert_equal '/private/tmp/synthetic/Beluga-Mac-0.2.0-100.dmg', result[:resume_dmg]
+    assert result.values.all?(&:frozen?)
+    (1..6).each do |mask|
+      partial = resume_options.select.with_index { |_, index| (mask & (1 << index)) != 0 }
+      assert_raises(C::Refusal) { C.package_resume_options!(partial) }
+    end
+    { resume_dmg: [nil, 'relative.dmg', "/nul\0image", '/' + 'x' * 4096],
+      resume_sha: [nil, 'A' * 64, 'a' * 63, 'a' * 64 + "\n"],
+      resume_id: [nil, 'invalid', '11111111-2222-4333-8444-55555555555G', '11111111-2222-4333-8444-555555555555\n'] }.each do |key, values|
+      values.each { |value| assert_raises(C::Refusal) { C.package_resume_options!(resume_options.merge(key => value)) } }
+    end
+  end
+
+  def test_resume_copy_preserves_exact_original_bytes_and_refuses_overwrite_or_changed_source
+    binding, output, _app, name = resume_fixture
+    original = binding.fetch('path')
+    before = C.snapshot(original)
+    destination = File.join(output, name)
+    copied = C.copy_resume_dmg!(binding, destination)
+    assert_equal before, C.snapshot(original)
+    assert_equal File.binread(original), File.binread(destination)
+    assert_equal binding.fetch('sha256'), copied.last
+    assert_equal 0o600, File.stat(destination).mode & 0o777
+    assert_raises(Errno::EEXIST) { C.copy_resume_dmg!(binding, destination) }
+    File.binwrite(original, 'changed', perm: 0o600)
+    assert_raises(C::Refusal) { C.copy_resume_dmg!(binding, File.join(output, 'unused.dmg')) }
+    refute File.exist?(File.join(output, 'unused.dmg'))
+  end
+
+  def test_resume_image_binding_refuses_mixed_names_locations_symlinks_hardlinks_and_digest_drift
+    binding, output, app, name = resume_fixture
+    original = binding.fetch('path')
+    options = resume_options(original, binding.fetch('sha256'))
+    admit = lambda { |values, out = output, expected = name| C.resume_dmg_binding!(C.package_resume_options!(values), output: out, app: app, dmg_name: expected) }
+    assert_raises(C::Refusal) { admit.call(options.merge(resume_sha: 'b' * 64)) }
+    assert_raises(C::Refusal) { admit.call(options, output, 'Beluga-Mac-0.2.1-101.dmg') }
+    assert_raises(C::Refusal) { admit.call(options, File.dirname(original)) }
+    assert_raises(C::Refusal) { admit.call(options, original) }
+    File.link(original, File.join(@directory, 'hardlink'))
+    assert_raises(C::Refusal) { admit.call(options) }
+    File.unlink(File.join(@directory, 'hardlink'))
+    alias_path = File.join(app, name)
+    File.symlink(original, alias_path)
+    assert_raises(C::Refusal) { admit.call(options.merge(resume_dmg: alias_path)) }
+    File.chmod(0o666, original)
+    assert_raises(C::Refusal) { admit.call(options) }
+  end
+
+  def test_notary_info_requires_exact_accepted_id_name_and_duplicate_free_bounded_json
+    id = resume_options.fetch(:resume_id)
+    name = 'Beluga-Mac-0.2.0-100.dmg'
+    value = { 'id' => id, 'name' => name, 'status' => 'Accepted', 'createdDate' => 'synthetic' }
+    assert_equal value, C.accepted_notary_info!(JSON.generate(value), submission_id: id, dmg_name: name)
+    [{ 'status' => 'In Progress' }, { 'status' => 'Invalid' }, { 'name' => 'other.dmg' },
+     { 'id' => 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' }, { 'id' => nil }, { 'name' => [name] }].each do |change|
+      assert_raises(C::Refusal) { C.accepted_notary_info!(JSON.generate(value.merge(change)), submission_id: id, dmg_name: name) }
+    end
+    ['{}', '[]', 'null', '{', "\xff".b, 'x' * 65_537,
+     JSON.generate(value).sub('"status":"Accepted"', '"status":"Invalid","status":"Accepted"')].each do |bytes|
+      assert_raises(C::Refusal) { C.accepted_notary_info!(bytes, submission_id: id, dmg_name: name) }
+    end
+  end
+
+  def test_dmg_signature_uses_exact_leaf_identity_without_weakening_app_runtime_requirement
+    binding, _output, _app, name = resume_fixture
+    identifier = File.basename(name, '.dmg')
+    metadata = "Identifier=#{identifier}\nFormat=disk image\nCodeDirectory v=20200 size=308 flags=0x0(none) hashes=1+6 location=embedded\nAuthority=Developer ID Application: Synthetic Owner (#{C::TEAM})\nTeamIdentifier=#{C::TEAM}\nTimestamp=Oct 2, 2026 at 12:00:00 PM\n"
+    identity = 'A' * 40
+    calls = []
+    original = C.method(:run)
+    current_metadata = metadata
+    C.define_singleton_method(:run) do |*argv, **_keywords|
+      calls << argv
+      argv.include?('-d') ? current_metadata : ''
+    end
+    assert_equal 'disk image', C.verify_dmg_signature!(binding.fetch('path'), identity: identity, identifier: identifier)['Format']
+    assert_equal 3, calls.length
+    requirement = calls.last.find { |argument| argument.start_with?('-R=') }
+    assert_includes requirement, "certificate leaf = H\"#{identity}\""
+    assert_includes requirement, "identifier \"#{identifier}\""
+    assert_raises(C::Refusal) { C.signature_fields!(metadata) }
+    [metadata.sub('Format=disk image', 'Format=Mach-O'), metadata.sub("TeamIdentifier=#{C::TEAM}", 'TeamIdentifier=OTHERTEAM1'),
+     metadata.sub('flags=0x0(none)', 'flags=0x2(adhoc)'), metadata.sub('Timestamp=Oct 2, 2026 at 12:00:00 PM', 'Timestamp=none'),
+     metadata + "Identifier=#{identifier}\n", metadata + 'CodeDirectory=forged'].each do |mutant|
+      current_metadata = mutant
+      assert_raises(C::Refusal) { C.verify_dmg_signature!(binding.fetch('path'), identity: identity, identifier: identifier) }
+    end
+    current_metadata = metadata
+    C.define_singleton_method(:run) do |*argv, **_keywords|
+      raise C::Refusal, 'synthetic certificate mismatch' if argv.any? { |argument| argument.start_with?('-R=') }
+      argv.include?('-d') ? current_metadata : ''
+    end
+    assert_raises(C::Refusal) { C.verify_dmg_signature!(binding.fetch('path'), identity: identity, identifier: identifier) }
+  ensure
+    C.define_singleton_method(:run, original) if original
+  end
+
+  def test_package_mount_is_fresh_canonical_owned_internal_scratch_not_output
+    mount = C.private_package_mount!
+    assert mount.start_with?('/private/tmp/beluga-mac-client-mount.')
+    assert_equal mount, C.canonical!(mount)
+    assert_equal Process.uid, File.stat(mount).uid
+    assert_equal 0o700, File.stat(mount).mode & 0o777
+    assert_equal 0o700, File.stat(File.dirname(mount)).mode & 0o777
+    assert_empty Dir.children(mount)
+  ensure
+    if mount
+      Dir.rmdir(mount)
+      Dir.rmdir(File.dirname(mount))
+    end
+  end
+
+  def test_package_resume_branch_cannot_sign_staple_or_submit_and_preserves_common_gates
+    package = File.read(File.join(C::ROOT, 'macOS/scripts/package-beluga-mac-client.rb'))
+    resume_branch = package.split('if resume_binding', 2).last.split(/^  else$/, 2).first
+    assert_includes resume_branch, 'C.copy_resume_dmg!'
+    assert_includes resume_branch, "'notarytool', 'info'"
+    assert_includes resume_branch, 'receipt.verify!'
+    assert_includes resume_branch, 'verify_authority.call'
+    refute_includes resume_branch, "'--sign'"
+    refute_includes resume_branch, "'stapler', 'staple'"
+    refute_includes resume_branch, "'notarytool', 'submit'"
+    assert_includes package, "'stapler', 'staple', dmg) unless resume_binding"
+    assert_includes package, 'mount = C.private_package_mount!'
+    refute_includes package, "mount = File.join(output, 'mount')"
+    assert_includes package, 'C.verify_dmg_signature!'
+    assert_includes package, "'originalPackageCompletionClaimed' => false"
+    assert_includes package, "'provenance' => retained ? retained.provenance"
+  end
+
   def test_microphone_receipt_brackets_exact_runner_invocation_and_refuses_changed_receipt
     path = File.join(@directory, 'receipt.json')
     File.write(path, 'source-bound offline fixture', perm: 0o600)

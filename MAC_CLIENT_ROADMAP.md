@@ -98,6 +98,19 @@ The browser protocol must not change deployed /v1/rendezvous or /v2/availability
 
 ## Implementation evidence — 2026-10-02
 
+- Distribution readback uses a fresh private internal mountpoint independently
+  of the chosen output volume. An external-backed mountpoint can be refused by
+  DiskImages even when the image and directory permissions are valid. The
+  packager's explicit notarized-DMG resume trio copies an independently
+  digest-bound image into fresh empty output; it never rebuilds the app,
+  re-signs/re-staples the image or repeats a notary submission. Current release
+  receipt, source/retained-product authority, updater tool/key checks, exact DMG
+  signing identity, Accepted notary ID/name, staple/Gatekeeper/image validation
+  and mounted app/candidate readback all remain mandatory before archive/feed
+  signing. The report retains original product provenance and records recovery
+  separately; it does not claim the interrupted original package completed or
+  equate Apple's pre-staple submission digest with the copied stapled image.
+  This source change alone is not successful packaging or deployment.
 - Actual retained-artifact admission passed the evidence collector, then native
   verification exposed a second metadata-parser defect: vtool's linker/compiler
   `version` lines were counted as macOS deployment targets alongside `minos`.

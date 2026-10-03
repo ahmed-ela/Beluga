@@ -10,6 +10,7 @@ require 'find'
 require 'json'
 require 'open3'
 require 'time'
+require 'tmpdir'
 require 'uri'
 
 module BelugaMacClient
@@ -174,6 +175,108 @@ module BelugaMacClient
   def self.snapshot(path)
     info = regular!(path)
     [info.dev, info.ino, info.uid, info.gid, info.mode, info.size, Digest::SHA256.file(path).hexdigest]
+  end
+
+  # Resumption is deliberately only the same already signed/stapled DMG. The
+  # normal product/receipt/key admission remains mandatory in the packager.
+  def self.package_resume_options!(options)
+    keys = %i[resume_dmg resume_sha resume_id]
+    return nil if (keys & options.keys).empty?
+    require!((keys - options.keys).empty?, 'all three notarized-DMG resume options are required together')
+    require!(options[:resume_dmg].is_a?(String) && options[:resume_dmg].bytesize <= 4096 && options[:resume_dmg].start_with?('/') && !options[:resume_dmg].include?("\0") &&
+             options[:resume_sha].is_a?(String) && /\A[0-9a-f]{64}\z/.match?(options[:resume_sha]) &&
+             options[:resume_id].is_a?(String) && /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/.match?(options[:resume_id]),
+             'notarized-DMG resume path/digest/submission ID is malformed')
+    keys.each_with_object({}) { |key, result| result[key] = options.fetch(key).dup.freeze }.freeze
+  end
+
+  def self.resume_dmg_binding!(resume, output:, app:, dmg_name:)
+    path = canonical!(resume.fetch(:resume_dmg))
+    require!(path != output && !path.start_with?("#{output}/") && !output.start_with?("#{File.dirname(path)}/") &&
+             path != ROOT && !path.start_with?("#{ROOT}/") && path != app && !path.start_with?("#{app}/") &&
+             File.basename(path) == dmg_name, 'resume DMG must be an independent exact release image outside source/app/output')
+    info = regular!(path)
+    require!(info.uid == Process.uid && info.size.positive? && info.size <= 8 * 1024**3, 'resume DMG owner/size differs')
+    binding = snapshot(path)
+    require!(binding.last == resume.fetch(:resume_sha), 'resume DMG digest differs')
+    { 'path' => path.dup.freeze, 'snapshot' => binding.freeze,
+      'sha256' => resume.fetch(:resume_sha), 'notarySubmissionID' => resume.fetch(:resume_id) }.freeze
+  end
+
+  def self.verify_resume_dmg_binding!(binding)
+    require!(snapshot(binding.fetch('path')) == binding.fetch('snapshot'), 'original notarized DMG changed')
+  end
+
+  def self.copy_resume_dmg!(binding, destination)
+    verify_resume_dmg_binding!(binding)
+    File.open(binding.fetch('path'), File::RDONLY | File::NOFOLLOW) do |input|
+      stat = input.stat
+      require!([stat.dev, stat.ino, stat.uid, stat.gid, stat.mode, stat.size] == binding.fetch('snapshot').first(6), 'resume DMG changed before copy')
+      File.open(destination, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o600) do |output|
+        require!(IO.copy_stream(input, output, stat.size) == stat.size && input.read(1).nil?, 'resume DMG copy was short or grew')
+        output.flush
+        output.fsync
+      end
+    end
+    verify_resume_dmg_binding!(binding)
+    copied = snapshot(destination)
+    require!(copied[2] == Process.uid && copied[5] == binding.fetch('snapshot')[5] && copied.last == binding.fetch('sha256'), 'copied notarized DMG differs')
+    copied
+  end
+
+  def self.accepted_notary_info!(bytes, submission_id:, dmg_name:)
+    require!(bytes.is_a?(String) && bytes.bytesize <= 65_536, 'notary submission info exceeds bound')
+    value = JSON.parse(utf8_text(bytes, 'notary submission info'), object_class: UniqueObject)
+    require!(value.is_a?(Hash) && value['id'] == submission_id && value['name'] == dmg_name && value['status'] == 'Accepted', 'notary submission info is not the exact Accepted release image')
+    # Accepted ID/name are submission provenance. They do not assert that Apple's
+    # pre-staple submission digest equals the caller's post-staple image digest.
+    value
+  rescue JSON::ParserError
+    raise Refusal, 'notary submission info is malformed JSON'
+  end
+
+  def self.private_package_mount!
+    # DiskImages refuses this mountpoint on external-backed package output. Keep
+    # output on its chosen volume and use the normal internal OS scratch root.
+    directory = canonical!(Dir.mktmpdir('beluga-mac-client-mount.', '/private/tmp'))
+    empty_owned_directory!(directory)
+    mount = File.join(directory, 'mount')
+    Dir.mkdir(mount, 0o700)
+    empty_owned_directory!(mount)
+    mount # Retained after detach as private evidence; never recursively removed.
+  end
+
+  def self.verify_dmg_signature!(path, identity:, identifier:)
+    regular!(path)
+    require!(identity.is_a?(String) && /\A[0-9A-F]{40}\z/.match?(identity) && identifier.is_a?(String) &&
+             /\ABeluga-Mac-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\z/.match?(identifier), 'DMG signature identity/identifier is malformed')
+    run('/usr/bin/codesign', '--verify', '--strict', '--verbose=2', path)
+    fields = {}
+    utf8_text(run('/usr/bin/codesign', '-d', '--verbose=4', path, capture_stderr: true), 'DMG codesign metadata').each_line do |raw|
+      line = raw.chomp
+      if /\ACodeDirectory(?:[ =\t]|\z)/.match?(line)
+        require!(line.start_with?('CodeDirectory '), 'malformed DMG CodeDirectory record')
+        key, value = 'CodeDirectory', line.delete_prefix('CodeDirectory ')
+      else
+        next unless /\A(?:Identifier|Format|TeamIdentifier|Authority|Timestamp)=/.match?(line)
+        key, value = line.split('=', 2)
+      end
+      if key == 'Authority'
+        (fields[key] ||= []) << value
+      else
+        require!(!fields.key?(key), 'duplicate DMG codesign field')
+        fields[key] = value
+      end
+    end
+    flags = /\Av=[0-9]+ size=[0-9]+ flags=0x([0-9a-f]+)\(([a-z0-9,-]*)\)(?: [^\r\n]*)?\z/.match(fields.fetch('CodeDirectory', ''))
+    require!(fields['Identifier'] == identifier && fields['Format'] == 'disk image' && fields['TeamIdentifier'] == TEAM &&
+             fields.fetch('Authority', []).first.to_s.match?(/\ADeveloper ID Application: .+ \(#{TEAM}\)\z/) &&
+             flags && fields['CodeDirectory'].scan(/\bflags=/).length == 1 &&
+             (flags[1].to_i(16) & 0x2).zero? && !flags[2].split(',').include?('adhoc') &&
+             !fields.fetch('Timestamp', '').match?(/\A[[:space:]]*(?:none)?[[:space:]]*\z/i), 'DMG Developer ID/secure timestamp differs')
+    requirement = "identifier \"#{identifier}\" and anchor apple generic and certificate leaf = H\"#{identity}\" and certificate leaf[subject.OU] = \"#{TEAM}\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"
+    run('/usr/bin/codesign', '--verify', '--strict', "-R=#{requirement}", path)
+    fields
   end
 
   # This consumes existing invocation/tools fields only AFTER the production
