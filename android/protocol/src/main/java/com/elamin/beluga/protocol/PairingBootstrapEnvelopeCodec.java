@@ -276,7 +276,7 @@ public final class PairingBootstrapEnvelopeCodec implements AutoCloseable {
     }
 
     // Small serialization codecs, not custom cryptography or an Android API26 Base64 dependency.
-    private static String encodeBase64(byte[] bytes, boolean url) {
+    static String encodeBase64(byte[] bytes, boolean url) {
         StringBuilder result = new StringBuilder(((bytes.length + 2) / 3) * 4);
         for (int i = 0; i < bytes.length; i += 3) {
             int remaining = bytes.length - i;
@@ -293,7 +293,7 @@ public final class PairingBootstrapEnvelopeCodec implements AutoCloseable {
         char symbol = BASE64.charAt(value);
         return url && symbol == '+' ? '-' : url && symbol == '/' ? '_' : symbol;
     }
-    private static byte[] decodeBase64(String value, boolean url, int maximum) throws EnvelopeFailure {
+    static byte[] decodeBase64(String value, boolean url, int maximum) throws EnvelopeFailure {
         int length = value.length();
         if (length == 0 || length > ((maximum + 2) / 3) * 4 || length % 4 == 1) throw failure(FailureCode.INVALID_WIRE);
         if (!url && length % 4 != 0) throw failure(FailureCode.INVALID_WIRE);
@@ -321,11 +321,18 @@ public final class PairingBootstrapEnvelopeCodec implements AutoCloseable {
         } finally { if (!success) clear(result); }
     }
     private static Map<String, Object> parse(byte[] input, int maximum) throws EnvelopeFailure {
+        return parse(input, maximum, 5);
+    }
+    /** Separate six-field availability framing; bootstrap remains limited to five fields. */
+    static Map<String, Object> parseAvailabilityWire(byte[] input, int maximum) throws EnvelopeFailure {
+        return parse(input, maximum, 6);
+    }
+    private static Map<String, Object> parse(byte[] input, int maximum, int maximumFields) throws EnvelopeFailure {
         if (input == null || input.length == 0 || input.length > maximum) throw failure(FailureCode.INVALID_WIRE);
         byte[] owned = input.clone();
         try {
             for (byte b : owned) if (b < 0) throw failure(FailureCode.INVALID_WIRE);
-            return new FlatParser(new String(owned, StandardCharsets.US_ASCII)).object();
+            return new FlatParser(new String(owned, StandardCharsets.US_ASCII), maximumFields).object();
         } finally { clear(owned); }
     }
     private static void exactKeys(Map<String, Object> map, String... names) throws EnvelopeFailure {
@@ -339,13 +346,13 @@ public final class PairingBootstrapEnvelopeCodec implements AutoCloseable {
         Object value = map.get(key); if (!(value instanceof Long)) throw failure(FailureCode.INVALID_WIRE); return ((Long) value).longValue();
     }
     private static final class FlatParser {
-        private final String text; private int offset;
-        private FlatParser(String text) { this.text = text; }
+        private final String text; private final int maximumFields; private int offset;
+        private FlatParser(String text, int maximumFields) { this.text = text; this.maximumFields = maximumFields; }
         Map<String, Object> object() throws EnvelopeFailure {
             whitespace(); take('{'); whitespace(); Map<String, Object> fields = new HashMap<>();
             if (!consume('}')) {
                 while (true) {
-                    if (fields.size() >= 5) throw failure(FailureCode.INVALID_WIRE);
+                    if (fields.size() >= maximumFields) throw failure(FailureCode.INVALID_WIRE);
                     String key = quoted(32); if (fields.containsKey(key)) throw failure(FailureCode.INVALID_WIRE);
                     whitespace(); take(':'); whitespace();
                     Object value = offset < text.length() && text.charAt(offset) == '"' ? quoted(MAXIMUM_WIRE_BYTES) : unsignedNumber();

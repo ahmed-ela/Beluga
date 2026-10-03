@@ -63,13 +63,14 @@ import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLParameters;
 
 /**
- * One-use invitation WSS transport. HTTP101 is transport evidence, not pairing authority.
+ * Profile-bound pairing or saved-pair availability WSS transport. HTTP101 is only transport evidence.
  * Listener callbacks must return promptly and never block awaiting a transport completion.
  * There is no reconnect, protocol parser, persistence, media, logging or permission request here.
  */
 public final class NettyPairingWssTransport {
     public static final String PRODUCTION_ORIGIN = "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev";
     public static final String SUBPROTOCOL = "audiostreamer.pairing.v1";
+    public static final String AVAILABILITY_SUBPROTOCOL = "audiostreamer.availability.v1";
     static final String HOST = "audiostreamer-rendezvous.elaminahmed03.workers.dev";
     static final int MAXIMUM_MESSAGE_BYTES = 90_000;
     static final int MAXIMUM_FRAGMENTS = 64;
@@ -79,6 +80,13 @@ public final class NettyPairingWssTransport {
     static final long OPEN_TIMEOUT_SECONDS = 30;
     static final long WRITE_TIMEOUT_SECONDS = 10;
     static final long FRAGMENT_TIMEOUT_SECONDS = 10;
+
+    private enum Profile {
+        PAIRING("/v1/rendezvous", SUBPROTOCOL),
+        AVAILABILITY("/v2/availability", AVAILABILITY_SUBPROTOCOL);
+        final String path, subprotocol;
+        Profile(String path, String subprotocol) { this.path = path; this.subprotocol = subprotocol; }
+    }
 
     public enum FailureCode {
         INVALID_ENDPOINT, INVALID_HEADERS, TLS_CONFIGURATION, CONNECT_FAILED, RESOLVER_BUSY, OPEN_TIMEOUT,
@@ -108,6 +116,7 @@ public final class NettyPairingWssTransport {
     }
 
     private final URI url;
+    private final Profile profile;
     private final Listener listener;
     private final EventLoopGroup group;
     private final CompletableFuture<Void> opened = new CompletableFuture<>();
@@ -127,8 +136,8 @@ public final class NettyPairingWssTransport {
     private volatile boolean isOpen;
     private ScheduledFuture<?> openDeadline;
 
-    private NettyPairingWssTransport(URI url, Listener listener, EventLoopGroup group) {
-        this.url = url; this.listener = listener; this.group = group;
+    private NettyPairingWssTransport(URI url, Profile profile, Listener listener, EventLoopGroup group) {
+        this.url = url; this.profile = profile; this.listener = listener; this.group = group;
         // A null channel at retirement alone proves nothing: a claimed or queued DNS delivery
         // could still be running. Only detached handoff AND terminated loop prove no allocator
         // can publish a channel later. Neither may overwrite a failed first native close.
@@ -145,10 +154,23 @@ public final class NettyPairingWssTransport {
             PairingBootstrapEnvelopeCodec.JoinHeaders join, Listener listener) throws TransportFailure {
         URI url = endpoint(endpoint);
         HttpHeaders headers = upgradeHeaders(join);
+        return connectValidated(url, Profile.PAIRING, headers, listener);
+    }
+
+    /** Saved-pair viewer availability; never reinterprets bootstrap headers or route. */
+    public static NettyPairingWssTransport connectAvailability(String endpoint,
+            ViewerAvailabilityEnvelopeCodec.JoinHeaders join, Listener listener) throws TransportFailure {
+        URI url = availabilityEndpoint(endpoint);
+        HttpHeaders headers = availabilityUpgradeHeaders(join);
+        return connectValidated(url, Profile.AVAILABILITY, headers, listener);
+    }
+
+    private static NettyPairingWssTransport connectValidated(URI url, Profile profile,
+            HttpHeaders headers, Listener listener) throws TransportFailure {
         if (listener == null) throw failure(FailureCode.INVALID_HEADERS);
         SSLEngine engine = tlsEngine();
         MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        NettyPairingWssTransport result = new NettyPairingWssTransport(url, listener, group);
+        NettyPairingWssTransport result = new NettyPairingWssTransport(url, profile, listener, group);
         result.start(ProcessPairingDnsResolver.process(),
                 (owner, address) -> owner.connectResolved(address, headers, engine), () -> { });
         return result;
@@ -309,7 +331,7 @@ public final class NettyPairingWssTransport {
         pipeline.addLast("http", new HttpClientCodec(4096, 8192, 4096));
         pipeline.addLast("http-body", new HttpObjectAggregator(4096));
         pipeline.addLast("upgrade", new UpgradeHandler(WebSocketClientHandshakerFactory.newHandshaker(
-                url, WebSocketVersion.V13, SUBPROTOCOL, false, headers,
+                url, WebSocketVersion.V13, profile.subprotocol, false, headers,
                 MAXIMUM_MESSAGE_BYTES, true, false, 1000)));
         pipeline.addLast("frame-budget", new FrameBudget());
         WebSocketFrameAggregator aggregator = new WebSocketFrameAggregator(MAXIMUM_MESSAGE_BYTES);
@@ -332,7 +354,7 @@ public final class NettyPairingWssTransport {
         @Override protected void channelRead0(ChannelHandlerContext context, FullHttpResponse response) {
             if (retired.get()) return;
             try {
-                validateUpgrade(response);
+                validateUpgrade(response, profile);
                 handshaker.finishHandshake(context.channel(), response);
                 context.pipeline().remove(this);
                 if (retired.get()) return;
@@ -348,9 +370,13 @@ public final class NettyPairingWssTransport {
     }
 
     static void validateUpgrade(FullHttpResponse response) throws TransportFailure {
+        validateUpgrade(response, Profile.PAIRING);
+    }
+
+    private static void validateUpgrade(FullHttpResponse response, Profile profile) throws TransportFailure {
         List<String> protocols = response.headers().getAll(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL);
         if (!response.decoderResult().isSuccess() || response.status().code() != 101
-                || protocols.size() != 1 || !SUBPROTOCOL.equals(protocols.get(0))
+                || protocols.size() != 1 || !profile.subprotocol.equals(protocols.get(0))
                 || response.headers().contains(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS)
                 || response.headers().contains(HttpHeaderNames.LOCATION)
                 || response.content().isReadable() || !response.trailingHeaders().isEmpty()) {
@@ -524,6 +550,14 @@ public final class NettyPairingWssTransport {
     }
 
     static URI endpoint(String value) throws TransportFailure {
+        return endpoint(value, Profile.PAIRING);
+    }
+
+    static URI availabilityEndpoint(String value) throws TransportFailure {
+        return endpoint(value, Profile.AVAILABILITY);
+    }
+
+    private static URI endpoint(String value, Profile profile) throws TransportFailure {
         try {
             URI supplied = new URI(value);
             if (!"wss".equals(supplied.getScheme()) || !HOST.equals(supplied.getHost())
@@ -533,7 +567,7 @@ public final class NettyPairingWssTransport {
                     || !("".equals(supplied.getRawPath()) || "/".equals(supplied.getRawPath()))) {
                 throw failure(FailureCode.INVALID_ENDPOINT);
             }
-            return new URI("wss", null, HOST, -1, "/v1/rendezvous", null, null);
+            return new URI("wss", null, HOST, -1, profile.path, null, null);
         } catch (URISyntaxException | NullPointerException ignored) { throw failure(FailureCode.INVALID_ENDPOINT); }
     }
 
@@ -544,6 +578,17 @@ public final class NettyPairingWssTransport {
                 .set("X-AudioStreamer-Channel", join.channelID())
                 .set("X-AudioStreamer-Role", "viewer")
                 .set("X-AudioStreamer-Admission", join.admissionProofForUpgradeHeader());
+    }
+
+    static HttpHeaders availabilityUpgradeHeaders(ViewerAvailabilityEnvelopeCodec.JoinHeaders join)
+            throws TransportFailure {
+        if (join == null || !"viewer".equals(join.role()) || !crockfordChannel(join.channelID())
+                || !urlProof(join.admissionProofForUpgradeHeader())) throw failure(FailureCode.INVALID_HEADERS);
+        return new DefaultHttpHeaders()
+                .set("X-AudioStreamer-Channel", join.channelID())
+                .set("X-AudioStreamer-Role", "viewer")
+                .set("X-AudioStreamer-Admission", join.admissionProofForUpgradeHeader())
+                .set("X-AudioStreamer-Mode", "availability");
     }
 
     private static boolean crockfordChannel(String value) {
@@ -596,7 +641,24 @@ public final class NettyPairingWssTransport {
             Listener listener, CompletableFuture<Void> testLoopDrain, CompletableFuture<Void> testRegistrationDrain,
             CompletableFuture<Void> testFirstNativeClose)
             throws TransportFailure {
-        NettyPairingWssTransport result = new NettyPairingWssTransport(endpoint(PRODUCTION_ORIGIN), listener, null);
+        return embedded(channel, Profile.PAIRING, upgradeHeaders(join), listener,
+                testLoopDrain, testRegistrationDrain, testFirstNativeClose);
+    }
+
+    static NettyPairingWssTransport embeddedAvailability(Channel channel,
+            ViewerAvailabilityEnvelopeCodec.JoinHeaders join, Listener listener,
+            CompletableFuture<Void> testLoopDrain, CompletableFuture<Void> testRegistrationDrain,
+            CompletableFuture<Void> testFirstNativeClose) throws TransportFailure {
+        return embedded(channel, Profile.AVAILABILITY, availabilityUpgradeHeaders(join), listener,
+                testLoopDrain, testRegistrationDrain, testFirstNativeClose);
+    }
+
+    private static NettyPairingWssTransport embedded(Channel channel, Profile profile, HttpHeaders headers,
+            Listener listener, CompletableFuture<Void> testLoopDrain,
+            CompletableFuture<Void> testRegistrationDrain, CompletableFuture<Void> testFirstNativeClose)
+            throws TransportFailure {
+        NettyPairingWssTransport result = new NettyPairingWssTransport(
+                endpoint(PRODUCTION_ORIGIN, profile), profile, listener, null);
         result.channel = channel;
         testFirstNativeClose.whenComplete((ignored, error) -> {
             if (error == null) result.socketDrained.complete(null);
@@ -609,7 +671,7 @@ public final class NettyPairingWssTransport {
             if (error == null) result.registrationDrained.complete(null);
             else result.registrationDrained.completeExceptionally(error);
         });
-        result.installPipeline(channel, upgradeHeaders(join));
+        result.installPipeline(channel, headers);
         result.beginUpgrade(channel);
         return result;
     }
@@ -628,7 +690,8 @@ public final class NettyPairingWssTransport {
     static NettyPairingWssTransport withResolverForFixture(ProcessPairingDnsResolver resolver,
             EventLoopGroup group, Listener listener, ResolvedConnector connector,
             Runnable afterRegisterBeforePublish) throws TransportFailure {
-        NettyPairingWssTransport result = new NettyPairingWssTransport(endpoint(PRODUCTION_ORIGIN), listener, group);
+        NettyPairingWssTransport result = new NettyPairingWssTransport(
+                endpoint(PRODUCTION_ORIGIN), Profile.PAIRING, listener, group);
         result.start(resolver, connector, afterRegisterBeforePublish);
         return result;
     }

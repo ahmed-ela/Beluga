@@ -335,6 +335,12 @@ public final class ViewerPairingAuthenticator {
         public RecordPhase phase() { return phase; }
         public String nextOutboundReconnectSequence() { return unsignedDecimal(nextOutbound); }
         public String highestAcceptedReconnectSequence() { return unsignedDecimal(highestAccepted); }
+        /** Routing capability only; selection, durable admission, socket and media authority remain external. */
+        public ViewerAvailabilityLocator availabilityLocator() throws AuthFailure {
+            require(phase == RecordPhase.ACTIVE, FailureCode.INVALID_RECONNECT);
+            try { return ViewerAvailabilityLocator.derive(root, pairID, transcript); }
+            catch (CryptoFailure error) { throw normalized(error); }
+        }
         @Override public String toString() { return "<redacted immutable Beluga viewer record candidate>"; }
 
         public RecordRecoveryAction recoveryAction() {

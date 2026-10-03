@@ -7,8 +7,10 @@ authentication, opaque identity-bound local record encoding, and the pure
 bootstrap reducer/effect model, exact saved-pair reconnect authentication and
 catalog/lifecycle helpers. Native encrypted identity/catalog composition is in
 the app module; authenticated WSS and DNS adapters are in transport. The preview
-UI calls their NEW-Mac pairing composition. Availability/reconnect networking,
-native media and a physically validated paired Android client remain absent.
+UI calls their NEW-Mac pairing composition. Viewer-only availability routing,
+exchange framing/crypto and guarded one-use reconnect response completion are
+now implemented, but their selected-Mac session/media composition and a
+physically validated paired Android client remain absent.
 
 The reducer has only explicit trusted-adapter composition and fixture adapters.
 Its callback receipts do not authenticate malicious in-process code or prove
@@ -45,6 +47,13 @@ live in `shared/ProtocolFixtures`, including:
   `3c8ef42139c81e4cff10fcc1957aa0460a7548792ce7e952498966eff51c629e`.
 - `public-swift-bootstrap-envelopes-v1.tsv`: actual Swift bootstrap envelope
   capture, separately hash-pinned in its app tests.
+- `public-swift-availability-v1.tsv`: 20 rows captured from the unchanged Swift
+  availability client with synthetic socket boundaries, including retained
+  activation, request and response wires plus directional keys; SHA-256
+  `c204b3e755aacdc8e4563f448547e0e85d17ce5b081e103b53b54f26e530ed20`.
+  The capture passed one XCTest case, then Android tests consume its exact
+  bytes and captured production nonces. Neither fake sockets nor a derived
+  session credential establish a real connection or native media behavior.
 
 Every seed/key/name in these fixtures is public synthetic test material. Never
 issue these as real invitations or treat them as real identities. Do not

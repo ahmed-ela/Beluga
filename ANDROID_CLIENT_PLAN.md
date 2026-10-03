@@ -130,11 +130,36 @@ graphics payloads/assets and no camera/microphone permission. Earlier unchanged
 protocol/transport suites retain their source-bound evidence. These are
 host/static-package proofs only; no Android package was installed or distributed.
 
-The next coherent slice is a selected-ACTIVE-Mac reconnect session: a distinct
-availability WSS profile, exchange-bound signaling, durable reservation before
-send, authenticated response completion, exact transport close and ownership
-handoff. Do not expose raw preparations/keys or call an authenticated credential
-"connected." Only then wire native WebRTC audio/video and meaningful Connect UI.
+The availability implementation now adds a distinct viewer-only WSS profile,
+exchange-bound signaling and one-use response completion after the durable
+reservation. Verification must include independent production-Swift public
+fixtures, wrong/stale exchange and replay rejection, exact subprotocol/header
+negotiation and cancellation while accepting the authenticated response. This
+source checkpoint is not a native saved-Mac connection or release.
+
+Focused offline verification passed 225 JVM JUnit cases (158 app, 67 transport),
+four affected protocol assertion suites, debug assembly and lint with zero errors
+and three existing warnings. The new Swift availability capture passed one XCTest;
+Java reseals its exact retained activation/request bytes and opens its response.
+Static debug APK readback preserves the manifest, permissions and all 40 native/
+asset entries. None of these checks installs a client or proves Android runtime,
+Keystore durability, real WSS, media playback or deployment.
+
+The next coherent slice remains the selected-ACTIVE-Mac session composition:
+resend the retained activation acknowledgement, persist the reconnect counter
+before sending, authenticate the response, join the exact availability close,
+revalidate the selected committed record, then hand the credential and operation
+ownership to native media signaling. Do not expose raw preparations/keys or call
+an authenticated credential "connected." Only wire meaningful Connect UI after
+native WebRTC audio/video and cancellation/teardown are implemented.
+
+**Do not add a disposable "check saved Mac" reconnect probe.** The current host
+persists its accepted reconnect sequence and prepares a media service before
+sending the signed response; availability peer-left is not media teardown. A
+probe that discards the fresh credential could strand the prepared service or
+replace media ownership. No such probe, automatic retry or Connect button is
+enabled in this preview. Pure/embedded tests must not contact the live host.
+
 Move-media behavior still needs the user's choice between streaming Mac audio
 and transferring the actual source/position while pausing the Mac.
 

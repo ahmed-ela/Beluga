@@ -2,6 +2,7 @@ package com.elamin.beluga.protocol;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -20,12 +21,16 @@ import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.ReferenceCountUtil;
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
@@ -36,7 +41,7 @@ import java.util.regex.Pattern;
 import javax.net.ssl.SSLEngine;
 import org.junit.Test;
 
-/** Real Netty HTTP/frame/aggregation/write-promise tests; no sockets, DNS, TLS or Android. */
+/** Real Netty HTTP/frame/write tests and platform TLS configuration; no sockets, handshake or Android. */
 public final class NettyPairingWssTransportTest {
     @Test public void exactConfiguredOriginConstructsOnlyPairingRoute() throws Exception {
         assertEquals(NettyPairingWssTransport.PRODUCTION_ORIGIN + "/v1/rendezvous",
@@ -70,6 +75,148 @@ public final class NettyPairingWssTransportTest {
         try { NettyPairingWssTransport.upgradeHeaders(join(PairingCanonicalCodec.Role.HOST)); fail("Expected viewer-only refusal"); }
         catch (NettyPairingWssTransport.TransportFailure error) {
             assertEquals(NettyPairingWssTransport.FailureCode.INVALID_HEADERS, error.code());
+        }
+    }
+
+    @Test public void availabilityOriginCannotAcceptRoutesOrUrlCapabilities() throws Exception {
+        assertEquals(NettyPairingWssTransport.PRODUCTION_ORIGIN + "/v2/availability",
+                NettyPairingWssTransport.availabilityEndpoint(NettyPairingWssTransport.PRODUCTION_ORIGIN).toString());
+        assertEquals(NettyPairingWssTransport.availabilityEndpoint(NettyPairingWssTransport.PRODUCTION_ORIGIN),
+                NettyPairingWssTransport.availabilityEndpoint(NettyPairingWssTransport.PRODUCTION_ORIGIN + ":443/"));
+        for (String value : new String[] {null, "", "ws://localhost", "wss://other.example",
+                NettyPairingWssTransport.PRODUCTION_ORIGIN + ":444",
+                NettyPairingWssTransport.PRODUCTION_ORIGIN + "/v2/availability",
+                NettyPairingWssTransport.PRODUCTION_ORIGIN + "/v1/rendezvous",
+                NettyPairingWssTransport.PRODUCTION_ORIGIN + "/%76%32/availability",
+                NettyPairingWssTransport.PRODUCTION_ORIGIN + "?admission=x",
+                NettyPairingWssTransport.PRODUCTION_ORIGIN + "#x",
+                "wss://viewer@" + NettyPairingWssTransport.HOST,
+                "wss://" + NettyPairingWssTransport.HOST + "."}) {
+            try { NettyPairingWssTransport.availabilityEndpoint(value); fail("Expected exact availability endpoint refusal"); }
+            catch (NettyPairingWssTransport.TransportFailure error) {
+                assertEquals(NettyPairingWssTransport.FailureCode.INVALID_ENDPOINT, error.code());
+            }
+        }
+        // The old entry point still constructs only v1 even after using the new profile.
+        assertEquals(NettyPairingWssTransport.PRODUCTION_ORIGIN + "/v1/rendezvous",
+                NettyPairingWssTransport.endpoint(NettyPairingWssTransport.PRODUCTION_ORIGIN).toString());
+    }
+
+    @Test public void availabilityHeadersAreViewerOnlyWithFixedModeAndNoHostRegistration() throws Exception {
+        ViewerAvailabilityEnvelopeCodec.JoinHeaders join = availabilityJoin();
+        HttpHeaders headers = NettyPairingWssTransport.availabilityUpgradeHeaders(join);
+        assertEquals(4, headers.size());
+        assertEquals("availability", headers.get("X-AudioStreamer-Mode"));
+        assertEquals("viewer", headers.get("X-AudioStreamer-Role"));
+        assertEquals(join.channelID(), headers.get("X-AudioStreamer-Channel"));
+        assertEquals(join.admissionProofForUpgradeHeader(), headers.get("X-AudioStreamer-Admission"));
+        assertEquals(52, headers.get("X-AudioStreamer-Channel").length());
+        assertEquals(43, headers.get("X-AudioStreamer-Admission").length());
+        assertFalse(headers.contains("X-AudioStreamer-Viewer-Admission"));
+        assertFalse(headers.contains("X-AudioStreamer-Host-Admission"));
+        assertFalse(headers.contains(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS));
+        assertTrue(join.toString().contains("redacted"));
+        try { NettyPairingWssTransport.availabilityUpgradeHeaders(null); fail("Expected missing availability capability refusal"); }
+        catch (NettyPairingWssTransport.TransportFailure error) {
+            assertEquals(NettyPairingWssTransport.FailureCode.INVALID_HEADERS, error.code());
+        }
+        HttpHeaders bootstrap = NettyPairingWssTransport.upgradeHeaders(join(PairingCanonicalCodec.Role.VIEWER));
+        assertEquals(3, bootstrap.size());
+        assertFalse(bootstrap.contains("X-AudioStreamer-Mode"));
+        assertFalse(bootstrap.contains("X-AudioStreamer-Viewer-Admission"));
+    }
+
+    @Test public void availabilityHandshakeOffersOnlyItsExactPathHeadersAndProtocol() throws Exception {
+        try (Fixture fixture = new Fixture(true)) {
+            assertTrue(fixture.request.startsWith("GET /v2/availability HTTP/1.1\r\n"));
+            assertEquals(NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL,
+                    header(fixture.request, "Sec-WebSocket-Protocol"));
+            assertEquals("availability", header(fixture.request, "X-AudioStreamer-Mode"));
+            assertEquals("viewer", header(fixture.request, "X-AudioStreamer-Role"));
+            assertEquals(fixture.availabilityHeaders.channelID(), header(fixture.request, "X-AudioStreamer-Channel"));
+            assertEquals(fixture.availabilityHeaders.admissionProofForUpgradeHeader(),
+                    header(fixture.request, "X-AudioStreamer-Admission"));
+            String lower = fixture.request.toLowerCase(java.util.Locale.ROOT);
+            assertFalse(lower.contains("x-audiostreamer-viewer-admission"));
+            assertFalse(lower.contains("x-audiostreamer-host-admission"));
+            assertFalse(lower.contains("sec-websocket-extensions"));
+            assertFalse(fixture.request.contains("?"));
+            assertFalse(fixture.transport.whenOpen().toCompletableFuture().isDone());
+            fixture.open();
+            assertFalse(fixture.transport.whenOpen().toCompletableFuture().isCompletedExceptionally());
+            assertEquals(1, fixture.listener.opens);
+            // HTTP101 is still only transport evidence; no saved-Mac status or READY is synthesized.
+            assertTrue(fixture.listener.messages.isEmpty());
+        }
+    }
+
+    @Test public void availabilityMissingWrongBootstrapCommaAndDuplicateProtocolsNeverOpen() throws Exception {
+        for (int mode = 0; mode < 7; mode++) {
+            try (Fixture fixture = new Fixture(true)) {
+                FullHttpResponse response = fixture.response();
+                if (mode == 0) response.headers().remove(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL);
+                if (mode == 1) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, "wrong.v1");
+                if (mode == 2) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, NettyPairingWssTransport.SUBPROTOCOL);
+                if (mode == 3) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,
+                        NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL + ", " + NettyPairingWssTransport.SUBPROTOCOL);
+                if (mode == 4) response.headers().add(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,
+                        NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL);
+                if (mode == 5) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, "audiostreamer.Availability.v1");
+                if (mode == 6) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL,
+                        NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL + " ");
+                fixture.channel.writeInbound(response); fixture.channel.runPendingTasks();
+                assertFailure(fixture.transport.whenOpen(), NettyPairingWssTransport.FailureCode.UPGRADE_REFUSED);
+                assertEquals(0, fixture.listener.opens); assertTrue(fixture.listener.messages.isEmpty());
+                assertFalse(fixture.channel.isOpen());
+            }
+        }
+    }
+
+    @Test public void bootstrapCannotAcceptAvailabilityProtocolReply() throws Exception {
+        try (Fixture fixture = new Fixture()) {
+            FullHttpResponse response = fixture.response();
+            response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL);
+            fixture.channel.writeInbound(response); fixture.channel.runPendingTasks();
+            assertFailure(fixture.transport.whenOpen(), NettyPairingWssTransport.FailureCode.UPGRADE_REFUSED);
+            assertEquals(0, fixture.listener.opens);
+            assertFalse(fixture.request.toLowerCase(java.util.Locale.ROOT).contains("x-audiostreamer-mode"));
+        }
+    }
+
+    @Test public void availabilityRedirectsExtensionsAndWrongChallengeRemainRefused() throws Exception {
+        for (int mode = 0; mode < 5; mode++) {
+            try (Fixture fixture = new Fixture(true)) {
+                FullHttpResponse response = fixture.response();
+                if (mode == 0) response.setStatus(HttpResponseStatus.TEMPORARY_REDIRECT);
+                if (mode == 1) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_EXTENSIONS, "permessage-deflate");
+                if (mode == 2) response.headers().set(HttpHeaderNames.LOCATION,
+                        NettyPairingWssTransport.PRODUCTION_ORIGIN + "/v1/rendezvous");
+                if (mode == 3) response.headers().add(HttpHeaderNames.SEC_WEBSOCKET_ACCEPT, fixture.accept);
+                if (mode == 4) response.headers().set(HttpHeaderNames.SEC_WEBSOCKET_ACCEPT, "wrong");
+                fixture.channel.writeInbound(response); fixture.channel.runPendingTasks();
+                assertFailure(fixture.transport.whenOpen(), NettyPairingWssTransport.FailureCode.UPGRADE_REFUSED);
+                assertEquals(0, fixture.listener.opens);
+            }
+        }
+    }
+
+    @Test public void availabilityUsesSameGuardedWriteAndExactCloseBarriers() throws Exception {
+        try (Fixture fixture = new Fixture(true)) {
+            fixture.open();
+            HeldWrites held = new HeldWrites(); fixture.channel.pipeline().addFirst("held", held);
+            AtomicBoolean authorized = new AtomicBoolean(true);
+            CompletionStage<Void> send = fixture.transport.sendGuarded(bytes(1, 'a'), authorized::get);
+            authorized.set(false); fixture.channel.runPendingTasks();
+            assertFailure(send, NettyPairingWssTransport.FailureCode.NOT_OPEN);
+            assertTrue(held.pending.isEmpty()); assertNull(fixture.channel.readOutbound());
+            CompletionStage<Void> close = fixture.transport.closeAsync();
+            assertFalse(close.toCompletableFuture().isDone());
+            fixture.loopDrain.complete(null);
+            assertFalse(close.toCompletableFuture().isDone());
+            fixture.dnsDrain.complete(null);
+            assertTrue(close.toCompletableFuture().isDone());
+            assertFalse(close.toCompletableFuture().isCompletedExceptionally());
+            assertEquals(1, fixture.listener.terminals);
         }
     }
 
@@ -456,10 +603,18 @@ public final class NettyPairingWssTransportTest {
         final CompletableFuture<Void> loopDrain = new CompletableFuture<>();
         final CompletableFuture<Void> dnsDrain = new CompletableFuture<>();
         final NettyPairingWssTransport transport;
+        final ViewerAvailabilityEnvelopeCodec.JoinHeaders availabilityHeaders;
+        final String subprotocol;
         final String request, accept;
-        Fixture() throws Exception {
-            transport = NettyPairingWssTransport.embedded(channel, join(PairingCanonicalCodec.Role.VIEWER),
-                    listener, loopDrain, dnsDrain, firstNativeClose);
+        Fixture() throws Exception { this(false); }
+        Fixture(boolean availability) throws Exception {
+            availabilityHeaders = availability ? availabilityJoin() : null;
+            subprotocol = availability ? NettyPairingWssTransport.AVAILABILITY_SUBPROTOCOL : NettyPairingWssTransport.SUBPROTOCOL;
+            transport = availability
+                    ? NettyPairingWssTransport.embeddedAvailability(channel, availabilityHeaders,
+                            listener, loopDrain, dnsDrain, firstNativeClose)
+                    : NettyPairingWssTransport.embedded(channel, join(PairingCanonicalCodec.Role.VIEWER),
+                            listener, loopDrain, dnsDrain, firstNativeClose);
             channel.runPendingTasks();
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             Object outgoing;
@@ -480,7 +635,7 @@ public final class NettyPairingWssTransportTest {
             result.headers().set(HttpHeaderNames.UPGRADE, "websocket");
             result.headers().set(HttpHeaderNames.CONNECTION, "Upgrade");
             result.headers().set(HttpHeaderNames.SEC_WEBSOCKET_ACCEPT, accept);
-            result.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, NettyPairingWssTransport.SUBPROTOCOL);
+            result.headers().set(HttpHeaderNames.SEC_WEBSOCKET_PROTOCOL, subprotocol);
             return result;
         }
         void open() {
@@ -562,6 +717,63 @@ public final class NettyPairingWssTransportTest {
                 PairingInvitation.parseManual(code.toString()), role, () -> new byte[12])) {
             return codec.copyJoinHeaders();
         }
+    }
+
+    private static ViewerAvailabilityEnvelopeCodec.JoinHeaders availabilityJoin() throws Exception {
+        // Actual authenticated ACTIVE record path, using only retained PUBLIC synthetic inputs.
+        // This does not simulate Android durable admission or a selected saved-Mac owner.
+        Map<String, byte[]> rows = publicPairingFixture();
+        UUID viewerID = UUID.fromString(new String(publicValue(rows, "input.viewer-device-id"), StandardCharsets.US_ASCII));
+        ViewerPairingAuthenticator.ViewerIdentity identity = ViewerPairingAuthenticator.viewerIdentity(
+                viewerID, publicValue(rows, "input.viewer-signing-seed"));
+        ViewerPairingAuthenticator.PreparedViewer prepared = ViewerPairingAuthenticator.authenticateRetainedLocalHello(
+                viewerID, "Test iPhone", publicValue(rows, "input.viewer-signing-seed"),
+                publicValue(rows, "input.invitation-secret"), publicValue(rows, "input.viewer-ephemeral-private"),
+                publicValue(rows, "input.viewer-nonce"),
+                (PairingPayloadDecoder.HelloPayload) PairingPayloadDecoder.decode(publicValue(rows, "hello.viewer.payload")));
+        ViewerPairingAuthenticator.Agreement agreement = ViewerPairingAuthenticator.acceptHost(prepared,
+                (PairingPayloadDecoder.HelloPayload) PairingPayloadDecoder.decode(publicValue(rows, "hello.host.payload")));
+        ViewerPairingAuthenticator.ViewerPairRecord pending = agreement.makePendingRecord(
+                agreement.authenticateHostConfirmation((PairingPayloadDecoder.ConfirmationPayload)
+                        PairingPayloadDecoder.decode(publicValue(rows, "confirmation.host.payload"))), 1700000000.25);
+        ViewerPairingAuthenticator.ViewerPairRecord accepted = pending.prepareAcknowledgement(
+                (PairingPayloadDecoder.CommitPayload) PairingPayloadDecoder.decode(publicValue(rows, "commit.proposal.payload")), identity).record();
+        ViewerPairingAuthenticator.ViewerPairRecord active = accepted.acceptCompletion(
+                (PairingPayloadDecoder.CommitPayload) PairingPayloadDecoder.decode(publicValue(rows, "commit.completion.payload")), identity).record();
+        try (ViewerAvailabilityLocator locator = active.availabilityLocator()) {
+            return locator.copyJoinHeaders();
+        }
+    }
+
+    private static Map<String, byte[]> publicPairingFixture() throws Exception {
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (InputStream input = NettyPairingWssTransportTest.class.getResourceAsStream("/public-swift-engine-v1.tsv")) {
+            assertNotNull("Exact PUBLIC synthetic Swift resource required", input);
+            byte[] chunk = new byte[4096]; int count;
+            while ((count = input.read(chunk)) != -1) {
+                assertTrue("PUBLIC fixture bounded before append", output.size() + count <= 64 * 1024);
+                output.write(chunk, 0, count);
+            }
+        }
+        byte[] file = output.toByteArray();
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(file);
+        StringBuilder hex = new StringBuilder();
+        for (byte value : digest) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+        assertEquals("7d8a58cd34400271d0c68ac1e263450c4ad4978337ae1bb87246362a6d0ec06a", hex.toString());
+        Map<String, byte[]> rows = new TreeMap<>(); String previous = "";
+        for (String line : new String(file, StandardCharsets.US_ASCII).split("\n")) {
+            if (line.startsWith("#")) continue;
+            String[] fields = line.split("\t", -1); assertEquals(2, fields.length);
+            assertTrue(previous.compareTo(fields[0]) < 0);
+            byte[] value = Base64.getDecoder().decode(fields[1]);
+            assertEquals(fields[1], Base64.getEncoder().encodeToString(value));
+            assertNull(rows.put(fields[0], value)); previous = fields[0];
+        }
+        assertEquals(45, rows.size()); return rows;
+    }
+
+    private static byte[] publicValue(Map<String, byte[]> rows, String name) {
+        byte[] value = rows.get(name); assertNotNull("Required PUBLIC fixture row", value); return value.clone();
     }
     private static byte[] bytes(int size, char value) { byte[] result = new byte[size]; Arrays.fill(result, (byte) value); return result; }
     private static String repeat(char value, int count) { char[] result = new char[count]; Arrays.fill(result, value); return new String(result); }

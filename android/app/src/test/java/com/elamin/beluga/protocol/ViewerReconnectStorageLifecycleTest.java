@@ -42,6 +42,7 @@ import com.elamin.beluga.protocol.ViewerPairingAuthenticator.AuthFailure;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.FailureCode;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.PreparedViewer;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.ReconnectPreparation;
+import com.elamin.beluga.protocol.ViewerPairingAuthenticator.SessionCredential;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.ViewerIdentity;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.ViewerPairRecord;
 import com.elamin.beluga.protocol.ViewerReconnectStorageLifecycle.CloseReceipt;
@@ -291,6 +292,179 @@ public final class ViewerReconnectStorageLifecycleTest {
             refused(() -> new ViewerReconnectStorageLifecycle(other, transport, predecessor.stamp(SLOT), close));
             assertEquals(0, close.calls); assertFalse(transportOwner.isRetired()); assertFalse(other.isRetired());
         }
+    }
+
+    @Test public void committedResponseCompletesOnceWithActualSwiftCredentialAndNoMoreSends() throws Exception {
+        try (ViewerStorageCatalog predecessor = catalog()) {
+            Fixture f = new Fixture(predecessor.stamp(SLOT)); FakePublication publication = new FakePublication(null);
+            ReconnectPreparation preparation = prepare(predecessor);
+            Reserved reserved = f.lifecycle.reserve(predecessor, preparation, publication);
+            try {
+                try (SessionCredential credential = reserved.completeResponse(response("first"))) {
+                    assertActualSwiftCredential(credential, "first");
+                    assertFalse(reserved.canSend()); refused(reserved::requestPayloadForTrustedSender);
+                    refused(() -> reserved.completeResponse(response("first")));
+                    assertFalse(f.owner.isRetired());
+                    assertEquals("<redacted fresh Beluga session credential>", credential.toString());
+                }
+                authRefused(() -> preparation.complete(response("first")));
+                assertSpentCounter(publication, "2");
+            } finally { finish(f); }
+        }
+    }
+
+    @Test public void staleWrongSignatureAndAbsentResponsesConsumeAttemptWithoutExposingCredential() throws Exception {
+        for (int invalid = 0; invalid < 3; invalid++) {
+            try (ViewerStorageCatalog predecessor = catalog()) {
+                Fixture f = new Fixture(predecessor.stamp(SLOT)); FakePublication publication = new FakePublication(null);
+                ReconnectPreparation preparation = prepare(predecessor);
+                Reserved reserved = f.lifecycle.reserve(predecessor, preparation, publication);
+                ReconnectMessages.Response response = invalid == 0 ? response("second") : response("first");
+                if (invalid == 1) {
+                    byte[] signature = response.signature(); signature[0] ^= 1;
+                    response = new ReconnectMessages.Response(response.protocolVersion(), response.pairID(),
+                            response.requesterDeviceID(), response.responderDeviceID(), response.responderRole(),
+                            response.requestSequence(), response.requestDigest(), response.ephemeralKeyAgreementPublicKey(),
+                            response.nonce(), signature);
+                }
+                final ReconnectMessages.Response rejected = invalid == 2 ? null : response;
+                try {
+                    refused(() -> reserved.completeResponse(rejected));
+                    assertTrue(f.owner.isRetired()); assertFalse(reserved.canSend());
+                    refused(() -> reserved.completeResponse(response("first")));
+                    refused(reserved::requestPayloadForTrustedSender);
+                    authRefused(() -> preparation.complete(response("first")));
+                    assertFalse(f.lifecycle.readbackDiscrepancyForStore()); assertSpentCounter(publication, "2");
+                } finally { finish(f); }
+            }
+        }
+    }
+
+    @Test public void cancellationBeforeResponseCannotExposeCredentialOrRefundCommittedCounter() throws Exception {
+        try (ViewerStorageCatalog predecessor = catalog()) {
+            Fixture f = new Fixture(predecessor.stamp(SLOT)); FakePublication publication = new FakePublication(null);
+            ReconnectPreparation preparation = prepare(predecessor);
+            Reserved reserved = f.lifecycle.reserve(predecessor, preparation, publication);
+            f.owner.retire();
+            try {
+                refused(() -> reserved.completeResponse(response("first")));
+                assertFalse(reserved.canSend()); assertSpentCounter(publication, "2");
+            } finally { finish(f); }
+            authRefused(() -> preparation.complete(response("first")));
+        }
+    }
+
+    @Test public void cancellationAfterDerivationButBeforeOwnerAcceptanceCannotExposeCredential() throws Exception {
+        try (ViewerStorageCatalog predecessor = catalog()) {
+            Fixture f = new Fixture(predecessor.stamp(SLOT)); FakePublication publication = new FakePublication(null);
+            ReconnectPreparation preparation = prepare(predecessor);
+            Reserved reserved = f.lifecycle.reserve(predecessor, preparation, publication);
+            ResponseWork work = new ResponseWork(reserved, response("first"));
+            try {
+                synchronized (f.owner) {
+                    work.thread.start(); assertTrue(work.started.await(3, TimeUnit.SECONDS));
+                    // Only the post-derivation acceptance takes this Owner monitor. Blocking
+                    // here exercises cancellation of a real derived credential, not a fake crypto callback.
+                    awaitOwnerAcceptance(work.thread);
+                    assertNull(work.credential.get()); assertFalse(work.finished.await(1, TimeUnit.MILLISECONDS));
+                    f.owner.retire();
+                }
+                assertTrue(work.finished.await(3, TimeUnit.SECONDS));
+                assertNull(work.credential.get()); assertTrue(work.failure.get() instanceof Failure);
+                assertEquals("Beluga private storage refused", work.failure.get().getMessage());
+                assertFalse(reserved.canSend()); refused(() -> reserved.completeResponse(response("first")));
+                authRefused(() -> preparation.complete(response("first")));
+                assertSpentCounter(publication, "2");
+            } finally { finishResponseWork(work); finish(f); }
+        }
+    }
+
+    @Test public void concurrentSecondResponseCannotReplaceTheExactFirstResponseAcceptance() throws Exception {
+        try (ViewerStorageCatalog predecessor = catalog()) {
+            Fixture f = new Fixture(predecessor.stamp(SLOT)); FakePublication publication = new FakePublication(null);
+            Reserved reserved = f.lifecycle.reserve(predecessor, prepare(predecessor), publication);
+            ResponseWork work = new ResponseWork(reserved, response("first"));
+            try {
+                synchronized (f.owner) {
+                    work.thread.start(); assertTrue(work.started.await(3, TimeUnit.SECONDS));
+                    awaitOwnerAcceptance(work.thread);
+                    refused(() -> reserved.completeResponse(response("second")));
+                    assertFalse(f.owner.isRetired()); assertNull(work.credential.get());
+                }
+                assertTrue(work.finished.await(3, TimeUnit.SECONDS)); assertNull(work.failure.get());
+                assertNotNull(work.credential.get()); assertActualSwiftCredential(work.credential.get(), "first");
+                assertFalse(reserved.canSend()); refused(() -> reserved.completeResponse(response("first")));
+                assertSpentCounter(publication, "2");
+            } finally { finishResponseWork(work); finish(f); }
+        }
+    }
+
+    @Test public void exactCloseRetirementMakesLateResponsePermanentlyInert() throws Exception {
+        try (ViewerStorageCatalog predecessor = catalog()) {
+            Fixture f = new Fixture(predecessor.stamp(SLOT)); FakePublication publication = new FakePublication(null);
+            Reserved reserved = f.lifecycle.reserve(predecessor, prepare(predecessor), publication);
+            CompletionStage<CloseReceipt> drain = f.lifecycle.retireAndClose();
+            assertFalse(drain.toCompletableFuture().isDone());
+            refused(() -> reserved.completeResponse(response("first")));
+            f.close.future.complete(null);
+            assertTrue(drain.toCompletableFuture().get(3, TimeUnit.SECONDS).belongsTo(f.lifecycle));
+            refused(() -> reserved.completeResponse(response("first")));
+            assertFalse(reserved.canSend()); assertSpentCounter(publication, "2");
+        }
+    }
+
+    private static final class ResponseWork implements Runnable {
+        final Reserved reserved; final ReconnectMessages.Response response;
+        final CountDownLatch started = new CountDownLatch(1), finished = new CountDownLatch(1);
+        final AtomicReference<SessionCredential> credential = new AtomicReference<>();
+        final AtomicReference<Exception> failure = new AtomicReference<>();
+        final Thread thread = new Thread(this, "Beluga-public-fixture-response-test");
+        ResponseWork(Reserved reserved, ReconnectMessages.Response response) {
+            this.reserved = reserved; this.response = response; thread.setDaemon(true);
+        }
+        @Override public void run() {
+            started.countDown();
+            try { credential.set(reserved.completeResponse(response)); }
+            catch (Exception refused) { failure.set(refused); }
+            finally { finished.countDown(); }
+        }
+    }
+    private static void awaitOwnerAcceptance(Thread thread) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        while (System.nanoTime() - deadline < 0) {
+            StackTraceElement[] trace = thread.getStackTrace();
+            if (thread.getState() == Thread.State.BLOCKED && trace.length > 0
+                    && trace[0].getClassName().equals("com.elamin.beluga.protocol.ViewerReconnectStorageLifecycle$Reserved")
+                    && trace[0].getMethodName().equals("completeResponse")) return;
+            Thread.yield();
+        }
+        fail("Actual response did not reach its held owner acceptance boundary");
+    }
+    private static void finishResponseWork(ResponseWork work) throws Exception {
+        work.thread.join(3000);
+        if (work.thread.isAlive()) { work.thread.interrupt(); work.thread.join(3000); }
+        assertFalse("Owned response worker did not terminate", work.thread.isAlive());
+        SessionCredential credential = work.credential.get(); if (credential != null) credential.close();
+    }
+    private static ReconnectMessages.Response response(String name) throws Exception {
+        return ReconnectMessages.decodeResponse(reconnect("reconnect." + name + ".response.full"));
+    }
+    private static void assertSpentCounter(FakePublication publication, String expected) throws Exception {
+        try (ViewerStorageCatalog durable = ViewerStorageCatalog.decode(publication.published)) {
+            assertEquals(expected, durable.entry(SLOT).record.nextOutboundReconnectSequence());
+            assertEquals("0", durable.entry(SLOT).record.highestAcceptedReconnectSequence());
+        }
+    }
+    private static void assertActualSwiftCredential(SessionCredential credential, String name) throws Exception {
+        String prefix = "reconnect." + name + ".credential.";
+        assertEquals(new String(reconnect(prefix + "channel"), StandardCharsets.US_ASCII), credential.channelID());
+        assertEquals(new String(reconnect(prefix + "admission"), StandardCharsets.US_ASCII), credential.admissionProofForTransport());
+        byte[] plaintext = "public synthetic ownership test".getBytes(StandardCharsets.US_ASCII);
+        byte[] nonce = repeat(0x44, 12), aad = "public bounded AAD".getBytes(StandardCharsets.US_ASCII);
+        assertArrayEquals(BouncyCastlePairingCrypto.sealCombined(reconnect(prefix + "host-to-viewer"), nonce, plaintext, aad),
+                credential.sealForTransport(SessionCredential.Direction.HOST_TO_VIEWER, plaintext, nonce, aad));
+        assertArrayEquals(BouncyCastlePairingCrypto.sealCombined(reconnect(prefix + "viewer-to-host"), nonce, plaintext, aad),
+                credential.sealForTransport(SessionCredential.Direction.VIEWER_TO_HOST, plaintext, nonce, aad));
     }
 
     private static final class Fixture {

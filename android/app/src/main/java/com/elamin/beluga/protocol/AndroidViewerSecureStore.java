@@ -115,6 +115,7 @@ final class AndroidViewerSecureStore {
         private ViewerStorageCloseDrain.Receipt closeReceipt;
         private ViewerReconnectStorageLifecycle reconnect;
         private StoreStamp reconnectInitial;
+        private ViewerReconnectStorageLifecycle.Reserved reconnectReserved;
         private ViewerReconnectStorageLifecycle.CloseReceipt reconnectCloseReceipt;
         private CompletableFuture<Void> reconnectCloseResult;
         private Binding(AndroidViewerSecureStore store, Owner owner, Transport transport, UUID slot) {
@@ -295,6 +296,38 @@ final class AndroidViewerSecureStore {
         }
     }
 
+    /** Derives viewer-only routing from the exact bound ACTIVE record; never exposes its root. */
+    ViewerAvailabilityLocator reconnectLocator(Binding binding) throws Failure {
+        synchronized (SERIAL) {
+            requireReconnectBinding(binding);
+            try (Image image = load()) {
+                ViewerStorageCatalog.demand(binding.reconnectInitial.same(image.catalog.stamp(binding.slot))
+                        && binding.slot.equals(image.catalog.selectedSlot));
+                ViewerAvailabilityLocator locator = image.catalog.entry(binding.slot).record.availabilityLocator();
+                synchronized (binding.owner) {
+                    if (binding.owner.isRetired()) { locator.close(); throw new Failure(); }
+                    return locator;
+                }
+            } catch (AuthFailure refused) { throw new Failure(); }
+        }
+    }
+
+    /** After exact close, re-read selection and complete committed record before reporting verification. */
+    void verifyClosedReconnect(Binding binding, StoreStamp expected) throws Failure {
+        synchronized (SERIAL) {
+            ViewerStorageCatalog.demand(binding != null && binding.store == this
+                    && OWNERS.get(directory.getPath()) == binding && binding.owner.isRetired()
+                    && binding.reconnectCloseReceipt != null && expected != null
+                    && binding.slot.equals(expected.target) && binding.reconnectReserved != null
+                    && binding.reconnectReserved.afterStamp().same(expected));
+            try (Image image = load()) {
+                ViewerStorageCatalog.demand(binding.slot.equals(image.catalog.selectedSlot)
+                        && expected.same(image.catalog.stamp(binding.slot))
+                        && image.catalog.admissionRevision(binding.slot) == 1);
+            }
+        }
+    }
+
     /** Native encrypted +1 publication/readback. No admitted request escapes on uncertainty/cancel. */
     ViewerReconnectStorageLifecycle.Reserved reserveSelectedReconnect(Binding binding) throws Failure {
         synchronized (SERIAL) {
@@ -328,7 +361,7 @@ final class AndroidViewerSecureStore {
                 // SERIAL excludes selection/catalog successors. This final short owner fence
                 // prevents a cancelled publication from yielding usable request authority.
                 synchronized (binding.owner) {
-                    requireReconnectBinding(binding); return result;
+                    requireReconnectBinding(binding); binding.reconnectReserved = result; return result;
                 }
             } catch (Failure | AuthFailure | RuntimeException refused) {
                 binding.owner.retire(); if (preparation != null) preparation.close();

@@ -24,12 +24,18 @@ this candidate. Dependency locks and verification metadata are unchanged.
 The sections explicitly labeled historical below describe those earlier runs;
 they do not claim runtime validation for this candidate.
 
-The newest source checkpoint also reserves reconnect counters through the real
-encrypted writer and exact catalog readback, with cancellation and close-drain
-fencing. This does not wire a saved-Mac connection: availability signaling,
-response/session handoff and native media remain unfinished. Its 139 app JUnit
-cases, bootstrap-model assertions and debug APK/static readback pass; actual
-Android storage, TLS, pairing and media still require runtime evidence.
+The source also reserves reconnect counters through the encrypted writer and
+exact catalog readback, with cancellation and close-drain fencing. It now adds
+the viewer-only availability WSS profile, exchange-bound encryption/parser and
+one-use response completion. These pieces are not exposed as a native saved-Mac
+connection: session/ownership handoff and native media remain unfinished. The
+previous storage checkpoint's 139 app JUnit cases, bootstrap-model assertions
+and debug APK/static readback are historical evidence, not validation of these
+new changes. Actual Android storage, TLS, pairing and media require runtime proof.
+
+A reconnect is not an inert health check: the Mac prepares fresh media before
+returning its response. Therefore this preview deliberately has no disposable
+"check connection" action that would abandon an authorized media session.
 
 ## Admission and privacy
 

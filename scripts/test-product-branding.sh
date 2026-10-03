@@ -426,6 +426,17 @@ ANDROID_CLIENT_COMPATIBILITY_PATHS=(
   android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java
   android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java
 )
+# These exact files are absent in the prior Android checkpoint. When present,
+# their actual ABI lines must pass the same fixed policy, not a fixture exemption.
+for relative_path in \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java; do
+  if [[ -f "$ROOT_DIR/$relative_path" ]] && \
+      rg -q 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path"; then
+    ANDROID_CLIENT_COMPATIBILITY_PATHS+=("$relative_path")
+  fi
+done
 for relative_path in "${ANDROID_CLIENT_COMPATIBILITY_PATHS[@]}"; do
   mkdir -p "$ANDROID_CLIENT_COMPATIBILITY/${relative_path:h}"
   rg 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path" \
@@ -498,6 +509,61 @@ require_scoped_content_rejected android-client-header-trailing-brand "${ANDROID_
   '.set("X-AudioStreamer-Channel", join.channelID()) // AudioStreamer' AudioStreamer-Channel
 require_scoped_content_rejected android-client-test-forbidden-header-inversion "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
   'assertTrue(headers.contains("X-AudioStreamer-Viewer-Admission"));' AudioStreamer-Viewer-Admission
+
+require_scoped_content_rejected android-client-availability-subprotocol-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'public static final String AVAILABILITY_SUBPROTOCOL = "audiostreamer.availability.v2";' audiostreamer.availability.v2
+require_scoped_content_rejected android-client-availability-subprotocol-wrong-path \
+  android/transport/src/main/java/com/elamin/beluga/protocol/UnreviewedAvailabilityTransport.java \
+  'public static final String AVAILABILITY_SUBPROTOCOL = "audiostreamer.availability.v1";' audiostreamer.availability.v1
+require_scoped_content_rejected android-client-availability-mode-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Mode", "pairing");' AudioStreamer-Mode
+require_scoped_content_rejected android-client-availability-host-registration "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Viewer-Admission", join.admissionProofForUpgradeHeader());' AudioStreamer-Viewer-Admission
+require_scoped_content_rejected android-client-availability-test-host-header-inversion "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  'assertTrue(headers.contains("X-AudioStreamer-Host-Admission"));' AudioStreamer-Host-Admission
+require_scoped_content_rejected android-client-availability-test-mode-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  'assertEquals("pairing", headers.get("X-AudioStreamer-Mode"));' AudioStreamer-Mode
+require_scoped_content_rejected android-client-availability-subprotocol-display "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'String displayName = "audiostreamer.availability.v1";' audiostreamer.availability.v1
+require_scoped_content_rejected android-client-availability-route-version \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'route = derive(root, routeSalt, "AudioStreamer.Availability.Route.v2");' AudioStreamer.Availability.Route.v2
+require_scoped_content_rejected android-client-availability-admission-role-swap \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'admission = derive(route, transcript, "AudioStreamer.Availability.Admission.Host.v2");' AudioStreamer.Availability.Admission.Host.v2
+require_scoped_content_rejected android-client-availability-seed-label-change \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'seed = derive(root, seedSalt, "AudioStreamer.Availability.ExchangeSeed.v2");' AudioStreamer.Availability.ExchangeSeed.v2
+require_scoped_content_rejected android-client-availability-label-display \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'String displayName = "AudioStreamer.Availability.Route.v1";' AudioStreamer.Availability.Route.v1
+require_scoped_content_rejected android-client-availability-domain-wrong-path \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/UnreviewedAvailabilityLocator.java \
+  'route = derive(root, routeSalt, "AudioStreamer.Availability.Route.v1");' AudioStreamer.Availability.Route.v1
+require_scoped_content_rejected android-client-availability-exchange-salt-input-change \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'salt = ReconnectMessages.domain("AudioStreamer.Availability.Exchange.Salt.v1", raw);' AudioStreamer.Availability.Exchange.Salt.v1
+require_scoped_content_rejected android-client-availability-send-direction-swap \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'send = ViewerAvailabilityLocator.derive(seed, salt, "AudioStreamer.Availability.Exchange.Signaling.HostToViewer.v1");' AudioStreamer.Availability.Exchange.Signaling.HostToViewer.v1
+require_scoped_content_rejected android-client-availability-aad-version \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v2", new byte[] {1}, ascii(channel),' AudioStreamer.Availability.Envelope.AAD.v2
+require_scoped_content_rejected android-client-availability-envelope-label-display \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'String displayName = "AudioStreamer.Availability.Envelope.AAD.v1";' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-availability-test-aad-version \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v2", new byte[] {1}, value("derived.channel"),' AudioStreamer.Availability.Envelope.AAD.v2
+require_scoped_content_rejected android-client-availability-test-aad-input-change \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {2}, value("derived.channel"),' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-availability-test-aad-wrong-path \
+  android/app/src/test/java/com/elamin/beluga/protocol/UnreviewedAvailabilityEnvelopeTest.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {1}, value("derived.channel"),' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-availability-test-label-display \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  'String displayName = "AudioStreamer.Availability.Envelope.AAD.v1";' AudioStreamer.Availability.Envelope.AAD.v1
 
 require_scoped_content_rejected physical-identity-wrong-path \
   iOS/opensteamer/Tests/UnreviewedTests.swift \

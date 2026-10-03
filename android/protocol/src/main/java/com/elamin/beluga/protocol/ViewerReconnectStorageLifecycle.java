@@ -8,6 +8,7 @@ import com.elamin.beluga.protocol.ViewerBootstrapReducer.StoreStamp;
 import com.elamin.beluga.protocol.ViewerBootstrapReducer.Transport;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.ReconnectPreparation;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.RecordPhase;
+import com.elamin.beluga.protocol.ViewerPairingAuthenticator.SessionCredential;
 import com.elamin.beluga.protocol.ViewerStorageCatalog.Failure;
 
 /**
@@ -29,19 +30,45 @@ final class ViewerReconnectStorageLifecycle {
         private final ViewerReconnectStorageLifecycle issuer;
         private final ReconnectPreparation preparation;
         private final StoreStamp after;
+        private boolean completed;
         private Reserved(ViewerReconnectStorageLifecycle issuer, ReconnectPreparation preparation, StoreStamp after) {
             this.issuer = issuer; this.preparation = preparation; this.after = after;
         }
         StoreStamp afterStamp() { return after; }
         byte[] requestPayloadForTrustedSender() throws Failure {
             synchronized (issuer) {
-                ViewerStorageCatalog.demand(issuer.reserved == this && !issuer.failed && !issuer.owner.isRetired());
+                ViewerStorageCatalog.demand(current() && !completed);
                 return preparation.requestPayload();
             }
         }
         /** Final queued-send guard, not storage authority or a native connection-health claim. */
         boolean canSend() {
-            synchronized (issuer) { return issuer.reserved == this && !issuer.failed && !issuer.owner.isRetired(); }
+            synchronized (issuer) { return current() && !completed; }
+        }
+        private boolean current() { return issuer.reserved == this && !issuer.failed && !issuer.owner.isRetired(); }
+        /** One response attempt for this persisted request; never a native connectivity claim. */
+        SessionCredential completeResponse(ReconnectMessages.Response response) throws Failure {
+            synchronized (issuer) {
+                ViewerStorageCatalog.demand(canSend() && !completed);
+                completed = true;
+            }
+            SessionCredential credential = null;
+            try {
+                credential = preparation.complete(response);
+                synchronized (issuer.owner) {
+                    synchronized (issuer) {
+                        ViewerStorageCatalog.demand(current());
+                        SessionCredential accepted = credential; credential = null; return accepted;
+                    }
+                }
+            } catch (Failure | ViewerPairingAuthenticator.AuthFailure | RuntimeException refused) {
+                issuer.owner.retire();
+                synchronized (issuer) { issuer.failed = true; }
+                throw new Failure();
+            } finally {
+                if (credential != null) credential.close();
+                preparation.close();
+            }
         }
         @Override public String toString() { return "<redacted exact committed reconnect reservation; not connected>"; }
     }
