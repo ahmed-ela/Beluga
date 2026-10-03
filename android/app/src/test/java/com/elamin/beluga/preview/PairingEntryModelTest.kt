@@ -26,6 +26,7 @@ class PairingEntryModelTest {
         assertFalse(state.scannerPending)
         assertFalse(state.acceptsScanResult)
         assertTrue(state.canScan)
+        assertFalse(state.canConfirmScan)
     }
 
     @Test fun allSharedManualVectorsValidateOnlyFormatAndDiscardInput() {
@@ -236,5 +237,181 @@ class PairingEntryModelTest {
         assertFalse(model.state.toString().contains(code))
         assertFalse(model.toString().contains(code))
         assertTrue(model.state.toString().contains("<redacted>"))
+    }
+
+    @Test fun manualPairActionReturnsParsedInvitationOnceAndClearsRawInput() {
+        for (code in codes()) {
+            val model = model()
+            model.changeManualInput(code.lowercase().replace('-', ' '))
+            assertEquals(code, requireNotNull(model.takeManualInvitation()).exportedCode())
+            assertEquals("", model.state.manualInput)
+            assertEquals(PairingEntryStatus.FormatValidNotPaired, model.state.status)
+            assertFalse(model.state.canConfirmScan)
+            assertNull(model.takeManualInvitation())
+        }
+    }
+
+    @Test fun invalidManualPairActionReturnsNoInvitationAndDiscardsRawInput() {
+        for (input in listOf("", "https://example.invalid/", "\u0000", " ".repeat(257))) {
+            val model = model()
+            model.changeManualInput(input)
+            assertNull(model.takeManualInvitation())
+            assertEquals("", model.state.manualInput)
+            assertEquals(PairingEntryStatus.InvalidInvitation, model.state.status)
+            assertFalse(model.state.canConfirmScan)
+        }
+    }
+
+    @Test fun scanCompletionStagesOnlyAnExplicitOneUseConfirmation() {
+        for (code in codes()) {
+            val model = model()
+            val attempt = requireNotNull(model.beginScan())
+            assertTrue(model.completeScan(attempt, true, qr(code)))
+            assertTrue(model.state.canConfirmScan)
+            assertEquals("", model.state.manualInput)
+            assertFalse(model.state.scannerPending)
+            assertEquals(PairingEntryStatus.FormatValidNotPaired, model.state.status)
+            assertEquals(code, requireNotNull(model.takeScannedInvitation()).exportedCode())
+            assertFalse(model.state.canConfirmScan)
+            assertNull(model.takeScannedInvitation())
+            assertFalse(model.completeScan(attempt, true, qr(code)))
+            assertFalse(model.state.canConfirmScan)
+        }
+    }
+
+    @Test fun malformedScanCanNeverOfferConfirmation() {
+        val code = codes().first()
+        for (payload in listOf(null, code, qr(code) + "\n", qr(code).lowercase())) {
+            val model = model()
+            assertTrue(model.completeScan(requireNotNull(model.beginScan()), true, payload))
+            assertFalse(model.state.canConfirmScan)
+            assertNull(model.takeScannedInvitation())
+        }
+        val model = model()
+        assertTrue(model.completeScan(requireNotNull(model.beginScan()), false, qr(code)))
+        assertFalse(model.state.canConfirmScan)
+        assertNull(model.takeScannedInvitation())
+    }
+
+    @Test fun stagedAdmissionExpiresAfterSdkOwnershipEnded() {
+        val model = model()
+        val attempt = requireNotNull(model.beginScan())
+        assertTrue(model.completeScan(attempt, true, qr(codes().first())))
+        assertFalse(model.state.scannerPending)
+        now = attempt.deadline + 1
+        model.expireScan(attempt)
+        assertEquals(PairingEntryStatus.ScanExpired, model.state.status)
+        assertFalse(model.state.canConfirmScan)
+        assertNull(model.takeScannedInvitation())
+    }
+
+    @Test fun stateReadAndTakeIndependentlyRecheckStagedDeadline() {
+        for (readStateFirst in listOf(true, false)) {
+            val model = model()
+            val attempt = requireNotNull(model.beginScan())
+            assertTrue(model.completeScan(attempt, true, qr(codes().first())))
+            now = attempt.deadline + 1
+            if (readStateFirst) assertFalse(model.state.canConfirmScan)
+            assertNull(model.takeScannedInvitation())
+            assertEquals(PairingEntryStatus.ScanExpired, model.state.status)
+        }
+    }
+
+    @Test fun confirmationAtExactOriginalDeadlineIsAllowedWithoutExtendingWindow() {
+        val model = model()
+        val attempt = requireNotNull(model.beginScan())
+        now = attempt.deadline - 1
+        assertTrue(model.completeScan(attempt, true, qr(codes().first())))
+        now = attempt.deadline
+        assertEquals(codes().first(), requireNotNull(model.takeScannedInvitation()).exportedCode())
+        assertFalse(model.state.canConfirmScan)
+    }
+
+    @Test fun rollbackAfterScanOrStateObservationRevokesStagedAdmission() {
+        for (readStateFirst in listOf(true, false)) {
+            val model = model()
+            val attempt = requireNotNull(model.beginScan())
+            now = attempt.startedAt + 100
+            assertTrue(model.completeScan(attempt, true, qr(codes().first())))
+            now += 100
+            assertTrue(model.state.canConfirmScan)
+            now -= 1 // Still after startedAt, but no longer monotonic.
+            if (readStateFirst) assertFalse(model.state.canConfirmScan)
+            assertNull(model.takeScannedInvitation())
+            assertEquals(PairingEntryStatus.ScanExpired, model.state.status)
+        }
+    }
+
+    @Test fun clearEditNewScanAndDisposeEachRevokeStagedConfirmation() {
+        for (action in 0..3) {
+            val model = model()
+            val attempt = requireNotNull(model.beginScan())
+            assertTrue(model.completeScan(attempt, true, qr(codes().first())))
+            when (action) {
+                0 -> model.clear()
+                1 -> model.changeManualInput(codes().last())
+                2 -> assertNotNull(model.beginScan())
+                3 -> model.dispose()
+            }
+            assertFalse(model.state.canConfirmScan)
+            assertNull(model.takeScannedInvitation())
+            assertFalse(model.completeScan(attempt, true, qr(codes().first())))
+            assertFalse(model.state.canConfirmScan)
+        }
+    }
+
+    @Test fun backgroundRevokesStagedInvitationButPreservesPendingExternalScanner() {
+        val model = model()
+        val attempt = requireNotNull(model.beginScan())
+        model.forgetSensitiveInput()
+        assertTrue(model.state.scannerPending)
+        assertTrue(model.state.acceptsScanResult)
+        assertTrue(model.completeScan(attempt, true, qr(codes().first())))
+        assertTrue(model.state.canConfirmScan)
+        model.forgetSensitiveInput()
+        assertFalse(model.state.canConfirmScan)
+        assertEquals("", model.state.manualInput)
+        assertEquals(PairingEntryStatus.Ready, model.state.status)
+        assertNull(model.takeScannedInvitation())
+    }
+
+    @Test fun staleTimeoutAndResultCannotRevokeOrReplaceNewStagedInvitation() {
+        val model = model()
+        val first = requireNotNull(model.beginScan())
+        model.scanCancelled(first)
+        val second = requireNotNull(model.beginScan())
+        assertTrue(model.completeScan(second, true, qr(codes().last())))
+        model.expireScan(first)
+        assertFalse(model.completeScan(first, true, qr(codes().first())))
+        model.scanCancelled(first)
+        assertTrue(model.state.canConfirmScan)
+        assertEquals(codes().last(), requireNotNull(model.takeScannedInvitation()).exportedCode())
+    }
+
+    @Test fun manualPairActionRetiresScannedAndPendingScanAdmission() {
+        val model = model()
+        val scannedAttempt = requireNotNull(model.beginScan())
+        assertTrue(model.completeScan(scannedAttempt, true, qr(codes().first())))
+        model.changeManualInput(codes().last())
+        assertEquals(codes().last(), requireNotNull(model.takeManualInvitation()).exportedCode())
+        assertNull(model.takeScannedInvitation())
+        val pending = requireNotNull(model.beginScan())
+        model.changeManualInput(codes().first())
+        assertEquals(codes().first(), requireNotNull(model.takeManualInvitation()).exportedCode())
+        assertFalse(model.completeScan(pending, true, qr(codes().last())))
+        assertFalse(model.state.canConfirmScan)
+    }
+
+    @Test fun stagedStateDescriptionsExposeOnlyConfirmationAvailability() {
+        val model = model()
+        val code = codes().first()
+        assertTrue(model.completeScan(requireNotNull(model.beginScan()), true, qr(code)))
+        assertEquals("", model.state.manualInput)
+        assertTrue(model.state.canConfirmScan)
+        assertFalse(model.state.toString().contains(code))
+        assertFalse(model.toString().contains(code))
+        assertFalse(PairingEntryState::class.java.declaredFields.any {
+            it.type == com.elamin.beluga.protocol.PairingInvitation::class.java
+        })
     }
 }

@@ -406,6 +406,99 @@ require_scoped_content_rejected audio-share-negative-prefix-wrong-context "${MAC
 require_scoped_content_rejected android-plan-wire-wrong-context "${MAC_CLIENT_COMPATIBILITY_PATHS[12]}" \
   '# audiostreamer.control' audiostreamer.control
 
+# Exercise every imported Android compatibility line, rather than a reduced sample.
+# The policy has fixed literal matches; these current-source inputs cannot grant permission.
+ANDROID_CLIENT_COMPATIBILITY="$TEMPORARY_ROOT/android-client-compatibility"
+initialize_repository "$ANDROID_CLIENT_COMPATIBILITY"
+ANDROID_CLIENT_COMPATIBILITY_PATHS=(
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingCanonicalCodec.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java
+  android/transport/src/main/java/com/elamin/beluga/protocol/ProcessPairingDnsResolver.java
+  android/protocol/src/test/java/com/elamin/beluga/protocol/PairingCanonicalCodecTest.java
+  android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java
+  android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java
+  android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java
+  android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java
+  android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java
+  android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java
+)
+for relative_path in "${ANDROID_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  mkdir -p "$ANDROID_CLIENT_COMPATIBILITY/${relative_path:h}"
+  rg 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path" \
+    >"$ANDROID_CLIENT_COMPATIBILITY/$relative_path"
+done
+commit_all "$ANDROID_CLIENT_COMPATIBILITY"
+"$ANDROID_CLIENT_COMPATIBILITY/scripts/check-product-branding.sh" \
+  "$ANDROID_CLIENT_COMPATIBILITY" >/dev/null
+
+for relative_path in "${ANDROID_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  # Every admitted source/test path still refuses presentation, including a real ABI token.
+  require_scoped_content_rejected "android-client-display-${relative_path:t}" "$relative_path" \
+    'String displayName = "AudioStreamer";' AudioStreamer
+  require_scoped_content_rejected "android-client-domain-display-${relative_path:t}" "$relative_path" \
+    'String displayName = "AudioStreamer.Pairing.Root.v1";' AudioStreamer.Pairing.Root.v1
+
+  # Moving an otherwise exact imported definition/assertion to a new file must not pass.
+  content=$(rg -m 1 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path" \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  wrong_path="android/unreviewed/${relative_path:t}"
+  repository="$TEMPORARY_ROOT/android-client-wrong-path-${relative_path:t}"
+  initialize_repository "$repository"
+  mkdir -p "$repository/${wrong_path:h}"
+  print -r -- "$content" >"$repository/$wrong_path"
+  commit_all "$repository"
+  require_failure "$repository" "$wrong_path:1:"
+done
+
+require_scoped_content_rejected android-client-admission-domain-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[1]}" \
+  'digest.update("AudioStreamer.WorldwideInvitation.Admitted.v2\0".getBytes(StandardCharsets.UTF_8));' \
+  AudioStreamer.WorldwideInvitation.Admitted.v2
+require_scoped_content_rejected android-client-canonical-frame-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'byte[] domain = ("AudioStreamer.Pairing." + fixedSuffix + ".v2").getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.Pairing.
+require_scoped_content_rejected android-client-canonical-frame-variable "${ANDROID_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'byte[] domain = ("AudioStreamer.Pairing." + displayName + ".v1").getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.Pairing.
+require_scoped_content_rejected android-client-envelope-domain-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[3]}" \
+  'private static final byte[] AAD_DOMAIN = ascii("AudioStreamer.Signaling.Envelope.AAD.v2\0");' \
+  AudioStreamer.Signaling.Envelope.AAD.v2
+require_scoped_content_rejected android-client-durable-label-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[4]}" \
+  'channel = derive(root, salt, "AudioStreamer.DurableRendezvous.session.channel.v2");' \
+  AudioStreamer.DurableRendezvous.session.channel.v2
+require_scoped_content_rejected android-client-role-label-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[4]}" \
+  'key = derive(root, transcript, "AudioStreamer.Pairing.Confirmation.viewer.v2");' \
+  AudioStreamer.Pairing.Confirmation.viewer.v2
+require_scoped_content_rejected android-client-commit-role-variable "${ANDROID_CLIENT_COMPATIBILITY_PATHS[4]}" \
+  'return "AudioStreamer.Pairing.Commit." + displayName + "." + name + ".v1";' \
+  AudioStreamer.Pairing.Commit.
+require_scoped_content_rejected android-client-reconnect-label-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[5]}" \
+  'return domain("AudioStreamer.Reconnect.Request.Signature.v2", unsignedRequest(request));' \
+  AudioStreamer.Reconnect.Request.Signature.v2
+require_scoped_content_rejected android-client-dns-host-mutation "${ANDROID_CLIENT_COMPATIBILITY_PATHS[6]}" \
+  'private static final String HOST = "audiostreamer-rendezvous.elaminahmed04.workers.dev";' \
+  audiostreamer-rendezvous.elaminahmed04.workers.dev
+require_scoped_content_rejected android-client-test-frame-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[7]}" \
+  'byte[] label = ("AudioStreamer.Pairing." + suffix + ".v2").getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.Pairing.
+require_scoped_content_rejected android-client-test-commit-variable "${ANDROID_CLIENT_COMPATIBILITY_PATHS[8]}" \
+  'byte[] key = BouncyCastlePairingCrypto.hkdfSha256(root, transcript, utf8("AudioStreamer.Pairing.Commit." + displayName + "." + phase + ".v1"), 32);' \
+  AudioStreamer.Pairing.Commit.
+require_scoped_content_rejected android-client-origin-wrong-scheme "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'public static final String PRODUCTION_ORIGIN = "ws://audiostreamer-rendezvous.elaminahmed03.workers.dev";' \
+  audiostreamer-rendezvous.elaminahmed03.workers.dev
+require_scoped_content_rejected android-client-subprotocol-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'public static final String SUBPROTOCOL = "audiostreamer.pairing.v2";' audiostreamer.pairing.v2
+require_scoped_content_rejected android-client-header-role-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Role", "host")' AudioStreamer-Role
+require_scoped_content_rejected android-client-header-trailing-brand "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Channel", join.channelID()) // AudioStreamer' AudioStreamer-Channel
+require_scoped_content_rejected android-client-test-forbidden-header-inversion "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  'assertTrue(headers.contains("X-AudioStreamer-Viewer-Admission"));' AudioStreamer-Viewer-Admission
+
 require_scoped_content_rejected physical-identity-wrong-path \
   iOS/opensteamer/Tests/UnreviewedTests.swift \
   'guard Bundle.main.bundleIdentifier == "org.example.AudioStreamer.dev" else {' AudioStreamer.dev

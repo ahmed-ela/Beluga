@@ -1,12 +1,14 @@
-# Native Android client — format-check preview, pairing/media not implemented
+# Native Android client — pairing preview, live reconnect/media incomplete
 
 Requested on 2026-10-02 as part of the active Mac menu-bar client goal. This
-checkout now includes an independently packaged Kotlin/Compose preview under
-`android/`: explicit QR/manual input with stale/duplicate/timeout fencing, strict
-invitation parsing, and no app camera/microphone/Internet permission. Its UI only
-checks format and explicitly reports **not paired**. Stable identity, saved Macs,
-authenticated pairing/reconnect, media and controls are not implemented.
-`android/protocol` is still independently JVM-testable. The browser `/v3/audio-share` receiver is a separate listen-only
+checkout includes a Kotlin/Compose pairing preview under `android/`: explicit
+QR/manual confirmation, encrypted local identity and saved-Mac catalog, durable
+NEW-Mac pairing, authenticated WSS, and selected-record reconnect crypto/storage.
+INTERNET is enabled for explicit pairing; app camera/microphone permissions remain
+absent. Selecting a saved Mac does not yet connect: availability/session handoff,
+native media and controls remain unimplemented. No physical Android pairing,
+Keystore/filesystem/TLS behavior, support or distribution is claimed.
+`android/protocol` remains independently JVM-testable. The browser `/v3/audio-share` receiver is a separate listen-only
 bearer-link feature and must not be relabeled as a paired Android client.
 
 ## First vertical slice
@@ -62,8 +64,10 @@ On 2026-10-02 the host-JVM run passed three vectors and 79 assertions, and the
 Swift fixture test passed in `mac-phone-catalog-update-policy-3.log` within
 `<private-release-evidence>`. The parser was compiled with
 installed JDK 26.0.1, `--release 11 -Xlint:all -Werror`.
-Handshake transcripts, identity/AEAD keys, commits and reconnect replay vectors
-remain outstanding. Host-JVM results are not Android SDK or device proof.
+That was the initial parser checkpoint. Retained public Swift fixtures now cover
+handshake transcripts/keys/commits (45 rows), bootstrap envelopes, Unicode name
+compatibility and saved-pair reconnect (98 rows), with mandatory exact-byte JVM
+checks. Host-JVM results are not Android runtime or device proof.
 
 ## Mac-side prerequisite: preserve multiple phones
 
@@ -92,7 +96,7 @@ conversion. Focused coverage passes 83 Swift tests and 35 producer tests with
 602 assertions. This is not a signed native update trial or installed migration;
 those and real-device compatibility remain release gates.
 
-## Native preview evidence — 2026-10-02
+## Historical format-only preview evidence — 2026-10-02
 
 - AGP9.1.1, built-in Kotlin/Compose compiler2.2.10, Gradle9.3.1, JDK17,
   API36/Build Tools36.0.0 are pinned. Existing SDK/JDK reused; no device or
@@ -109,6 +113,30 @@ those and real-device compatibility remain release gates.
   RECORD_AUDIO and INTERNET; network-state and signature-scoped receiver
   permissions remain. Backup/transfer are disabled. No package installation,
   Android runtime/scanner proof, release signing or distribution is claimed.
+
+## Source-integration checkpoint — 2026-10-03
+
+The current development preview is `0.1.1-pairing-preview` (2), minimum API27.
+It imports the reviewed native library/pairing UI, pinned Netty WSS/DNS adapters,
+public fixtures and exact dependency notices without changing Apple clients or
+the frozen Mac release candidate. Existing iPhone pairing compatibility remains
+a required physical test, not a consequence of compilation.
+
+The newest strict offline run passed 139 app JUnit cases (15 reconnect-storage
+cases), 1,742 bootstrap-model assertions, debug assembly and lint with zero
+errors. A separate removal of the whole-catalog readback check caused its exact
+assertion to fail. Static APK readback verified debug signing, unchanged native
+graphics payloads/assets and no camera/microphone permission. Earlier unchanged
+protocol/transport suites retain their source-bound evidence. These are
+host/static-package proofs only; no Android package was installed or distributed.
+
+The next coherent slice is a selected-ACTIVE-Mac reconnect session: a distinct
+availability WSS profile, exchange-bound signaling, durable reservation before
+send, authenticated response completion, exact transport close and ownership
+handoff. Do not expose raw preparations/keys or call an authenticated credential
+"connected." Only then wire native WebRTC audio/video and meaningful Connect UI.
+Move-media behavior still needs the user's choice between streaming Mac audio
+and transferring the actual source/position while pausing the Mac.
 
 ## Evidence required before support/distribution claims
 

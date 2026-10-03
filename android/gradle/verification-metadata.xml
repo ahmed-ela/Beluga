@@ -5,6 +5,91 @@
       <verify-signatures>false</verify-signatures>
    </configuration>
    <components>
+      <component group="org.bouncycastle" name="bc-jdk18on-bom" version="1.84">
+         <artifact name="bc-jdk18on-bom-1.84.pom">
+            <sha256 value="f0eee932bfb246b0dfbebc089261364c603dbadead18fc55fd6342c17c56f34c" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="bc-jdk18on-bom-1.84.module">
+            <sha256 value="88ab8884a5e7412e98f091c146eec144d79e8f8c958f380bc2d4cd0f0ad46869" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-buffer" version="4.2.18.Final">
+         <artifact name="netty-buffer-4.2.18.Final.pom">
+            <sha256 value="de9fa8147013f4df75c28bba030fdc62a495a8331314b317efd027a51eab43c9" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-buffer-4.2.18.Final.jar">
+            <sha256 value="fdf236d2b76aa9710684401fdad7dff9dec56e43da5d39172c9a55ba5f14b360" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-codec-base" version="4.2.18.Final">
+         <artifact name="netty-codec-base-4.2.18.Final.pom">
+            <sha256 value="ecf23b1309430129f053e7e0036e3299b6ac2947966b2b52c648f604bfa536da" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-codec-base-4.2.18.Final.jar">
+            <sha256 value="7e4612bead7ba88ac6f7908fa722f90ad6835ea96505c9e40b2f93686c1f61f3" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-codec-compression" version="4.2.18.Final">
+         <artifact name="netty-codec-compression-4.2.18.Final.pom">
+            <sha256 value="20970622925f5838e3b32c823ddc495dd5af063c829c1e3041b679fda895e8a3" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-codec-compression-4.2.18.Final.jar">
+            <sha256 value="9d8a4b9a6a2a166ec5a4bbe51a78b4f6a726457c51d81495743c7e7ccb9f4765" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-codec-http" version="4.2.18.Final">
+         <artifact name="netty-codec-http-4.2.18.Final.pom">
+            <sha256 value="a8dae80f5f03c884b5c808bab6c6f9d1efee4c7c29db2fcaefbd81eb31af45f3" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-codec-http-4.2.18.Final.jar">
+            <sha256 value="2d50765eb58591ce35146c54ca032a257808d2165d8985a8522c70ea1470e8d7" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-common" version="4.2.18.Final">
+         <artifact name="netty-common-4.2.18.Final.pom">
+            <sha256 value="d87194f803e1bdc84bb8d5a982a28b57b99da1d6e71ecc172f52e4cd00e46914" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-common-4.2.18.Final.jar">
+            <sha256 value="5d97cae5669685872339698efe13f74fe3cdb2dccdb36963b2352bd95acf7070" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-handler" version="4.2.18.Final">
+         <artifact name="netty-handler-4.2.18.Final.pom">
+            <sha256 value="f480dd0ad6abce8a4ec64d590bc7f2fa67f0fb4bca18f811a54fa491176f2ddd" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-handler-4.2.18.Final.jar">
+            <sha256 value="6d5a08d9dd6d7d0211202e22dbb1629b23a62550335c7e80892da1d4cb115540" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-parent" version="4.2.18.Final">
+         <artifact name="netty-parent-4.2.18.Final.pom">
+            <sha256 value="eaba8a01e7da7b913eacb9158f9529ac1c828f92ceebc5bc125dda913d936855" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-resolver" version="4.2.18.Final">
+         <artifact name="netty-resolver-4.2.18.Final.pom">
+            <sha256 value="d87958d9f5e2b5e62223f8c7af79870b96b91ebc8fb77b846432989fcb71af78" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-resolver-4.2.18.Final.jar">
+            <sha256 value="68373ec544cf769ba17bf2ef455166d98f2c260dff536edf35ef57067a9c155f" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-transport" version="4.2.18.Final">
+         <artifact name="netty-transport-4.2.18.Final.pom">
+            <sha256 value="2849f57c33af4d775602bb161fad27bf02fb5cba92e37a7aedb5ebde54480470" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-transport-4.2.18.Final.jar">
+            <sha256 value="eac4f12068db4489e60c6520fad663e5d872f0436a7c641aa9e08db649947863" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
+      <component group="io.netty" name="netty-transport-native-unix-common" version="4.2.18.Final">
+         <artifact name="netty-transport-native-unix-common-4.2.18.Final.pom">
+            <sha256 value="b2dff035c64795f3af1bfe4fc59ead2738e07bb94b284396c8c17f0ad3fb35de" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+         <artifact name="netty-transport-native-unix-common-4.2.18.Final.jar">
+            <sha256 value="cada7023d09136af128511ca94421d69dc84d0f1f64c9e1f127a1271bb62932a" origin="Verified against official Maven Central SHA-256 sidecar"/>
+         </artifact>
+      </component>
       <component group="androidx.activity" name="activity" version="1.11.0">
          <artifact name="activity-1.11.0.aar">
             <sha256 value="26726186b34f90b0fe55bbf0ebbf640ade99915bc35f4cb0153ddcf751499bd3" origin="Generated by Gradle"/>
@@ -884,6 +969,14 @@
             <sha256 value="723c631235f033d6fb6aa59996f00357469f57cc29b2f5d7973fd58ab62aeec3" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="com.android.tools" name="play-sdk-proto" version="32.1.1">
+         <artifact name="play-sdk-proto-32.1.1.jar">
+            <sha256 value="c6fc15a5c203064cfd2c8a176fdeac72ae0a2d743ec47a2e66a0238d8d870b6b" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="play-sdk-proto-32.1.1.pom">
+            <sha256 value="2c3d001f09cc6852dafb76997f5d50313e378befb78482ebe007699a813e1a52" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
       <component group="com.android.tools" name="repository" version="32.1.1">
          <artifact name="repository-32.1.1.jar">
             <sha256 value="ef3691e582cd8f9901502b679bb8f709a095cecb44b64fffdcb266a03df6b690" origin="Generated by Gradle"/>
@@ -1084,12 +1177,68 @@
             <sha256 value="a5867b2f64008f165b4e796a714f4010fc2293d6a91249c6a73e0400acaf4a3d" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="com.android.tools.external.com-intellij" name="intellij-core" version="32.1.1">
+         <artifact name="intellij-core-32.1.1.jar">
+            <sha256 value="975b9eeca60ff222f2f38524d05f02da3b8ccfd1a7449fa211d6e88423888cb6" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="intellij-core-32.1.1.pom">
+            <sha256 value="540446e443f5223dddfa1ddf5a2289444e3c4c269a9e59202edc40c8f35c4580" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
+      <component group="com.android.tools.external.com-intellij" name="kotlin-compiler" version="32.1.1">
+         <artifact name="kotlin-compiler-32.1.1.jar">
+            <sha256 value="9351e61defe2f25e632e2cbc34ee864a7b017d193c99cadf05650a061c843297" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="kotlin-compiler-32.1.1.pom">
+            <sha256 value="e4aa1d5526a2ef5b252e5ec7f9bdea487e668fc1d28a20669e4636fb6c1983a2" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
+      <component group="com.android.tools.external.org-jetbrains" name="uast" version="32.1.1">
+         <artifact name="uast-32.1.1.jar">
+            <sha256 value="b75a953d4dc82baaec5d79b84b5910fd10c58c0bf0ef664e66441356ff15bf4d" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="uast-32.1.1.pom">
+            <sha256 value="1f18ccb2738396ca638fec06ebc85d9a38f8431dc6256a08a7b72a43dd1eff7d" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
       <component group="com.android.tools.layoutlib" name="layoutlib-api" version="32.1.1">
          <artifact name="layoutlib-api-32.1.1.jar">
             <sha256 value="1b37af4dc07dda96ecddae553a97d3053402db2c4b420ab937ab41c4e2597f51" origin="Generated by Gradle"/>
          </artifact>
          <artifact name="layoutlib-api-32.1.1.pom">
             <sha256 value="f7c3f48bfcb05e520f2b3bcfd90ddc8e188095e176eb69cb30bbfd14e53fb2c0" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="com.android.tools.lint" name="lint-api" version="32.1.1">
+         <artifact name="lint-api-32.1.1.jar">
+            <sha256 value="e5fadcb6d525fc9fcdcb86abe89a5865d36f79070e18ca2d50dc8bcf83bda4b0" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="lint-api-32.1.1.pom">
+            <sha256 value="030edd505392542ec0dc6bfa506244af7408bc58e363f165a5f038d339c41bca" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
+      <component group="com.android.tools.lint" name="lint-checks" version="32.1.1">
+         <artifact name="lint-checks-32.1.1.jar">
+            <sha256 value="4bf382af26feffb5b06b4ed7506ab296bd8b6aa392634fcac129073d6ec0f0c4" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="lint-checks-32.1.1.pom">
+            <sha256 value="f772a85492f1f814568aedb189f49437a6bf0b28fc4294dc36a89482abaeb245" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
+      <component group="com.android.tools.lint" name="lint-gradle" version="32.1.1">
+         <artifact name="lint-gradle-32.1.1.jar">
+            <sha256 value="0abdb1b1cd9a0bb7b9488500646a016f2c053bb31ba427645d6bf563feb93821" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="lint-gradle-32.1.1.pom">
+            <sha256 value="c0c986d73bb576db9dbd35fcc8ec4d0f7b994cf1bbfa4c3a08cb9fd7d5d56fe3" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+      </component>
+      <component group="com.android.tools.lint" name="lint" version="32.1.1">
+         <artifact name="lint-32.1.1.jar">
+            <sha256 value="1299a6551416dc953ef88000c5bf4f7db504162b3e65ce9d63f9c9048b5e2f8a" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="lint-32.1.1.pom">
+            <sha256 value="5f06416e5754fd2cdb7fbd0c55038e0045e31955f69d8b296298881ad3136d2f" origin="Official Google Maven HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
          </artifact>
       </component>
       <component group="com.android.tools.lint" name="lint-model" version="32.1.1">
@@ -2521,6 +2670,14 @@
             <sha256 value="35e49f4134de2ac326c3a50a25762cbb4db56f3802fa3f730cc85b653ad0987b" origin="Generated by Gradle"/>
          </artifact>
       </component>
+      <component group="org.bouncycastle" name="bcprov-jdk15to18" version="1.86">
+         <artifact name="bcprov-jdk15to18-1.86.jar">
+            <sha256 value="fc50334d4d87b4272e72fa95ca748ead05bdef02ef760a5b13f64ffee317cd81" origin="Official Bouncy Castle 1.86 checksum CSV and HTTPS-published signer; independently verified"/>
+         </artifact>
+         <artifact name="bcprov-jdk15to18-1.86.pom">
+            <sha256 value="af3f44f2c8bd90d10d0ebbc3c2f26b5d9b54588543a57cd879465f3dc4f1eef0" origin="Official Maven Central POM and HTTPS-published Bouncy Castle signer; independently verified"/>
+         </artifact>
+      </component>
       <component group="org.bouncycastle" name="bcprov-jdk18on" version="1.79">
          <artifact name="bcprov-jdk18on-1.79.jar">
             <sha256 value="0d81ecc3124536b539bce9aa3fe9621b7f84c9cee371b635a5b31c78b79ab1da" origin="Generated by Gradle"/>
@@ -2556,6 +2713,14 @@
          </artifact>
          <artifact name="checker-qual-3.43.0.module">
             <sha256 value="f8163327245ab8625532948c72a930548cd97f34d6c3fe860fa6aec5a34d79b4" origin="Generated by Gradle"/>
+         </artifact>
+      </component>
+      <component group="org.codehaus.groovy" name="groovy" version="3.0.22">
+         <artifact name="groovy-3.0.22.jar">
+            <sha256 value="c92c92c4b9b183f9981ba7399f36592e5e3ad6f4cdac7101b5a22cc17998d13f" origin="Official Maven Central HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
+         </artifact>
+         <artifact name="groovy-3.0.22.pom">
+            <sha256 value="51b731e5cff121efd6d320f4a801cd616869c5bed4e9c0e353b29060b1d2355f" origin="Official Maven Central HTTPS SHA-256 sidecar independently matched to exact cached artifact"/>
          </artifact>
       </component>
       <component group="org.codehaus.mojo" name="animal-sniffer-annotations" version="1.23">

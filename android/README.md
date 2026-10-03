@@ -1,23 +1,41 @@
-# Beluga native Android preview — format checking only
+# Beluga native Android pairing preview
 
-This isolated first slice contains a native Kotlin/Compose screen, manual code
-entry, explicit Google Code Scanner QR launch, and the existing wire-compatible
-invitation parser. **A valid invitation format is not a pairing.** There is no
-identity/catalog, authenticated signaling, network, media, microphone, remote
-control, saved Mac or transport capability. The UI says so explicitly.
+Version `0.1.1-pairing-preview` (code 2) connects explicit Kotlin/Compose code
+entry and QR confirmation to the durable one-use NEW-Mac pairing engine.
+Initialize the encrypted local library explicitly on first use. Manual Pair or
+Pair scanned Mac is then a separate foreground action; scanning alone never
+opens a connection. Pairing uses the fixed broker over authenticated WSS, a
+device-backed identity, exact catalog/selection revisions and the shared Swift
+wire protocol. Only a clean authenticated terminal plus transport/storage
+teardown can report pairing success. The UI then reloads the actual saved Macs.
 
-The initial isolated source built a debug APK and passed the 19 model tests plus
-the shared 3-vector/79-assertion invitation test, including a strict offline
-forced-task repeat with identical APK bytes. The repository integration reuses
-`shared/ProtocolFixtures` directly for both app and protocol tests, avoiding
-independent copies that could drift. No device installation or runtime test
-has been performed. This is not complete Android support or a distributed app.
+This is source integration, not a distributed or physically validated Android
+client. Android ART, real TLS/Keystore/filesystem behavior, QR UI, host pairing
+and device lifecycle still need runtime validation. Reconnect/media, microphone,
+remote control and Move media to phone are not implemented here. Selecting a
+saved Mac does not connect. An interrupted pending/accepted pairing is not
+silently resumed, overwritten or deleted. **Format valid, saved and connected
+are different states.**
+
+The minimum is now Android 8.1 (API 27), matching the secure-store contract and
+the networking package's tested DEX floor. The earlier format-only API 23 APK
+and the isolated API 27 packaging experiment are historical artifacts, not
+this candidate. Dependency locks and verification metadata are unchanged.
+The sections explicitly labeled historical below describe those earlier runs;
+they do not claim runtime validation for this candidate.
+
+The newest source checkpoint also reserves reconnect counters through the real
+encrypted writer and exact catalog readback, with cancellation and close-drain
+fencing. This does not wire a saved-Mac connection: availability signaling,
+response/session handoff and native media remain unfinished. Its 139 app JUnit
+cases, bootstrap-model assertions and debug APK/static readback pass; actual
+Android storage, TLS, pairing and media still require runtime evidence.
 
 ## Admission and privacy
 
 - Only the user’s Scan button launches the scanner. Google Play services owns
-  its camera UI. No app camera, microphone or Internet permission is granted;
-  manifest merge removal rules also reject those transitive permissions.
+  its camera UI. App camera/microphone permissions remain removed at manifest
+  merge. INTERNET is enabled for explicit pairing, with cleartext disabled.
 - Google Play services and its unbundled scanner module are required. First use
   can download the module through Play services. SDK failure shows a fixed
   unavailable message and manual entry stays available; no fallback fabricates
@@ -25,16 +43,22 @@ has been performed. This is not complete Android support or a distributed app.
 - QR input uses only the exact non-URL `BELUGA-PAIRING-V1\n<canonical code>`
   envelope. Manual input keeps the deployed ASCII aliases/separators/checksum.
   URL, null, Unicode look-alike, overlength, noncanonical and wrong-format
-  payloads are refused before any network work (there is no network work).
+  payloads are refused before any network work.
 - There is one SDK task owner at a time. Opaque attempt identity and a monotonic
   120-second result-admission window refuse duplicate, stale, cancelled or
   superseded callbacks. Expiry/clear revokes result admission but retains SDK
   ownership until the task ends, so another scanner is not launched over it.
 - Entered text is memory-only, masked, bounded to 256 characters, cleared on
-  validation/clear/background/destruction, and never logged or saved in Bundle,
-  preferences, clipboard, files or crash messages. Scanner payloads and parsed
-  invitations are discarded after format checking. Managed-runtime erasure is
-  not guaranteed; this is bounded logical retention, not a zeroization claim.
+  consumption/clear/background/destruction, and never logged or saved in Bundle,
+  preferences, clipboard, files or crash messages. A parsed QR invitation stays
+  private only until explicit confirmation, the original scan deadline, clear,
+  edit or lifecycle invalidation. It is consumed at most once; the UI state
+  exposes no invitation. Managed-runtime erasure is not guaranteed.
+- Leaving the foreground revokes an active pairing immediately. Cancellation
+  is not completion: another pairing/library mutation remains blocked while
+  cleanup is pending. Unknown cleanup remains fail-closed, never a retry loop.
+  An external scanner's pending SDK task may finish after backgrounding, but
+  its result can only stage a candidate for a new foreground confirmation.
 - Android backups/transfers are disabled and the activity sets FLAG_SECURE.
   There is no automatic clipboard read and no invitation-bearing intent/deep link.
 
@@ -49,8 +73,9 @@ has been performed. This is not complete Android support or a distributed app.
 | Activity Compose | 1.11.0 | Documented compiled API36, stable, minimum API23. |
 | Google Code Scanner | 16.1.0 | Official Google scanner dependency; delegated explicit camera UI with no app camera permission. |
 | JUnit | 4.13.2 | Stable host-unit-test runner. |
+| Application crypto | org.bouncycastle:bcprov-jdk15to18:1.86 | Exact verified lightweight raw-protocol primitives; no global provider registration. Exact app/protocol rows are enrolled; tooling BC1.79 is unchanged. |
 
-Compile/target SDK36, Build Tools36.0.0, minimum API23, Java17 app and Java11
+Compile/target SDK36, Build Tools36.0.0, minimum API27, Java17 app and Java11
 protocol bytecode are explicit. Direct versions are pinned; all configurations
 use strict Gradle dependency locking for the resolved graph and artifact
 checksum verification. Gradle rejects combining locking with its alternative
@@ -68,7 +93,7 @@ Primary provenance:
 - [Gradle distribution/wrapper checksums](https://gradle.org/release-checksums/)
 - [Dependency verification](https://docs.gradle.org/9.3.1/userguide/dependency_verification.html)
 
-## Root-owned build and verification
+## Historical preview bootstrap — 2026-10-02
 
 Supply the already verified JDK17 and SDK36 via JAVA_HOME and ANDROID_HOME.
 Use an isolated GRADLE_USER_HOME outside any production checkout. Root generated
@@ -118,6 +143,41 @@ The 19 model unit tests and shared 3-vector/79-assertion parser test are host
 proof only. Physical QR UI, Play-service availability, lifecycle and package
 behavior still require independent Android validation.
 
-Before actual pairing, finish the host multi-phone catalog integration and
-cross-language identity/AEAD/commit/reconnect vectors. Do not replace the iPhone
-binding or infer pairing from this preview’s format-valid status.
+## Historical integrated protocol validation — 2026-10-03
+
+Root's isolated repository-layout run passed `:protocol:check`,
+`:app:testDebugUnitTest`, `:app:assembleDebug` and `:app:lintDebug` using strict
+dependency verification, `--offline --rerun-tasks`, no build/configuration cache,
+and the already reviewed toolchain/cache. All 64 actionable tasks executed.
+All eight protocol JavaExec suites passed; the app's 19 JUnit cases had zero
+failures, errors or skips. Lint reports zero errors and four nonfatal warnings:
+three newer-tool/dependency notices and the preview's missing application icon.
+This is not a claim that every Gradle task ran or that lint is warning-free.
+
+Only `:protocol:test` sets `failOnNoDiscoveredTests=false` because this module's
+tests are standalone JavaExec mains, not framework-discovered tests. All eight
+named JavaExec suites remain mandatory `check` dependencies; none are disabled
+and test failures are not ignored. App JUnit discovery is unchanged.
+
+The protocol/app lock delta adds only exact BC1.86; the plugin/buildscript lock
+is unchanged. Its JAR/POM provenance and the 18 additional lint JAR/POM SHA-256
+checksums were independently matched to official repository sidecars before
+strict verification. The CAMERA removal node alone has
+`tools:ignore="PermissionImpliesUnsupportedChromeOsHardware"`; this is not a
+global suppression, camera permission grant, or new hardware requirement.
+
+The forced offline repeat produces the identical APK SHA-256
+`d14a30be82667ea03ab389e26f6a66cd40abc6b97f4a2954ee15ade0d6a96336`.
+Static readback confirms the packaged manifest and all four existing native
+graphics libraries are byte-identical to the preview baseline, the exact BC
+notice asset is present, and the six imported core classes are in DEX. Debug
+v1/v2 signature verification passes. Separate private JVM and D8/min23 gates
+remain host/compiler evidence, not API23 runtime proof. No APK installation,
+scanner/device test, real identity/storage/WSS, Mac pairing or media validation
+has occurred. Documentation was refreshed after this run; the tested code,
+configuration and fixture bytes are unchanged.
+
+That historical preview did not wire storage or WSS. The current source adds
+that composition and UI admission, but a paired Android runtime still requires
+device evidence. Do not replace an existing iPhone binding or infer pairing
+from a format-valid status, JVM tests or an APK build.

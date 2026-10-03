@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "BelugaAndroidPreview"
 include(":app", ":protocol")
+include(":transport")

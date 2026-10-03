@@ -12,10 +12,11 @@ android {
 
     defaultConfig {
         applicationId = "com.elamin.beluga.android.preview"
-        minSdk = 23
+        // The durable secure-store contract and packaged networking require API 27+.
+        minSdk = 27
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-preview"
+        versionCode = 2
+        versionName = "0.1.1-pairing-preview"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -23,6 +24,14 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+    packaging.resources {
+        // JAR class-loader indexes and Java module descriptors are not Android resources.
+        // Preserve all runtime classes and ship license text separately under assets.
+        excludes.add("META-INF/INDEX.LIST")
+        excludes.add("META-INF/versions/11/module-info.class")
+        // Each Netty module contributes distinct version keys; retain every module.
+        merges.add("META-INF/io.netty.versions.properties")
     }
     buildTypes {
         release {
@@ -45,6 +54,7 @@ kotlin {
 
 dependencies {
     implementation(project(":protocol"))
+    implementation(project(":transport"))
     implementation(platform("androidx.compose:compose-bom:2025.06.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")

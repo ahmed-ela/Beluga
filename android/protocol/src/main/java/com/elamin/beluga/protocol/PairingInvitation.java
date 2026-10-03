@@ -76,6 +76,22 @@ public final class PairingInvitation {
 
     @Override public String toString() { return "<redacted Beluga pairing invitation>"; }
 
+    /** Trusted pairing composition only. The caller owns and wipes this transient copy. */
+    byte[] copySecretForPairing() { return Arrays.copyOfRange(packet, 1, 21); }
+
+    /** Same durable admission namespace and canonical spelling as ViewerPairingStore.swift. */
+    byte[] admissionFingerprint() {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update("AudioStreamer.WorldwideInvitation.Admitted.v1\0".getBytes(StandardCharsets.UTF_8));
+            byte[] code = exportedCode().getBytes(StandardCharsets.UTF_8);
+            try { return digest.digest(code); }
+            finally { Arrays.fill(code, (byte) 0); }
+        } catch (NoSuchAlgorithmException unavailable) {
+            throw new IllegalStateException("Required SHA-256 implementation unavailable");
+        }
+    }
+
     private static byte[] checksum(byte[] body) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

@@ -13,32 +13,47 @@ internal class PairingEntryState(
     val scannerPending: Boolean,
     val acceptsScanResult: Boolean,
     val canScan: Boolean,
+    val canConfirmScan: Boolean,
 ) {
     override fun toString() = "PairingEntryState(status=$status, input=<redacted>)"
 }
 
-/** One main-thread owner; never stores a parsed invitation or a scanner payload. */
+/** One main-thread owner; only a bounded, unconsumed parsed scan is retained privately. */
 internal class PairingEntryModel(private val elapsedMilliseconds: () -> Long) {
     internal class ScanAttempt internal constructor(
         internal val startedAt: Long,
         internal val deadline: Long,
     )
 
+    private class ScannedInvitation(
+        val invitation: PairingInvitation,
+        val attempt: ScanAttempt,
+    ) {
+        override fun toString() = "<redacted scanned Beluga invitation>"
+    }
+
     private var manualInput = ""
     private var status = PairingEntryStatus.Ready
     private var pending: ScanAttempt? = null
+    private var scanned: ScannedInvitation? = null
+    private var latestScanObservation = 0L
     private var accepting = false
     private var closed = false
 
     val state: PairingEntryState
-        get() = PairingEntryState(
-            manualInput, status, pending != null, accepting,
-            !closed && pending == null,
-        )
+        get() {
+            pending?.let { if (accepting) stillAdmitted(it) }
+            expireStagedIfNeeded()
+            return PairingEntryState(
+                manualInput, status, pending != null, accepting,
+                !closed && pending == null, !closed && scanned != null,
+            )
+        }
 
     fun changeManualInput(input: String) {
         if (closed) return
         accepting = false
+        scanned = null
         if (input.length > PairingInvitation.MAXIMUM_MANUAL_CHARACTERS) {
             manualInput = ""
             status = PairingEntryStatus.InvalidInvitation
@@ -49,20 +64,38 @@ internal class PairingEntryModel(private val elapsedMilliseconds: () -> Long) {
     }
 
     fun validateManual() {
-        if (closed) return
+        takeManualInvitation()
+    }
+
+    /** Explicit foreground action; callers own this transient invitation after return. */
+    fun takeManualInvitation(): PairingInvitation? {
+        if (closed) return null
         accepting = false
+        scanned = null
         val entered = manualInput
         manualInput = ""
-        status = try {
-            PairingInvitation.parseManual(entered)
-            PairingEntryStatus.FormatValidNotPaired
+        return try {
+            PairingInvitation.parseManual(entered).also {
+                status = PairingEntryStatus.FormatValidNotPaired
+            }
         } catch (_: IllegalArgumentException) {
-            PairingEntryStatus.InvalidInvitation
+            status = PairingEntryStatus.InvalidInvitation
+            null
         }
+    }
+
+    /** A scanner callback cannot connect; only an explicit foreground click consumes this. */
+    fun takeScannedInvitation(): PairingInvitation? {
+        if (closed) return null
+        expireStagedIfNeeded()
+        val admitted = scanned ?: return null
+        scanned = null
+        return admitted.invitation
     }
 
     fun beginScan(): ScanAttempt? {
         if (closed || pending != null) return null
+        scanned = null
         val now = elapsedMilliseconds()
         if (now < 0 || now > Long.MAX_VALUE - SCAN_WINDOW_MILLISECONDS) {
             manualInput = ""
@@ -70,6 +103,7 @@ internal class PairingEntryModel(private val elapsedMilliseconds: () -> Long) {
             return null
         }
         val attempt = ScanAttempt(now, now + SCAN_WINDOW_MILLISECONDS)
+        latestScanObservation = now
         manualInput = ""
         pending = attempt
         accepting = true
@@ -83,15 +117,13 @@ internal class PairingEntryModel(private val elapsedMilliseconds: () -> Long) {
         pending = null
         accepting = false
         if (!permitted) return false
-        status = if (!isQRCode) {
-            PairingEntryStatus.InvalidInvitation
-        } else {
-            try {
-                PairingInvitation.parseQRCode(payload)
-                PairingEntryStatus.FormatValidNotPaired
-            } catch (_: IllegalArgumentException) {
-                PairingEntryStatus.InvalidInvitation
-            }
+        scanned = null
+        if (!isQRCode) status = PairingEntryStatus.InvalidInvitation
+        else try {
+            scanned = ScannedInvitation(PairingInvitation.parseQRCode(payload), attempt)
+            status = PairingEntryStatus.FormatValidNotPaired
+        } catch (_: IllegalArgumentException) {
+            status = PairingEntryStatus.InvalidInvitation
         }
         return true
     }
@@ -106,24 +138,34 @@ internal class PairingEntryModel(private val elapsedMilliseconds: () -> Long) {
 
     fun expireScan(attempt: ScanAttempt) {
         if (!closed && pending === attempt && accepting) stillAdmitted(attempt)
+        if (!closed && scanned?.attempt === attempt) expireStagedIfNeeded()
     }
 
     fun clear() {
         if (closed) return
         manualInput = ""
         accepting = false
+        scanned = null
         status = PairingEntryStatus.Ready
         // Retain ownership until the SDK task ends; do not launch overlapping scanners.
     }
 
     fun forgetManualInput() {
+        forgetSensitiveInput()
+    }
+
+    /** Backgrounding clears entry/staging; the separately owned scanner SDK may still return. */
+    fun forgetSensitiveInput() {
         manualInput = ""
-        if (status == PairingEntryStatus.Editing) status = PairingEntryStatus.Ready
+        val hadScanned = scanned != null
+        scanned = null
+        if (!closed && (hadScanned || status == PairingEntryStatus.Editing)) status = PairingEntryStatus.Ready
     }
 
     fun dispose() {
         manualInput = ""
         pending = null
+        scanned = null
         accepting = false
         closed = true
         status = PairingEntryStatus.Closed
@@ -131,12 +173,26 @@ internal class PairingEntryModel(private val elapsedMilliseconds: () -> Long) {
 
     private fun stillAdmitted(attempt: ScanAttempt): Boolean {
         if (!accepting) return false
-        val now = elapsedMilliseconds()
-        if (now < attempt.startedAt || now > attempt.deadline) {
+        if (!timeAdmitted(attempt)) {
             accepting = false
             status = PairingEntryStatus.ScanExpired
             return false
         }
+        return true
+    }
+
+    private fun expireStagedIfNeeded() {
+        val staged = scanned ?: return
+        if (!timeAdmitted(staged.attempt)) {
+            scanned = null
+            status = PairingEntryStatus.ScanExpired
+        }
+    }
+
+    private fun timeAdmitted(attempt: ScanAttempt): Boolean {
+        val now = elapsedMilliseconds()
+        if (now < latestScanObservation || now > attempt.deadline) return false
+        latestScanObservation = now
         return true
     }
 

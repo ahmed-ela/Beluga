@@ -485,6 +485,83 @@ is_mac_client_compatibility_content_match() {
   esac
 }
 
+is_android_client_compatibility_content_match() {
+  local file_path=$1 line=$2 token=$3 content
+  case "$file_path" in
+    android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java|\
+      android/protocol/src/main/java/com/elamin/beluga/protocol/PairingCanonicalCodec.java|\
+      android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java|\
+      android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java|\
+      android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java|\
+      android/transport/src/main/java/com/elamin/beluga/protocol/ProcessPairingDnsResolver.java|\
+      android/protocol/src/test/java/com/elamin/beluga/protocol/PairingCanonicalCodecTest.java|\
+      android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java|\
+      android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java|\
+      android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java|\
+      android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java|\
+      android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java|\
+      android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java|\
+      android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java) ;;
+    *) return 1 ;;
+  esac
+  content=$(awk -v wanted="$line" 'NR == wanted {
+    sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit
+  }' "$file_path")
+
+  # Imported Android protocol bytes and their exact independent oracle call sites.
+  # No path-wide crypto/wire permission or former-brand display strings are admitted.
+  case "$file_path:$token:$content" in
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java:AudioStreamer.WorldwideInvitation.Admitted.v1:digest.update("AudioStreamer.WorldwideInvitation.Admitted.v1\0".getBytes(StandardCharsets.UTF_8));'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingCanonicalCodec.java:AudioStreamer.Pairing.:byte[] domain = ("AudioStreamer.Pairing." + fixedSuffix + ".v1").getBytes(StandardCharsets.US_ASCII);'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java:AudioStreamer.RemoteSession.HKDF-SHA256.v1:private static final byte[] SALT = ascii("AudioStreamer.RemoteSession.HKDF-SHA256.v1\0");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java:AudioStreamer.Signaling.Envelope.AAD.v1:private static final byte[] AAD_DOMAIN = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.Root.v1:byte[] root = derive(input, transcript, "AudioStreamer.Pairing.Root.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.ID.v1:UUID pair = derivedUUID(derive(root, transcript, "AudioStreamer.Pairing.ID.v1"));'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.CommitID.v1:UUID commit = derivedUUID(derive(root, transcript, "AudioStreamer.Pairing.CommitID.v1"));'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.Confirmation.host.v1:key = derive(root, transcript, "AudioStreamer.Pairing.Confirmation.host.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.Confirmation.viewer.v1:key = derive(root, transcript, "AudioStreamer.Pairing.Confirmation.viewer.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.ID.v1:require(pair.equals(derivedUUID(derive(this.root, this.transcript, "AudioStreamer.Pairing.ID.v1")))'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.CommitID.v1:&& commit.equals(derivedUUID(derive(this.root, this.transcript, "AudioStreamer.Pairing.CommitID.v1"))),'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Reconnect.SessionRoot.v1:sessionRoot = derive(keyMaterial, transcriptHash, "AudioStreamer.Reconnect.SessionRoot.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.DurableRendezvous.Salt.v1:salt = ReconnectMessages.domain("AudioStreamer.DurableRendezvous.Salt.v1", transcript,'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.DurableRendezvous.session.channel.v1:channel = derive(root, salt, "AudioStreamer.DurableRendezvous.session.channel.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.DurableRendezvous.session.admission.v1:admission = derive(root, salt, "AudioStreamer.DurableRendezvous.session.admission.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.DurableRendezvous.session.host-to-viewer.v1:host = derive(root, salt, "AudioStreamer.DurableRendezvous.session.host-to-viewer.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.DurableRendezvous.session.viewer-to-host.v1:viewer = derive(root, salt, "AudioStreamer.DurableRendezvous.session.viewer-to-host.v1");'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java:AudioStreamer.Pairing.Commit.:return "AudioStreamer.Pairing.Commit." + role + "." + name + ".v1";'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java:AudioStreamer.Reconnect.Request.Signature.v1:return domain("AudioStreamer.Reconnect.Request.Signature.v1", unsignedRequest(request));'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java:AudioStreamer.Reconnect.Response.Signature.v1:return domain("AudioStreamer.Reconnect.Response.Signature.v1", unsignedResponse(response));'|\
+    'android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java:AudioStreamer.Reconnect.Transcript.v1:return domain("AudioStreamer.Reconnect.Transcript.v1", ascii("{\"request\":"'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/ProcessPairingDnsResolver.java:audiostreamer-rendezvous.elaminahmed03.workers.dev:private static final String HOST = "audiostreamer-rendezvous.elaminahmed03.workers.dev";'|\
+    'android/protocol/src/test/java/com/elamin/beluga/protocol/PairingCanonicalCodecTest.java:AudioStreamer.Pairing.:byte[] label = ("AudioStreamer.Pairing." + suffix + ".v1").getBytes(StandardCharsets.US_ASCII);'|\
+    'android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java:AudioStreamer.Pairing.Root.v1:byte[] root = BouncyCastlePairingCrypto.hkdfSha256(concat(secret, shared), transcript, utf8("AudioStreamer.Pairing.Root.v1"), 32);'|\
+    'android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java:AudioStreamer.Pairing.ID.v1:byte[] pairRaw = publicUUIDBytes(BouncyCastlePairingCrypto.hkdfSha256(root, transcript, utf8("AudioStreamer.Pairing.ID.v1"), 32));'|\
+    'android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java:AudioStreamer.Pairing.CommitID.v1:byte[] commitRaw = publicUUIDBytes(BouncyCastlePairingCrypto.hkdfSha256(root, transcript, utf8("AudioStreamer.Pairing.CommitID.v1"), 32));'|\
+    'android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java:AudioStreamer.Pairing.Confirmation.:byte[] key = BouncyCastlePairingCrypto.hkdfSha256(root, transcript, utf8("AudioStreamer.Pairing.Confirmation." + role + ".v1"), 32);'|\
+    'android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java:AudioStreamer.Pairing.Commit.:byte[] key = BouncyCastlePairingCrypto.hkdfSha256(root, transcript, utf8("AudioStreamer.Pairing.Commit." + roleName + "." + phase + ".v1"), 32);'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java:audiostreamer-rendezvous.elaminahmed03.workers.dev:public static final String PRODUCTION_ORIGIN = "wss://audiostreamer-rendezvous.elaminahmed03.workers.dev";'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java:audiostreamer.pairing.v1:public static final String SUBPROTOCOL = "audiostreamer.pairing.v1";'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java:audiostreamer-rendezvous.elaminahmed03.workers.dev:static final String HOST = "audiostreamer-rendezvous.elaminahmed03.workers.dev";'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java:AudioStreamer-Channel:.set("X-AudioStreamer-Channel", join.channelID())'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java:AudioStreamer-Role:.set("X-AudioStreamer-Role", "viewer")'|\
+    'android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java:AudioStreamer-Admission:.set("X-AudioStreamer-Admission", join.admissionProofForUpgradeHeader());'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer-Role:assertEquals("viewer", headers.get("X-AudioStreamer-Role"));'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer-Channel:assertEquals(52, headers.get("X-AudioStreamer-Channel").length());'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer-Admission:assertEquals(43, headers.get("X-AudioStreamer-Admission").length());'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer-Mode:assertFalse(headers.contains("X-AudioStreamer-Mode"));'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer-Viewer-Admission:assertFalse(headers.contains("X-AudioStreamer-Viewer-Admission"));'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:hash.update("AudioStreamer.RemoteInvitation.Checksum.v1\0".getBytes(StandardCharsets.US_ASCII));'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java:AudioStreamer.WorldwideInvitation.Admitted.v1:byte[] domain = ascii("AudioStreamer.WorldwideInvitation.Admitted.v1\0");'|\
+    'android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:MessageDigest hash = MessageDigest.getInstance("SHA-256"); hash.update(ascii("AudioStreamer.RemoteInvitation.Checksum.v1\0"));'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java:AudioStreamer.Signaling.Envelope.AAD.v1:byte[] domain = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0"), channel = value("derived.channel");'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:MessageDigest digest = MessageDigest.getInstance("SHA-256"); digest.update(ascii("AudioStreamer.RemoteInvitation.Checksum.v1\0"));'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java:AudioStreamer.RemoteInvitation.Checksum.v1:MessageDigest digest = MessageDigest.getInstance("SHA-256"); digest.update(ascii("AudioStreamer.RemoteInvitation.Checksum.v1\0"));'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java:AudioStreamer.Pairing.Root.v1:byte[] root = BouncyCastlePairingCrypto.hkdfSha256(ikm, transcript, "AudioStreamer.Pairing.Root.v1".getBytes(StandardCharsets.UTF_8), 32);'|\
+    'android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java:AudioStreamer.Pairing.Confirmation.host.v1:byte[] confirmationKey = BouncyCastlePairingCrypto.hkdfSha256(root, transcript, "AudioStreamer.Pairing.Confirmation.host.v1".getBytes(StandardCharsets.UTF_8), 32);') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_allowed_legacy_token() {
   local file_path=$1
   local token=$2
@@ -646,6 +723,7 @@ while IFS=: read -r file_path line token; do
   if is_allowed_legacy_token "$file_path" "$token" || \
     is_scoped_compatibility_content_match "$file_path" "$line" "$token" || \
     is_mac_client_compatibility_content_match "$file_path" "$line" "$token" || \
+    is_android_client_compatibility_content_match "$file_path" "$line" "$token" || \
     is_readme_release_identity_match "$file_path" "$line" "$token" || \
     is_production_rendezvous_match "$file_path" "$line" "$token"; then
     continue
