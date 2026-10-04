@@ -1,0 +1,2 @@
+# Unified-diff context preserves exact upstream whitespace, including blank context lines.
+WebRtcAudioTrack.patch whitespace=-blank-at-eol

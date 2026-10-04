@@ -76,9 +76,20 @@ returning its response. Therefore this preview deliberately has no disposable
   media lifecycle. They do not establish Android Keystore, native WebRTC, PCM,
   screen rendering, physical pairing, release installation or distribution.
 
-The retained M150 WebRTC library remains outside this APK: its 64-bit ELF RELRO
-end alignment fails the documented 16 KB criterion. Private source compilation
-against that API is not a compatible distributable dependency or runtime proof.
+The retained M150 WebRTC library remains outside this APK and is not an admitted
+product dependency. Both retained 64-bit ELF files fail the
+[documented RELRO-end modulo criterion](https://developer.android.com/guide/practices/page-sizes#relro),
+but exact-layout static qualification found no non-RELRO writable or executable
+bytes inside the rounded protection ranges. That metadata discrepancy alone is
+not an observed loader failure; it has not been erased or treated as aligned.
+The exact ARM64 native SHA-256
+`7b299113fcd743de7dc5559686b21fc2681b2c8598347d8dc0743d2e004995ca`
+has successful private API 36 ARM64 emulator media/lifecycle runs with 16 KB
+pages and compatibility fallback disabled. The bounded startup comparison also
+retained a first-Show pixel failure; it does not establish reliable startup.
+This evidence does not qualify other ABIs, physical devices, the public-network
+path or the shipping app. Upstream/license/security review, dependency enrollment
+and actual product integration remain separate requirements.
 No new microphone permission, local capture, Connect button or production session
 is introduced by this checkpoint.
 
