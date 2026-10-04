@@ -93,13 +93,17 @@ private final class IsolatedHandoffChromeClient: MacChromeAppleEventsClient, @un
     var commands: Int { lock.withLock { commandCount } }
     var permissionPrompts: Int { lock.withLock { promptCount } }
 
-    init(path: String, pid: Int32) throws {
+    static func isPrivateBrowserPath(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
-        guard pid > 0, url.standardizedFileURL.path == path,
-              url.resolvingSymlinksInPath().path == path,
-              url.lastPathComponent == "Google Chrome.app",
-              url.deletingLastPathComponent().deletingLastPathComponent().path == "/Volumes/t7",
-              url.deletingLastPathComponent().lastPathComponent.hasPrefix("beluga-native-handoff."),
+        return url.standardizedFileURL.path == path &&
+            url.resolvingSymlinksInPath().path == path &&
+            url.lastPathComponent == "Google Chrome.app" &&
+            url.deletingLastPathComponent().deletingLastPathComponent().path == "/Volumes/t7" &&
+            url.deletingLastPathComponent().lastPathComponent.hasPrefix("beluga-native-handoff.")
+    }
+
+    init(path: String, pid: Int32) throws {
+        guard pid > 0, Self.isPrivateBrowserPath(path),
               let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
               app.bundleURL?.path == path, app.bundleIdentifier == "com.google.Chrome",
               let start = NativeOracleProcessStart.read(pid) else { throw NativeOracleError.isolation }
@@ -189,10 +193,24 @@ final class NativeYouTubeHandoffIsolationTests: XCTestCase {
         XCTAssertNotEqual(current, .init(seconds: current.seconds, microseconds: current.microseconds + 1))
     }
 
-    func testNormalBrowserAndNonPrivatePathsAreRejectedBeforeEvents() {
+    func testPrivatePathFenceIsIndependentOfProcessIdentity() {
+        // A non-Chrome PID must not mask a broken path policy in this test.
+        XCTAssertTrue(IsolatedHandoffChromeClient.isPrivateBrowserPath(
+            "/Volumes/t7/beluga-native-handoff.fixture/Google Chrome.app"))
         for path in ["/Applications/Google Chrome.app", "/tmp/Google Chrome.app",
-                     "/Volumes/t7/beluga-native-handoff.fixture/../Google Chrome.app"] {
-            XCTAssertThrowsError(try IsolatedHandoffChromeClient(path: path, pid: getpid()))
+                     "/Volumes/t7/beluga-native-handoff.fixture/../Google Chrome.app",
+                     "/Volumes/t7/beluga-native-handoff.fixture/nested/Google Chrome.app",
+                     "/Volumes/t7/unrelated.fixture/Google Chrome.app",
+                     "/Volumes/t7/beluga-native-handoff.fixture/Chromium.app",
+                     "/tmp/beluga-native-handoff.fixture/Google Chrome.app"] {
+            XCTAssertFalse(IsolatedHandoffChromeClient.isPrivateBrowserPath(path), path)
+        }
+    }
+
+    func testPrivatePathWithMissingOrNonBrowserProcessIsRejected() {
+        for pid in [Int32(0), -1, getpid()] {
+            XCTAssertThrowsError(try IsolatedHandoffChromeClient(
+                path: "/Volumes/t7/beluga-native-handoff.fixture/Google Chrome.app", pid: pid))
         }
     }
 

@@ -147,6 +147,7 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
     var commandError: OSStatus?
     var commandReply: (status: String, media: MacChromeScriptSnapshot?)?
     var scriptError: (OSStatus, String)?
+    var propertyError: (OSStatus, String)?
     var oversizedResult = false
     var urlReads = 0
     var onURLRead: ((Int) -> Void)?
@@ -233,6 +234,7 @@ private final class ChromeTestClient: MacChromeAppleEventsClient, @unchecked Sen
         } else {
             XCTAssertEqual(event.eventClass, kAECoreSuite)
             XCTAssertEqual(event.eventID, kAEGetData)
+            if let propertyError { return answer(.null(), error: propertyError.0, message: propertyError.1) }
             let reference = try XCTUnwrap(event.paramDescriptor(forKeyword: keyDirectObject))
             let property = try XCTUnwrap(reference.forKeyword(AEKeyword(keyAEKeyData))).typeCodeValue
             let container = try XCTUnwrap(reference.forKeyword(AEKeyword(keyAEContainer)))
@@ -1023,6 +1025,20 @@ final class MacChromeNowPlayingRuntimeTests: XCTestCase {
             XCTAssertThrowsError(try makeBackend(client).readSnapshots(deadline: 11)) {
                 XCTAssertEqual($0 as? MacChromeBackendError, .unavailable)
             }
+            XCTAssertEqual(client.permissionRequests, [false])
+            XCTAssertEqual(client.commandDispatches, 0)
+        }
+    }
+
+    func testNonJavaScriptEventErrorsDoNotBecomeJavaScriptPermissionRequests() throws {
+        for code: OSStatus in [-10000, 12] {
+            let client = ChromeTestClient()
+            client.propertyError = (code, "Executing JavaScript through AppleScript is turned off.")
+            XCTAssertThrowsError(try makeBackend(client).readSnapshots(deadline: 11)) {
+                XCTAssertEqual($0 as? MacChromeBackendError, .unavailable, "code=\(code)")
+            }
+            XCTAssertFalse(client.options.isEmpty)
+            XCTAssertTrue(client.requests.isEmpty)
             XCTAssertEqual(client.permissionRequests, [false])
             XCTAssertEqual(client.commandDispatches, 0)
         }
