@@ -560,10 +560,25 @@ module MicrophoneRegressionGate
     test_retained_admitted_provenance_cannot_mutate_product_or_tooling_fences
     test_retained_boundary_rechecks_ignored_input_inventory_and_tested_tool_bytes
     test_retained_product_log_requires_one_exact_success_terminal
+    test_trial_admission_pins_manifest_source_receipt_and_toolchain
+    test_trial_metadata_stages_and_verifies_both_slots_without_changing_production
+    test_trial_metadata_rejects_mixed_slot_config_provenance_and_plists
+    test_trial_metadata_requires_integer_build_in_both_signed_configs
+    test_trial_metadata_requires_native_integer_catalog_and_ownership_markers
+    test_trial_native_verifier_rejects_loose_bindings_before_native_work
+    test_trial_build_report_admission_binds_both_actual_slot_artifacts
+    test_trial_build_report_rejects_mixed_authority_candidates_and_json_types
+    test_trial_build_admission_rechecks_report_logs_app_and_production_evidence
+    test_trial_package_refuses_loose_authority_production_accounts_and_recovery_before_commands
+    test_trial_appcast_parses_exact_admitted_urls_and_rejects_bad_payload_identity
+    test_shared_appcast_preserves_fixed_production_bytes_and_escapes_all_dynamic_xml
+    test_trial_package_shared_workflow_emits_only_nonpromotable_reports
+    test_trial_package_rejects_wrong_lookup_key_before_any_sign_command
+    test_trial_package_rechecks_authority_at_signing_notary_and_handoff_boundaries
   ].freeze
 
   def self.mac_producer_inventory(root)
-    source = %w[verify-beluga-mac-client-tests.rb retained-beluga-mac-client-tests.rb].map do |name|
+    source = %w[verify-beluga-mac-client-tests.rb retained-beluga-mac-client-tests.rb update-trial-artifact-tests.rb update-trial-package-tests.rb].map do |name|
       utf8_text(File.binread(File.join(root, 'macOS/scripts', name)), 'Mac producer source')
     end.join("\n")
     methods = source.scan(/^\s*def (test\w+)(?:\(|\s|$)/).flatten

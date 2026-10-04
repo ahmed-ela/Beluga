@@ -6,14 +6,19 @@ require 'rexml/document'
 require 'tmpdir'
 require_relative 'build-beluga-mac-client-contract'
 require_relative 'retained-beluga-mac-client-tests'
+require_relative 'update-trial-artifact-tests'
+require_relative 'update-trial-package-tests'
 
 class BelugaMacClientContractTests < Minitest::Test
   include BelugaMacClientRetainedTests
+  include BelugaMacClientUpdateTrialTests
+  include BelugaMacClientUpdateTrialPackageTests
   C = BelugaMacClient
   def setup
     @directory = File.realpath(Dir.mktmpdir('beluga-mac-client-policy.'))
     File.chmod(0o700, @directory)
     setup_retained_model
+    setup_update_trial_profile
   end
 
   def teardown
@@ -591,7 +596,8 @@ class BelugaMacClientContractTests < Minitest::Test
     assert_includes source_body, 'catalog_source_contract!'
     builder = File.read(File.join(C::ROOT, 'macOS/scripts/build-beluga-mac-client.rb'))
     verifier = File.read(File.join(C::ROOT, 'macOS/scripts/verify-beluga-mac-client.rb'))
-    assert_includes builder, "'BelugaPairedPhoneCatalogVersion' => C::PAIRED_PHONE_CATALOG_VERSION"
+    assert_equal C::PAIRED_PHONE_CATALOG_VERSION, C.release_info(high).fetch('BelugaPairedPhoneCatalogVersion')
+    assert_includes builder, 'C.stage_release_metadata!(app, source: source, trial_binding: trial_binding)'
     assert_includes verifier, "'BelugaPairedPhoneCatalogVersion' => PAIRED_PHONE_CATALOG_VERSION"
     assert_operator verifier.index("paired_phone_catalog_plist!(File.join(app, 'Contents/Info.plist'))"), :<,
                     verifier.index('candidate_identity = candidate_identity_for_app!')
@@ -808,7 +814,7 @@ class BelugaMacClientContractTests < Minitest::Test
 
   def test_package_resume_branch_cannot_sign_staple_or_submit_and_preserves_common_gates
     package = File.read(File.join(C::ROOT, 'macOS/scripts/package-beluga-mac-client.rb'))
-    resume_branch = package.split('if resume_binding', 2).last.split(/^  else$/, 2).first
+    resume_branch = package.split('if resume_binding', 2).last.split(/^      else$/, 2).first
     assert_includes resume_branch, 'C.copy_resume_dmg!'
     assert_includes resume_branch, "'notarytool', 'info'"
     assert_includes resume_branch, 'receipt.verify!'

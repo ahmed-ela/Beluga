@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 require_relative 'build-beluga-mac-client-contract'
 require_relative 'retained-beluga-mac-client'
+require_relative 'update-trial-artifact'
 require 'optparse'
 
 module BelugaMacClient
@@ -13,7 +14,61 @@ module BelugaMacClient
   end
 
   def self.verify_app!(app, config = config!, product_binding: nil)
-    expected_source = product_source_for!(app, product_binding)
+    require!(config == config!, 'production verification requires the production configuration')
+    verify_bound_app!(app, config, product_binding: product_binding)
+  end
+
+  def self.verify_trial_app!(app, binding)
+    admitted = trial_artifact_binding!(binding)
+    verify_bound_app!(app, admitted.config, trial_binding: admitted)
+  end
+
+  def self.verify_release_metadata!(app, product_binding: nil, trial_binding: nil)
+    trial_artifact_binding!(trial_binding) unless trial_binding.nil?
+    require!(product_binding.nil? || trial_binding.nil?, 'retained and trial authority cannot be combined')
+    if trial_binding
+      binding = trial_artifact_binding!(trial_binding)
+      config, expected_source = binding.config, binding.build_source
+    else
+      config, expected_source = config!, product_source_for!(app, product_binding)
+    end
+    bytes = []
+    ['', BROKER].each do |relative|
+      resources = File.join(app, relative, 'Contents/Resources')
+      release = File.join(resources, 'Release.json')
+      if trial_binding
+        regular!(release)
+        require!(File.size(release) <= 16 * 1024, 'trial bundled configuration exceeds bound')
+        value = JSON.parse(File.binread(release), object_class: UniqueObject)
+        require!(value.is_a?(Hash) && value['build'].instance_of?(Integer), 'trial bundled build must be an exact integer')
+      else
+        value = config!(release)
+      end
+      require!(value == config, 'bundled release configuration differs from artifact authority')
+      provenance = File.join(resources, 'BuildSource.json')
+      regular!(provenance)
+      require!(File.size(provenance) <= 16 * 1024, 'bundled source binding exceeds bound')
+      bytes << File.binread(provenance)
+      require!(JSON.parse(bytes.last, object_class: UniqueObject) == expected_source, 'signed source binding differs from artifact authority')
+    end
+    require!(bytes[0] == bytes[1], 'broker signed source binding differs from host')
+    info_path = File.join(app, 'Contents/Info.plist')
+    # plutil's JSON conversion can erase plist real-vs-integer distinctions.
+    paired_phone_catalog_plist!(info_path)
+    ownership = run('/usr/bin/plutil', '-extract', 'BelugaUpdateOwnershipProtocol',
+                    'raw', '-expect', 'integer', '-n', info_path)
+    require!(ownership == '1', 'signed app does not declare exact updater ownership protocol1')
+    info = plist(info_path)
+    release_info(config).each { |key, value| require!(info[key] == value, "artifact Info.plist field differs: #{key}") }
+    broker_info!(plist(File.join(app, BROKER, 'Contents/Info.plist')), config: config)
+    trial_artifact_binding!(trial_binding) if trial_binding
+    [config, expected_source]
+  rescue JSON::ParserError
+    raise Refusal, 'invalid bundled artifact metadata'
+  end
+
+  def self.verify_bound_app!(app, config, product_binding: nil, trial_binding: nil)
+    expected_source = trial_binding ? trial_artifact_binding!(trial_binding).build_source : product_source_for!(app, product_binding)
     canonical!(app)
     before = tree_digest(app)
     aliases_and_tree!(app)
@@ -35,13 +90,8 @@ module BelugaMacClient
       'NSAppleEventsUsageDescription' => 'Beluga reads playback information and controls Chrome and Music when you enable media integration.'
     }
     expected.each { |key, value| require!(info[key] == value, "Info.plist field differs: #{key}") }
-    require!(config!(File.join(app, 'Contents/Resources/Release.json')) == config, 'bundled release configuration differs')
-    bound_source = JSON.parse(File.read(File.join(app, 'Contents/Resources/BuildSource.json')))
-    require!(bound_source == expected_source, 'signed source binding differs from admitted product source')
+    require!(verify_release_metadata!(app, product_binding: product_binding, trial_binding: trial_binding) == [config, expected_source], 'artifact metadata authority changed')
     broker = File.join(app, BROKER)
-    broker_info!(plist(File.join(broker, 'Contents/Info.plist')), config: config)
-    require!(config!(File.join(broker, 'Contents/Resources/Release.json')) == config, 'broker release configuration differs')
-    require!(File.binread(File.join(broker, 'Contents/Resources/BuildSource.json')) == File.binread(File.join(app, 'Contents/Resources/BuildSource.json')), 'broker signed source binding differs from host')
     require!(Digest::SHA256.file(File.join(broker, 'Contents/Resources/Sparkle-LICENSE.txt')).hexdigest == Digest::SHA256.file(File.join(ROOT, 'macOS/BelugaHost/Resources/Sparkle-LICENSE.txt')).hexdigest, 'broker Sparkle license differs from source')
     %w[THIRD_PARTY_NOTICES.md macOS/BelugaHost/Resources/Sparkle-LICENSE.txt].zip(%w[ThirdPartyNotices.md Sparkle-LICENSE.txt]).each do |source, resource|
       require!(Digest::SHA256.file(File.join(ROOT, source)).hexdigest == Digest::SHA256.file(File.join(app, 'Contents/Resources', resource)).hexdigest, 'bundled license/notices differ from source')
@@ -101,12 +151,17 @@ module BelugaMacClient
     run(File.join(ROOT, 'macOS/scripts/verify-no-private-virtual-display-imports.sh'), host)
     aliases_and_tree!(app)
     candidate_identity = candidate_identity_for_app!(app, config: config, expected_tree_sha256: before)
-    require!(product_source_for!(app, product_binding) == expected_source, 'product/source evidence changed during native verification')
-    { 'schema' => 'beluga.mac-client-verification.v1', 'status' => 'VERIFIED_DISTRIBUTION_APP',
+    require!(verify_release_metadata!(app, product_binding: product_binding, trial_binding: trial_binding) == [config, expected_source], 'product/source evidence changed during native verification')
+    result = { 'schema' => 'beluga.mac-client-verification.v1', 'status' => 'VERIFIED_DISTRIBUTION_APP',
       'version' => config['version'], 'build' => config['build'], 'appSHA256' => before,
       'candidateIdentity' => candidate_identity,
       'liveInstalled' => false, 'microphonePCMProven' => false }
+    return result unless trial_binding
+    result.merge(trial_binding.report_fields).merge(
+      'schema' => 'beluga.mac-client-update-trial-verification.v1', 'status' => 'VERIFIED_UPDATE_TRIAL_APP')
   end
+
+  private_class_method :verify_bound_app!
 end
 
 if $PROGRAM_NAME == __FILE__

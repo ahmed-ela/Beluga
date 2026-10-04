@@ -848,27 +848,34 @@ module BelugaMacClient
   end
 
   def self.appcast(config, dmg_name, size, signature, now = Time.now, candidate_identity:)
+    url = "https://github.com/#{config['repository']}/releases/download/mac-v#{config['version']}/#{dmg_name}"
+    appcast_xml(config, dmg_name, size, signature, now, candidate_identity: candidate_identity,
+      url: url, link: "https://github.com/#{config['repository']}")
+  end
+
+  def self.appcast_xml(config, dmg_name, size, signature, now, candidate_identity:, url:, link:)
     candidate_identity!(candidate_identity, config: config)
     require!(size.is_a?(Integer) && size > 0, 'empty update payload')
     require!(dmg_name == "Beluga-Mac-#{config['version']}-#{config['build']}.dmg", 'update filename differs from version')
+    require!(signature.is_a?(String), 'invalid update signature')
     require!(Base64.strict_decode64(signature).bytesize == 64 && Base64.strict_encode64(Base64.strict_decode64(signature)) == signature, 'invalid update signature')
-    url = "https://github.com/#{config['repository']}/releases/download/mac-v#{config['version']}/#{dmg_name}"
+    escape = lambda { |value| value.to_s.gsub('&', '&amp;').gsub('<', '&lt;').gsub('>', '&gt;').gsub('"', '&quot;').gsub("'", '&apos;') }
     <<~XML
       <?xml version="1.0" encoding="utf-8"?>
-      <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:beluga="#{CANDIDATE_XML_NAMESPACE}">
+      <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:beluga="#{escape.call(CANDIDATE_XML_NAMESPACE)}">
         <channel>
           <title>Beluga Mac updates</title>
-          <link>https://github.com/#{config['repository']}</link>
+          <link>#{escape.call(link)}</link>
           <description>Signed Beluga Mac client releases</description>
           <language>en</language>
           <item>
-            <title>Beluga #{config['version']}</title>
-            <pubDate>#{now.utc.rfc2822}</pubDate>
-            <sparkle:version>#{config['build']}</sparkle:version>
-            <sparkle:shortVersionString>#{config['version']}</sparkle:shortVersionString>
+            <title>Beluga #{escape.call(config['version'])}</title>
+            <pubDate>#{escape.call(now.utc.rfc2822)}</pubDate>
+            <sparkle:version>#{escape.call(config['build'])}</sparkle:version>
+            <sparkle:shortVersionString>#{escape.call(config['version'])}</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="#{url}" length="#{size}" type="application/octet-stream" sparkle:edSignature="#{signature}" beluga:artifactSchema="#{candidate_identity['schema']}" beluga:executableSHA256="#{candidate_identity['executableSHA256']}" beluga:bundleTreeSHA256="#{candidate_identity['bundleTreeSHA256']}" beluga:bundleTreeAlgorithm="#{candidate_identity['bundleTreeAlgorithm']}" />
+            <enclosure url="#{escape.call(url)}" length="#{escape.call(size)}" type="application/octet-stream" sparkle:edSignature="#{escape.call(signature)}" beluga:artifactSchema="#{escape.call(candidate_identity['schema'])}" beluga:executableSHA256="#{escape.call(candidate_identity['executableSHA256'])}" beluga:bundleTreeSHA256="#{escape.call(candidate_identity['bundleTreeSHA256'])}" beluga:bundleTreeAlgorithm="#{escape.call(candidate_identity['bundleTreeAlgorithm'])}" />
           </item>
         </channel>
       </rss>
@@ -876,4 +883,6 @@ module BelugaMacClient
   rescue ArgumentError
     raise Refusal, 'invalid update signature'
   end
+
+  private_class_method :appcast_xml
 end
