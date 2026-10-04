@@ -116,6 +116,7 @@ async function join(config) {
     trackReadyState: "none", inboundAudioReports: 0, packetsReceived: null, bytesReceived: null,
     totalSamplesReceived: null, concealedSamples: null, audioLevel: null, totalAudioEnergy: null };
   const currentRecord = record;
+  if (config.challenge) currentRecord.challengeNonce = config.challenge.nonce;
   starts.set(currentRecord, performance.now());
   class OracleSocket extends WebSocket {
     constructor(...arguments_) {
@@ -151,7 +152,8 @@ async function join(config) {
       document.body.append(player);
       source = context.createMediaStreamSource(stream);
       node = new AudioWorkletNode(context, "beluga-waveform-probe", { numberOfInputs: 1, numberOfOutputs: 1,
-        outputChannelCount: [2], channelCount: 2, channelCountMode: "explicit", channelInterpretation: "discrete" });
+        outputChannelCount: [2], channelCount: 2, channelCountMode: "explicit", channelInterpretation: "discrete",
+        ...(config.challenge ? { processorOptions: { challenge: config.challenge } } : {}) });
       node.port.onmessage = ({ data }) => {
         if (record !== currentRecord || currentRecord.closed || currentClient.closed) return;
         Object.assign(currentRecord, data); currentRecord.windows++;

@@ -22,7 +22,8 @@ const diagnosticCodes = new Set(["unknown", "invalid_key_material", "invalid_rol
   "socket_error", "socket_closed", "connect_src", "OperationError", "NotSupportedError", "InvalidAccessError",
   "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError"]);
 
-export async function createOracleServer({ key, cert }) {
+export async function createOracleServer({ key, cert, systemSource = null }) {
+  const phases = systemSource ? ["revoke", "expiry", "owner_loss"] : ["revoke", "expiry"];
   let config = { revision: 0, action: "idle", phase: "none" };
   let report = { epochs: [], nativeSnapshots: [], failure: null, microphoneCalls: 0, complete: false,
     broker: { upgrades: 0, registrations: 0, authentications: 0, rejections: 0, signalsOwner: 0, signalsListener: 0,
@@ -54,11 +55,14 @@ export async function createOracleServer({ key, cert }) {
       if (request.method === "POST" && path === "/oracle/native") {
         const value = await body(request);
         if (!value || Object.keys(value).sort().join(",") !== "activeListeners,phase,sources,status" ||
-            !["before_revoke", "after_revoke", "after_expiry", "failure_before_cleanup", "success"].includes(value.phase) ||
+            !["before_revoke", "after_revoke", "after_expiry", ...(systemSource ? ["after_owner_loss"] : []), "failure_before_cleanup", "success"].includes(value.phase) ||
             !["idle", "starting", "active", "ended", "failed"].includes(value.status) ||
             !Number.isSafeInteger(value.activeListeners) || value.activeListeners < 0 || value.activeListeners > 8 ||
-            !Array.isArray(value.sources) || value.sources.length > 2 || report.nativeSnapshots.length >= 8 ||
-            !value.sources.every((source) => source && Object.keys(source).sort().join(",") === "attachedListeners,deliveries,starts,stops" &&
+            !Array.isArray(value.sources) || value.sources.length > (systemSource ? 3 : 2) || report.nativeSnapshots.length >= 8 ||
+            !value.sources.every((source) => systemSource
+              ? source && Object.keys(source).sort().join(",") === "attachedListeners,confirmedStarts,confirmedStops,starts,stops" &&
+                Object.values(source).every((number) => Number.isSafeInteger(number) && number >= 0 && number <= 8)
+              : source && Object.keys(source).sort().join(",") === "attachedListeners,deliveries,starts,stops" &&
               ["starts", "stops", "deliveries", "attachedListeners"].every((key) => Number.isSafeInteger(source[key]) && source[key] >= 0) &&
               source.starts < 100 && source.stops < 100 && source.deliveries <= 100_000 && source.attachedListeners <= 8)) {
           throw new Error("invalid_native_report");
@@ -67,12 +71,23 @@ export async function createOracleServer({ key, cert }) {
       }
       if (request.method === "POST" && path === "/oracle/command") {
         const command = await body(request);
-        if (!command || !["join", "rejoin", "complete"].includes(command.action)) throw new Error("invalid_command");
+        if (!command || !["join", "rejoin", "complete", ...(systemSource ? ["start-emitter", "stop-emitter", "lose-owner"] : [])].includes(command.action)) throw new Error("invalid_command");
+        if (systemSource && ["start-emitter", "stop-emitter", "lose-owner"].includes(command.action)) {
+          if (Object.keys(command).join(",") !== "action") throw new Error("invalid_command");
+          if (command.action === "lose-owner") {
+            const active = [...shares.values()].filter((share) => !share.closed);
+            if (active.length !== 1 || config.phase !== "owner_loss") throw new Error("invalid_command");
+            active[0].owner.terminate();
+          } else if (command.action === "start-emitter") await systemSource.startEmitter();
+          else await systemSource.stopEmitter();
+          sendJSON(response, { accepted: true }); return;
+        }
         if (command.action === "join") {
           const url = new URL(command.url);
           if (url.origin !== `https://127.0.0.1:${server.address().port}` || url.pathname !== "/audio-share" ||
-              url.search || url.hash.length > 160 || !["revoke", "expiry"].includes(command.phase)) throw new Error("invalid_command");
+              url.search || url.hash.length > 160 || !phases.includes(command.phase)) throw new Error("invalid_command");
           config = { revision: config.revision + 1, action: "join", phase: command.phase, url: url.href };
+          if (systemSource) config.challenge = systemSource.challenge;
         } else if (command.action === "rejoin") {
           if (!config.url || config.phase !== "revoke") throw new Error("invalid_command");
           config = { ...config, revision: config.revision + 1, action: "rejoin" };
@@ -90,9 +105,10 @@ export async function createOracleServer({ key, cert }) {
           "stage", "errorStage", "errorCode", "socketCloseCode", "protocolMatches", "openReadyState", "elapsedMs",
           "stopReason", "stopStage", "stopClosed", "stopReady", "timerBindingRejected", "timerBindingCode", "peerState",
           "trackMuted", "trackReadyState", "inboundAudioReports", "packetsReceived", "bytesReceived", "totalSamplesReceived",
-          "concealedSamples", "audioLevel", "totalAudioEnergy"].includes(k)) ||
+          "concealedSamples", "audioLevel", "totalAudioEnergy", ...(systemSource ? ["challengeNonce"] : [])].includes(k)) ||
           !Number.isSafeInteger(value.epoch) || value.epoch < 1 || value.epoch > 4 ||
-          !["revoke", "expiry"].includes(value.phase) || !validShareID(value.shareID) ||
+          !phases.includes(value.phase) || !validShareID(value.shareID) ||
+          (systemSource && value.challengeNonce !== systemSource.challenge.nonce) ||
           typeof value.decoded !== "boolean" || typeof value.closed !== "boolean" || typeof value.topology !== "boolean" ||
           !["rmsLeft", "rmsRight", "leftRatio", "rightRatio", "sampleRate", "windows", "microphoneCalls"].every((k) =>
             Number.isFinite(value[k]) && value[k] >= 0 && value[k] < 1_000_000) ||

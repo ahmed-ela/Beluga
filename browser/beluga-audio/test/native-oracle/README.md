@@ -43,6 +43,107 @@ This is **not** deployed-Worker proof, real system-audio capture proof, phone
 coexistence proof, eight-listener performance proof, or internet/TURN proof.
 The source-bound microphone gate and release/deployment gates remain separate.
 
+## Separate real-system-source mode (execution requires fresh approval)
+
+`run-system-source.mjs` is an additional explicit oracle, not a replacement for
+the fixture command above. Its XCTest selects the **unchanged production source
+factory**, so the challenge must travel through the real `SystemAudioCaptureSource`
+and native tap before the existing sender/browser decoder. It does not launch the
+host, acquire its runtime lock, load pairings, connect a phone, install a driver,
+change a default/per-device route, or write a volume/format property. The silent
+receiver still has hardware input and output disabled.
+
+The separately owned `system-source-emitter.c` emits a bounded 48 kHz stereo
+challenge on the existing default output only after real capture startup returns.
+Each run selects fresh left/right frequencies and a public correlation nonce.
+The emitter is a different process because production capture excludes its own
+process. This **makes real sound** and can enter an existing phone's audio stream:
+do not infer isolation merely from a private directory or unchanged routes.
+
+Before execution the operator must freshly establish no active phone, or obtain
+separate approval for the audible coexistence challenge. Unknown phone state is
+refused. This gate is operator-provided evidence; the harness does not contact or
+control a phone and never labels it independently verified phone coexistence.
+
+The actual signed capture executable must have its own system-audio capture
+authorization, or the user must approve **one ordinary permission request** for
+that exact executable. The two states are distinct in the gate/report. There is
+no public Core Audio tap permission preflight here. A hash or test bundle's Info
+plist is not a TCC grant. This slice supports the existing signed `xctest` executable
+only; it does not copy it into a new app, create a permission identity, change TCC,
+impersonate the host, or retry a rejected/missing approval. If that execution identity
+cannot obtain the normal grant, stop: a separately reviewed diagnostic app host is
+required before running this mode.
+
+Source preparation does not authorize these build or execution steps. Once the
+operator approves them, compile the small output-only emitter into an owned new
+path with the pinned toolchain (`clang -std=c11 -Wall -Wextra -Werror`, linking
+AudioToolbox, CoreAudio and CoreFoundation). Compile the **unchanged**
+`macOS/scripts/opensteamer-v91-coreaudio-route-monitor.swift` separately. No build,
+signing or permission setup is performed by the runner. Main must bind the actual
+built bytes to their reviewed sources before supplying their hashes.
+
+Supply a fresh owner-only, non-symlink gate file with exactly these fields; the
+placeholders below are documentation, not a ready-to-run authorization:
+
+```json
+{
+  "schema": 1,
+  "checkedAt": 0,
+  "expiresAt": 0,
+  "oracleExecutionApproved": true,
+  "audioChallengeApproved": true,
+  "capture": {
+    "path": "/exact/canonical/path/to/xctest",
+    "sha256": "EXACT_SHA256",
+    "designatedRequirement": "EXACT_CODESIGN_DESIGNATED_REQUIREMENT",
+    "permission": "confirmed"
+  },
+  "emitter": { "path": "/exact/owned/emitter", "sha256": "EXACT_SHA256" },
+  "monitor": { "path": "/exact/owned/monitor", "sha256": "EXACT_SHA256" },
+  "routes": { "input": "EXACT_UID", "output": "EXACT_UID", "system": "EXACT_UID" },
+  "phone": { "state": "inactive", "coexistenceChallengeApproved": false }
+}
+```
+
+`checkedAt`/`expiresAt` are Unix milliseconds: initial evidence must be at most
+30 seconds old and the entire permit at most 120 seconds. Permission may instead
+be `one-request-approved`; that is authorization to attempt once, not a claim
+that permission exists. Phone state may be `absent` or `inactive`; `active`
+requires its separate `coexistenceChallengeApproved=true`. The runner rechecks
+expiry before capture and every emitter start. The gate does not monitor later
+phone reconnects: the operator must supervise that boundary throughout the run.
+
+```sh
+node browser/beluga-audio/test/native-oracle/run-system-source.mjs \
+  --gate /absolute/private/fresh-gate.json \
+  --test-bundle /absolute/owned-scratch/BelugaPackageTests.xctest \
+  --timeout-seconds 75 \
+  --result /absolute/owned-evidence/system-source.json
+```
+
+The original fixture invocation/options are unchanged. This mode allows 60–90
+seconds and uses a different XCTest method, which skips without its dedicated
+opt-in variables. It keeps rejoin, manual revoke and absolute expiry and adds
+owner-WSS-loss. The sticky read-only monitor must arm **before** audio resources,
+then acknowledge clean listener removal, identical three default UIDs and zero
+notifications **after** source/emitter teardown. Every source start/stop and
+emitter stop/dispose must acknowledge completion. A killed source, emitter or
+monitor, timeout, failed native stop, missing acknowledgement or residual owned
+process makes the result fail; process death is not native teardown proof.
+The expiry phase waits for automatic native retirement before any explicit stop;
+it accepts `.ended`, or `.failed` from the expiry/socket-cancellation race, only
+with both sources' stop acknowledgements and zero attached listeners. Owner loss
+requires `.failed` plus all three sources' confirmed retirement. `SIGINT` and
+`SIGTERM` enter the same single bounded cleanup path, including during setup or
+teardown, and permanently fail the final report as `interrupted`.
+
+The pure refusal/report regression is `test/system-source-oracle.test.js`, included
+in ordinary `npm test`; it opens no browser, tap, output or route listener.
+Even a real-system-source pass remains loopback signaling evidence: deployed
+Worker, current-phone continuity, unrelated-network/forced-TURN operation and
+eight-listener performance remain **unverified**. Production sharing stays disabled.
+
 ## 2026-10-02 findings
 
 - A bare Window timer stored on a dependency object threw `TypeError` in Chrome;
