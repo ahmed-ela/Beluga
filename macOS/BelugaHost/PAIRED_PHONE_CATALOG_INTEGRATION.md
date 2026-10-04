@@ -1,11 +1,13 @@
 # Paired-phone catalog integration audit
 
-Status: **not integrated into production callers**. This is a read-only source
-audit and integration contract, not live pairing, release, or device evidence.
+Status: **integrated into production callers in source**. The original inventory
+below records the pre-integration boundaries; it is not live pairing, release,
+or device evidence. The first-pair onboarding correction below remains subject
+to the release operator's focused tests and gate.
 The existing host continues to own one selected phone and one media session.
 The separate catalog store must not silently change that behavior.
 
-## Existing call sites
+## Original call-site inventory
 
 | Boundary | Current responsibility |
 | --- | --- |
@@ -94,6 +96,68 @@ availability locator, and one active WebRTC phone session remains the limit.
 Browser audio-share capabilities must not acquire phone-selection authority.
 "Move media to phone" is a separate unresolved requirement, not part of this
 catalog integration.
+
+## Explicit first-pair onboarding
+
+The real menu's user-started `pairAnotherPhone` flow may select its exact newly
+authenticated ACTIVE phone only when the coordinator admitted that attempt from
+a pristine catalog: no records, no selection, revision 1, and no legacy import
+receipt. This is runtime-scoped intent bound to the bootstrap attempt, selection
+epoch, and exact admission snapshot, not a catalog-store default. Generic
+`addPairedPhone` and `updatePairedPhone` still never select.
+
+Consume the opportunity on the first admitted pairing attempt, including a
+failure before its first durable checkpoint. An explicit select/deselect, forget,
+or reset denies it. Startup never chooses an existing record; interrupted
+bootstrap recovery and a later retry cannot inherit the first attempt's intent.
+A prior catalog with records or an empty forget tombstone never qualifies.
+
+Even after the authenticated ACTIVE checkpoint, leave selection nil until the
+exact bootstrap has stopped and its transport/task teardown has returned. Then
+recheck current owner and mutation admission, exact attempt/epoch/admission
+snapshot, and the checkpoint's fresh whole-catalog readback. Its only record
+must equal the authenticated completion and its selection must still be nil.
+Select that exact ID through the normal revision-checked store API, then start
+availability. A foreign revision (including select/deselect back to nil), catalog
+generation, owner loss, cancellation, or stale completion must never write a
+selection. Existing/second-phone pairing resumes its predecessor unchanged.
+
+Focused behavior and mutation coverage lives in `WorldwideHostCoordinatorTests`:
+
+| Boundary / unsafe mutation | Regression |
+| --- | --- |
+| Select before ACTIVE/close, or open availability for the wrong record | `testExplicitFirstPairSelectsExactActivePhoneOnlyAfterBootstrapTeardown` |
+| Infer first-pair permission from nil selection or an empty tombstone | `testPriorCatalogExplicitDeselectAndResetNeverAcquireFirstPairIntent` |
+| Carry intent into startup, recovery, or later pairing | `testInterruptedFirstPairRemainsUnselectedAcrossRestartAndAnotherPairing` |
+| Restore consumed intent after a pre-checkpoint failure | `testFailedFirstPairBeforeCheckpointDoesNotTransferIntentToRetry` |
+| Admit a cancelled start or pass its intent to a retry | `testCancelledFirstPairStartCannotActivateOrTransferIntentToRetry` |
+| Strand a selected predecessor after caller cancellation, resume before drain, or recover a foreign catalog/owner | `testCancelledPairAnotherResumesOnlyUnchangedPredecessorAfterConfirmedDrain` |
+| Remove the post-teardown owner or mutation-admission check | `testFirstPairRechecksOwnerAndMutationAdmissionAfterHeldTeardown` |
+| Ignore foreign revision, selected successor, or catalog generation | `testFirstPairRejectsForeignRevisionSelectionAndCatalogGenerationDuringTeardown` |
+| Let a stopped bootstrap activate its durable record later | `testStoppedFirstPairCannotSelectAfterLateTeardownOrOnRestart` |
+| Replace the existing selected phone while adding another | `testPairAnotherDoesNotOverwriteOrSelectAndFailedAttemptDoesNotRecoverOldPair` |
+
+These use real coordinator/checkpoint/catalog paths and a real cryptographic
+pairing transcript over an in-memory transport, with a held retirement close.
+They do not claim physical QR pairing, public-service reachability, or first
+installation proof. No tests were run while authoring this correction.
+
+Cancellation after predecessor retirement is handled separately from first-pair
+activation: after positively confirmed transport drain and successful current
+owner/catalog revalidation, use the existing safe-recovery helper to resume only
+the unchanged selected phone. A foreign revision or owner failure throws before
+that cancellation-recovery branch and never restores availability.
+
+The stopped-bootstrap regression bounds shutdown before releasing the late
+coordinator close. Current shutdown cancels but does not join `pairingTask`;
+it separately calls `bootstrap.stop()`, closes that transport, and joins the
+already-finished signaling consumer. Thus the held completion callback cannot
+block revocation, and its eventual return still has no selection authority.
+After releasing the held close, the regression waits for the fixed non-sensitive
+`Worldwide pairing completion task finished` lifecycle marker emitted by the
+captured pairing task's final `defer`. Only the original coordinator's logger
+records this single attempt. Durable-state assertions follow that exact task-end
+receipt, not a transport-close counter or an assumed scheduler delay.
 
 ## Release and downgrade boundary
 

@@ -74,6 +74,15 @@ actor WorldwideHostCoordinator {
                                        task: Task<Void, Never>?)?
     private var availabilityIsWaiting = false
     private var pairingBootstrap: WorldwidePairingBootstrap?
+    // A user-started first pairing may complete onboarding, but generic catalog writes,
+    // startup, and recovery never choose a phone. This authority is not persisted.
+    private struct FirstPairActivationIntent {
+        let attemptID: UUID
+        let selectionEpoch: UUID
+        let admittedCatalog: WorldwidePairedPhoneCatalogSnapshot
+    }
+    private var firstPairActivationIsEligible = false
+    private var firstPairActivationIntent: FirstPairActivationIntent?
     private var availabilityClient: (any WorldwideHostAvailabilityTransport)?
     private var mediaService: WorldwideScreenService?
     private var pairingTask: Task<Void, Never>?
@@ -197,6 +206,9 @@ actor WorldwideHostCoordinator {
         self.identity = identity
         phoneCatalog = snapshot
         pairedRecord = record
+        firstPairActivationIsEligible = !resetPairing && snapshot.records.isEmpty &&
+            snapshot.selectedPhoneID == nil && snapshot.token.revision == 1 &&
+            snapshot.legacyImportReceipt == nil
         isStarted = true
 
         if let record {
@@ -236,6 +248,7 @@ actor WorldwideHostCoordinator {
             throw WorldwidePairedPhoneCatalogError.unknownPhone
         }
         let operation = try beginCatalogAction(action)
+        firstPairActivationIsEligible = false
         try await retireAvailabilityForCatalogAction(operation)
         defer { endCatalogAction(operation) }
         do {
@@ -254,6 +267,7 @@ actor WorldwideHostCoordinator {
             throw WorldwidePairedPhoneCatalogError.unknownPhone
         }
         let operation = try beginCatalogAction(action)
+        firstPairActivationIsEligible = false
         try await retireAvailabilityForCatalogAction(operation)
         defer { endCatalogAction(operation) }
         do {
@@ -267,17 +281,30 @@ actor WorldwideHostCoordinator {
         }
     }
 
-    /// Pairs a new independent phone. Adding never selects it or replaces current trust.
+    /// Pairs a new independent phone. Only an explicitly started, pristine first pairing
+    /// may select its own ACTIVE record after teardown; adding itself never selects.
     /// Interrupted new records remain addressable by exact ID for a later explicit selection.
     func pairAnotherPhone(action: WorldwidePhoneCatalogAction) async throws -> WorldwideHostStartResult {
+        try Task.checkCancellation()
         guard let phoneCatalog,
               phoneCatalog.records.count < WorldwidePairedPhoneCatalogStore.maximumPhoneCount else {
             throw WorldwidePairedPhoneCatalogError.capacityReached
         }
         let operation = try beginCatalogAction(action)
+        let activateFirstPair = firstPairActivationIsEligible
+        firstPairActivationIsEligible = false
         try await retireAvailabilityForCatalogAction(operation)
         defer { endCatalogAction(operation) }
         try revalidateCatalogAction(operation, action: action)
+        do {
+            try Task.checkCancellation()
+        } catch {
+            // Caller cancellation is not a request to deselect the predecessor. The exact
+            // transport has drained and revalidation above excluded foreign catalog/owner
+            // changes; the helper still rereads both before resuming that unchanged phone.
+            recoverCatalogActionIfSafe(operation)
+            throw error
+        }
         guard let identity else {
             throw WorldwidePhoneCatalogRuntimeError.notQuiet
         }
@@ -296,6 +323,10 @@ actor WorldwideHostCoordinator {
                 logger: logger
             )
             pairingBootstrap = bootstrap
+            firstPairActivationIntent = activateFirstPair ? FirstPairActivationIntent(
+                attemptID: checkpoint.attemptID, selectionEpoch: selectionEpoch,
+                admittedCatalog: phoneCatalog
+            ) : nil
             publishPresentation(.inviting)
             pairingPresentationTask = Task { [weak self, bootstrap] in
                 for await event in bootstrap.invitationEvents {
@@ -303,13 +334,17 @@ actor WorldwideHostCoordinator {
                 }
             }
             let code = try await bootstrap.start()
-            guard !isStopped, catalogActionID == operation, catalogOwnerIsValid(),
+            guard !isStopped, !Task.isCancelled, catalogActionID == operation, catalogOwnerIsValid(),
                   pairingBootstrap === bootstrap else {
                 checkpoint.revoke()
                 await bootstrap.stop()
                 throw CancellationError()
             }
+            let completionLogger = logger
             pairingTask = Task { [weak self, bootstrap] in
+                // Observe the owned task's terminal boundary, not merely transport close.
+                // This carries no invitation, phone identity, or pairing material.
+                defer { completionLogger.info("Worldwide pairing completion task finished") }
                 do {
                     for try await record in bootstrap.completion {
                         await self?.pairingDidCommit(record, bootstrap: bootstrap)
@@ -330,6 +365,7 @@ actor WorldwideHostCoordinator {
             }
             return .invitation(code)
         } catch {
+            firstPairActivationIntent = nil
             pairingBootstrap?.checkpoint.revoke()
             await pairingBootstrap?.stop()
             pairingBootstrap = nil
@@ -463,12 +499,35 @@ actor WorldwideHostCoordinator {
               record.pairingState == .active else {
             return
         }
+        let activationIntent = firstPairActivationIntent
+        firstPairActivationIntent = nil
         await bootstrap.stop()
-        guard !isStopped, catalogOwnerIsValid(), pairingBootstrap === bootstrap else { return }
+        guard !isStopped, !Task.isCancelled, catalogOwnerIsValid(),
+              pairingBootstrap === bootstrap else { return }
         do {
             let readback = try bootstrap.checkpoint.readback()
             guard readback.record == record else { throw WorldwidePhoneCatalogRuntimeError.staleAttempt }
-            phoneCatalog = readback.snapshot
+            if let intent = activationIntent {
+                guard catalogMutationIsAuthorized(), let identity,
+                      intent.attemptID == bootstrap.checkpoint.attemptID,
+                      intent.selectionEpoch == selectionEpoch,
+                      phoneCatalog == intent.admittedCatalog,
+                      intent.admittedCatalog.records.isEmpty,
+                      intent.admittedCatalog.selectedPhoneID == nil,
+                      intent.admittedCatalog.token.revision == 1,
+                      intent.admittedCatalog.legacyImportReceipt == nil,
+                      readback.snapshot.token.catalogID == intent.admittedCatalog.token.catalogID,
+                      readback.snapshot.records == [record],
+                      readback.snapshot.selectedPhoneID == nil,
+                      readback.snapshot.legacyImportReceipt == nil else {
+                    throw WorldwidePhoneCatalogRuntimeError.staleAttempt
+                }
+                phoneCatalog = try store.phoneCatalog.selectPhone(
+                    record.remoteDeviceID, for: identity, expectedToken: readback.snapshot.token
+                )
+            } else {
+                phoneCatalog = readback.snapshot
+            }
         } catch {
             await fail(error, bootstrap: bootstrap)
             return
@@ -477,7 +536,7 @@ actor WorldwideHostCoordinator {
         pairingPresentationTask = nil
         pairingBootstrap = nil
         pairingTask = nil
-        // New bindings never select implicitly. Existing selection resumes unchanged.
+        // An existing selection resumes unchanged; only the exact first-pair intent can select.
         resumeSelectedPhone()
     }
 
@@ -491,6 +550,7 @@ actor WorldwideHostCoordinator {
               identity != nil else {
             return
         }
+        firstPairActivationIntent = nil
         await bootstrap.stop()
         guard !isStopped, catalogOwnerIsValid(), pairingBootstrap === bootstrap else { return }
         do {
@@ -987,6 +1047,8 @@ actor WorldwideHostCoordinator {
         }
         teardownDidBegin()
         isStopped = true
+        firstPairActivationIsEligible = false
+        firstPairActivationIntent = nil
         catalogActionID = nil
         selectionEpoch = UUID()
         shutdownIsInProgress = true

@@ -358,6 +358,374 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         }
     }
 
+    func testExplicitFirstPairSelectsExactActivePhoneOnlyAfterBootstrapTeardown() async throws {
+        let memory = CoordinatorMemoryPairingDataStore()
+        let store = WorldwidePairingStore(dataStore: memory)
+        let host = try store.loadOrCreateHostIdentity(displayName: "Test Mac")
+        let identityBytes = try memory.data(for: WorldwidePairingStore.identityAccount)
+        let gate = CatalogPairingCloseGate()
+        let locators = LockedValues<RemoteAvailabilityLocator>()
+        let coordinator = makeCoordinator(store: store, availabilityClientFactory: { _, locator in
+            locators.append(locator)
+            return HostAvailabilityClientStub(behavior: .validatedWaiting)
+        }, catalogMutationIsAuthorized: { true }, pairingClientFactory: { _, invitation in
+            try CatalogPairingTransport(invitation: invitation, holdSecondClose: gate)
+        })
+        _ = try await coordinator.start(resetPairing: false)
+        let action = try await awaitCatalogAction(coordinator)
+        _ = try await coordinator.pairAnotherPhone(action: action)
+        try await awaitPairingClose(gate)
+        let beforeClose = try store.phoneCatalog.loadOrMigrate(for: host)
+        let active = try XCTUnwrap(beforeClose.records.only)
+        XCTAssertEqual(active.pairingState, .active)
+        XCTAssertNil(beforeClose.selectedPhoneID)
+        XCTAssertTrue(locators.values.isEmpty, "No availability before confirmed bootstrap retirement")
+        do { _ = try await coordinator.phoneCatalogAction(); XCTFail("Bootstrap still owns the attempt") }
+        catch WorldwidePhoneCatalogRuntimeError.notQuiet {}
+        await gate.release()
+        _ = try await awaitCatalogAction(coordinator)
+        let afterClose = try await coordinator.pairedPhones()
+        XCTAssertEqual(afterClose.records, [active])
+        XCTAssertEqual(afterClose.selectedRecord, active)
+        XCTAssertEqual(afterClose.token.revision, beforeClose.token.revision + 1)
+        XCTAssertEqual(locators.values, [try active.availabilityLocator()])
+        XCTAssertEqual(try memory.data(for: WorldwidePairingStore.identityAccount), identityBytes)
+        XCTAssertNil(try memory.data(for: WorldwidePairingStore.pairedViewerAccount))
+        await coordinator.stop()
+    }
+
+    func testPriorCatalogExplicitDeselectAndResetNeverAcquireFirstPairIntent() async throws {
+        for scenario in 0..<4 {
+            let store = WorldwidePairingStore(dataStore: CoordinatorMemoryPairingDataStore())
+            let host = try store.loadOrCreateHostIdentity(displayName: "Test Mac")
+            var initial = try store.phoneCatalog.loadOrMigrate(for: host)
+            if scenario == 1 || scenario == 2 {
+                let previous = try makeActiveRecord(hostIdentity: host)
+                initial = try store.phoneCatalog.addPairedPhone(previous, for: host, expectedToken: initial.token)
+                if scenario == 1 {
+                    initial = try store.phoneCatalog.forgetPhone(previous.remoteDeviceID, for: host,
+                                                               expectedToken: initial.token)
+                }
+            }
+            let calls = LockedValues<Int>()
+            let coordinator = makeCoordinator(store: store, availabilityClientFactory: { _, _ in
+                calls.append(1)
+                return HostAvailabilityClientStub(behavior: .validatedWaiting)
+            }, catalogMutationIsAuthorized: { true }, pairingClientFactory: { _, invitation in
+                try CatalogPairingTransport(invitation: invitation)
+            })
+            _ = try await coordinator.start(resetPairing: scenario == 3)
+            if scenario == 0 {
+                let deselect = try await awaitCatalogAction(coordinator)
+                try await coordinator.selectPhone(nil, action: deselect)
+            }
+            let action = try await awaitCatalogAction(coordinator)
+            _ = try await coordinator.pairAnotherPhone(action: action)
+            _ = try await awaitCatalogAction(coordinator)
+            let afterPairing = try await coordinator.pairedPhones()
+            XCTAssertEqual(afterPairing.records.count, initial.records.count + 1)
+            XCTAssertTrue(afterPairing.records.allSatisfy { $0.pairingState == .active })
+            XCTAssertNil(afterPairing.selectedPhoneID, "No first-pair intent for scenario \(scenario)")
+            XCTAssertTrue(calls.values.isEmpty)
+            await coordinator.stop()
+        }
+    }
+
+    func testInterruptedFirstPairRemainsUnselectedAcrossRestartAndAnotherPairing() async throws {
+        let store = WorldwidePairingStore(dataStore: CoordinatorMemoryPairingDataStore())
+        let first = makeCoordinator(store: store, catalogMutationIsAuthorized: { true },
+            pairingClientFactory: { _, invitation in
+                try CatalogPairingTransport(invitation: invitation, failAfterProposal: true)
+            })
+        _ = try await first.start(resetPairing: false)
+        let firstAction = try await awaitCatalogAction(first)
+        _ = try await first.pairAnotherPhone(action: firstAction)
+        _ = try await awaitCatalogAction(first)
+        let interrupted = try await first.pairedPhones()
+        XCTAssertEqual(interrupted.records.only?.pairingState, .pending)
+        XCTAssertNil(interrupted.selectedPhoneID)
+        await first.stop()
+        let calls = LockedValues<Int>()
+        let restarted = makeCoordinator(store: store, availabilityClientFactory: { _, _ in
+            calls.append(1)
+            return HostAvailabilityClientStub(behavior: .validatedWaiting)
+        }, catalogMutationIsAuthorized: { true }, pairingClientFactory: { _, invitation in
+            try CatalogPairingTransport(invitation: invitation)
+        })
+        let started = try await restarted.start(resetPairing: false)
+        XCTAssertEqual(started, .unselected)
+        let afterRestart = try await restarted.pairedPhones()
+        XCTAssertEqual(afterRestart, interrupted)
+        let next = try await awaitCatalogAction(restarted)
+        _ = try await restarted.pairAnotherPhone(action: next)
+        _ = try await awaitCatalogAction(restarted)
+        let afterRetry = try await restarted.pairedPhones()
+        XCTAssertEqual(afterRetry.records.count, 2)
+        XCTAssertEqual(afterRetry.records.first, interrupted.records.first)
+        XCTAssertEqual(afterRetry.records.last?.pairingState, .active)
+        XCTAssertNil(afterRetry.selectedPhoneID)
+        XCTAssertTrue(calls.values.isEmpty)
+        await restarted.stop()
+    }
+
+    func testFailedFirstPairBeforeCheckpointDoesNotTransferIntentToRetry() async throws {
+        let store = WorldwidePairingStore(dataStore: CoordinatorMemoryPairingDataStore())
+        let attempts = LockedValues<Int>()
+        let coordinator = makeCoordinator(store: store, catalogMutationIsAuthorized: { true },
+            pairingClientFactory: { _, invitation in
+                attempts.append(1)
+                if attempts.values.count == 1 { throw CoordinatorTestError.noClient }
+                return try CatalogPairingTransport(invitation: invitation)
+            })
+        _ = try await coordinator.start(resetPairing: false)
+        let first = try await awaitCatalogAction(coordinator)
+        do { _ = try await coordinator.pairAnotherPhone(action: first); XCTFail("Injected failure expected") }
+        catch CoordinatorTestError.noClient {}
+        let unchanged = try await coordinator.pairedPhones()
+        XCTAssertTrue(unchanged.records.isEmpty)
+        XCTAssertEqual(unchanged.token.revision, 1)
+        let retry = try await awaitCatalogAction(coordinator)
+        _ = try await coordinator.pairAnotherPhone(action: retry)
+        _ = try await awaitCatalogAction(coordinator)
+        let paired = try await coordinator.pairedPhones()
+        XCTAssertEqual(paired.records.only?.pairingState, .active)
+        XCTAssertNil(paired.selectedPhoneID)
+        await coordinator.stop()
+    }
+
+    func testFirstPairRechecksOwnerAndMutationAdmissionAfterHeldTeardown() async throws {
+        for loseOwner in [false, true] {
+            let store = WorldwidePairingStore(dataStore: CoordinatorMemoryPairingDataStore())
+            let host = try store.loadOrCreateHostIdentity(displayName: "Test Mac")
+            let gate = CatalogPairingCloseGate()
+            let lost = LockedFlag()
+            let denied = LockedFlag()
+            let calls = LockedValues<Int>()
+            let coordinator = makeCoordinator(store: store, availabilityClientFactory: { _, _ in
+                calls.append(1)
+                return HostAvailabilityClientStub(behavior: .validatedWaiting)
+            }, catalogMutationIsAuthorized: {
+                if !loseOwner && lost.value { denied.set(); return false }
+                return true
+            }, catalogOwnerIsValid: {
+                if loseOwner && lost.value { denied.set(); return false }
+                return true
+            }, pairingClientFactory: { _, invitation in
+                try CatalogPairingTransport(invitation: invitation, holdSecondClose: gate)
+            })
+            _ = try await coordinator.start(resetPairing: false)
+            let action = try await awaitCatalogAction(coordinator)
+            _ = try await coordinator.pairAnotherPhone(action: action)
+            try await awaitPairingClose(gate)
+            let before = try store.phoneCatalog.loadOrMigrate(for: host)
+            XCTAssertEqual(before.records.only?.pairingState, .active)
+            lost.set()
+            await gate.release()
+            let rechecked = await eventually { denied.value }
+            XCTAssertTrue(rechecked, "Admission must be read again after teardown")
+            await coordinator.stop()
+            XCTAssertEqual(try store.phoneCatalog.loadOrMigrate(for: host), before)
+            XCTAssertTrue(calls.values.isEmpty)
+        }
+    }
+
+    func testCancelledFirstPairStartCannotActivateOrTransferIntentToRetry() async throws {
+        let store = WorldwidePairingStore(dataStore: CoordinatorMemoryPairingDataStore())
+        let connectGate = CatalogPairingCloseGate()
+        let attempts = LockedValues<Int>()
+        let coordinator = makeCoordinator(store: store, catalogMutationIsAuthorized: { true },
+            pairingClientFactory: { _, invitation in
+                attempts.append(1)
+                return try CatalogPairingTransport(invitation: invitation,
+                    holdConnect: attempts.values.count == 1 ? connectGate : nil)
+            })
+        _ = try await coordinator.start(resetPairing: false)
+        let action = try await awaitCatalogAction(coordinator)
+        let starting = Task { try await coordinator.pairAnotherPhone(action: action) }
+        try await awaitPairingClose(connectGate)
+        starting.cancel()
+        await connectGate.release()
+        do { _ = try await starting.value; XCTFail("Cancelled start must not return an invitation") }
+        catch is CancellationError {}
+        let afterCancellation = try await coordinator.pairedPhones()
+        XCTAssertTrue(afterCancellation.records.isEmpty)
+        XCTAssertNil(afterCancellation.selectedPhoneID)
+        let retry = try await awaitCatalogAction(coordinator)
+        _ = try await coordinator.pairAnotherPhone(action: retry)
+        _ = try await awaitCatalogAction(coordinator)
+        let afterRetry = try await coordinator.pairedPhones()
+        XCTAssertEqual(afterRetry.records.only?.pairingState, .active)
+        XCTAssertNil(afterRetry.selectedPhoneID)
+        await coordinator.stop()
+    }
+
+    func testCancelledPairAnotherResumesOnlyUnchangedPredecessorAfterConfirmedDrain() async throws {
+        for scenario in 0..<3 {
+            let fixture = try makeCatalogFixture()
+            let gate = CatalogPairingCloseGate()
+            let old = HostAvailabilityClientStub(behavior: .validatedWaiting, confirmedCloseGate: gate)
+            let successor = HostAvailabilityClientStub(behavior: .validatedWaiting)
+            let clients = HostAvailabilityClientFactoryStub(clients: [old, successor])
+            let lostOwner = LockedFlag()
+            let returned = LockedFlag()
+            let pairingCalls = LockedValues<Int>()
+            let coordinator = makeCoordinator(store: fixture.store,
+                availabilityClientFactory: { _, _ in try clients.next() },
+                catalogMutationIsAuthorized: { true }, catalogOwnerIsValid: { !lostOwner.value },
+                pairingClientFactory: { _, invitation in
+                    pairingCalls.append(1)
+                    return try CatalogPairingTransport(invitation: invitation)
+                })
+            _ = try await coordinator.start(resetPairing: false)
+            let action = try await awaitCatalogAction(coordinator)
+            let previous = try await coordinator.pairedPhones()
+            let pairing = Task {
+                defer { returned.set() }
+                return try await coordinator.pairAnotherPhone(action: action)
+            }
+            try await awaitPairingClose(gate)
+            pairing.cancel()
+            XCTAssertFalse(returned.value, "Cancellation alone cannot stand in for transport drain")
+            XCTAssertEqual(clients.attemptCount, 1)
+            XCTAssertTrue(pairingCalls.values.isEmpty)
+            var expected = previous
+            if scenario == 1 {
+                let foreign = try makeActiveRecord(hostIdentity: fixture.host)
+                expected = try fixture.store.phoneCatalog.addPairedPhone(
+                    foreign, for: fixture.host, expectedToken: previous.token
+                )
+            } else if scenario == 2 {
+                lostOwner.set()
+            }
+            await gate.release()
+            do {
+                _ = try await pairing.value
+                XCTFail("Cancelled or invalidated admission must not create an invitation")
+            } catch is CancellationError {
+                XCTAssertEqual(scenario, 0)
+            } catch WorldwidePhoneCatalogRuntimeError.staleSelection {
+                XCTAssertEqual(scenario, 1)
+            } catch WorldwidePhoneCatalogRuntimeError.ownerNotAuthorized {
+                XCTAssertEqual(scenario, 2)
+            }
+            if scenario == 0 {
+                let recovered = try await awaitCatalogAction(coordinator)
+                XCTAssertNotEqual(recovered.selectionEpoch, action.selectionEpoch)
+                XCTAssertEqual(clients.attemptCount, 2, "Unchanged selected phone regains availability")
+                let current = try await coordinator.pairedPhones()
+                XCTAssertEqual(current, previous)
+            } else {
+                XCTAssertEqual(clients.attemptCount, 1, "Foreign catalog/owner must never resume")
+            }
+            XCTAssertEqual(try fixture.store.phoneCatalog.loadOrMigrate(for: fixture.host), expected)
+            XCTAssertTrue(pairingCalls.values.isEmpty)
+            XCTAssertEqual(old.closeCount, 1)
+            await coordinator.stop()
+        }
+    }
+
+    func testFirstPairRejectsForeignRevisionSelectionAndCatalogGenerationDuringTeardown() async throws {
+        for scenario in 0..<3 {
+            let memory = CoordinatorMemoryPairingDataStore()
+            let store = WorldwidePairingStore(dataStore: memory)
+            let host = try store.loadOrCreateHostIdentity(displayName: "Test Mac")
+            let gate = CatalogPairingCloseGate()
+            let calls = LockedValues<Int>()
+            let presentations = LockedValues<BelugaHostPresentation>()
+            let coordinator = makeCoordinator(store: store, availabilityClientFactory: { _, _ in
+                calls.append(1)
+                return HostAvailabilityClientStub(behavior: .validatedWaiting)
+            }, catalogMutationIsAuthorized: { true }, pairingClientFactory: { _, invitation in
+                try CatalogPairingTransport(invitation: invitation, holdSecondClose: gate)
+            }, presentation: { presentations.append($0) })
+            _ = try await coordinator.start(resetPairing: false)
+            let action = try await awaitCatalogAction(coordinator)
+            _ = try await coordinator.pairAnotherPhone(action: action)
+            try await awaitPairingClose(gate)
+            var foreign = try store.phoneCatalog.loadOrMigrate(for: host)
+            let first = try XCTUnwrap(foreign.records.only)
+            if scenario == 0 {
+                // Same visible shape after an explicit select/deselect is still a foreign revision.
+                foreign = try store.phoneCatalog.selectPhone(first.remoteDeviceID, for: host,
+                                                            expectedToken: foreign.token)
+                foreign = try store.phoneCatalog.selectPhone(nil, for: host, expectedToken: foreign.token)
+            } else {
+                if scenario == 2 {
+                    try memory.removeData(for: WorldwidePairedPhoneCatalogStore.catalogAccount)
+                    foreign = try store.phoneCatalog.loadOrMigrate(for: host)
+                }
+                let other = try makeActiveRecord(hostIdentity: host)
+                foreign = try store.phoneCatalog.addPairedPhone(other, for: host, expectedToken: foreign.token)
+                foreign = try store.phoneCatalog.selectPhone(other.remoteDeviceID, for: host,
+                                                            expectedToken: foreign.token)
+            }
+            await gate.release()
+            let stopped = await eventually { presentations.values.last?.phase == .stopped }
+            XCTAssertTrue(stopped, "A foreign checkpoint must fail closed")
+            await coordinator.stop()
+            XCTAssertEqual(try store.phoneCatalog.loadOrMigrate(for: host), foreign)
+            XCTAssertTrue(calls.values.isEmpty)
+        }
+    }
+
+    func testStoppedFirstPairCannotSelectAfterLateTeardownOrOnRestart() async throws {
+        let store = WorldwidePairingStore(dataStore: CoordinatorMemoryPairingDataStore())
+        let host = try store.loadOrCreateHostIdentity(displayName: "Test Mac")
+        let gate = CatalogPairingCloseGate()
+        let oldTaskLogger = RecordingLogger()
+        let taskEndMarker = "Worldwide pairing completion task finished"
+        let calls = LockedValues<Int>()
+        let coordinator = makeCoordinator(store: store, availabilityClientFactory: { _, _ in
+            calls.append(1)
+            return HostAvailabilityClientStub(behavior: .validatedWaiting)
+        }, catalogMutationIsAuthorized: { true }, pairingClientFactory: { _, invitation in
+            try CatalogPairingTransport(invitation: invitation, holdSecondClose: gate)
+        }, logger: oldTaskLogger)
+        _ = try await coordinator.start(resetPairing: false)
+        let action = try await awaitCatalogAction(coordinator)
+        _ = try await coordinator.pairAnotherPhone(action: action)
+        try await awaitPairingClose(gate)
+        let activeButUnselected = try store.phoneCatalog.loadOrMigrate(for: host)
+        XCTAssertEqual(activeButUnselected.records.only?.pairingState, .active)
+        // Shutdown cancels (but does not join) pairingTask. Its separate bootstrap.stop()
+        // performs close #3 and joins the already-finished signaling consumer, not the
+        // held close #2 in pairingDidCommit. Bound this assertion so a join regression
+        // fails instead of hanging this test indefinitely.
+        let shutdownReturned = LockedFlag()
+        let stopping = Task { await coordinator.stop(); shutdownReturned.set() }
+        let stoppedBeforeLateClose = await eventually { shutdownReturned.value }
+        if !stoppedBeforeLateClose { await gate.release() }
+        await stopping.value
+        XCTAssertTrue(stoppedBeforeLateClose)
+        let restarted = makeCoordinator(store: store, catalogMutationIsAuthorized: { true })
+        let started = try await restarted.start(resetPairing: false)
+        XCTAssertEqual(started, .unselected)
+        XCTAssertFalse(oldTaskLogger.informationMessages.contains(taskEndMarker))
+        await gate.release()
+        // Only the old coordinator has this recorder and it owned exactly one attempt.
+        // Its defer receipt follows the entire late pairingDidCommit return, unlike a
+        // transport close counter that can advance before the stale callback resumes.
+        let oldTaskFinished = await eventually {
+            oldTaskLogger.informationMessages.contains(taskEndMarker)
+        }
+        XCTAssertTrue(oldTaskFinished)
+        XCTAssertEqual(oldTaskLogger.informationMessages.filter { $0 == taskEndMarker }.count, 1)
+        let afterLateClose = try await restarted.pairedPhones()
+        XCTAssertEqual(afterLateClose, activeButUnselected)
+        XCTAssertTrue(calls.values.isEmpty)
+        await restarted.stop()
+    }
+
+    private func awaitPairingClose(_ gate: CatalogPairingCloseGate) async throws {
+        for _ in 0..<1_000 {
+            if await gate.entered { return }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        // Do not strand a later close if the expectation times out.
+        await gate.release()
+        throw CoordinatorTestError.noClient
+    }
+
     private func awaitCatalogAction(_ coordinator: WorldwideHostCoordinator) async throws -> WorldwidePhoneCatalogAction {
         for _ in 0..<1_000 {
             if let action = try? await coordinator.phoneCatalogAction() { return action }
@@ -788,6 +1156,10 @@ private struct TestCoexistenceNativeScreenStopUnconfirmedError:
     NativeScreenCaptureStopUnconfirmedError
 {}
 
+private extension Array {
+    var only: Element? { count == 1 ? first : nil }
+}
+
 /// Availability transport with two intentional behaviors: a transport-originated cancellation,
 /// or an open event stream that remains alive until `close`. Locking models cross-task callbacks.
 private final class HostAvailabilityClientStub:
@@ -802,6 +1174,7 @@ private final class HostAvailabilityClientStub:
 
     private let behavior: Behavior
     private let closeBarrier: AsyncStream<Void>?
+    private let confirmedCloseGate: CatalogPairingCloseGate?
     private let sendBarrier: AsyncStream<Void>?
     private let lock = NSLock()
     private var continuation: PairedAvailabilitySignalingClient.EventStream.Continuation?
@@ -810,10 +1183,12 @@ private final class HostAvailabilityClientStub:
     private var sends = 0
     private var sendCompletions = 0
 
-    init(behavior: Behavior, closeBarrier: AsyncStream<Void>? = nil, sendBarrier: AsyncStream<Void>? = nil) {
+    init(behavior: Behavior, closeBarrier: AsyncStream<Void>? = nil, sendBarrier: AsyncStream<Void>? = nil,
+         confirmedCloseGate: CatalogPairingCloseGate? = nil) {
         self.behavior = behavior
         self.closeBarrier = closeBarrier
         self.sendBarrier = sendBarrier
+        self.confirmedCloseGate = confirmedCloseGate
     }
 
     func connect() async throws -> PairedAvailabilitySignalingClient.EventStream {
@@ -846,6 +1221,7 @@ private final class HostAvailabilityClientStub:
         }
         streamContinuation?.finish()
         if let closeBarrier { for await _ in closeBarrier { break } }
+        await confirmedCloseGate?.wait()
     }
 
     func emit(_ event: PairedAvailabilitySignalingEvent) {

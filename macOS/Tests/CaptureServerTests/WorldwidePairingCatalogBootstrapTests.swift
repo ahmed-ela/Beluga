@@ -10,21 +10,29 @@ actor CatalogPairingTransport: WorldwideHostPairingTransport {
     private let participant: RemotePairingParticipant
     private let failAfterProposal: Bool
     private let holdCompletion: AsyncStream<Void>?
+    private let holdSecondClose: CatalogPairingCloseGate?
+    private let holdConnect: CatalogPairingCloseGate?
     private let events = PairingBootstrapSignalingClient.EventStream.makeStream()
     private var agreement: RemotePairingAgreement?
     private var record: RemotePairedDeviceRecord?
     private(set) var completionSendStarted = false
+    private(set) var closeCount = 0
     private var closed = false
 
     init(invitation: RemoteInvitationCode, failAfterProposal: Bool = false,
-         holdCompletion: AsyncStream<Void>? = nil) throws {
+         holdCompletion: AsyncStream<Void>? = nil,
+         holdSecondClose: CatalogPairingCloseGate? = nil,
+         holdConnect: CatalogPairingCloseGate? = nil) throws {
         viewer = try RemoteDeviceIdentity.generate(role: .viewer, displayName: "Another Phone")
         participant = try RemotePairingParticipant(identity: viewer, invitation: invitation)
         self.failAfterProposal = failAfterProposal
         self.holdCompletion = holdCompletion
+        self.holdSecondClose = holdSecondClose
+        self.holdConnect = holdConnect
     }
 
     func connect() async throws -> PairingBootstrapSignalingClient.EventStream {
+        await holdConnect?.wait()
         guard !closed else { throw CancellationError() }
         events.continuation.yield(.ready(role: .host, invitationExpiresAt: Date().addingTimeInterval(300)))
         return events.stream
@@ -65,7 +73,33 @@ actor CatalogPairingTransport: WorldwideHostPairingTransport {
         }
     }
 
-    func close() async { closed = true; events.continuation.finish() }
+    func close() async {
+        closed = true
+        events.continuation.finish()
+        closeCount += 1
+        // The first close is the authenticated bootstrap commit. The second belongs to
+        // coordinator retirement, before its durable readback and any first-pair selection.
+        if closeCount == 2 { await holdSecondClose?.wait() }
+    }
+}
+
+/// A transport operation must return; task cancellation alone does not release this gate.
+actor CatalogPairingCloseGate {
+    private(set) var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        entered = true
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
 }
 
 final class WorldwidePairingCatalogBootstrapTests: XCTestCase {
