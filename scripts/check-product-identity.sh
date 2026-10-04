@@ -2442,7 +2442,7 @@ assert_json_name macOS/RelayBridge/package-lock.json top opensteamer-relay-bridg
 assert_json_name macOS/RelayBridge/package-lock.json lock-root opensteamer-relay-bridge \
   'RelayBridge lockfile root-package name'
 
-assert_toml_name services/RendezvousWorker/wrangler.toml opensteamer-rendezvous \
+assert_toml_name services/RendezvousWorker/wrangler.toml audiostreamer-rendezvous \
   'production Worker name'
 assert_toml_name services/RendezvousWorker/wrangler.test.toml opensteamer-rendezvous-test \
   'test Worker name'

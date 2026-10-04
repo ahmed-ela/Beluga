@@ -1,4 +1,5 @@
-name = "opensteamer-rendezvous"
+# Preserve the deployed origin used by installed clients; this is not display branding.
+name = "audiostreamer-rendezvous"
 main = "src/index.js"
 compatibility_date = "2026-07-13"
 workers_dev = true

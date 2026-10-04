@@ -178,6 +178,34 @@ write_current_automatic_signing_fixture "$AUTOMATIC_SIGNING"
 commit_all "$AUTOMATIC_SIGNING"
 "$AUTOMATIC_SIGNING/scripts/check-product-branding.sh" "$AUTOMATIC_SIGNING" >/dev/null
 
+WORKER_ORIGIN="$TEMPORARY_ROOT/worker-origin"
+initialize_repository "$WORKER_ORIGIN"
+mkdir -p "$WORKER_ORIGIN/services/RendezvousWorker"
+print -r -- 'name = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+print -r -- "$PRODUCTION_URL" >"$WORKER_ORIGIN/services/RendezvousWorker/README.md"
+commit_all "$WORKER_ORIGIN"
+"$WORKER_ORIGIN/scripts/check-product-branding.sh" "$WORKER_ORIGIN" >/dev/null
+
+print -rl -- '[vars]' 'name = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.toml:2:'
+print -r -- 'name = "audiostreamer-rendezvous-other"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.toml:1:'
+print -r -- 'description = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.toml:1:'
+print -r -- 'name = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+print -r -- "http://${PRODUCTION_HOST}" >"$WORKER_ORIGIN/services/RendezvousWorker/README.md"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/README.md:1:'
+print -r -- "$PRODUCTION_URL" >"$WORKER_ORIGIN/services/RendezvousWorker/README.md"
+cp "$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml" \
+  "$WORKER_ORIGIN/services/RendezvousWorker/wrangler.test.toml"
+commit_all "$WORKER_ORIGIN"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.test.toml:1:'
+
 MAC_RENDEZVOUS="$TEMPORARY_ROOT/mac-rendezvous"
 initialize_repository "$MAC_RENDEZVOUS"
 mkdir -p "$MAC_RENDEZVOUS/macOS/BelugaHost"

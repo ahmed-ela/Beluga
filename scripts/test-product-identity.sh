@@ -2,6 +2,13 @@
 # Mutation tests for check-product-identity.sh. Every case starts from the same valid fixture and
 # changes exactly one identity boundary, preventing one broad failure from masking a weak oracle.
 set -euo pipefail
+if [[ "${OPENSTEAMER_IDENTITY_WORKER_ONLY:-0}" == 1 && \
+    ("${OPENSTEAMER_IDENTITY_LOCATOR_ONLY:-0}" == 1 || \
+     "${OPENSTEAMER_IDENTITY_BEHAVIOR_ONLY:-0}" == 1 || \
+     "${OPENSTEAMER_IDENTITY_NOTIFICATION_ONLY:-0}" == 1) ]]; then
+  print -u2 -r -- 'identity regression setup failed: Worker-only mode cannot be combined with another mode'
+  exit 1
+fi
 zmodload zsh/system || {
   print -u2 -r -- 'identity regression setup failed: zsh/system is unavailable'
   exit 1
@@ -626,7 +633,7 @@ print -r -- '{"name":"@opensteamer/rendezvous-worker","packages":{"":{"name":"@o
 print -r -- '{"name":"opensteamer-relay-bridge"}' >"$BASELINE/macOS/RelayBridge/package.json"
 print -r -- '{"name":"opensteamer-relay-bridge","packages":{"":{"name":"opensteamer-relay-bridge"}}}' \
   >"$BASELINE/macOS/RelayBridge/package-lock.json"
-print -r -- 'name = "opensteamer-rendezvous"
+print -r -- 'name = "audiostreamer-rendezvous"
 main = "src/index.js"' >"$BASELINE/services/RendezvousWorker/wrangler.toml"
 print -r -- 'name = "opensteamer-rendezvous-test"
 main = "src/index.js"' >"$BASELINE/services/RendezvousWorker/wrangler.test.toml"
@@ -676,6 +683,27 @@ require_rejection() {
 }
 
 if [[ "${OPENSTEAMER_IDENTITY_BEHAVIOR_ONLY:-0}" != 1 ]]; then
+
+CASE=$(new_case worker-name)
+replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
+  'name = "audiostreamer-rendezvous"' 'name = "opensteamer-rendezvous"'
+require_rejection "$CASE" 'production Worker name'
+
+CASE=$(new_case worker-name-duplicate)
+replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
+  'name = "audiostreamer-rendezvous"' \
+  $'name = "audiostreamer-rendezvous"\nname = "opensteamer-rendezvous"'
+require_rejection "$CASE" 'production Worker name'
+
+CASE=$(new_case worker-name-nested)
+replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
+  'name = "audiostreamer-rendezvous"' $'[vars]\nname = "audiostreamer-rendezvous"'
+require_rejection "$CASE" 'production Worker name'
+
+if [[ "${OPENSTEAMER_IDENTITY_WORKER_ONLY:-0}" == 1 ]]; then
+  print -r -- 'PASS: Worker identity baseline and three focused mutations'
+  exit 0
+fi
 
 for notification_setting in SKIP_INSTALL APPLICATION_EXTENSION_API_ONLY; do
   CASE=$(new_case "notification-yml-${notification_setting:l}")
@@ -3103,11 +3131,6 @@ CASE=$(new_case npm-package-name)
 replace_once "$CASE/services/Rendezvous/package.json" \
   '@opensteamer/rendezvous' '@opensteamer/signaling'
 require_rejection "$CASE" 'Rendezvous npm package name'
-
-CASE=$(new_case worker-name)
-replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
-  'name = "opensteamer-rendezvous"' 'name = "opensteamer-signaling"'
-require_rejection "$CASE" 'production Worker name'
 
 fi
 

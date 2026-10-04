@@ -6,8 +6,10 @@ existing black Beluga logo on white. The original 2048-pixel PNG is
 [`branding/BelugaLogo.png`](branding/BelugaLogo.png); app asset sizes are derived from it.
 
 Source directories, Xcode project/target/scheme/module names, scripts, environment variables,
-package references, npm packages, Worker names, and deployed service endpoints retain their
-existing opensteamer spellings. They are operational identifiers rather than app display names.
+package references and npm packages retain their existing opensteamer spellings.
+The production Worker and service endpoint retain their original deployed names,
+including the pre-rebrand name in `services/RendezvousWorker/wrangler.toml`.
+These are operational identifiers rather than app display names.
 The root Swift package is named `Beluga`; its library and executable target names remain stable.
 
 The installed Mac host and LaunchAgent still use their recorded opensteamer paths. Historical

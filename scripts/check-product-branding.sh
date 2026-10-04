@@ -120,7 +120,8 @@ is_readme_release_identity_match() {
 is_scoped_compatibility_content_match() {
   local file_path=$1 line=$2 token=$3 content
   case "$file_path" in
-    iOS/opensteamer/Tests/WebRTCAudioPlaybackSessionTests.swift|\
+    services/RendezvousWorker/wrangler.toml|\
+      iOS/opensteamer/Tests/WebRTCAudioPlaybackSessionTests.swift|\
       macOS/Tests/CaptureServerTests/DiagnosticDriverV2ResumeContractTests.swift|\
       macOS/scripts/opensteamer-diagnostic-driver-v1-update-controller.rs|\
       macOS/scripts/opensteamer-diagnostic-driver-v2-resume-stager.rs|\
@@ -132,6 +133,14 @@ is_scoped_compatibility_content_match() {
   }' "$file_path")
 
   case "$file_path" in
+    services/RendezvousWorker/wrangler.toml)
+      [[ "$token" == "${FORMER_LOWER}-rendezvous" ]] || return 1
+      awk -v wanted="$line" -v expected="name = \"${FORMER_LOWER}-rendezvous\"" '
+        /^[[:space:]]*\[/ { in_section = 1 }
+        NR == wanted { allowed = !in_section && $0 == expected }
+        END { exit(allowed ? 0 : 1) }
+      ' "$file_path"
+      ;;
     iOS/opensteamer/Tests/WebRTCAudioPlaybackSessionTests.swift)
       [[ "$token" == "${FORMER_CAMEL}.dev" && \
         ("$content" == "guard Bundle.main.bundleIdentifier == \"${DEBUG_BUNDLE_ID}\" else {" || \
@@ -308,6 +317,10 @@ is_production_rendezvous_match() {
   [[ "$token" == "$PRODUCTION_RENDEZVOUS_HOST" ]] || return 1
 
   case "$file_path" in
+    services/RendezvousWorker/README.md)
+      content=$(awk -v wanted="$line" 'NR == wanted { print; exit }' "$file_path")
+      [[ "$content" == "wss://${PRODUCTION_RENDEZVOUS_HOST}" ]]
+      ;;
     macOS/BelugaHost/Info.plist)
       # This is a shipped service address, not display branding. Permit only its
       # exact configuration key/value; the same token in other plist text fails.

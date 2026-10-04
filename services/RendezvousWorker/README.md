@@ -83,7 +83,13 @@ conservative budget protects bounded aggregate work, not per-user fairness.
 
 ## Deployment
 
-Review the account and TURN billing configuration first, then deploy explicitly:
+The default production Worker name preserves the existing installed-client origin.
+Do not override it with a renamed Worker: existing pairing and media clients do not
+discover a second origin. Before any deployment or secret write, verify the personal
+Cloudflare account and TURN billing configuration; do not select a different organization.
+Account selection and credentials remain private deployment inputs, not source files.
+
+After the sharing integration gates above pass, deploy explicitly:
 
 ```sh
 npm ci
@@ -92,10 +98,13 @@ npm run check
 npm run deploy
 ```
 
-Wrangler creates the `RendezvousSession` class with the `new_sqlite_classes` migration, which is compatible with Workers Free Durable Objects. With the default name, the stable endpoint is:
+Wrangler's migrations retain `RendezvousSession` and add the separate sharing classes.
+Keep existing bindings, stored objects and phone TURN secrets intact. The production
+default remains sharing-disabled until the separately authorized enablement step.
+For the existing installation, the stable endpoint is:
 
 ```text
-wss://opensteamer-rendezvous.<workers-subdomain>.workers.dev
+wss://audiostreamer-rendezvous.elaminahmed03.workers.dev
 ```
 
 Configure the Mac and iOS clients with that origin only; their shared Swift clients append `/v1/rendezvous` for invitation/media sessions and `/v2/availability` for durable paired reconnect coordination. Do not put a channel, role, proof, or pairing code in the URL. Deploy this Worker contract before the matching Mac and iOS clients. The media path prefers direct WebRTC ICE and uses TURN only when direct connectivity fails.
