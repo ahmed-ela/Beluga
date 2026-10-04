@@ -1603,19 +1603,38 @@ actor WorldwideScreenService {
 
     // MARK: - WebRTC peer lifecycle
 
+    /// The product opt-in stays scoped to the full primary media owner. The shared
+    /// transport remains default-off and still requires an exact capability echo.
+    nonisolated static func makePeerConfiguration(
+        iceServers: [RemoteICEServer],
+        icePolicy: WebRTCICEPolicy,
+        maximumVideoBitrate: Int,
+        featureProfile: WorldwideScreenServiceFeatureProfile,
+        remoteMediaControllerIsAvailable: Bool
+    ) -> WebRTCTransportConfiguration {
+        let ownsRemoteMedia = featureProfile.allowsNowPlaying
+            && remoteMediaControllerIsAvailable
+        return WebRTCTransportConfiguration(
+            role: .host,
+            iceServers: iceServers,
+            icePolicy: icePolicy,
+            maximumVideoBitrate: maximumVideoBitrate,
+            mediaTopology: featureProfile.transportMediaTopology,
+            supportsRemoteMediaControls: ownsRemoteMedia,
+            supportsMediaHandoff: ownsRemoteMedia,
+            supportsAudioClientDiagnostics: featureProfile.allowsAudioClientDiagnostics
+        )
+    }
+
     /// Creates a fresh WebRTC generation and its bounded ICE recovery supervisor.
     private func startPeer(iceServers: [RemoteICEServer]) async throws {
         let peer = try WebRTCPeer(
-            configuration: WebRTCTransportConfiguration(
-                role: .host,
+            configuration: Self.makePeerConfiguration(
                 iceServers: iceServers,
                 icePolicy: icePolicy,
                 maximumVideoBitrate: maximumVideoBitrate,
-                mediaTopology: featureProfile.transportMediaTopology,
-                supportsRemoteMediaControls: featureProfile.allowsNowPlaying
-                    && remoteMediaController.isAvailable,
-                supportsAudioClientDiagnostics:
-                    featureProfile.allowsAudioClientDiagnostics
+                featureProfile: featureProfile,
+                remoteMediaControllerIsAvailable: remoteMediaController.isAvailable
             )
         )
         cancelSharedClockEpochRecovery(

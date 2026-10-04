@@ -676,7 +676,21 @@ uncertainty also revokes absolute Play/Pause authority. Cover 39 eligible tabs, 
 capacity, unknown selected versus unrelated renderers, cursor churn, paused-resume
 handoff races, and current-item command operation despite unrelated timeouts.
 
-### Default-off phone media handoff components
+### Explicitly negotiated phone media handoff
+
+The production Mac and iOS peer factories now explicitly opt in only for the full
+primary media/audio owner, with an available Mac media controller. The shared
+transport still defaults to off, requires remote-media controls and full topology,
+and requires the exact peer capability echo. Restricted viewers, legacy peers
+without that echo and the Android pairing preview remain unsupported. Factory
+regressions exercise these actual production configuration values; the composed
+phone receiver tests now use the production iOS factory instead of a test-only
+capability opt-in.
+
+Actual native Mac/provider/phone handoff remains unverified because YouTube is
+blocked by the user's policy. That restriction is not waived proof: deterministic
+tests, capability advertisement and an offer ID must not be reported as successful
+native playback transfer, acoustic coexistence or completed runtime validation.
 
 `MediaHandoffProtocolTests` and the actual headless ordered-channel case in
 `RemoteMediaControlsProtocolTests` cover optional exact-nonce negotiation,
@@ -720,8 +734,9 @@ diagnostics-backlog isolation coverage alongside the new cases.
 Build the current iOS target against the expanded event union. Build-only success
 does not replace runtime tests; use the existing development Simulator under its
 authorization/boot workflow, never a personal phone as an implicit substitute.
-The service entry point must remain unadvertised until the phone player, menu,
-scoped audio policy and full service-to-native/runtime transfer gates are proven.
+The phone player, menu, scoped audio policy and exact native transaction are wired
+in source. Full service-to-native/runtime transfer proof remains a separate gate;
+production capability advertisement does not satisfy it.
 
 `BelugaMediaHandoffMenuTests` cover the actual menu model's exact connected-phone
 target, one in-flight request, pre-dispatch cancellation, replacement-session and
@@ -735,7 +750,7 @@ cases. Remove the menu's exact-target comparison and require the unchanged stale
 target test to fail; restore the bytes before the final run. Menu command doubles
 and the idle coordinator refusal test are not live positive-dispatch, rendered
 popover, phone-receiver or completed-transfer proof. Do not label an offer ID as a
-successful transfer, and retain default-off wire negotiation until integration passes.
+successful transfer, and retain the shared transport's default-off negotiation.
 
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
@@ -849,11 +864,11 @@ not equate an env-off skip, a disabled-scripting failure, or this isolated bound
 pass with the completed menu/service/phone/native-pause or acoustic handoff. The
 deterministic `NativeYouTubeHandoffIsolationTests` run without a browser or UI events.
 
-Keep the capability disabled in both product frontends until native source
-binding, current-phone menu/presentation integration, exact offer-bound native
-pause/readback, and owner-scoped audio coexistence are implemented. Actual
-provider playback, native phone output and the completed source handoff remain
-separate runtime gates. Model, script and local WK tests are not that evidence.
+The product frontends opt in through their primary-owner configuration factories;
+native source binding, current-phone menu/presentation integration, exact
+offer-bound native pause/readback and owner-scoped audio coexistence are implemented.
+Actual provider playback, native phone output and the completed source handoff
+remain separate runtime gates. Model, script and local WK tests are not that evidence.
 
 Permission-only helper IPC must
 work without an extension or connected peer, reject media-state injection, tolerate

@@ -7123,6 +7123,24 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
     }
 
+    /// Full sessions own the local player/audio coexistence transaction. Auxiliary
+    /// screen viewers must not advertise that authority or allocate its media path.
+    static func makePeerConfiguration(
+        iceServers: [RemoteICEServer],
+        mediaTopology: WebRTCTransportMediaTopology
+    ) -> WebRTCTransportConfiguration {
+        let ownsAudio = mediaTopology == .full
+        return WebRTCTransportConfiguration(
+            role: .viewer,
+            iceServers: iceServers,
+            icePolicy: .directPreferred,
+            mediaTopology: mediaTopology,
+            supportsRemoteMediaControls: ownsAudio,
+            supportsMediaHandoff: ownsAudio,
+            supportsAudioClientDiagnostics: ownsAudio
+        )
+    }
+
     private func handleSignalingEvent(
         _ event: RendezvousSignalingEvent,
         client: RendezvousSignalingClient,
@@ -7140,13 +7158,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             // either device and therefore cannot clear the one-time invitation.
 
             let newPeer = try WebRTCPeer(
-                configuration: WebRTCTransportConfiguration(
-                    role: .viewer,
+                configuration: Self.makePeerConfiguration(
                     iceServers: iceServers,
-                    icePolicy: .directPreferred,
-                    mediaTopology: sessionMediaTopology,
-                    supportsRemoteMediaControls: sessionOwnsAudio,
-                    supportsAudioClientDiagnostics: sessionOwnsAudio
+                    mediaTopology: sessionMediaTopology
                 )
             )
             if sessionOwnsAudio {

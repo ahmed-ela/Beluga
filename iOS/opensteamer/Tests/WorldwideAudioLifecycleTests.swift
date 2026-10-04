@@ -37,6 +37,24 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         case localFailure
     }
 
+    func testProductionPeerConfigurationAdvertisesHandoffOnlyForAudioOwner() {
+        for topology in [WebRTCTransportMediaTopology.full, .videoControlOnly] {
+            let configuration = WorldwideSessionViewModel.makePeerConfiguration(
+                iceServers: [], mediaTopology: topology
+            )
+            let ownsAudio = topology == .full
+            XCTAssertEqual(configuration.role, .viewer)
+            XCTAssertEqual(configuration.icePolicy, .directPreferred)
+            XCTAssertEqual(configuration.mediaTopology, topology)
+            XCTAssertEqual(configuration.supportsMediaHandoff, ownsAudio)
+            XCTAssertEqual(configuration.supportsRemoteMediaControls, ownsAudio)
+            XCTAssertEqual(configuration.supportsAudioClientDiagnostics, ownsAudio)
+        }
+        // Older/unintegrated callers do not acquire this optional protocol by default.
+        XCTAssertFalse(WebRTCTransportConfiguration(role: .viewer, iceServers: [],
+            supportsRemoteMediaControls: true).supportsMediaHandoff)
+    }
+
     func testComposedHandoffReceiverUsesRealPeerAndScopedAudioOwner() async throws {
         #if targetEnvironment(simulator)
         let actualProvider = ProcessInfo.processInfo.environment["OPENSTEAMER_LIVE_YOUTUBE_PROBE"] == "1"
@@ -81,9 +99,9 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         let host = try WebRTCPeer.makeNoHardwareHostForTesting(configuration: .init(
             role: .host, iceServers: [], supportsRemoteMediaControls: true,
             supportsMediaHandoff: true), audioDevice: hostDevice)
-        let viewer = try WebRTCPeer.makeNoHardwareViewerForTesting(configuration: .init(
-            role: .viewer, iceServers: [], supportsRemoteMediaControls: true,
-            supportsMediaHandoff: true), audioDevice: viewerDevice)
+        let viewer = try WebRTCPeer.makeNoHardwareViewerForTesting(
+            configuration: WorldwideSessionViewModel.makePeerConfiguration(
+                iceServers: [], mediaTopology: .full), audioDevice: viewerDevice)
         XCTAssertNil(viewer.iOSAudioTransactionDeviceBinding)
         XCTAssertTrue(viewModel.debugInstallScreenSessionForTests(peer: viewer,
             provenance: .unauthenticated, bindAudioTransactionDevice: false))
