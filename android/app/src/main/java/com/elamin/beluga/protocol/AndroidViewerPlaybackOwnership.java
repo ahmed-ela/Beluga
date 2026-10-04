@@ -24,11 +24,10 @@ final class AndroidViewerPlaybackOwnership {
 
     /**
      * exactOutput must be the receiver's real, initialized playback AudioTrack, not a probe track.
-     * No routed device means no authorization. The retained M150 adapter does not yet expose this
-     * handle: that integration remains required. Since a route may be absent until playback starts,
+     * No routed device means no authorization. Since a route may be absent until playback starts,
      * native integration must establish it with media delivery muted; this adapter does not bootstrap it.
-     * nativeDrain must join this exact receiver; its
-     * parent's Media.close must also await the returned owner's drained() before releasing storage.
+     * nativeDrain is the exact output's stopped-after-join receipt, not the parent's final close.
+     * The parent's Media.close separately joins native graph and returned owner.drained() cleanup.
      */
     static ViewerPlaybackOwnership create(Context context, AudioTrack exactOutput, BooleanSupplier ownerAdmitted,
             Runnable cancelExactAttempt, CompletionStage<Void> nativeDrain) {

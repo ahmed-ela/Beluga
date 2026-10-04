@@ -1,8 +1,9 @@
-# Exact-output WebRTC adapter — source qualification only
+# Exact-output WebRTC adapter — not yet enabled in the app
 
 This directory is **not in the app dependency graph**. It does not enable Android
 Connect, replace the installed app, or qualify Android playback. It contains an
-opt-in Java source patch for the retained `webrtc-sdk/android v150.7871.01` SDK.
+opt-in Java source patch, an offline derived-artifact builder, and the receive-only
+receiver integration for the retained `webrtc-sdk/android v150.7871.01` SDK.
 Do not append these classes beside an unchanged AAR: any future derived artifact
 must replace the original `WebRtcAudioTrack` and its nested classes exactly once.
 No native library, ELF header, or Java class-version header is modified.
@@ -64,8 +65,78 @@ platform calls or JNI. These tests prove decisions, not thread joins, device
 audio, focus, routing, final PCM or final pixels. Compilation and original-method
 descriptor comparison must use the pinned SDK and real Android compile SDK.
 
-Still required: receiver composition and native-owner quarantine, a reproducible
-single-definition derived artifact, dependency/license/security enrollment,
-muted route bootstrap, focused actual-device/emulator lifecycle/media evidence,
+The `receiver/` source now connects the actual output callbacks to bounded muted
+route discovery, exact route/focus ownership, and receipt-gated native destruction.
+The corresponding pure `ViewerPlaybackOutputLifetime` lives in the app sources.
+It keeps output-stop and main-thread cleanup receipts separate. An explicit
+retirement and a failed admission read race at an atomic retirement commit, so
+a late read cannot convert an already-requested disconnect into a new failure.
+Missing cleanup proof strongly retains the receiver graph in a process quarantine
+before the session parent drops its reference; it blocks later native starts.
+Quarantine is containment, not leak-free recovery.
+
+The receiver uses the existing production rendezvous origin, stored identities,
+fresh session credentials, and broker-provided ICE configuration. It includes no
+private-oracle connector, candidate restrictions, PCM collector or diagnostic
+artifact writer. Connect/UI composition remains disabled. The retained native
+API makes SetAudioPlayout(false) a synchronous worker call to StopPlayout, but
+discards its return value; the exact Java stop receipt is therefore required
+before peer.close as well as disposal. See the pinned upstream
+[PeerConnection implementation](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/pc/peer_connection.cc#L1576)
+and [AudioState implementation](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/audio/audio_state.cc#L56).
+
+Still required: app receiver/UI composition, dependency/license/security enrollment,
+focused actual-device/emulator lifecycle/media evidence for this derived artifact,
 foreground/background UI/service integration and public-network compatibility.
 Do not use this directory as a shipping or runtime pass.
+
+## Offline derived-AAR builder (not app enrollment)
+
+`build-derived-aar.rb` consumes explicit local inputs; it never downloads, signs,
+installs, enrolls a Gradle dependency or loads JNI. An existing output directory
+is refused. Failed work stays in its one-shot directory and must not be reused.
+Only a terminal `receipt.json` with `DERIVED_AAR_BUILT_NOT_ADMITTED` identifies
+completed static packaging; an AAR left without that receipt is not success.
+
+```sh
+ruby android/webrtc-adapter/build-derived-aar-test.rb
+ruby android/webrtc-adapter/build-derived-aar.rb \
+  --inputs /absolute/reviewed-inputs.json \
+  --output /absolute/new-derived-aar-directory
+```
+
+The exact JSON object has these fields (no extra or duplicate keys):
+
+- `schema`: `beluga.webrtc-derived-aar.inputs.v1`.
+- `rawAar`, `upstreamSource`: canonical absolute paths to the unchanged pinned
+  AAR and upstream `WebRtcAudioTrack.java` above.
+- `jdkHome`: canonical local JDK21 home. Only its `javac` and `javap` are invoked;
+  the build produces non-preview Java17 classes, never rewritten class headers.
+- `androidJar`: the actual Android36 platform jar, SHA-256
+  `d9eb9da824d9e247a352f570f01e1169e725b2954bca9e283a71786c59b59f9a`.
+- `annotationsJar`: AndroidX annotation-jvm1.9.1, SHA-256
+  `1e343917ebf27ba96fe4dc52b1cad7fd32b738fbc6355bb6cd5b3b305d7212d0`.
+- `inputPins`: an exact absolute-path-to-SHA256 map containing those four input
+  files; `jdkHome/bin/javac`, `jdkHome/bin/javap`, `jdkHome/release`; `/bin/ps`;
+  and this directory's `build-derived-aar.rb`, `build-command.rb`,
+  `WebRtcAudioTrack.patch`, `LICENSE.webrtc`, `PATENTS.webrtc`, and
+  `src/org/webrtc/audio/PlaybackOutputObserver.java`. Root must prepare and review
+  these pins before execution. The bounded command supervisor is currently
+  qualified for the pinned macOS `/bin/ps`, not arbitrary hosts.
+
+The builder applies the unified patch at exact original line positions and
+context, with no fuzz or offset. It checks original method descriptors for both
+`WebRtcAudioTrack` and its original `AudioTrackThread`, replaces those two classes
+once, and adds only `OutputLease` and `PlaybackOutputObserver`. Every other JAR
+entry and every original outer AAR payload, including all four native libraries,
+must remain byte-identical. Duplicate/path-aliased archive members are refused.
+
+Archives use sorted names, stored payloads, fixed timestamps and regular-file
+metadata. Compression metadata is deliberately regenerated, not preserved.
+LICENSE/PATENTS and canonical provenance are added under
+`META-INF/beluga-webrtc-adapter/`; no existing notice is removed. Embedded
+provenance is independent of output paths and records exact compiler/source/tool
+and output-class hashes. Input hashes are rechecked before and after publication.
+Whole-JDK provenance, complete licensing/security review, R8 qualification and
+native/device/runtime compatibility remain separate gates. The focused Ruby tests
+use pure archive/patch fixtures and a command double, not an actual compiler.
