@@ -98,7 +98,11 @@ androidComponents.onVariants { variant ->
         "prepare${variant.name.replaceFirstChar { it.uppercase() }}WebRtcNotices"
     ) {
         from(webRtcAdapterDirectory) {
-            include("LICENSE.webrtc", "PATENTS.webrtc", "NOTICE.beluga")
+            include(
+                "LICENSE.webrtc", "PATENTS.webrtc", "NOTICE.beluga",
+                "NOTICE.native.webrtc", "VERSIONS.webrtc", "NOTICE.fork.webrtc",
+                "LICENSE.Apache-2.0", "PROVENANCE.notices.json"
+            )
             into("third-party/webrtc-sdk-150.7871.01")
         }
         outputDirectory.set(layout.buildDirectory.dir("generated/webrtc-notices/${variant.name}"))

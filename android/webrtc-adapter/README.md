@@ -112,14 +112,40 @@ coordinates. The existing ABI set is retained; it is not an all-ABI runtime pass
 Native stripping is disabled for this exact library so packaging must retain its
 reviewed bytes; inspect the built APK independently before runtime use.
 
-The per-variant `prepare…WebRtcNotices` task copies the existing upstream `LICENSE.webrtc`,
-`PATENTS.webrtc` and this directory's `NOTICE.beluga` into APK assets at
-`third-party/webrtc-sdk-150.7871.01/`. This explicit copy is necessary because
-notices in the outer AAR are not a guarantee of notice delivery in the APK.
-Those two upstream notices are not a complete third-party inventory for the
-prebuilt native libraries. Collecting/validating transitive native notices and
-completing license/security review remain release requirements; dependency
-enrollment and previous raw-SDK emulator evidence do not satisfy them.
+## Packaged notices and provenance
+
+The per-variant `prepare…WebRtcNotices` task copies `LICENSE.webrtc`,
+`PATENTS.webrtc`, `NOTICE.beluga`, `NOTICE.native.webrtc`, `VERSIONS.webrtc`,
+`NOTICE.fork.webrtc`, `LICENSE.Apache-2.0` and `PROVENANCE.notices.json` into APK
+assets at `third-party/webrtc-sdk-150.7871.01/`. Explicit APK delivery is necessary:
+notices in the outer AAR alone do not guarantee their delivery in the APK.
+
+`NOTICE.native.webrtc` and `VERSIONS.webrtc` are unchanged copies of `webrtc/NOTICE`
+and `webrtc/VERSIONS` from the unprefixed `webrtc.android.tar.gz` Actions artifact
+`9744480229` in [upstream build #479](https://github.com/webrtc-sdk/webrtc-build/actions/runs/33350496482).
+The retained artifact ZIP digest, member paths and individual notice hashes are
+recorded in `PROVENANCE.notices.json`. Its embedded `webrtc/aar/libwebrtc.aar`
+matches the original AAR digest above; all four embedded native payloads match
+the unchanged payloads retained by the derived AAR. `VERSIONS.webrtc` pins the
+source revision and dependency revisions. The upstream
+[packager](https://github.com/webrtc-sdk/webrtc-build/blob/06e3410d8f67d08202e26f55225705596b60778e/build/run.py#L850)
+generates a dependency-license union across Android build targets/architectures
+and renames it `NOTICE`. Its original Markdown and escaped text are preserved.
+Do not substitute the release's generic `webrtc.tar.gz`: the release workflow
+selects prefixed variants, not this unprefixed artifact.
+
+`NOTICE.fork.webrtc` separately preserves the pinned source's Shiguredo/Wandbox
+attribution; it is not the generated dependency inventory. The pinned upstream
+[README](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/README.md#license)
+identifies Shiguredo patches and LiveKit changes as Apache-2.0.
+`LICENSE.Apache-2.0` is the unchanged full license text from Apache's primary site.
+
+This establishes the generated notice inventory's provenance and byte binding,
+not an independent completeness, legal, patent, security or runtime clearance.
+Review of license obligations/security and readback of the actual built APK's
+notice assets remain release requirements. No native rebuild or derived-AAR
+change was needed to collect these notices; raw-SDK emulator evidence does not
+qualify the app's derived receiver.
 
 ## Offline derived-AAR builder
 

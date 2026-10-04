@@ -14,6 +14,16 @@ and provenance instructions are in android/webrtc-adapter in the Beluga source.
 The derived AAR also contains META-INF/beluga-webrtc-adapter provenance.
 
 The accompanying LICENSE.webrtc and PATENTS.webrtc reproduce the upstream
-notices. They are not a complete inventory of third-party components linked
-into the prebuilt native libraries. Complete transitive notice/license and
-security review is still required before release distribution.
+notices. NOTICE.native.webrtc is the unchanged generated dependency-license
+inventory from the exact unprefixed Android build artifact. VERSIONS.webrtc
+records that build's source/dependency revisions. The archive's embedded AAR
+and all four native payloads match the retained inputs; PROVENANCE.notices.json
+records the source URLs, archive identity, member paths and notice hashes.
+
+NOTICE.fork.webrtc separately preserves the pinned source's Shiguredo/Wandbox
+attribution. The upstream README identifies Shiguredo patches and LiveKit
+changes as Apache-2.0. LICENSE.Apache-2.0 supplies the full license text.
+
+Byte binding establishes provenance, not an independent completeness, legal,
+patent, security or runtime clearance. Review of license obligations/security
+and delivery of these notices in the built APK remain release requirements.

@@ -1,2 +1,4 @@
 # Unified-diff context preserves exact upstream whitespace, including blank context lines.
 WebRtcAudioTrack.patch whitespace=-blank-at-eol
+# Retain the generated upstream notice byte-for-byte, including its whitespace.
+NOTICE.native.webrtc whitespace=-blank-at-eol,-blank-at-eof
