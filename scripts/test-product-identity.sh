@@ -171,7 +171,7 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer.MediaNotificationContent
           BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
           DEVELOPMENT_TEAM: MSMG8CJLB3
-          CURRENT_PROJECT_VERSION: 93
+          CURRENT_PROJECT_VERSION: 95
   opensteamerTests:
     type: bundle.unit-test
     settings:
@@ -386,7 +386,7 @@ print -r -- '// !$*UTF8*$!
         SKIP_INSTALL = YES;
         APPLICATION_EXTENSION_API_ONLY = YES;
         MARKETING_VERSION = 0.1.0;
-        CURRENT_PROJECT_VERSION = 93;
+        CURRENT_PROJECT_VERSION = 95;
         DEVELOPMENT_TEAM = MSMG8CJLB3;
         CODE_SIGN_STYLE = Automatic;
       };
@@ -686,8 +686,8 @@ done
 
 CASE=$(new_case notification-yml-team)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  $'          DEVELOPMENT_TEAM: MSMG8CJLB3\n          CURRENT_PROJECT_VERSION: 93' \
-  $'          DEVELOPMENT_TEAM: OTHER\n          CURRENT_PROJECT_VERSION: 93'
+  $'          DEVELOPMENT_TEAM: MSMG8CJLB3\n          CURRENT_PROJECT_VERSION: 95' \
+  $'          DEVELOPMENT_TEAM: OTHER\n          CURRENT_PROJECT_VERSION: 95'
 require_rejection "$CASE" 'project.yml notification storage/signing/install contract'
 
 CASE=$(new_case notification-yml-sdk)
@@ -703,7 +703,7 @@ require_rejection "$CASE" 'generated Xcode notification storage isolation'
 
 CASE=$(new_case notification-pbx-version)
 replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
-  'CURRENT_PROJECT_VERSION = 93;' 'CURRENT_PROJECT_VERSION = 89;'
+  'CURRENT_PROJECT_VERSION = 95;' 'CURRENT_PROJECT_VERSION = 89;'
 require_rejection "$CASE" 'generated Xcode notification signing/install contract'
 
 CASE=$(new_case notification-pbx-framework-target)

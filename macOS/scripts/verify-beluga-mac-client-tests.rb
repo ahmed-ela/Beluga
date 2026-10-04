@@ -40,7 +40,7 @@ class BelugaMacClientContractTests < Minitest::Test
     mutations = {
       'publicEDKey' => [nil, '', Base64.strict_encode64("\0" * 32), Base64.strict_encode64('k' * 31), Base64.strict_encode64('k' * 32) + "\n"],
       'version' => ['01.2.0', '0.2', 'v0.2.0', '0.2.0-beta', '4294967296.2.0'],
-      'build' => [0, -1, 99, '100', 1.2, 2**63],
+      'build' => [0, -1, 99, '101', 1.2, 2**63],
       'sparkleVersion' => ['2.9.0', '2.10.1'], 'minimumSystemVersion' => ['13.0'],
       'bundleIdentifier' => ['com.example.new-host'], 'teamIdentifier' => ['OTHERTEAM1'],
       'feedURL' => ['http://github.com/ahmed-ela/Beluga/releases/download/mac-update-stable/appcast.xml', 'https://example.com/appcast.xml'],
@@ -51,7 +51,7 @@ class BelugaMacClientContractTests < Minitest::Test
     end
     assert_raises(C::Refusal) { admit_config(config.merge('unreviewed' => true)) }
     path = File.join(@directory, 'duplicate.json')
-    File.write(path, JSON.generate(config).sub('"build":100', '"build":99,"build":100'), perm: 0o600)
+    File.write(path, JSON.generate(config).sub('"build":101', '"build":99,"build":101'), perm: 0o600)
     assert_raises(C::Refusal) { C.config!(path) }
   end
 
@@ -532,7 +532,7 @@ class BelugaMacClientContractTests < Minitest::Test
   end
 
   def candidate_identity
-    { 'schema' => C::CANDIDATE_IDENTITY_SCHEMA, 'version' => '0.2.0', 'build' => 100,
+    { 'schema' => C::CANDIDATE_IDENTITY_SCHEMA, 'version' => '0.3.0', 'build' => 101,
       'executableSHA256' => 'a' * 64, 'bundleTreeSHA256' => 'b' * 64,
       'bundleTreeAlgorithm' => C::BUNDLE_TREE_ALGORITHM }
   end
@@ -612,8 +612,8 @@ class BelugaMacClientContractTests < Minitest::Test
     end
     mutations = {
       'schema' => [nil, '', 'beluga.update-candidate.v1', 'beluga.update-candidate.v3'],
-      'version' => [nil, 2, '0.2.1', '00.2.0', "0.2.0\n", '4294967296.2.0'],
-      'build' => [nil, true, 0, -1, '100', 100.0, 101, 2**63],
+      'version' => [nil, 2, '0.3.1', '00.3.0', "0.3.0\n", '4294967296.2.0'],
+      'build' => [nil, true, 0, -1, '101', 101.0, 100, 102, 2**63],
       'executableSHA256' => [nil, 3, '', 'a' * 63, 'A' * 64, 'a' * 64 + "\n"],
       'bundleTreeSHA256' => [nil, [], '', 'b' * 65, 'B' * 64, 'b' * 64 + "\n"],
       'bundleTreeAlgorithm' => [nil, 1, '', 'beluga.executable-only.v1']
@@ -627,10 +627,10 @@ class BelugaMacClientContractTests < Minitest::Test
 
   def test_appcast_contains_exact_signed_payload_version_arm64_and_public_github_release_url
     signature = Base64.strict_encode64('s' * 64)
-    name = 'Beluga-Mac-0.2.0-100.dmg'
+    name = 'Beluga-Mac-0.3.0-101.dmg'
     xml = C.appcast(config, name, 12345, signature, Time.utc(2026, 10, 2), candidate_identity: candidate_identity)
-    assert_includes xml, 'https://github.com/ahmed-ela/Beluga/releases/download/mac-v0.2.0/Beluga-Mac-0.2.0-100.dmg'
-    assert_includes xml, '<sparkle:version>100</sparkle:version>'
+    assert_includes xml, 'https://github.com/ahmed-ela/Beluga/releases/download/mac-v0.3.0/Beluga-Mac-0.3.0-101.dmg'
+    assert_includes xml, '<sparkle:version>101</sparkle:version>'
     assert_includes xml, '<sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>'
     assert_includes xml, "length=\"12345\""
     assert_includes xml, "sparkle:edSignature=\"#{signature}\""
@@ -652,11 +652,12 @@ class BelugaMacClientContractTests < Minitest::Test
 
   def test_appcast_refuses_malformed_or_release_mismatched_candidate_metadata_before_xml_generation
     signature = Base64.strict_encode64('s' * 64)
-    [nil, candidate_identity.merge('build' => 101), candidate_identity.merge('version' => '0.2.1'),
+    [nil, candidate_identity.merge('build' => 100), candidate_identity.merge('build' => 102),
+     candidate_identity.merge('version' => '0.3.1'),
      candidate_identity.merge('executableSHA256' => 'A' * 64),
      candidate_identity.merge('unknown' => 'ignored')].each do |value|
       assert_raises(C::Refusal) do
-        C.appcast(config, 'Beluga-Mac-0.2.0-100.dmg', 12345, signature, candidate_identity: value)
+        C.appcast(config, 'Beluga-Mac-0.3.0-101.dmg', 12345, signature, candidate_identity: value)
       end
     end
   end

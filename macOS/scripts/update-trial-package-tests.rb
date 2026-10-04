@@ -153,22 +153,22 @@ module BelugaMacClientUpdateTrialPackageTests
           <description>Signed Beluga Mac client releases</description>
           <language>en</language>
           <item>
-            <title>Beluga 0.2.0</title>
+            <title>Beluga 0.3.0</title>
             <pubDate>Fri, 02 Oct 2026 00:00:00 -0000</pubDate>
-            <sparkle:version>100</sparkle:version>
-            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <sparkle:version>101</sparkle:version>
+            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>14.0.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/ahmed-ela/Beluga/releases/download/mac-v0.2.0/Beluga-Mac-0.2.0-100.dmg" length="12345" type="application/octet-stream" sparkle:edSignature="#{signature}" beluga:artifactSchema="beluga.update-candidate.v2" beluga:executableSHA256="#{'a' * 64}" beluga:bundleTreeSHA256="#{'b' * 64}" beluga:bundleTreeAlgorithm="beluga.bundle-tree-json-v1" />
+            <enclosure url="https://github.com/ahmed-ela/Beluga/releases/download/mac-v0.3.0/Beluga-Mac-0.3.0-101.dmg" length="12345" type="application/octet-stream" sparkle:edSignature="#{signature}" beluga:artifactSchema="beluga.update-candidate.v2" beluga:executableSHA256="#{'a' * 64}" beluga:bundleTreeSHA256="#{'b' * 64}" beluga:bundleTreeAlgorithm="beluga.bundle-tree-json-v1" />
           </item>
         </channel>
       </rss>
     XML
-    assert_equal expected, C.appcast(config, 'Beluga-Mac-0.2.0-100.dmg', 12345, signature,
+    assert_equal expected, C.appcast(config, 'Beluga-Mac-0.3.0-101.dmg', 12345, signature,
       Time.utc(2026, 10, 2), candidate_identity: candidate_identity)
     # Internal emitter escaping is defense in depth; the admitted URL grammar is narrower.
     text = %q[https://host.test/<tag>&"quoted'field]
-    xml = C.send(:appcast_xml, config, 'Beluga-Mac-0.2.0-100.dmg', 1, signature, Time.utc(2026, 10, 2),
+    xml = C.send(:appcast_xml, config, 'Beluga-Mac-0.3.0-101.dmg', 1, signature, Time.utc(2026, 10, 2),
       candidate_identity: candidate_identity, url: text, link: text)
     document = REXML::Document.new(xml)
     assert_equal text, document.elements['rss/channel/link'].text
