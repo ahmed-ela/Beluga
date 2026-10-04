@@ -253,6 +253,21 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('missing or duplicate') { Gate.validate_simulator(summary, value, @sim_methods, SIMULATOR) }
   end
 
+  def test_shipped_screen_awake_regressions_are_mandatory
+    %w[ScreenVideoIdleTimerTests ScreenVideoIdleTimerViewTests].each do |name|
+      assert_includes Gate::SIMULATOR_CLASSES, name
+      methods = Gate::SIMULATOR_PINNED.select { |id| id.start_with?(name + '/') }
+      refute_empty methods
+      methods.each do |id|
+        value = results
+        value['testNodes'].reject! { |node| node['nodeIdentifier'] == id + '()' }
+        rejects('missing or duplicate') { Gate.validate_simulator(summary, value, @sim_methods, SIMULATOR) }
+      end
+    end
+    assert_includes Gate::SIMULATOR_PINNED,
+                    'WorldwideAudioLifecycleTests/testExternalPausePublishesNotificationWhileStatisticsReaderIsSuspended'
+  end
+
   def test_zero_executed_simulator_tests_cannot_borrow_summary
     rejects('zero Simulator tests') { Gate.validate_simulator(summary, { 'testNodes' => [] }, @sim_methods, SIMULATOR) }
   end

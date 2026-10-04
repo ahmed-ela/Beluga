@@ -32,7 +32,8 @@ module MicrophoneRegressionGate
                            'zero timestamp publication keeps returned lifecycle',
                            'diagnostic snapshot concurrent coherency and progress']
   }.freeze
-  SIMULATOR_CLASSES = %w[WorldwideAudioLifecycleTests WebRTCAudioPlaybackSessionTests IOSAudioDiagnosticsJournalTests].freeze
+  SIMULATOR_CLASSES = %w[WorldwideAudioLifecycleTests WebRTCAudioPlaybackSessionTests IOSAudioDiagnosticsJournalTests
+                        ScreenVideoIdleTimerTests ScreenVideoIdleTimerViewTests].freeze
   SIMULATOR_SKIPS = %w[
     WorldwideAudioLifecycleTests/testPhysicalDeviceCanConfigureLegacyBackgroundPlaybackSession
     WebRTCAudioPlaybackSessionTests/testPhysicalPolicyScenarioOriginalOrder
@@ -58,6 +59,11 @@ module MicrophoneRegressionGate
     WebRTCAudioPlaybackSessionTests/testPeerUsesStereoRemoteIOAndReceivesNativePlayoutCallbacks
   ].freeze
   SIMULATOR_PINNED = %w[
+    ScreenVideoIdleTimerTests/testPausedOrStoppedObservationReleasesPriorPlayingEvidence
+    ScreenVideoIdleTimerTests/testAudioOnlyOrHiddenScreenDoesNotPreventSleep
+    ScreenVideoIdleTimerTests/testForeignOrRemovedOwnerExpiryCannotReleaseSuccessor
+    ScreenVideoIdleTimerViewTests/testNativeIdleTimerTracksScenePlaybackHideAndViewRemoval
+    WorldwideAudioLifecycleTests/testExternalPausePublishesNotificationWhileStatisticsReaderIsSuspended
     WorldwideAudioLifecycleTests/testOrdinaryRawMicrophoneProfileRequiresExactTupleAndSupportedEffectivePolicy
     WorldwideAudioLifecycleTests/testTransportUncertaintyClosesMicrophonePrivacyBeforeOutputOnlyOwnerReturns
     WorldwideAudioLifecycleTests/testPublicOutputOnlyDisableClosesMicrophonePrivacyBeforeNativeAttemptForSuccessAndFailure

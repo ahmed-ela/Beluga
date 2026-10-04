@@ -19292,12 +19292,14 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
                 sourceName: "YouTube", title: "Same video", playbackState: playing ? .playing : .paused,
                 elapsedTime: 45, duration: 120, playbackRate: playing ? 1 : 0,
                 capabilities: .init(canPlay: !playing, canPause: playing,
-                                    canSkipForward: false, canSkipBackward: false))
+                                    canSkipForward: false, canSkipBackward: false),
+                artwork: .init(videoID: "AAAAAAAAAAA"))
             return WebRTCReceivedRemoteMediaState(envelope: .init(authorization: negotiation,
                 update: .init(revision: revision, item: item)))
         }
         viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
             state: state(revision: 2, playing: true)) { _ in }
+        XCTAssertNotNil(viewModel.screenVideoPlaybackEvidence)
         let initial = try? store.readSnapshot()
         XCTAssertEqual(initial?.revision, 2)
         XCTAssertEqual(initial?.entries.first?.isPlaying, true)
@@ -19338,6 +19340,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         }
         await fulfillment(of: [pausePublished], timeout: 2)
         XCTAssertFalse(readerCompleted, "Pause publication must precede completion of the held native read")
+        XCTAssertNil(viewModel.screenVideoPlaybackEvidence,
+                     "The same admitted Mac pause must also release video wake evidence")
         let whileHeld = try? store.readSnapshot()
         XCTAssertEqual(whileHeld?.revision, 3)
         XCTAssertEqual(whileHeld?.entries.first?.isPlaying, false)
@@ -19358,6 +19362,8 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         }
         let rejectedTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
         XCTAssertEqual(rejectedTrace.lastEventRevision, 2)
+        XCTAssertNil(viewModel.screenVideoPlaybackEvidence,
+                     "Rejected older playing state cannot re-acquire wake evidence")
         XCTAssertEqual(rejectedTrace.lastEventAdmitted, false)
         XCTAssertEqual(rejectedTrace.applied?.revision, 3)
         XCTAssertEqual(rejectedTrace.published?.revision, 3,
@@ -19373,6 +19379,7 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         await consumer.value
         viewModel.disconnect()
         let retiredTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertNil(viewModel.screenVideoPlaybackEvidence)
         XCTAssertNil(retiredTrace.applied)
         XCTAssertNil(retiredTrace.lastEventRevision)
         await peer.close()

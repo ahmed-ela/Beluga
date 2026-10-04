@@ -1520,6 +1520,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var remoteMediaCommandOwner: RemoteMediaCommandOwnerToken?
     private var remoteMediaControlsNegotiated = false
     private var currentRemoteMediaState: WebRTCReceivedRemoteMediaState?
+    @Published private(set) var screenVideoPlaybackEvidence: ScreenVideoPlaybackEvidence?
     private var currentRemoteMediaUpdate: WebRTCRemoteMediaStateUpdate? {
         currentRemoteMediaState?.update
     }
@@ -7644,6 +7645,10 @@ final class WorldwideSessionViewModel: ObservableObject {
             remoteMediaRefreshTask?.cancel()
             remoteMediaRefreshTask = nil
             currentRemoteMediaState = receivedState
+            screenVideoPlaybackEvidence = ScreenVideoPlaybackEvidence(
+                update: receivedState.update,
+                receivedAtUptime: ProcessInfo.processInfo.systemUptime
+            )
             remoteMediaStateTransportAuthorizationGeneration =
                 transportAuthorizationGeneration
             if let remoteMediaCommandOwner {
@@ -13286,6 +13291,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func clearRemoteMediaPresentation() {
+        screenVideoPlaybackEvidence = nil
         remoteMediaRefreshTask?.cancel()
         remoteMediaRefreshTask = nil
         remoteMediaRefresh.invalidate()
@@ -13379,6 +13385,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         let ticket = remoteMediaRefresh.begin(generation: transportAuthorizationGeneration)!
         _ = remoteMediaRefresh.accept(refreshID: ticket.id, generation: ticket.generation)
         currentRemoteMediaState = state
+        screenVideoPlaybackEvidence = ScreenVideoPlaybackEvidence(
+            update: state.update,
+            receivedAtUptime: ProcessInfo.processInfo.systemUptime
+        )
         remoteMediaStateTransportAuthorizationGeneration = transportAuthorizationGeneration
         debugRemoteMediaCommandSender = sender
         if let remoteMediaCommandOwner {

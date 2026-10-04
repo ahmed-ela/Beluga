@@ -61,6 +61,8 @@ xcodebuild test \
   -only-testing:opensteamerTests/WorldwideAudioLifecycleTests \
   -only-testing:opensteamerTests/WebRTCAudioPlaybackSessionTests \
   -only-testing:opensteamerTests/IOSAudioDiagnosticsJournalTests \
+  -only-testing:opensteamerTests/ScreenVideoIdleTimerTests \
+  -only-testing:opensteamerTests/ScreenVideoIdleTimerViewTests \
   DEVELOPMENT_TEAM=MSMG8CJLB3
 
 (cd iOS/opensteamer/Rust/AudioTransactionAuthority && cargo test --locked)

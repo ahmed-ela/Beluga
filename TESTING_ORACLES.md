@@ -443,6 +443,24 @@ driver evidence and does not certify a later build from this source cleanup.
   prove restoration after `SIGKILL`, process crash, kernel failure, or power loss;
   release claims must state that limitation rather than inferring crash recovery.
 
+## YouTube viewing idle timer
+
+The iPhone wake lease is observation-only. Require an admitted primary YouTube watch item
+with valid provider artwork, playing state and positive rate, plus an active, exact visible
+screen lease, video track, first rendered frame and no presentation cover. Hidden/audio-only,
+paused/stopped, inactive, detached, disconnected or stale evidence must release it; do not
+change AVAudioSession or send media commands to keep the screen awake. A 15-second monotonic
+cap fails off when change-driven host updates stop; cached refresh replies are not a new poll.
+
+Run ScreenVideoIdleTimerTests and ScreenVideoIdleTimerViewTests in the signed Simulator.
+Require actual UIKit property readback through the SwiftUI modifier, overlap/stale-owner
+rejection, real scheduled expiry, and the existing suspended-statistics external-pause VM
+test. Removing the playing-state guard must fail the paused/stopped cases. These tests do
+not prove physical Auto-Lock timing. On the exact TestFlight build, separately observe a
+YouTube viewing interval longer than Auto-Lock, then pause and verify normal sleep; repeat
+for hidden/audio-only listening. Metadata identifies a YouTube watch player, not whether
+its content genre is music or whether the user's eyes are on the video.
+
 ## Ordinary microphone effective-sharing profile
 
 The 2026-09-19 user-approved revision preserves the requested `.default` setter
