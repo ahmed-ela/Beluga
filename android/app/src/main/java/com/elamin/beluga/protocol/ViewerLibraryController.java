@@ -16,11 +16,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** Foreground library and explicit pairing orchestration; saved rows are not connection proof. */
+/** Foreground library, explicit pairing and selected-Mac ownership; status is not decoded-media proof. */
 public final class ViewerLibraryController implements AutoCloseable {
     public enum Status { INACTIVE, UNSUPPORTED, LOADING, READY, WORKING, UNAVAILABLE, CLOSED }
     public enum Phase { PENDING, ACCEPTED_ISSUED, ACTIVE }
     public enum PairingStatus { IDLE, PAIRING, CANCELLING, PAIRED, CANCELLED, FAILED, CLEANUP_UNPROVEN, BLOCKED }
+    public enum ConnectionStatus { IDLE, CONNECTING, ACTIVE, CANCELLING, ENDED, CANCELLED, FAILED, CLEANUP_UNPROVEN }
     public interface Listener { void onState(State state); }
 
     public static final class Mac {
@@ -41,12 +42,16 @@ public final class ViewerLibraryController implements AutoCloseable {
     public static final class State {
         public final Status status;
         public final PairingStatus pairingStatus;
+        public final ConnectionStatus connectionStatus;
         public final UUID viewerID, selectedMacID, selectedEnrollmentSlot;
         public final List<Mac> macs;
         public final List<PendingEnrollment> pendingEnrollments;
         private final Data data;
-        private State(Status status, Data data, PairingStatus pairingStatus) {
+        private final boolean connectionAvailable;
+        private State(Status status, Data data, PairingStatus pairingStatus,
+                ConnectionStatus connectionStatus, boolean connectionAvailable) {
             this.status = status; this.data = data; this.pairingStatus = pairingStatus;
+            this.connectionStatus = connectionStatus; this.connectionAvailable = connectionAvailable;
             viewerID = data == null ? null : data.viewerID;
             selectedMacID = data == null ? null : data.selectedMacID;
             selectedEnrollmentSlot = data == null ? null : data.selectedEnrollmentSlot;
@@ -57,9 +62,19 @@ public final class ViewerLibraryController implements AutoCloseable {
         public boolean canChangeLibrary() { return status == Status.READY && !pairingBlocksActions(); }
         public boolean canPair() { return canChangeLibrary() && macs.size() + pendingEnrollments.size() < 32; }
         public boolean canCancelPairing() { return pairingStatus == PairingStatus.PAIRING; }
+        public boolean canConnect() {
+            if (!connectionAvailable || !canChangeLibrary() || selectedMacID == null) return false;
+            for (Mac mac : macs) if (selectedMacID.equals(mac.deviceID)) return mac.phase == Phase.ACTIVE;
+            return false;
+        }
+        public boolean canDisconnect() {
+            return connectionStatus == ConnectionStatus.CONNECTING || connectionStatus == ConnectionStatus.ACTIVE;
+        }
         private boolean pairingBlocksActions() {
             return pairingStatus == PairingStatus.PAIRING || pairingStatus == PairingStatus.CANCELLING
-                    || pairingStatus == PairingStatus.CLEANUP_UNPROVEN || pairingStatus == PairingStatus.BLOCKED;
+                    || pairingStatus == PairingStatus.CLEANUP_UNPROVEN || pairingStatus == PairingStatus.BLOCKED
+                    || connectionStatus == ConnectionStatus.CONNECTING || connectionStatus == ConnectionStatus.ACTIVE
+                    || connectionStatus == ConnectionStatus.CANCELLING || connectionStatus == ConnectionStatus.CLEANUP_UNPROVEN;
         }
         @Override public String toString() { return "<Beluga library state; not connection proof>"; }
     }
@@ -81,6 +96,17 @@ public final class ViewerLibraryController implements AutoCloseable {
     interface PairingAttempt {
         void cancel();
         CompletionStage<PairingStatus> completion();
+    }
+    interface ConnectionPort {
+        /** Throws only before ownership exists; never enrolls, selects or retries. */
+        ConnectionAttempt start(UUID selectedHost, long catalog, long selection);
+    }
+    interface ConnectionAttempt {
+        void cancel();
+        /** Nonblocking observation only; no status, including TERMINAL, licenses release. */
+        ViewerConnectionSession.State state();
+        /** Actual native, storage and process-lease terminal, not a readiness future. */
+        CompletionStage<ConnectionStatus> completion();
     }
     static final class Data {
         final UUID viewerID, selectedMacID, selectedEnrollmentSlot;
@@ -124,14 +150,26 @@ public final class ViewerLibraryController implements AutoCloseable {
         boolean cancelled;
         PairingOperation(long foreground) { this.foreground = foreground; }
     }
+    private static final class ConnectionOperation {
+        final long foreground;
+        final Data expected;
+        ConnectionAttempt attempt;
+        boolean cancelled, cancelRequested, cancelInProgress, completionAttached, completionReceived;
+        ConnectionStatus completionStatus;
+        Throwable completionFailure;
+        ConnectionOperation(long foreground, Data expected) { this.foreground = foreground; this.expected = expected; }
+    }
     private final StoragePort storage;
     private final SerialPort serial;
     private final MainPort main;
     private final boolean supported;
     private final PairingPort pairing;
-    private State state = new State(Status.INACTIVE, null, PairingStatus.IDLE);
+    private final ConnectionPort connection;
+    private State state;
     private PairingStatus pairingStatus = PairingStatus.IDLE;
+    private ConnectionStatus connectionStatus = ConnectionStatus.IDLE;
     private PairingOperation pendingPairing;
+    private ConnectionOperation pendingConnection;
     private boolean cleanupUnproven;
     private Listener listener;
     private Operation pending;
@@ -139,6 +177,10 @@ public final class ViewerLibraryController implements AutoCloseable {
     private boolean observing, closed, reloadAfterPending;
 
     public static ViewerLibraryController create(Context context) {
+        return create(context, null);
+    }
+    /** A reviewed same-package receiver enables explicit Connect; construction never starts it. */
+    static ViewerLibraryController create(Context context, AndroidViewerConnection.ReceiverFactory receiver) {
         java.util.Objects.requireNonNull(context);
         Handler handler = new Handler(Looper.getMainLooper());
         MainPort main = new MainPort() {
@@ -178,6 +220,23 @@ public final class ViewerLibraryController implements AutoCloseable {
                     }
                 };
             }
+        }, receiver == null ? null : (host, catalog, selection) -> {
+            AndroidViewerConnection.Attempt attempt = AndroidViewerConnection.start(application, host, catalog, selection, receiver);
+            return new ConnectionAttempt() {
+                @Override public void cancel() { attempt.cancel(); }
+                @Override public ViewerConnectionSession.State state() { return attempt.state(); }
+                @Override public CompletionStage<ConnectionStatus> completion() {
+                    return attempt.completion().thenApply(terminal -> {
+                        if (!AndroidViewerConnection.permitsProcessRelease(terminal)) return ConnectionStatus.CLEANUP_UNPROVEN;
+                        switch (terminal.status) {
+                            case ENDED: return ConnectionStatus.ENDED;
+                            case CANCELLED: return ConnectionStatus.CANCELLED;
+                            case FAILED: return ConnectionStatus.FAILED;
+                            default: return ConnectionStatus.CLEANUP_UNPROVEN;
+                        }
+                    });
+                }
+            };
         });
     }
     ViewerLibraryController(StoragePort storage, SerialPort serial, MainPort main, boolean supported) {
@@ -189,10 +248,16 @@ public final class ViewerLibraryController implements AutoCloseable {
         });
     }
     ViewerLibraryController(StoragePort storage, SerialPort serial, MainPort main, boolean supported, PairingPort pairing) {
+        this(storage, serial, main, supported, pairing, null);
+    }
+    ViewerLibraryController(StoragePort storage, SerialPort serial, MainPort main, boolean supported,
+            PairingPort pairing, ConnectionPort connection) {
         if (supported && storage == null) throw new IllegalArgumentException("Storage is required");
         this.storage = storage; this.serial = java.util.Objects.requireNonNull(serial);
         this.main = java.util.Objects.requireNonNull(main); this.supported = supported;
         this.pairing = java.util.Objects.requireNonNull(pairing);
+        this.connection = connection;
+        state = snapshot(Status.INACTIVE, null);
     }
     public State state() { main.checkOwner(); return state; }
     public void start(Listener observer) {
@@ -203,8 +268,18 @@ public final class ViewerLibraryController implements AutoCloseable {
         if (pendingPairing != null) {
             cancelPairing(); publish(snapshot(Status.WORKING, null)); return;
         }
+        if (pendingConnection != null) {
+            ConnectionOperation operation = pendingConnection;
+            long currentForeground = foreground;
+            boolean alreadyCancelled = operation.cancelled;
+            disconnect();
+            if (alreadyCancelled && pendingConnection == operation && observing && !closed && foreground == currentForeground)
+                publish(snapshot(Status.WORKING, null));
+            return;
+        }
         if (pairingBlocked()) { publish(snapshot(Status.WORKING, null)); return; }
         pairingStatus = PairingStatus.IDLE;
+        connectionStatus = ConnectionStatus.IDLE;
         if (pending != null) {
             pending.retired.set(true); reloadAfterPending = true; publish(snapshot(Status.LOADING, null));
         } else begin(Kind.LOAD, null, null);
@@ -213,7 +288,7 @@ public final class ViewerLibraryController implements AutoCloseable {
         main.checkOwner(); if (closed) return;
         observing = false; listener = null; reloadAfterPending = false; advanceForeground();
         if (pending != null) pending.retired.set(true);
-        cancelPairing(); state = snapshot(Status.INACTIVE, null);
+        cancelPairing(); disconnect(); state = snapshot(Status.INACTIVE, null);
     }
     public boolean refresh() {
         main.checkOwner();
@@ -229,6 +304,113 @@ public final class ViewerLibraryController implements AutoCloseable {
     public boolean select(UUID host, State expected) { return change(Kind.SELECT, host, expected); }
     public boolean forget(UUID host, State expected) { return change(Kind.FORGET, host, expected); }
     public boolean abandon(UUID slot, State expected) { return change(Kind.ABANDON, slot, expected); }
+    public boolean connect(State expected) {
+        main.checkOwner();
+        if (!available() || pending != null || expected != state || !state.canConnect()) return false;
+        ConnectionOperation operation = new ConnectionOperation(foreground, state.data);
+        pendingConnection = operation; connectionStatus = ConnectionStatus.CONNECTING;
+        publish(snapshot(Status.WORKING, operation.expected));
+        if (operation.cancelled || closed || !observing) {
+            finishConnection(operation, ConnectionStatus.CANCELLED, null); return true;
+        }
+        ConnectionAttempt attempt;
+        try { attempt = connection.start(operation.expected.selectedMacID,
+                operation.expected.catalogRevision, operation.expected.selectionRevision); }
+        catch (RuntimeException refusedBeforeOwnership) {
+            finishConnection(operation, ConnectionStatus.FAILED, null); return true;
+        }
+        if (attempt == null) { finishConnection(operation, ConnectionStatus.CLEANUP_UNPROVEN, null); return true; }
+        operation.attempt = attempt;
+        try {
+            java.util.Objects.requireNonNull(attempt.completion()).whenComplete((terminal, failure) -> {
+                try { main.execute(() -> connectionCompleted(operation, terminal, failure)); }
+                catch (RuntimeException unavailable) { /* Exact ownership remains held without main-owner completion. */ }
+            });
+            operation.completionAttached = true;
+            if (operation.completionReceived) finishConnection(operation, operation.completionStatus, operation.completionFailure);
+            if (pendingConnection == operation && operation.cancelled) requestCancel(operation);
+        } catch (RuntimeException uncertain) {
+            requestCancel(operation);
+            finishConnection(operation, ConnectionStatus.CLEANUP_UNPROVEN, null);
+        }
+        return true;
+    }
+    private void connectionCompleted(ConnectionOperation operation, ConnectionStatus terminal, Throwable failure) {
+        main.checkOwner(); if (pendingConnection != operation || operation.completionReceived) return;
+        operation.completionReceived = true; operation.completionStatus = terminal; operation.completionFailure = failure;
+        // An inline callback is not proof that attachment itself returned normally.
+        if (operation.completionAttached && !operation.cancelInProgress) finishConnection(operation, terminal, failure);
+    }
+    /** Explicit main-owner refresh of native operational state, never decoded-media or close proof. */
+    public boolean refreshConnectionStatus() {
+        main.checkOwner();
+        ConnectionOperation operation = pendingConnection;
+        if (operation == null || operation.attempt == null || operation.cancelled || closed || !observing
+                || operation.foreground != foreground || cleanupUnproven) return false;
+        final ViewerConnectionSession.State observed;
+        try { observed = operation.attempt.state(); }
+        catch (RuntimeException unavailable) {
+            if (pendingConnection == operation && !operation.cancelled && !closed && observing && operation.foreground == foreground)
+                disconnect();
+            return false;
+        }
+        // A trusted callback may reenter while the state query is in progress.
+        if (pendingConnection != operation || operation.cancelled || closed || !observing
+                || operation.foreground != foreground || cleanupUnproven) return false;
+        if (observed == null) { disconnect(); return false; }
+        ConnectionStatus next;
+        switch (observed) {
+            case PREPARING: case AVAILABILITY: case STARTING_MEDIA: next = ConnectionStatus.CONNECTING; break;
+            case ACTIVE: next = ConnectionStatus.ACTIVE; break;
+            case CLOSING: case TERMINAL: next = ConnectionStatus.CANCELLING; break;
+            default: disconnect(); return false;
+        }
+        if (connectionStatus == ConnectionStatus.CANCELLING) return false;
+        if (next != connectionStatus) {
+            connectionStatus = next; publish(snapshot(Status.WORKING, operation.expected));
+        }
+        return true;
+    }
+    public void disconnect() {
+        main.checkOwner();
+        ConnectionOperation operation = pendingConnection;
+        if (operation == null || operation.cancelled) return;
+        long currentForeground = foreground;
+        operation.cancelled = true; connectionStatus = ConnectionStatus.CANCELLING;
+        requestCancel(operation);
+        if (pendingConnection == operation && observing && !closed && foreground == currentForeground)
+            publish(snapshot(Status.WORKING, operation.expected));
+    }
+    private void requestCancel(ConnectionOperation operation) {
+        if (operation.attempt == null || operation.cancelRequested) return;
+        operation.cancelRequested = true; operation.cancelInProgress = true;
+        try { operation.attempt.cancel(); }
+        catch (RuntimeException unknown) { cleanupUnproven = true; connectionStatus = ConnectionStatus.CLEANUP_UNPROVEN; }
+        finally {
+            operation.cancelInProgress = false;
+            if (operation.completionAttached && operation.completionReceived)
+                finishConnection(operation, operation.completionStatus, operation.completionFailure);
+        }
+    }
+    private void finishConnection(ConnectionOperation operation, ConnectionStatus terminal, Throwable failure) {
+        main.checkOwner(); if (pendingConnection != operation) return;
+        pendingConnection = null;
+        if (failure != null || (terminal != ConnectionStatus.ENDED && terminal != ConnectionStatus.CANCELLED
+                && terminal != ConnectionStatus.FAILED)) cleanupUnproven = true;
+        if (cleanupUnproven) {
+            connectionStatus = ConnectionStatus.CLEANUP_UNPROVEN;
+            if (closed) state = snapshot(Status.CLOSED, null);
+            else if (!observing) state = snapshot(Status.INACTIVE, null);
+            else publish(snapshot(Status.WORKING, null));
+            return;
+        }
+        boolean current = operation.foreground == foreground && observing && !closed;
+        connectionStatus = current ? (operation.cancelled ? ConnectionStatus.CANCELLED : terminal) : ConnectionStatus.IDLE;
+        if (closed) { state = snapshot(Status.CLOSED, null); return; }
+        if (!observing) { state = snapshot(Status.INACTIVE, null); return; }
+        if (pairingBlocked()) { publish(snapshot(Status.WORKING, null)); return; }
+        begin(Kind.LOAD, null, null);
+    }
     public boolean pair(State expected, PairingInvitation invitation) {
         main.checkOwner();
         if (!available() || pending != null || expected != state || !state.canPair() || invitation == null) return false;
@@ -307,11 +489,11 @@ public final class ViewerLibraryController implements AutoCloseable {
     private boolean available() {
         if (closed || !observing || !supported) return false;
         if (!pairingBlocked()) return true;
-        if (pendingPairing == null) publish(snapshot(Status.UNAVAILABLE, null));
+        if (pendingPairing == null && pendingConnection == null) publish(snapshot(Status.UNAVAILABLE, null));
         return false;
     }
     private boolean pairingBlocked() {
-        if (cleanupUnproven || pendingPairing != null) return true;
+        if (cleanupUnproven || pendingPairing != null || pendingConnection != null) return true;
         try {
             if (pairing.isAttemptInFlight()) { pairingStatus = PairingStatus.BLOCKED; return true; }
         } catch (RuntimeException unavailable) { pairingStatus = PairingStatus.BLOCKED; return true; }
@@ -319,8 +501,9 @@ public final class ViewerLibraryController implements AutoCloseable {
     }
     private State snapshot(Status status, Data data) {
         if (status == Status.WORKING && (pairingStatus == PairingStatus.BLOCKED
-                || pairingStatus == PairingStatus.CLEANUP_UNPROVEN)) status = Status.UNAVAILABLE;
-        return new State(status, data, pairingStatus);
+                || pairingStatus == PairingStatus.CLEANUP_UNPROVEN
+                || connectionStatus == ConnectionStatus.CLEANUP_UNPROVEN)) status = Status.UNAVAILABLE;
+        return new State(status, data, pairingStatus, connectionStatus, connection != null);
     }
     private void begin(Kind kind, UUID target, Data expected) {
         Operation operation = new Operation(kind, foreground, target, expected);

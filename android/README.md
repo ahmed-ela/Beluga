@@ -42,6 +42,15 @@ returning its response. Therefore this preview deliberately has no disposable
 
 ## Selected-Mac media handoff — source checkpoint
 
+- `ViewerLibraryController` now owns an explicit selected-ACTIVE Connect attempt
+  against the exact displayed snapshot and private catalog/selection revisions.
+  Pairing, selection, deletion and refresh stay blocked until actual connection
+  cleanup completes; an observed native TERMINAL state is not release proof.
+  Stop/close cancels the exact attempt, stale callbacks cannot affect a successor,
+  and uncertain cleanup remains blocked. Operational status requires an explicit
+  main-owner observation and does not claim decoded media. The public default
+  factory remains connection-disabled; only the package-private receiver-injected
+  factory composes this path. No Connect UI or native dependency is enabled yet.
 - `AndroidViewerConnection` opens only already-enrolled storage and binds the exact
   selected ACTIVE Mac and catalog/selection revisions. Pairing and media share one
   process lease. An unproven close cannot admit a successor or library mutation.
