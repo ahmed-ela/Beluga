@@ -1,6 +1,6 @@
-# Beluga native Android pairing preview
+# Beluga native Android receiver preview
 
-Version `0.1.1-pairing-preview` (code 2) connects explicit Kotlin/Compose code
+Version `0.1.2-receiver-preview` (code 3) connects explicit Kotlin/Compose code
 entry and QR confirmation to the durable one-use NEW-Mac pairing engine.
 Initialize the encrypted local library explicitly on first use. Manual Pair or
 Pair scanned Mac is then a separate foreground action; scanning alone never
@@ -9,10 +9,17 @@ device-backed identity, exact catalog/selection revisions and the shared Swift
 wire protocol. Only a clean authenticated terminal plus transport/storage
 teardown can report pairing success. The UI then reloads the actual saved Macs.
 
+The selected saved Mac now has explicit Connect/Disconnect controls. The native
+receive-only adapter uses that Mac's existing authenticated reconnect transaction,
+not a second pairing path. Screen Show/Hide is independent of audio. The same
+covered native surface stays mounted until that connection ends; no automatic
+Show or reconnect occurs. Transient inactivity covers pixels; backgrounding
+disconnects the complete session. Background playback, microphone, remote input
+and Move media to phone are not implemented in this Android slice.
+
 This is source integration, not a distributed or physically validated Android
 client. Android ART, real TLS/Keystore/filesystem behavior, QR UI, host pairing
-and device lifecycle still need runtime validation. Native media, microphone,
-remote control and Move media to phone are not available here. Selecting a
+and device lifecycle still need runtime validation. Selecting a
 saved Mac does not connect. An interrupted pending/accepted pairing is not
 silently resumed, overwritten or deleted. **Format valid, saved and connected
 are different states.**
@@ -30,8 +37,8 @@ exact catalog readback, with cancellation and close-drain fencing. It now adds
 the viewer-only availability WSS profile, exchange-bound encryption/parser and
 one-use response completion. A package-private worker now composes retained
 activation, durable reconnect reservation, authenticated response, exact availability
-closure and media handoff. These pieces are not exposed as a native saved-Mac
-connection: a compatible native receiver and runtime validation remain unfinished. The
+closure and media handoff. The app-facing receiver composition now exposes an
+explicit saved-Mac connection; runtime validation remains unfinished. The
 previous storage checkpoint's 139 app JUnit cases, bootstrap-model assertions
 and debug APK/static readback are historical evidence, not validation of these
 new changes. Actual Android storage, TLS, pairing and media require runtime proof.
@@ -49,8 +56,9 @@ returning its response. Therefore this preview deliberately has no disposable
   Stop/close cancels the exact attempt, stale callbacks cannot affect a successor,
   and uncertain cleanup remains blocked. Operational status requires an explicit
   main-owner observation and does not claim decoded media. The public default
-  factory remains connection-disabled; only the package-private receiver-injected
-  factory composes this path. No Connect UI or native dependency is enabled yet.
+  factory remains connection-disabled for library-only callers. The app uses
+  `AndroidViewerMediaClient` to supply the native factory and own its one screen
+  lifetime. No source receipt is a decoded-media or deployment claim.
 - `AndroidViewerConnection` opens only already-enrolled storage and binds the exact
   selected ACTIVE Mac and catalog/selection revisions. Pairing and media share one
   process lease. An unproven close cannot admit a successor or library mutation.
@@ -76,8 +84,9 @@ returning its response. Therefore this preview deliberately has no disposable
   media lifecycle. They do not establish Android Keystore, native WebRTC, PCM,
   screen rendering, physical pairing, release installation or distribution.
 
-The retained M150 WebRTC library remains outside this APK and is not an admitted
-product dependency. Both retained 64-bit ELF files fail the
+The app build requires the exact locally derived M150 WebRTC AAR through the
+pinned adapter enrollment described in `webrtc-adapter/README.md`; no raw-AAR
+fallback is allowed. Both retained 64-bit ELF files fail the
 [documented RELRO-end modulo criterion](https://developer.android.com/guide/practices/page-sizes#relro),
 but exact-layout static qualification found no non-RELRO writable or executable
 bytes inside the rounded protection ranges. That metadata discrepancy alone is
@@ -88,10 +97,10 @@ has successful private API 36 ARM64 emulator media/lifecycle runs with 16 KB
 pages and compatibility fallback disabled. The bounded startup comparison also
 retained a first-Show pixel failure; it does not establish reliable startup.
 This evidence does not qualify other ABIs, physical devices, the public-network
-path or the shipping app. Upstream/license/security review, dependency enrollment
-and actual product integration remain separate requirements.
-No new microphone permission, local capture, Connect button or production session
-is introduced by this checkpoint.
+path or the shipping app. Complete third-party license/security review and
+changed-artifact runtime qualification remain release requirements. Source graph
+enrollment is not permission to ship an unqualified SDK. No microphone permission
+or local capture is introduced; a production session begins only on explicit Connect.
 
 ## Screen-control v2 — source checkpoint
 
@@ -122,11 +131,10 @@ Its deterministic sorted keys are fixture canonicalization, not a production
 JSON ordering guarantee. The UInt64.max rows demonstrate wire capacity; the
 session refuses issuing that final ID, matching the current Mac peer's bound.
 
-These are protocol and lifecycle components, not a native Connect action. A
+These protocol and lifecycle components feed the native Connect action. A
 Show ACK proves host capture admission, **not Android decoded or rendered pixels**.
-The native-library compatibility gate, actual DataChannel binding, foreground
-privacy cover/rendering integration and Android runtime tests remain release
-requirements. No live session or permission change is part of this checkpoint.
+The native-library compatibility gate and actual app runtime tests remain release
+requirements. No live session or permission change is part of source validation.
 
 ## Admission and privacy
 

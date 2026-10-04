@@ -5,7 +5,7 @@
     <uses-permission android:name="android.permission.CAMERA" tools:node="remove"
         tools:ignore="PermissionImpliesUnsupportedChromeOsHardware" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
-    <!-- Used only by explicit authenticated pairing; no background auto-connect. -->
+    <!-- Explicit authenticated pairing and selected-Mac media; no background auto-connect. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:allowBackup="false"

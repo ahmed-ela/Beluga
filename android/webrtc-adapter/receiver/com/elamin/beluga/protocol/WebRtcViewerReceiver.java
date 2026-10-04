@@ -45,7 +45,7 @@ import org.webrtc.audio.JavaAudioDeviceModule;
 import com.elamin.beluga.protocol.ViewerPairingAuthenticator.SessionCredential;
 
 /**
- * Receive-only M150 native receiver source, not yet in the app's dependency graph.
+ * Receive-only M150 native receiver.
  * Exclusively owns one transferred credential, WSS connection, ADM, factory and peer. Creates
  * no local tracks, recording prewarm, AudioRecord request, event log or media artifact. It must
  * only be constructed after exact saved-pair reservation and authenticated reconnect handoff.
@@ -270,8 +270,10 @@ final class WebRtcViewerReceiver implements ViewerConnectionSession.Media {
     @Override public CompletionStage<Void> close() {
         revoke(); return drained.thenApply(value -> value);
     }
+    /** Observe exact drainage without initiating or weakening the parent's close. */
+    CompletionStage<Void> completion() { return drained.thenApply(value -> value); }
     /**
-     * Main-thread-only integration seam, not wired into MainActivity or the app graph.
+     * Main-thread-only integration seam.
      * Construction must not allocate GL before mounting. One receiver admits one lifetime only;
      * a detached/failed surface cannot be replaced without the entire parent drainage receipt.
      */
@@ -301,9 +303,7 @@ final class WebRtcViewerReceiver implements ViewerConnectionSession.Media {
             fail(); return null;
         }
     }
-    // Feature admission remains disabled until compatible dependency + actual app UI/runtime gates.
-    boolean screenActivationAvailable() { return false; }
-    /** Future foreground owner must supply explicit scene/Show/Hide; no UI consumes this yet. */
+    /** The foreground owner supplies explicit scene/Show/Hide; this getter grants no Show. */
     ViewerScreenSession screenControlModel() { return live() ? screenSession : null; }
     @Override public String toString() { return "<Beluga native receiver; no decoded-media proof>"; }
 

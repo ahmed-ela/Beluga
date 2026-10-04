@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -26,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -33,6 +36,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.elamin.beluga.protocol.AndroidViewerMediaClient
 import com.elamin.beluga.protocol.ViewerLibraryController
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
@@ -44,14 +49,22 @@ class MainActivity : ComponentActivity() {
     private val timeouts = Handler(Looper.getMainLooper())
     private var screen by mutableStateOf(model.state)
     private lateinit var library: ViewerLibraryController
+    private lateinit var media: AndroidViewerMediaClient
     private var libraryState by mutableStateOf<ViewerLibraryController.State?>(null)
+    private var mediaState by mutableStateOf<AndroidViewerMediaClient.ScreenState?>(null)
+    private var mediaView by mutableStateOf<View?>(null)
     private var resumed by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        library = ViewerLibraryController.create(applicationContext)
+        media = AndroidViewerMediaClient.create(this)
+        library = media.library()
         libraryState = library.state()
+        media.observeScreen {
+            mediaState = it
+            mediaView = media.view()
+        }
         setContent {
             MaterialTheme {
                 PairingScreen(
@@ -69,6 +82,15 @@ class MainActivity : ComponentActivity() {
                     onSelect = { mac, expected -> if (resumed) library.select(mac.deviceID, expected) },
                     onForget = { mac, expected -> if (resumed) library.forget(mac.deviceID, expected) },
                     onAbandon = { row, expected -> if (resumed) library.abandon(row.slot, expected) },
+                    mediaState = mediaState,
+                    mediaView = mediaView,
+                    onConnect = { expected -> if (resumed) {
+                        media.setScene(AndroidViewerMediaClient.Scene.ACTIVE)
+                        library.connect(expected)
+                    } },
+                    onDisconnect = { media.setSceneActive(false); library.disconnect() },
+                    onShow = { if (resumed) media.show() },
+                    onHide = { media.hide() },
                 )
             }
         }
@@ -82,11 +104,13 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         resumed = true
+        media.setScene(AndroidViewerMediaClient.Scene.ACTIVE)
         refresh() // Rechecks the original monotonic scan deadline after sleep/backgrounding.
     }
 
     override fun onPause() {
         resumed = false
+        media.setScene(AndroidViewerMediaClient.Scene.INACTIVE)
         library.cancelPairing()
         model.forgetSensitiveInput()
         refresh()
@@ -94,6 +118,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        media.setScene(AndroidViewerMediaClient.Scene.BACKGROUND)
         library.stop()
         libraryState = library.state()
         model.forgetSensitiveInput()
@@ -102,6 +127,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        media.close()
         library.close()
         libraryState = library.state()
         timeouts.removeCallbacksAndMessages(null)
@@ -192,6 +218,12 @@ private fun PairingScreen(
     onSelect: (ViewerLibraryController.Mac, ViewerLibraryController.State) -> Unit,
     onForget: (ViewerLibraryController.Mac, ViewerLibraryController.State) -> Unit,
     onAbandon: (ViewerLibraryController.PendingEnrollment, ViewerLibraryController.State) -> Unit,
+    mediaState: AndroidViewerMediaClient.ScreenState?,
+    mediaView: View?,
+    onConnect: (ViewerLibraryController.State) -> Unit,
+    onDisconnect: () -> Unit,
+    onShow: () -> Unit,
+    onHide: () -> Unit,
 ) {
     val canPair = foreground && libraryState?.canPair() == true
     Surface(Modifier.fillMaxSize()) {
@@ -202,8 +234,12 @@ private fun PairingScreen(
         ) {
             Text("Beluga", style = MaterialTheme.typography.headlineLarge)
             Text("Android", style = MaterialTheme.typography.labelLarge)
+            libraryState?.let { library ->
+                ConnectionControls(library, foreground, mediaState, mediaView,
+                    onConnect, onDisconnect, onShow, onHide)
+            }
             Text("Scan a Mac’s pairing QR code, or enter its one-use code manually.")
-            Text("Initialize the local library below on first use, then pair a Mac. QR scans require a confirmation tap. This preview saves authenticated pairings; reconnecting and playing media are not implemented yet.")
+            Text("Initialize the local library on first use, then pair and select a Mac. Connect is a separate action. This preview receives audio and screen video only while open; leaving the app disconnects. Microphone, remote input and media handoff are not available.")
             OutlinedTextField(
                 value = state.manualInput,
                 onValueChange = onInput,
@@ -253,6 +289,62 @@ private fun PairingScreen(
 }
 
 @Composable
+private fun ConnectionControls(
+    library: ViewerLibraryController.State,
+    foreground: Boolean,
+    screen: AndroidViewerMediaClient.ScreenState?,
+    view: View?,
+    onConnect: (ViewerLibraryController.State) -> Unit,
+    onDisconnect: () -> Unit,
+    onShow: () -> Unit,
+    onHide: () -> Unit,
+) {
+    Text("Mac connection", style = MaterialTheme.typography.headlineSmall)
+    val selected = library.macs.firstOrNull { it.deviceID == library.selectedMacID }
+    Text(selected?.let { "Selected: ${it.displayName ?: "Saved Mac"}" } ?: "Select a saved Mac below.")
+    Text(connectionMessage(library.connectionStatus))
+    if (library.canDisconnect()) {
+        OutlinedButton(onClick = onDisconnect, enabled = foreground) {
+            Text(if (library.connectionStatus == ViewerLibraryController.ConnectionStatus.CONNECTING)
+                "Cancel connection" else "Disconnect")
+        }
+    } else {
+        Button(onClick = { onConnect(library) }, enabled = foreground && library.canConnect()) {
+            Text("Connect to selected Mac")
+        }
+    }
+    if (view != null) {
+        // Hide/inactivity must not dispose and recreate this receiver's single surface.
+        key(view) {
+            AndroidView(factory = { view }, modifier = Modifier.fillMaxWidth().height(320.dp))
+        }
+    }
+    if (screen != null && view != null) {
+        Text(when (screen.status) {
+            AndroidViewerMediaClient.ScreenStatus.UNAVAILABLE -> "Screen is not available."
+            AndroidViewerMediaClient.ScreenStatus.HIDDEN -> "Screen hidden; audio stays connected."
+            AndroidViewerMediaClient.ScreenStatus.SHOW_PENDING -> "Waiting for the Mac to start screen capture…"
+            AndroidViewerMediaClient.ScreenStatus.ACKNOWLEDGED -> "Mac screen capture acknowledged."
+            AndroidViewerMediaClient.ScreenStatus.HIDE_PENDING -> "Screen covered; waiting for capture to stop…"
+            AndroidViewerMediaClient.ScreenStatus.CLOSED -> "Screen session ended."
+        })
+        Button(onClick = onShow, enabled = foreground && screen.canShow) { Text("Show Mac screen") }
+        OutlinedButton(onClick = onHide, enabled = foreground && screen.canHide) { Text("Hide Mac screen") }
+    }
+}
+
+internal fun connectionMessage(status: ViewerLibraryController.ConnectionStatus): String = when (status) {
+    ViewerLibraryController.ConnectionStatus.IDLE -> "Not connected."
+    ViewerLibraryController.ConnectionStatus.CONNECTING -> "Connecting to the selected Mac…"
+    ViewerLibraryController.ConnectionStatus.ACTIVE -> "Connected. Audio is enabled; use Show for the Mac screen."
+    ViewerLibraryController.ConnectionStatus.CANCELLING -> "Disconnecting and waiting for cleanup…"
+    ViewerLibraryController.ConnectionStatus.ENDED -> "The Mac ended the connection."
+    ViewerLibraryController.ConnectionStatus.CANCELLED -> "Disconnected."
+    ViewerLibraryController.ConnectionStatus.FAILED -> "Connection failed. Nothing will retry automatically."
+    ViewerLibraryController.ConnectionStatus.CLEANUP_UNPROVEN -> "Connection cleanup is unverified. Further connections and library changes are blocked."
+}
+
+@Composable
 private fun SavedMacLibrary(
     state: ViewerLibraryController.State,
     foreground: Boolean,
@@ -267,7 +359,10 @@ private fun SavedMacLibrary(
         ViewerLibraryController.Status.INACTIVE -> Text("Library is inactive while this screen is backgrounded.")
         ViewerLibraryController.Status.UNSUPPORTED -> Text("Pairing requires Android 8.1 (API 27) or later.")
         ViewerLibraryController.Status.LOADING -> Text("Reading the saved library…")
-        ViewerLibraryController.Status.WORKING -> Text("Updating the saved library…")
+        ViewerLibraryController.Status.WORKING -> Text(if (state.canDisconnect() ||
+                state.connectionStatus == ViewerLibraryController.ConnectionStatus.CANCELLING)
+            "Library changes are unavailable until this connection finishes cleanup."
+            else "Updating the saved library…")
         ViewerLibraryController.Status.UNAVAILABLE -> {
             if (state.pairingStatus == ViewerLibraryController.PairingStatus.CLEANUP_UNPROVEN) {
                 Text("Library actions are blocked because pairing cleanup could not be verified. Nothing is reset automatically.")

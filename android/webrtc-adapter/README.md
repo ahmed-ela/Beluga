@@ -1,11 +1,13 @@
-# Exact-output WebRTC adapter — not yet enabled in the app
+# Exact-output WebRTC adapter — receiver preview integration
 
-This directory is **not in the app dependency graph**. It does not enable Android
-Connect, replace the installed app, or qualify Android playback. It contains an
-opt-in Java source patch, an offline derived-artifact builder, and the receive-only
-receiver integration for the retained `webrtc-sdk/android v150.7871.01` SDK.
-Do not append these classes beside an unchanged AAR: any future derived artifact
-must replace the original `WebRtcAudioTrack` and its nested classes exactly once.
+The preview app graph now includes `receiver/` and one exact local derived AAR.
+This source enrollment does not install an app or qualify Android playback.
+This directory contains an opt-in Java source patch, an offline derived-artifact
+builder, and the receive-only receiver integration for the retained
+`webrtc-sdk/android v150.7871.01` SDK. Do not append these classes beside an
+unchanged AAR: the derived artifact replaces the original `WebRtcAudioTrack`
+and its nested classes exactly once. `src/` is deliberately not an app source
+directory; its `PlaybackOutputObserver` is already in the derived AAR.
 No native library, ELF header, or Java class-version header is modified.
 
 ## Pinned input
@@ -78,19 +80,48 @@ Quarantine is containment, not leak-free recovery.
 The receiver uses the existing production rendezvous origin, stored identities,
 fresh session credentials, and broker-provided ICE configuration. It includes no
 private-oracle connector, candidate restrictions, PCM collector or diagnostic
-artifact writer. Connect/UI composition remains disabled. The retained native
+artifact writer. App/UI composition and its validation are separate from this
+dependency enrollment. The retained native
 API makes SetAudioPlayout(false) a synchronous worker call to StopPlayout, but
 discards its return value; the exact Java stop receipt is therefore required
 before peer.close as well as disposal. See the pinned upstream
 [PeerConnection implementation](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/pc/peer_connection.cc#L1576)
 and [AudioState implementation](https://github.com/webrtc-sdk/webrtc/blob/73cb8180f7258ee292878d6edd05177f41883962/audio/audio_state.cc#L56).
 
-Still required: app receiver/UI composition, dependency/license/security enrollment,
+Still required: complete license/security review, app receiver/UI validation,
 focused actual-device/emulator lifecycle/media evidence for this derived artifact,
 foreground/background UI/service integration and public-network compatibility.
 Do not use this directory as a shipping or runtime pass.
 
-## Offline derived-AAR builder (not app enrollment)
+## Reproducing the receiver preview dependency
+
+The app requires `-PbelugaDerivedWebrtcAar=/absolute/canonical/libwebrtc-derived.aar`.
+The path must be an existing regular file with no symlink/path aliases, and its
+SHA-256 must be exactly
+`e98a90d72fa186d9feb92ea3cde3a6dda06e68361c061bce9f72bf854c92bf6d`.
+The Gradle configuration and `preBuild` recheck it. There is no fallback to the
+raw SDK, download, checked-in binary or artifact search. An absent/mismatched
+input fails instead of silently building a different receiver.
+
+Run Gradle under an explicitly supplied local JDK21 `JAVA_HOME`; the retained
+upstream classes require that compiler. Java/Kotlin app output stays at17 and
+AGP's Android platform wiring is unchanged. No toolchain or SDK download is
+enabled. Continue using the repository's offline strict dependency-verification
+and lock settings. This file dependency is pinned above rather than by Maven
+coordinates. The existing ABI set is retained; it is not an all-ABI runtime pass.
+Native stripping is disabled for this exact library so packaging must retain its
+reviewed bytes; inspect the built APK independently before runtime use.
+
+The per-variant `prepare…WebRtcNotices` task copies the existing upstream `LICENSE.webrtc`,
+`PATENTS.webrtc` and this directory's `NOTICE.beluga` into APK assets at
+`third-party/webrtc-sdk-150.7871.01/`. This explicit copy is necessary because
+notices in the outer AAR are not a guarantee of notice delivery in the APK.
+Those two upstream notices are not a complete third-party inventory for the
+prebuilt native libraries. Collecting/validating transitive native notices and
+completing license/security review remain release requirements; dependency
+enrollment and previous raw-SDK emulator evidence do not satisfy them.
+
+## Offline derived-AAR builder
 
 `build-derived-aar.rb` consumes explicit local inputs; it never downloads, signs,
 installs, enrolls a Gradle dependency or loads JNI. An existing output directory

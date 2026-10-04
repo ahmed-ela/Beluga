@@ -1,0 +1,19 @@
+Beluga receiver preview — derived WebRTC dependency
+
+Upstream: webrtc-sdk/android v150.7871.01
+Source revision: 73cb8180f7258ee292878d6edd05177f41883962
+Raw AAR SHA-256:
+8ad5e5fd02f0177743ddb566bea329006bef7689b944f6351717cd1d018958c0
+Derived AAR SHA-256:
+e98a90d72fa186d9feb92ea3cde3a6dda06e68361c061bce9f72bf854c92bf6d
+
+Beluga modifies only the Java WebRtcAudioTrack output-lifetime/callback path and
+adds PlaybackOutputObserver. All unrelated SDK classes and all original native
+library payloads are preserved. Source patch, offline builder, input contract
+and provenance instructions are in android/webrtc-adapter in the Beluga source.
+The derived AAR also contains META-INF/beluga-webrtc-adapter provenance.
+
+The accompanying LICENSE.webrtc and PATENTS.webrtc reproduce the upstream
+notices. They are not a complete inventory of third-party components linked
+into the prebuilt native libraries. Complete transitive notice/license and
+security review is still required before release distribution.
