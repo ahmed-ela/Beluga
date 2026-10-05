@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { summarizeFixtureDiagnostics, validFixtureDiagnostics } from "./native-oracle/relay-fixture-diagnostics.mjs";
+import { RELAY_FAILURE_CODES } from "./native-oracle/relay-contract.js";
 
 const secret = "private-canary-https://example.invalid/credential";
 const epoch = (number = 1) => ({ epoch: number, phase: number === 3 ? "expiry" : "revoke", failure: null,
@@ -12,6 +13,19 @@ const report = () => ({ failure: null, nativeExitCode: 0, rawError: secret,
   browser: { complete: true, failure: null, epochs: [epoch(1), epoch(2), epoch(3)],
     nativeSnapshots: [{ phase: "before_revoke", raw: secret }, { phase: "success", raw: secret }] } });
 const summarize = (value = report(), boundary = "none") => summarizeFixtureDiagnostics(value, boundary);
+test("fixed relay rejection survives later socket stage without widening the scalar schema", () => {
+  for (const code of RELAY_FAILURE_CODES) {
+    const value = report();
+    value.browser.epochs = [{ ...epoch(), failure: "relay", decoded: false,
+      relay: { status: "failed", observations: 0 }, stage: "socket_close", errorStage: "relay_proof", errorCode: code }];
+    const projected = summarize(value, "native_exit");
+    assert.equal(projected.errorCode, code);
+    assert.equal(projected.errorStage, "relay_proof");
+    assert.equal(projected.stage, "socket_close");
+    assert.equal(Object.keys(projected).length, 22);
+    safe(projected);
+  }
+});
 function safe(value) {
   assert.equal(validFixtureDiagnostics(value), true);
   assert.equal(JSON.stringify(value).includes(secret), false);

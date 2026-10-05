@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { AUDIO_SHARE_PROTOCOL, parseAuthentication, parseClientMessage, validShareID } from "../../public/protocol.js";
-import { validRelayEpochReport } from "./relay-contract.js";
+import { validRelayEpochReport, RELAY_FAILURE_CODES } from "./relay-contract.js";
 
 const require = createRequire(new URL("../../../../services/RendezvousWorker/package.json", import.meta.url));
 const { WebSocketServer } = require("ws");
@@ -16,12 +16,12 @@ const equal = (a, b) => typeof a === "string" && typeof b === "string" &&
   a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const id = () => randomBytes(16).toString("base64url");
 const diagnosticStages = new Set(["start", "socket_open", "socket_error", "socket_close", "wire", "ready", "offer",
-  "candidate", "cipher_open", "cipher_seal", "worklet", "csp"]);
+  "candidate", "cipher_open", "cipher_seal", "worklet", "csp", "relay_proof"]);
 const diagnosticCodes = new Set(["unknown", "invalid_key_material", "invalid_role", "invalid_proof", "invalid_link_origin",
   "invalid_signal_context", "invalid_signal", "signal_closed", "invalid_link", "invalid_message", "candidate_overflow",
   "unexpected_answer", "invalid_ready", "offer_overlap", "unexpected_media", "stale_candidate", "invalid_audio_description",
   "socket_error", "socket_closed", "connect_src", "OperationError", "NotSupportedError", "InvalidAccessError",
-  "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError"]);
+  "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError", ...RELAY_FAILURE_CODES]);
 
 export async function createOracleServer({ key, cert, systemSource = null, relayIce = null }) {
   if (systemSource && relayIce) throw new Error("invalid_oracle_mode");

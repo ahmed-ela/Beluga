@@ -25,14 +25,22 @@ All previous product progress and the pause checkpoint were remote-confirmed at
   missing; the variable first-Show result still does not establish a deterministic
   product defect. Android currently supports the receiver path, not actual-media
   handoff, background playback, microphone forwarding or remote input.
-- A fresh read-only check found an active phone session and its microphone input
-  route. No relay/authentication retry, phone operation, host restart or route
-  change was attempted. Revalidate the safe boundary before any live test.
+- After the phone naturally disconnected, one approved guarded relay attempt
+  connected and received a good stereo waveform, but failed its relay proof.
+  Temporary credentials were revoked and all owned processes/scratch cleaned up;
+  the sticky route monitor reported zero notifications and clean teardown. The
+  production host and routes remained unchanged. This is not relay success.
+- The existing diagnostics did not identify which proof predicate failed. Added
+  fixed first-rejection codes that survive intentional socket teardown without
+  changing the five-field proof, thresholds, media or cleanup acceptance. All
+  45 focused proof/browser/parent/lifecycle/diagnostic cases pass with no skips.
+  A separate bounded local no-TURN browser probe found valid stats bindings and
+  timestamps; it neither identifies the relay defect nor qualifies deployment.
 
-Next: bind and offline-validate the private credential reader/supervisor to the
-diagnostic schema and exact source, then make one bounded diagnostic relay attempt
-when the existing quiet-session/route gate permits it. Do not weaken the gate or
-repeat the old opaque failure. Sharing service, Android app qualification, final
+Next: admit the fixed predicate codes in a fresh offline-tested private reader,
+bind the reviewed supervisor to the new source, then make one bounded changed
+diagnostic relay attempt when the existing quiet-session/route gate permits it.
+Do not weaken the gate or repeat the old opaque failure. Sharing service, Android app qualification, final
 release validation, signed DMG/update feed and matching TestFlight publication
 remain open. The previous YouTube and real upgrade rehearsal deferrals remain.
 

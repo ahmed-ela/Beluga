@@ -1,16 +1,17 @@
 // Fixed scalar projection only. Never retain the child report, signaling or IDs.
+import { RELAY_FAILURE_CODES } from "./relay-contract.js";
 const boundaries = new Set(["report_invalid", "forced_termination", "cleanup", "runner", "native_exit",
   "browser_incomplete", "browser", "relay_proof", "stereo_or_lifecycle", "none"]);
 const runnerFailures = new Set(["interrupted", "relay_credentials_refused", "deadline", "runner_or_native_boundary", "cleanup"]);
 const browserFailures = new Set(["decode", "topology", "browser", "deadline", "relay"]);
 const phases = new Set(["revoke", "expiry"]);
 const stages = new Set(["start", "socket_open", "socket_error", "socket_close", "wire", "ready", "offer",
-  "candidate", "cipher_open", "cipher_seal", "worklet", "csp"]);
+  "candidate", "cipher_open", "cipher_seal", "worklet", "csp", "relay_proof"]);
 const codes = new Set(["unknown", "invalid_key_material", "invalid_role", "invalid_proof", "invalid_link_origin",
   "invalid_signal_context", "invalid_signal", "signal_closed", "invalid_link", "invalid_message", "candidate_overflow",
   "unexpected_answer", "invalid_ready", "offer_overlap", "unexpected_media", "stale_candidate", "invalid_audio_description",
   "socket_error", "socket_closed", "connect_src", "OperationError", "NotSupportedError", "InvalidAccessError",
-  "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError"]);
+  "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError", ...RELAY_FAILURE_CODES]);
 const peerStates = new Set(["new", "connecting", "connected", "disconnected", "failed", "closed"]);
 const relayStates = new Set(["pending", "verified", "failed"]);
 const nativePhases = new Set(["before_revoke", "after_revoke", "after_expiry", "after_owner_loss", "failure_before_cleanup", "success"]);

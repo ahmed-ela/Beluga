@@ -1,6 +1,6 @@
 import { AudioShareListener, readAndClearLink } from "/public/core.js";
 import { AUDIO_SHARE_PROTOCOL } from "/public/protocol.js";
-import { createRelayProof, failRelayEpoch } from "/oracle/relay-contract.js";
+import { createRelayProof, failRelayEpoch, RELAY_FAILURE_CODES } from "/oracle/relay-contract.js";
 
 let revision = 0, epoch = 0, client = null, record = null, context = null, node = null, source = null, player = null;
 let microphoneCalls = 0;
@@ -9,7 +9,7 @@ const errorCodes = new Set(["unknown", "invalid_key_material", "invalid_role", "
   "invalid_signal_context", "invalid_signal", "signal_closed", "invalid_link", "invalid_message", "candidate_overflow",
   "unexpected_answer", "invalid_ready", "offer_overlap", "unexpected_media", "stale_candidate", "invalid_audio_description",
   "socket_error", "socket_closed", "connect_src", "OperationError", "NotSupportedError", "InvalidAccessError",
-  "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError"]);
+  "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError", ...RELAY_FAILURE_CODES]);
 function diagnostic(currentRecord, stage, error = null) {
   if (record !== currentRecord) return;
   currentRecord.stage = stage;
@@ -80,7 +80,10 @@ async function sampleStats(currentClient, currentRecord) {
       currentRecord.relay = currentClient.oracleRelay.observe(stats,
         performance.timeOrigin + performance.now(), currentClient.oracleWaveformGood);
       if (currentRecord.relay.status === "failed") {
-        failRelayEpoch(currentRecord, currentClient.oracleRelay); currentClient.stop("unavailable");
+        failRelayEpoch(currentRecord, currentClient.oracleRelay);
+        // Latch the proof's fixed first rejection before intentional socket close.
+        diagnostic(currentRecord, "relay_proof", { message: currentClient.oracleRelay.failureReason() });
+        currentClient.stop("unavailable");
       }
       else if (currentRecord.relay.status === "verified") {
         currentRecord.decoded = true; currentClient.setPlaybackActive(true);
@@ -89,7 +92,9 @@ async function sampleStats(currentClient, currentRecord) {
     report();
   } catch {
     if (currentClient.oracleRelay && record === currentRecord && !currentRecord.closed && !currentClient.closed) {
+      const reason = currentClient.oracleRelay.failureReason() ?? "relay_stats_exception";
       failRelayEpoch(currentRecord, currentClient.oracleRelay);
+      diagnostic(currentRecord, "relay_proof", { message: reason });
       currentClient.stop("unavailable"); report();
     }
     // Direct-mode statistics remain optional diagnostics.

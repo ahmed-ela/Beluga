@@ -5,6 +5,7 @@ import { PassThrough, Writable } from "node:stream";
 import { readSharingMasterInput, runOwnedRelayFixture,
   admitFixtureOutcome as admitWithDiagnostics } from "./native-oracle/relay-parent-process.mjs";
 import { validFixtureDiagnostics } from "./native-oracle/relay-fixture-diagnostics.mjs";
+import { RELAY_FAILURE_CODES } from "./native-oracle/relay-contract.js";
 
 // Keep the original acceptance/cleanup assertions independent of diagnostics.
 function proof(outcome) {
@@ -158,4 +159,20 @@ test("failed child evidence survives admission without changing pass or cleanup"
   assert.equal(admitWithDiagnostics(value, 1).diagnostics.boundary, "browser");
   const clean = report();
   assert.equal(admitWithDiagnostics(clean, 1).diagnostics.boundary, "runner");
+});
+
+test("first relay predicate reaches the parent without changing failure or cleanup admission", () => {
+  for (const code of RELAY_FAILURE_CODES) {
+    const value = report();
+    value.passed = false; value.relayVerified = false; value.nativeExitCode = 1;
+    value.browser.complete = false; value.browser.failure = "relay";
+    Object.assign(value.browser.epochs[0], { failure: "relay", decoded: false,
+      stage: "socket_close", errorStage: "relay_proof", errorCode: code,
+      relay: { status: "failed", observations: 0, elapsedMs: 0, pairBytesReceivedDelta: 0, audioBytesReceivedDelta: 0 } });
+    const outcome = admitWithDiagnostics(value, 1);
+    assert.deepEqual(proof(outcome), { passed: false, cleanupVerified: true });
+    assert.equal(outcome.diagnostics.errorCode, code);
+    assert.equal(outcome.diagnostics.errorStage, "relay_proof");
+    assert.equal(outcome.diagnostics.stage, "socket_close");
+  }
 });

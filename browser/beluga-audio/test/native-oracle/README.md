@@ -73,7 +73,10 @@ timestamps. Missing, ambiguous, stale, frozen, regressed, replaced or non-relay 
 fails closed. Stats use the browser performance-origin clock. Startup silence stays
 pending; a bad window after proof begins is terminal. The bounded scalar proof is
 retained through peer closure; no candidate IDs, addresses, URLs or credentials are
-reported. `SIGINT`/`SIGTERM` cancel pending input/setup and enter owned cleanup once,
+reported. The first rejected proof predicate is retained as a fixed `relay_*`
+error code at stage `relay_proof`, before intentional socket teardown can obscure
+it. No raw stats or exception strings are added and acceptance is unchanged.
+`SIGINT`/`SIGTERM` cancel pending input/setup and enter owned cleanup once,
 permanently failing the result. The result path is checked before relay allocation.
 
 Even a pass proves only this fixture's selected browser relay path and decoded
