@@ -9,6 +9,16 @@ const safeText = (value, bound = 256) => typeof value === "string" && value.leng
 const require = (condition, code) => { if (!condition) throw new Error(code); };
 const artifactKeys = ["path", "sha256"];
 
+export function captureDesignatedRequirement(signature) {
+  require(typeof signature === "string" && signature.length <= 16_384, "capture_identity_mismatch");
+  const lines = signature.split("\n").filter((line) => /^\s*(?:#\s*)?designated\b/.test(line));
+  require(lines.length === 1, "capture_identity_mismatch");
+  // codesign prefixes a computed, implicit requirement with "# ".
+  const match = /^(?:# )?designated => (.+)$/.exec(lines[0]);
+  require(match && safeText(match[1], 4096), "capture_identity_mismatch");
+  return match[1];
+}
+
 export function admitSystemSourceGate(gate, artifacts, now, { initial = true } = {}) {
   require(exact(gate, ["schema", "checkedAt", "expiresAt", "oracleExecutionApproved", "audioChallengeApproved",
     "capture", "emitter", "monitor", "routes", "phone"]), "invalid_gate");

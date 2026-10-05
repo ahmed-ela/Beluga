@@ -1,8 +1,26 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { admitSystemSourceGate, parseRouteLine, systemSourceEvidencePasses } from "./native-oracle/system-source-contract.mjs";
+import { admitSystemSourceGate, captureDesignatedRequirement, parseRouteLine, systemSourceEvidencePasses } from "./native-oracle/system-source-contract.mjs";
 import { createSystemSourceCancellation } from "./native-oracle/system-source-cancellation.mjs";
+
+test("capture identity accepts exactly one explicit or implicit codesign requirement", () => {
+  const requirement = 'cdhash H"a673eaf3a91657106a6aee779edd5eedbed18cea" or cdhash H"031671a15adef455c09b4b8f4ffab0d802022420"';
+  for (const prefix of ["", "# "]) {
+    assert.equal(captureDesignatedRequirement(`Executable=/private/xctest\n${prefix}designated => ${requirement}\n`), requirement);
+  }
+  for (const signature of ["", "Executable=/private/xctest\n", "designated => \n",
+    "#designated => identifier test", " designated => identifier test",
+    "designated => identifier test\r", "designated => identifier\ttest",
+    "designated => one\ndesignated => two", "# designated => one\n# designated => one",
+    "designated => one\n# designated => two", "designated => one\n # designated => two",
+    `designated => ${"x".repeat(4097)}`, "x".repeat(16_385), null]) {
+    assert.throws(() => captureDesignatedRequirement(signature), /capture_identity_mismatch/);
+  }
+  const { gate, artifacts } = gateFixture();
+  artifacts.capture.designatedRequirement = captureDesignatedRequirement(`# designated => ${requirement}\n`);
+  assert.throws(() => admitSystemSourceGate(gate, artifacts, 2_000), /capture_identity_mismatch/);
+});
 
 function gateFixture() {
   const item = (name) => ({ path: `/private/owned/${name}`, sha256: "a".repeat(64) });

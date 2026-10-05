@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, X509Certificate } from "node:crypto";
 import { createOracleServer } from "./server.mjs";
-import { admitSystemSourceGate, parseRouteLine, systemSourceEvidencePasses } from "./system-source-contract.mjs";
+import { admitSystemSourceGate, captureDesignatedRequirement, parseRouteLine, systemSourceEvidencePasses } from "./system-source-contract.mjs";
 import { createSystemSourceCancellation } from "./system-source-cancellation.mjs";
 
 const hash = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -129,9 +129,7 @@ try {
   if (basename(artifacts.capture.path) !== "xctest") throw new Error("capture_host_not_supported");
   await commandOutput("/usr/bin/codesign", ["--verify", "--strict", artifacts.capture.path]);
   const signature = await commandOutput("/usr/bin/codesign", ["--display", "--requirements", "-", artifacts.capture.path]);
-  const requirements = signature.split("\n").filter((line) => line.startsWith("designated => "));
-  if (requirements.length !== 1) throw new Error("capture_identity_mismatch");
-  artifacts.capture.designatedRequirement = requirements[0].slice("designated => ".length);
+  artifacts.capture.designatedRequirement = captureDesignatedRequirement(signature);
   admitSystemSourceGate(gate, artifacts, Date.now());
   const recheck = () => {
     cancellation.throwIfCancelled();
