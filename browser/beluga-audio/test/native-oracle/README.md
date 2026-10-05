@@ -55,8 +55,8 @@ Execution requires a separately authorized parent issuer/revoker lifecycle. The
 parent must mint short-lived ICE credentials, pass one canonical `JSON.stringify`
 envelope `{iceServers,expiresAt}` through a private stdin pipe/socket and close it,
 then revoke the issued credentials after runner cleanup on success, failure or
-interruption. No issuer is provided here, and possessing an arbitrary stdin payload
-is not authorization to run. Never put secrets in arguments, environment, files or
+interruption. The operator entry point below supplies that lifecycle; possessing an
+arbitrary stdin payload is not authorization to run. Never put secrets in arguments, environment, files or
 logs; the runner never accepts master-key/API-token fields. `expiresAt` is Unix
 milliseconds, at least the selected run bound plus 30 seconds ahead and no more
 than 300 seconds ahead. Input is capped at 64 KiB and five seconds, normalized by
@@ -82,6 +82,40 @@ stereo/lifecycle. `systemAudioVerified`, `deployedWorkerVerified`,
 neither final acoustic output nor production enablement. Pure regressions are in
 `test/relay-oracle.test.js` and ordinary `npm test`; they require no credentials,
 browser, native media or network. Source preparation does not authorize execution.
+
+### Parent-owned issuance and revocation
+
+`run-credentialed-relay.mjs --execute-authorized-relay true` accepts the same
+`--test-bundle`, optional `--chrome`, `--timeout-seconds` and `--result` arguments.
+It requires a trusted, normally authorized credential reader to provide exactly
+`{apiToken,keyId,name:"beluga-audio-share-v1"}` as canonical JSON over private stdin.
+It does not access Keychain, change its permissions, create a relay app, enable
+production sharing or accept the existing phone relay's credential namespace.
+The exact account/item provenance is the operator's responsibility: a JSON name
+is not independent evidence of an account or authorization.
+
+The parent makes one issuance attempt for 180-second credentials, then runs the
+existing relay fixture. Only temporary ICE reaches the child, never the master.
+Following child cleanup it attempts every distinct known username's revocation
+once, with separate five-second deadlines even after cancellation. These operations
+use the [documented Cloudflare API](https://developers.cloudflare.com/realtime/turn/generate-credentials/).
+Responses and input are size/time bounded. Error payloads and child output are
+never copied to the parent report; that report contains fixed scalar status,
+counts and proof-scope flags only. No automatic retry occurs.
+
+An uncertain issuance, failed revocation, cancelled run, missing child cleanup,
+or invalid child proof cannot pass. Forced runner termination reports cleanup as
+unverified: its separately owned child groups require operator reconciliation
+before another attempt. Credential expiry is not process-cleanup evidence or a
+substitute for a successful revocation acknowledgment. The entry point is not a
+standalone recovery controller. Normal Keychain approval, current source/native
+artifact bindings and an external owned-process supervisor must be established
+before live execution. Neither source tests nor a local fixture pass enable
+production sharing or qualify the deployed Worker, phones or Android release.
+
+`test/relay-lifecycle.test.js` uses injected HTTP/fixture responses;
+`test/relay-parent-process.test.js` uses fake streams/processes. Neither calls the
+network, reads credentials, launches a browser, or plays/captures audio.
 
 ## Separate real-system-source mode (execution requires fresh approval)
 
