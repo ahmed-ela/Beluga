@@ -1,37 +1,55 @@
 // Explicit opt-in only. Owns one HTTPS fixture broker, private headless browser and XCTest.
 // No CDP, signed-in browser, global trust, microphone, system tap or real audio output.
 import { spawn } from "node:child_process";
-import { mkdtemp, chmod, readFile, rm, writeFile, stat } from "node:fs/promises";
+import { mkdtemp, chmod, readFile, rm, writeFile, stat, lstat } from "node:fs/promises";
+import { fstatSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { X509Certificate, createHash } from "node:crypto";
 import { createOracleServer } from "./server.mjs";
+import { readRelayIce } from "./relay-contract-input.mjs";
+import { finishRelayResult } from "./relay-contract.js";
+import { createSystemSourceCancellation } from "./system-source-cancellation.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
-  if (!["--test-bundle", "--chrome", "--timeout-seconds", "--result"].includes(process.argv[index]) || !process.argv[index + 1]) {
-    throw new Error("Expected --test-bundle, optional --chrome/--timeout-seconds/--result");
+  if (!["--test-bundle", "--chrome", "--timeout-seconds", "--result", "--relay-ice-stdin"].includes(process.argv[index]) || !process.argv[index + 1]) {
+    throw new Error("Expected --test-bundle, optional --chrome/--timeout-seconds/--result/--relay-ice-stdin");
   }
   if (args.has(process.argv[index])) throw new Error("Duplicate option");
   args.set(process.argv[index], process.argv[index + 1]);
 }
+if (args.has("--relay-ice-stdin") && args.get("--relay-ice-stdin") !== "true") throw new Error("Relay opt-in must be true");
+const relay = args.has("--relay-ice-stdin");
+// Relay cancellation is armed before credential input or resource allocation.
+const cancellation = relay ? createSystemSourceCancellation() : null;
+const inputAbort = new AbortController();
+let interrupted = false;
+const interruptInput = () => { interrupted = true; inputAbort.abort(); };
+if (relay) { process.on("SIGINT", interruptInput); process.on("SIGTERM", interruptInput); }
 const testBundle = resolve(args.get("--test-bundle") ?? "");
 if (!args.has("--test-bundle") || !testBundle.endsWith(".xctest") || !(await stat(testBundle)).isDirectory()) throw new Error("Exact compiled XCTest bundle required");
 const chrome = args.get("--chrome") ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 if (!(await stat(chrome)).isFile()) throw new Error("Chrome executable unavailable");
 const seconds = Number(args.get("--timeout-seconds") ?? 60);
 if (!Number.isSafeInteger(seconds) || seconds < 45 || seconds > 90) throw new Error("Bound must be 45...90 seconds");
-const directory = await mkdtemp(join(tmpdir(), "beluga-native-browser-oracle."));
-await chmod(directory, 0o700);
-let broker, browser, native, deadline;
+const resultPath = args.has("--result") ? resolve(args.get("--result")) : null;
+if (relay && resultPath) {
+  if (!(await stat(dirname(resultPath))).isDirectory()) throw new Error("Result parent must already exist");
+  try { await lstat(resultPath); throw new Error("Result must not exist"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+}
+let directory, broker, browser, native, deadline, relayIce;
 const children = new Set();
 const ownedGroups = new Set();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const childEnvironment = Object.fromEntries(["PATH", "HOME", "TMPDIR", "DEVELOPER_DIR", "SDKROOT", "LANG"]
   .filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 function child(command, argv, options = {}) {
+  cancellation?.throwIfCancelled();
   const process = spawn(command, argv, { stdio: ["ignore", "pipe", "pipe"], env: childEnvironment, detached: true, ...options });
+  if (relay && process.pid) ownedGroups.add(process.pid);
   children.add(process); process.once("exit", () => children.delete(process));
   // A failed spawn has no live child; consume its EventEmitter error so finally
   // can always release the broker/profile. Native/certificate promises still reject.
@@ -54,16 +72,30 @@ async function boundedCommand(command, argv, ms) {
 }
 let result = { passed: false, kind: "fixture-native-to-headless-browser", deployedWorkerVerified: false,
   systemAudioVerified: false, physicalDeviceVerified: false, nativeExitCode: null, browser: null };
+if (relay) { result.kind = "fixture-native-to-relay-headless-browser"; result.relayVerified = false; result.unrelatedNetworksVerified = false; }
 try {
+  cancellation?.throwIfCancelled();
+  if (relay) {
+    const descriptor = fstatSync(0);
+    relayIce = await cancellation.run(readRelayIce(process.stdin, {
+      privatePipe: descriptor.isFIFO() || descriptor.isSocket(), runMilliseconds: seconds * 1_000, signal: inputAbort.signal,
+    }));
+  }
+  directory = await mkdtemp(join(tmpdir(), "beluga-native-browser-oracle."));
+  await chmod(directory, 0o700); cancellation?.throwIfCancelled();
   const keyPath = join(directory, "key.pem"), certPath = join(directory, "cert.pem");
-  await boundedCommand("/usr/bin/openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes",
+  const certificateCommand = boundedCommand("/usr/bin/openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes",
     "-keyout", keyPath, "-out", certPath, "-days", "1", "-config",
     fileURLToPath(new URL("./certificate.cnf", import.meta.url)), "-extensions", "san"], 10_000);
+  await (cancellation ? cancellation.run(certificateCommand) : certificateCommand);
   await chmod(keyPath, 0o600); await chmod(certPath, 0o600);
   const key = await readFile(keyPath), cert = await readFile(certPath), certificate = new X509Certificate(cert);
   const pin = createHash("sha256").update(certificate.raw).digest("hex");
   const spki = createHash("sha256").update(certificate.publicKey.export({ type: "spki", format: "der" })).digest("base64");
-  broker = await createOracleServer({ key, cert }); key.fill(0);
+  cancellation?.throwIfCancelled();
+  if (relayIce && relayIce.expiresAt - Date.now() < seconds * 1_000 + 15_000) throw new Error("relay_credentials_refused");
+  broker = await createOracleServer({ key, cert, ...(relay ? { relayIce } : {}) }); key.fill(0);
+  cancellation?.throwIfCancelled();
   browser = child(chrome, ["--headless=new", `--user-data-dir=${join(directory, "chrome-profile")}`,
     "--no-first-run", "--disable-default-apps", "--disable-extensions", "--disable-audio-input", "--disable-audio-output",
     "--autoplay-policy=no-user-gesture-required", "--disable-background-timer-throttling", "--disable-renderer-backgrounding",
@@ -80,7 +112,8 @@ try {
   native.stdout.resume(); native.stderr.resume();
   const exit = new Promise((resolve, reject) => { native.once("error", reject); native.once("exit", (code) => resolve(code)); });
   const timeout = new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error("Oracle deadline reached")), seconds * 1_000); });
-  result.nativeExitCode = await Promise.race([exit, timeout]);
+  const completion = Promise.race([exit, timeout]);
+  result.nativeExitCode = await (cancellation ? cancellation.run(completion) : completion);
   result.browser = broker.state();
   const epochs = result.browser.epochs;
   result.passed = result.nativeExitCode === 0 && result.browser.complete && result.browser.failure === null &&
@@ -90,10 +123,13 @@ try {
     epochs[2].shareID !== epochs[0].shareID;
 } catch (error) {
   // Fixed failure names only; no URL/request/capability-bearing exception payloads.
-  result.failure = error?.message === "Oracle deadline reached" ? "deadline" : "runner_or_native_boundary";
+  result.failure = interrupted ? "interrupted" : error?.message === "relay_credentials_refused" ? "relay_credentials_refused" :
+    error?.message === "Oracle deadline reached" ? "deadline" : "runner_or_native_boundary";
   if (broker) result.browser = broker.state();
 } finally {
+  inputAbort.abort();
   clearTimeout(deadline);
+  const cleanup = async () => {
   for (const pid of ownedGroups) signalGroup(pid, "SIGTERM");
   for (const child of children) child.kill("SIGTERM");
   await sleep(500);
@@ -104,13 +140,34 @@ try {
   result.ownedChildrenReaped = children.size === 0;
   result.ownedProcessGroupsGone = [...ownedGroups].every((pid) => !signalGroup(pid, 0));
   if (!result.ownedChildrenReaped || !result.ownedProcessGroupsGone) result.passed = false;
+  if (relay && broker) result.browser = broker.state();
   await broker?.close();
-  await rm(directory, { recursive: true, force: true });
+  if (directory) await rm(directory, { recursive: true, force: true });
+  };
+  try { await (cancellation ? cancellation.cleanup(cleanup) : cleanup()); }
+  catch { result.passed = false; result.failure = "cleanup"; }
+  if (relayIce) {
+    for (const server of relayIce.iceServers) { delete server.username; delete server.credential; }
+    relayIce.iceServers.length = 0; relayIce = null;
+  }
 }
-if (args.has("--result")) {
-  const path = resolve(args.get("--result"));
-  if (!(await stat(dirname(path))).isDirectory()) throw new Error("Result parent must already exist");
-  await writeFile(path, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+if (relay) {
+  // Like the system-source runner, keep cancellation armed through cleanup, then
+  // publish synchronously: no await may separate the last verdict from its output.
+  try {
+    finishRelayResult(result, interrupted);
+    if (resultPath) writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+    console.log(JSON.stringify(result));
+    process.exitCode = result.passed ? 0 : 1;
+  } finally {
+    cancellation.dispose();
+    process.removeListener("SIGINT", interruptInput); process.removeListener("SIGTERM", interruptInput);
+  }
+} else {
+  if (resultPath) {
+    if (!(await stat(dirname(resultPath))).isDirectory()) throw new Error("Result parent must already exist");
+    await writeFile(resultPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  }
+  console.log(JSON.stringify(result));
+  process.exitCode = result.passed ? 0 : 1;
 }
-console.log(JSON.stringify(result));
-process.exitCode = result.passed ? 0 : 1;

@@ -1,5 +1,6 @@
 import { AudioShareListener, readAndClearLink } from "/public/core.js";
 import { AUDIO_SHARE_PROTOCOL } from "/public/protocol.js";
+import { createRelayProof, failRelayEpoch } from "/oracle/relay-contract.js";
 
 let revision = 0, epoch = 0, client = null, record = null, context = null, node = null, source = null, player = null;
 let microphoneCalls = 0;
@@ -75,8 +76,24 @@ async function sampleStats(currentClient, currentRecord) {
     for (const key of ["packetsReceived", "bytesReceived", "totalSamplesReceived", "concealedSamples", "audioLevel", "totalAudioEnergy"]) {
       currentRecord[key] = Number.isFinite(audio?.[key]) && audio[key] >= 0 && audio[key] <= 9_007_199_254_740_991 ? audio[key] : null;
     }
+    if (currentClient.oracleRelay) {
+      currentRecord.relay = currentClient.oracleRelay.observe(stats,
+        performance.timeOrigin + performance.now(), currentClient.oracleWaveformGood);
+      if (currentRecord.relay.status === "failed") {
+        failRelayEpoch(currentRecord, currentClient.oracleRelay); currentClient.stop("unavailable");
+      }
+      else if (currentRecord.relay.status === "verified") {
+        currentRecord.decoded = true; currentClient.setPlaybackActive(true);
+      }
+    }
     report();
-  } catch { /* Optional scalar diagnostics, not a substitute for decoded waveform proof. */ }
+  } catch {
+    if (currentClient.oracleRelay && record === currentRecord && !currentRecord.closed && !currentClient.closed) {
+      failRelayEpoch(currentRecord, currentClient.oracleRelay);
+      currentClient.stop("unavailable"); report();
+    }
+    // Direct-mode statistics remain optional diagnostics.
+  }
   finally { currentClient.oracleStatsPending = false; }
 }
 function report() {
@@ -116,6 +133,8 @@ async function join(config) {
     trackReadyState: "none", inboundAudioReports: 0, packetsReceived: null, bytesReceived: null,
     totalSamplesReceived: null, concealedSamples: null, audioLevel: null, totalAudioEnergy: null };
   const currentRecord = record;
+  const relay = config.relay === true ? createRelayProof() : null;
+  if (relay) currentRecord.relay = relay.snapshot();
   if (config.challenge) currentRecord.challengeNonce = config.challenge.nonce;
   starts.set(currentRecord, performance.now());
   class OracleSocket extends WebSocket {
@@ -135,8 +154,11 @@ async function join(config) {
     }
   }
   let currentClient;
+  class RelayPeer extends RTCPeerConnection {
+    constructor(configuration) { super({ ...configuration, iceTransportPolicy: "relay" }); }
+  }
   currentClient = new OracleListener(link, location.origin, {
-    status(status) { if (["unavailable"].includes(status) && !currentRecord.decoded) { currentRecord.failure = "browser"; report(); } },
+    status(status) { if (["unavailable"].includes(status) && !currentRecord.decoded) { currentRecord.failure ??= "browser"; report(); } },
     track(track) { void (async () => {
       currentClient.oracleTrack = track;
       const currentContext = new AudioContext({ sampleRate: 48_000 });
@@ -158,7 +180,9 @@ async function join(config) {
         if (record !== currentRecord || currentRecord.closed || currentClient.closed) return;
         Object.assign(currentRecord, data); currentRecord.windows++;
         currentRecord.topology = topology(currentClient.peer);
-        if (data.rmsLeft > 0.01 && data.rmsRight > 0.01 && data.leftRatio > 8 && data.rightRatio > 8 && currentRecord.topology) {
+        currentClient.oracleWaveformGood = data.sampleRate === 48_000 && data.rmsLeft > 0.01 && data.rmsRight > 0.01 &&
+          data.leftRatio > 8 && data.rightRatio > 8 && currentRecord.topology;
+        if (!relay && data.rmsLeft > 0.01 && data.rmsRight > 0.01 && data.leftRatio > 8 && data.rightRatio > 8 && currentRecord.topology) {
           currentRecord.decoded = true; currentClient.setPlaybackActive(true);
         }
         report(); void sampleStats(currentClient, currentRecord);
@@ -173,7 +197,8 @@ async function join(config) {
       diagnostic(currentRecord, "worklet", error); currentRecord.failure = "decode"; report();
     }); },
     stop() { if (record === currentRecord) closed(); },
-  }, { WebSocket: OracleSocket });
+  }, { WebSocket: OracleSocket, ...(relay ? { RTCPeerConnection: RelayPeer } : {}) });
+  currentClient.oracleRelay = relay;
   currentClient.diagnose = (stage, error) => diagnostic(currentRecord, stage, error);
   currentClient.diagnoseStop = (reason, ready, wasClosed) => {
     if (record !== currentRecord || currentRecord.stopReason !== null) return;

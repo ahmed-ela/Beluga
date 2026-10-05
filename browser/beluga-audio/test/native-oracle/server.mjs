@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { AUDIO_SHARE_PROTOCOL, parseAuthentication, parseClientMessage, validShareID } from "../../public/protocol.js";
+import { validRelayEpochReport } from "./relay-contract.js";
 
 const require = createRequire(new URL("../../../../services/RendezvousWorker/package.json", import.meta.url));
 const { WebSocketServer } = require("ws");
@@ -22,7 +23,8 @@ const diagnosticCodes = new Set(["unknown", "invalid_key_material", "invalid_rol
   "socket_error", "socket_closed", "connect_src", "OperationError", "NotSupportedError", "InvalidAccessError",
   "InvalidStateError", "SecurityError", "SyntaxError", "AbortError", "TypeError"]);
 
-export async function createOracleServer({ key, cert, systemSource = null }) {
+export async function createOracleServer({ key, cert, systemSource = null, relayIce = null }) {
+  if (systemSource && relayIce) throw new Error("invalid_oracle_mode");
   const phases = systemSource ? ["revoke", "expiry", "owner_loss"] : ["revoke", "expiry"];
   let config = { revision: 0, action: "idle", phase: "none" };
   let report = { epochs: [], nativeSnapshots: [], failure: null, microphoneCalls: 0, complete: false,
@@ -88,6 +90,7 @@ export async function createOracleServer({ key, cert, systemSource = null }) {
               url.search || url.hash.length > 160 || !phases.includes(command.phase)) throw new Error("invalid_command");
           config = { revision: config.revision + 1, action: "join", phase: command.phase, url: url.href };
           if (systemSource) config.challenge = systemSource.challenge;
+          if (relayIce) config.relay = true;
         } else if (command.action === "rejoin") {
           if (!config.url || config.phase !== "revoke") throw new Error("invalid_command");
           config = { ...config, revision: config.revision + 1, action: "rejoin" };
@@ -105,14 +108,16 @@ export async function createOracleServer({ key, cert, systemSource = null }) {
           "stage", "errorStage", "errorCode", "socketCloseCode", "protocolMatches", "openReadyState", "elapsedMs",
           "stopReason", "stopStage", "stopClosed", "stopReady", "timerBindingRejected", "timerBindingCode", "peerState",
           "trackMuted", "trackReadyState", "inboundAudioReports", "packetsReceived", "bytesReceived", "totalSamplesReceived",
-          "concealedSamples", "audioLevel", "totalAudioEnergy", ...(systemSource ? ["challengeNonce"] : [])].includes(k)) ||
+          "concealedSamples", "audioLevel", "totalAudioEnergy", ...(systemSource ? ["challengeNonce"] : []),
+          ...(relayIce ? ["relay"] : [])].includes(k)) ||
           !Number.isSafeInteger(value.epoch) || value.epoch < 1 || value.epoch > 4 ||
           !phases.includes(value.phase) || !validShareID(value.shareID) ||
           (systemSource && value.challengeNonce !== systemSource.challenge.nonce) ||
           typeof value.decoded !== "boolean" || typeof value.closed !== "boolean" || typeof value.topology !== "boolean" ||
           !["rmsLeft", "rmsRight", "leftRatio", "rightRatio", "sampleRate", "windows", "microphoneCalls"].every((k) =>
             Number.isFinite(value[k]) && value[k] >= 0 && value[k] < 1_000_000) ||
-          (value.failure !== null && !["decode", "topology", "browser", "deadline"].includes(value.failure)) ||
+          (value.failure !== null && !["decode", "topology", "browser", "deadline", ...(relayIce ? ["relay"] : [])].includes(value.failure)) ||
+          (relayIce && !validRelayEpochReport(value)) ||
           !diagnosticStages.has(value.stage) || (value.errorStage !== null && !diagnosticStages.has(value.errorStage)) ||
           (value.errorCode !== null && !diagnosticCodes.has(value.errorCode)) ||
           !Number.isSafeInteger(value.socketCloseCode) || value.socketCloseCode < 0 || value.socketCloseCode > 4_999 ||
@@ -140,12 +145,16 @@ export async function createOracleServer({ key, cert, systemSource = null }) {
         ["/oracle", [oracleRoot, "index.html", "text/html"]],
         ["/oracle/browser-oracle.js", [oracleRoot, "browser-oracle.js", "text/javascript"]],
         ["/oracle/waveform-worklet.js", [oracleRoot, "waveform-worklet.js", "text/javascript"]],
+        ["/oracle/relay-contract.js", [oracleRoot, "relay-contract.js", "text/javascript"]],
         ...["core.js", "crypto.js", "protocol.js"].map((name) => [`/public/${name}`, [publicRoot, name, "text/javascript"]]),
       ]);
       if (request.method !== "GET" || !files.has(path)) { sendJSON(response, { error: "not_found" }, 404); return; }
       const [base, name, type] = files.get(path);
       response.writeHead(200, { ...headers, "Content-Type": type }); response.end(await readFile(resolve(base, name)));
-    } catch { sendJSON(response, { error: "invalid_request" }, 400); }
+    } catch {
+      if (relayIce && request.url === "/oracle/report") report.failure = "relay";
+      sendJSON(response, { error: "invalid_request" }, 400);
+    }
   });
   server.requestTimeout = 5_000; server.headersTimeout = 5_000;
   const wss = new WebSocketServer({ noServer: true, maxPayload: 90_000,
@@ -197,8 +206,9 @@ export async function createOracleServer({ key, cert, systemSource = null }) {
                   !equal(authentication.proof, share.listenerProof)) throw new Error();
               role = "listener"; listenerID = id(); share.listeners.set(listenerID, websocket);
               report.broker.authentications++;
+              if (relayIce && Date.now() + 15_000 >= relayIce.expiresAt) throw new Error();
               const ready = { type: "listener-ready", v: 1, shareID: share.id, generation: share.generation,
-                listenerID, expiresAt: share.expiresAt, serverTime: Date.now(), iceServers: [] };
+                listenerID, expiresAt: share.expiresAt, serverTime: Date.now(), iceServers: relayIce?.iceServers ?? [] };
               send(share.owner, { ...ready, role: "owner" }); send(websocket, { ...ready, role: "listener" });
             }
             clearTimeout(timeout); timers.delete(timeout); return;
@@ -243,6 +253,10 @@ export async function createOracleServer({ key, cert, systemSource = null }) {
       for (const share of shares.values()) end(share);
       for (const socket of sockets) socket.terminate();
       shares.clear();
+      if (relayIce) {
+        for (const server of relayIce.iceServers) { delete server.username; delete server.credential; }
+        relayIce.iceServers.length = 0; relayIce = null;
+      }
       const closed = new Promise((resolve) => server.close(resolve));
       server.closeAllConnections(); await closed; wss.close();
     } };

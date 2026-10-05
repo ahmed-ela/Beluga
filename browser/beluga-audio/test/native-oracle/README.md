@@ -39,9 +39,49 @@ Only bounded scalar diagnostics are recorded. Capabilities, private keys, ICE
 credentials, SDP/candidates, and PCM are not logged. The native/browser child
 logs are discarded; do not copy private signaling into a failure report.
 
-This is **not** deployed-Worker proof, real system-audio capture proof, phone
-coexistence proof, eight-listener performance proof, or internet/TURN proof.
+The default invocation is **not** deployed-Worker proof, real system-audio capture
+proof, phone coexistence proof, eight-listener performance proof, or internet/TURN proof.
 The source-bound microphone gate and release/deployment gates remain separate.
+
+## Opt-in temporary-credential forced relay mode
+
+`run.mjs --relay-ice-stdin true` retains the same silent source, waveform limits,
+three epochs, native XCTest and owned cleanup. Only the browser's injected peer
+uses `iceTransportPolicy: "relay"`; the existing loopback broker supplies the same
+temporary ICE servers to native and browser. Direct fixture and real-system-source
+modes do not opt in. This is not a deployed Worker or unrelated-network test.
+
+Execution requires a separately authorized parent issuer/revoker lifecycle. The
+parent must mint short-lived ICE credentials, pass one canonical `JSON.stringify`
+envelope `{iceServers,expiresAt}` through a private stdin pipe/socket and close it,
+then revoke the issued credentials after runner cleanup on success, failure or
+interruption. No issuer is provided here, and possessing an arbitrary stdin payload
+is not authorization to run. Never put secrets in arguments, environment, files or
+logs; the runner never accepts master-key/API-token fields. `expiresAt` is Unix
+milliseconds, at least the selected run bound plus 30 seconds ahead and no more
+than 300 seconds ahead. Input is capped at 64 KiB and five seconds, normalized by
+the production Cloudflare ICE validator, and cleared on cancellation. Opaque string
+contents cannot prove issuance or distinguish a mislabelled credential; the trusted
+parent owns that provenance and revocation. JavaScript strings cannot be zeroized;
+references are dropped at cleanup and no credentials enter scalar reports.
+
+Each epoch's decoded latch additionally waits for two good stereo windows at least
+100 ms apart. Fresh inbound-audio stats must bind to the sole transport's selected
+succeeded pair and its local relay candidate; both pair receive bytes and inbound
+audio receive bytes must strictly advance with unchanged identities and advancing
+timestamps. Missing, ambiguous, stale, frozen, regressed, replaced or non-relay proof
+fails closed. Stats use the browser performance-origin clock. Startup silence stays
+pending; a bad window after proof begins is terminal. The bounded scalar proof is
+retained through peer closure; no candidate IDs, addresses, URLs or credentials are
+reported. `SIGINT`/`SIGTERM` cancel pending input/setup and enter owned cleanup once,
+permanently failing the result. The result path is checked before relay allocation.
+
+Even a pass proves only this fixture's selected browser relay path and decoded
+stereo/lifecycle. `systemAudioVerified`, `deployedWorkerVerified`,
+`unrelatedNetworksVerified` and `physicalDeviceVerified` remain false. It proves
+neither final acoustic output nor production enablement. Pure regressions are in
+`test/relay-oracle.test.js` and ordinary `npm test`; they require no credentials,
+browser, native media or network. Source preparation does not authorize execution.
 
 ## Separate real-system-source mode (execution requires fresh approval)
 
