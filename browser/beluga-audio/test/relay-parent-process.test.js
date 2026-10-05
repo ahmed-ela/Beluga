@@ -2,7 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { readSharingMasterInput, runOwnedRelayFixture, admitFixtureOutcome } from "./native-oracle/relay-parent-process.mjs";
+import { readSharingMasterInput, runOwnedRelayFixture,
+  admitFixtureOutcome as admitWithDiagnostics } from "./native-oracle/relay-parent-process.mjs";
+import { validFixtureDiagnostics } from "./native-oracle/relay-fixture-diagnostics.mjs";
+
+// Keep the original acceptance/cleanup assertions independent of diagnostics.
+function proof(outcome) {
+  assert.equal(validFixtureDiagnostics(outcome.diagnostics), true);
+  return { passed: outcome.passed, cleanupVerified: outcome.cleanupVerified };
+}
+const admitFixtureOutcome = (...args) => proof(admitWithDiagnostics(...args));
 
 const master = { apiToken: "public-test-only-master-token=", keyId: "a".repeat(32), name: "beluga-audio-share-v1" };
 const envelope = () => ({ expiresAt: Date.now() + 180_000, iceServers: [{
@@ -79,7 +88,7 @@ test("fixture receives only ephemeral ICE on stdin with a sanitized environment 
   const outcome = await runOwnedRelayFixture(input, options({ executable: "/exact/node", environment: {
     PATH: "/usr/bin", HOME: "/private/test-home", NODE_PATH: "/private/ws", SECRET: master.apiToken,
     NODE_OPTIONS: "--require /unsafe.js" }, spawnImpl: (...args) => { invocation = args; return child; } }));
-  assert.deepEqual(outcome, { passed: true, cleanupVerified: true });
+  assert.deepEqual(proof(outcome), { passed: true, cleanupVerified: true });
   assert.equal(invocation[0], "/exact/node");
   assert.equal(invocation[1].at(-1), "true"); assert.equal(invocation[1].at(-2), "--relay-ice-stdin");
   assert.deepEqual(invocation[2].env, { PATH: "/usr/bin", HOME: "/private/test-home", NODE_PATH: "/private/ws" });
@@ -98,7 +107,7 @@ test("cancellation waits for normal runner cleanup but can never retain a passin
   };
   const outcome = await runOwnedRelayFixture(envelope(), options({ signal: abort.signal, spawnImpl: () => child }));
   assert.equal(closed, true); assert.deepEqual(child.signals, ["SIGTERM"]);
-  assert.deepEqual(outcome, { passed: false, cleanupVerified: true });
+  assert.deepEqual(proof(outcome), { passed: false, cleanupVerified: true });
 });
 
 test("forced runner termination remains cleanup-unverified even if a stale passing report arrives", async () => {
@@ -111,7 +120,7 @@ test("forced runner termination remains cleanup-unverified even if a stale passi
   const outcome = await runOwnedRelayFixture(envelope(), options({ signal: abort.signal, spawnImpl: () => child,
     terminateGraceMilliseconds: 2, killGraceMilliseconds: 2 }));
   assert.deepEqual(child.signals, ["SIGTERM", "SIGKILL"]);
-  assert.deepEqual(outcome, { passed: false, cleanupVerified: false });
+  assert.deepEqual(proof(outcome), { passed: false, cleanupVerified: false });
 });
 
 test("malformed output, spawn failure and excessive output cannot escape into a passing or secret-bearing report", async () => {
@@ -123,7 +132,30 @@ test("malformed output, spawn failure and excessive output cannot escape into a 
     const outcome = await runOwnedRelayFixture(envelope(), options({ spawnImpl: () => {
       if (mode === "spawn") throw new Error("private-spawn-error"); return child;
     } }));
-    assert.deepEqual(outcome, { passed: false, cleanupVerified: false });
+    assert.deepEqual(proof(outcome), { passed: false, cleanupVerified: false });
     assert.equal(JSON.stringify(outcome).includes("private"), false);
   }
+});
+
+test("failed child evidence survives admission without changing pass or cleanup", () => {
+  const value = report();
+  value.passed = false; value.relayVerified = false; value.nativeExitCode = 1;
+  value.browser.complete = false; value.browser.failure = "relay";
+  Object.assign(value.browser.epochs[0], { failure: "relay", decoded: false,
+    stage: "candidate", peerState: "connected", bytesReceived: 2048,
+    relay: { status: "failed", observations: 0 } });
+  const outcome = admitWithDiagnostics(value, 1);
+  assert.deepEqual(proof(outcome), { passed: false, cleanupVerified: true });
+  assert.equal(outcome.diagnostics.boundary, "native_exit");
+  assert.equal(outcome.diagnostics.browserFailure, "relay");
+  assert.equal(outcome.diagnostics.stage, "candidate");
+  assert.equal(outcome.diagnostics.bytesReceived, 2048);
+  assert.equal(outcome.diagnostics.relayStatus, "failed");
+  assert.equal(JSON.stringify(outcome).includes(value.browser.epochs[0].shareID), false);
+  // The runner also exits nonzero for browser assertions; that is not a
+  // failing native process when the independent native exit is zero.
+  value.nativeExitCode = 0;
+  assert.equal(admitWithDiagnostics(value, 1).diagnostics.boundary, "browser");
+  const clean = report();
+  assert.equal(admitWithDiagnostics(clean, 1).diagnostics.boundary, "runner");
 });

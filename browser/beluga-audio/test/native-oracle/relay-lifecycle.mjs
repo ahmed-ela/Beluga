@@ -1,5 +1,6 @@
 // Parent-only lifecycle. This module never logs, persists, or passes the master to a child.
 import { normalizeCloudflareIceServers } from "../../../../services/RendezvousWorker/src/ice.js";
+import { validFixtureDiagnostics } from "./relay-fixture-diagnostics.mjs";
 
 const endpoint = "https://rtc.live.cloudflare.com/v1/turn/keys";
 const ttlSeconds = 180, requestMilliseconds = 5_000, maxBody = 65_536, maxUsernames = 16;
@@ -116,9 +117,12 @@ export async function runCredentialedRelay({ master, runMilliseconds, signal, fe
     report.status = "fixture_failed"; report.fixtureStarted = true;
     // Do not race this promise against cancellation: its adapter owns bounded child cleanup.
     const fixture = await runFixture(envelope, { signal, runMilliseconds });
-    if (!exact(fixture, "cleanupVerified,passed") || typeof fixture.passed !== "boolean" ||
+    if (!(exact(fixture, "cleanupVerified,passed") ||
+          (exact(fixture, "cleanupVerified,diagnostics,passed") && validFixtureDiagnostics(fixture.diagnostics))) ||
+        typeof fixture.passed !== "boolean" ||
         typeof fixture.cleanupVerified !== "boolean") throw new Error();
     report.fixturePassed = fixture.passed; report.fixtureCleanupVerified = fixture.cleanupVerified;
+    if (Object.hasOwn(fixture, "diagnostics")) report.fixtureDiagnostics = structuredClone(fixture.diagnostics);
     if (!fixture.cleanupVerified) report.status = "fixture_cleanup_unproven";
   } catch {
     // Intentionally no exception names, messages, URLs, usernames or credentials.

@@ -101,7 +101,15 @@ once, with separate five-second deadlines even after cancellation. These operati
 use the [documented Cloudflare API](https://developers.cloudflare.com/realtime/turn/generate-credentials/).
 Responses and input are size/time bounded. Error payloads and child output are
 never copied to the parent report; that report contains fixed scalar status,
-counts and proof-scope flags only. No automatic retry occurs.
+counts and proof-scope flags only. Its optional `fixtureDiagnostics` object
+projects fixed failure/stage codes, bounded counters and booleans from the
+existing child report. It excludes share IDs, credentials, URLs, candidate
+identities, exception text and PCM. The first failed/incomplete epoch and last
+native phase help locate the boundary; they do not recover a discarded XCTest
+assertion or establish a root cause. Unknown enum values become `unknown` and
+invalid scalar values become `null`, never raw strings. Diagnostics cannot grant
+media success or cleanup. Normal report validation and all existing pass,
+revocation and interruption rules still apply. No automatic retry occurs.
 
 An uncertain issuance, failed revocation, cancelled run, missing child cleanup,
 or invalid child proof cannot pass. Forced runner termination reports cleanup as
@@ -112,6 +120,9 @@ standalone recovery controller. Normal Keychain approval, current source/native
 artifact bindings and an external owned-process supervisor must be established
 before live execution. Neither source tests nor a local fixture pass enable
 production sharing or qualify the deployed Worker, phones or Android release.
+An external credential reader that validates the older exact report schema must
+be updated and tested offline to admit the diagnostic object before using this
+runner; do not bypass its report validator or authentication boundary.
 
 `test/relay-lifecycle.test.js` uses injected HTTP/fixture responses;
 `test/relay-parent-process.test.js` uses fake streams/processes. Neither calls the

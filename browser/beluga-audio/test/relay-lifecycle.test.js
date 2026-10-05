@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { admitSharingMaster, runCredentialedRelay } from "./native-oracle/relay-lifecycle.mjs";
+import { summarizeFixtureDiagnostics } from "./native-oracle/relay-fixture-diagnostics.mjs";
 
 const now = 1_800_000_000_000;
 const master = () => ({ apiToken: "fixture-master-token", keyId: "fixture-key", name: "beluga-audio-share-v1" });
@@ -25,6 +26,26 @@ function harness({ issue = good, revoke = () => new Response(null, { status: 204
 }
 const countIssue = (calls) => calls.filter(({ url }) => url.endsWith("generate-ice-servers")).length;
 const countRevoke = (calls) => calls.filter(({ url }) => url.endsWith("/revoke")).length;
+
+test("bounded child diagnostics reach the lifecycle report and invalid additions cannot escape", async () => {
+  const diagnostics = summarizeFixtureDiagnostics({ nativeExitCode: 1, browser: {
+    complete: false, failure: "relay", epochs: [], nativeSnapshots: [] } }, "native_exit");
+  const h = harness({ runFixture: async () => ({ passed: false, cleanupVerified: true, diagnostics }) });
+  const result = await h.run();
+  assert.equal(result.status, "fixture_failed"); assert.equal(result.fixtureCleanupVerified, true);
+  assert.equal(result.passed, false); assert.equal(result.revokedAll, true);
+  assert.deepEqual(result.fixtureDiagnostics, diagnostics);
+  assert.notEqual(result.fixtureDiagnostics, diagnostics);
+  for (const bad of [{ ...diagnostics, secret: "do-not-echo" },
+    { ...diagnostics, browserFailure: "do-not-echo" }, { ...diagnostics, bytesReceived: Infinity }]) {
+    const failed = await harness({ runFixture: async () => ({ passed: false, cleanupVerified: true,
+      diagnostics: bad }) }).run();
+    assert.equal(failed.passed, false); assert.equal(failed.fixtureCleanupVerified, false);
+    assert.equal(failed.revokedAll, true);
+    assert.equal(Object.hasOwn(failed, "fixtureDiagnostics"), false);
+    assert.equal(JSON.stringify(failed).includes("do-not-echo"), false);
+  }
+});
 
 test("master is exact, bounded, parent-only canonical JSON with fixed refusal", () => {
   const encode = (value) => Buffer.from(JSON.stringify(value));

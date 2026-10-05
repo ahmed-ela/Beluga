@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { admitSharingMaster } from "./relay-lifecycle.mjs";
 import { relayEpochsPass } from "./relay-contract.js";
 import { validShareID } from "../../public/protocol.js";
+import { summarizeFixtureDiagnostics } from "./relay-fixture-diagnostics.mjs";
 
 // Master bytes stay in the parent; the fixture receives only temporary ICE.
 export function readSharingMasterInput(input, { privatePipe, signal, timeoutMilliseconds = 5_000 }) {
@@ -58,7 +59,15 @@ export function admitFixtureOutcome(value, exitCode, forced = false) {
       epoch.leftRatio > 8 && epoch.rightRatio > 8) && epochs[0].shareID === epochs[1].shareID &&
     epochs[2].shareID !== epochs[0].shareID &&
     scopeKeys.every((key) => value[key] === false);
-  return { passed, cleanupVerified };
+  // Diagnostics describe the failed boundary; they never authorize a pass or
+  // cleanup. Project only fixed enums/booleans/bounded counters, not child logs.
+  const boundary = forced ? "forced_termination" : !completeReport ? "report_invalid" :
+    !cleanupVerified ? "cleanup" : value.failure ? "runner" :
+    value.nativeExitCode !== 0 ? "native_exit" : value.browser?.failure ? "browser" :
+    value.browser?.complete !== true ? "browser_incomplete" :
+    !relayEpochsPass(epochs) ? "relay_proof" : exitCode !== 0 ? "runner" :
+    !passed ? "stereo_or_lifecycle" : "none";
+  return { passed, cleanupVerified, diagnostics: summarizeFixtureDiagnostics(value, boundary) };
 }
 
 export function runOwnedRelayFixture(envelope, { signal, runMilliseconds, testBundle, chrome,
