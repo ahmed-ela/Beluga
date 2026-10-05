@@ -6,6 +6,39 @@ passed the corresponding physical release gate.
 
 ## Resumed client-upgrade checkpoint — 2026-10-05
 
+### Stopped at the user's checkpoint request — 2026-10-05
+
+The user clarified that the requested action is to commit, push and preserve
+progress, not continue release work. Further implementation, live relay attempts
+and deployment are stopped here. The goal is incomplete.
+
+- All existing product progress is preserved on `feat/phone-media-handoff`.
+  Latest diagnostic source `dc23be4730d2d73b4704942ae20e5c7732c1d884`
+  was committed, pushed and independently matched against the remote branch.
+- The approved prior relay attempt connected and received a good stereo waveform
+  but failed relay-proof validation. Temporary credentials were revoked; owned
+  process cleanup and the zero-notification sticky route monitor passed. This
+  does not prove a product defect or a passing relay path.
+- Fixed first-rejection diagnostics are saved; 45 focused cases pass. Independent
+  review passed after correcting failure-report ordering. No media, credential,
+  revocation, route or teardown acceptance criterion was weakened.
+- A fresh private reader/supervisor was prepared, offline-tested and reviewed,
+  **but never executed**. Its pins refer to the diagnostic commit above and must
+  be revalidated/rebound after this documentation-only checkpoint before any
+  future explicitly resumed run. Private evidence remains outside Git.
+- No new full-feature DMG, update feed or TestFlight release was published. The
+  running host, phones and audio routes were not changed.
+
+Remaining on explicit resumption: obtain the exact relay rejection with the
+prepared guarded diagnostic, resolve it from evidence, qualify deployed sharing
+and actual Android app pairing/reconnect/media, then complete release validation
+and publish the signed DMG/update feed and matching TestFlight. Android actual-
+media handoff is not implemented. Live YouTube and real upgrade rehearsal remain
+explicitly deferred, not passed.
+
+The earlier resumption record below is retained as history, not an instruction
+to continue while this checkpoint is stopped.
+
 The user resumed both the original Mac-client request and the phone handoff/
 Android additions. One goal is active again; the release is still incomplete.
 All previous product progress and the pause checkpoint were remote-confirmed at
