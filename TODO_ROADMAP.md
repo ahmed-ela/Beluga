@@ -4,11 +4,43 @@ This roadmap records current work, not private deployment history. Completed ite
 foundations; they are not claims that every network, device, route, or distribution artifact has
 passed the corresponding physical release gate.
 
-## Paused client-upgrade checkpoint — 2026-10-05
+## Resumed client-upgrade checkpoint — 2026-10-05
 
-**Paused at the user's request, not complete or deployment-ready.** Resume only when
-the user asks. This dated checkpoint supersedes older status statements below for
-the client-upgrade work; it does not mark the broader roadmap complete.
+The user resumed both the original Mac-client request and the phone handoff/
+Android additions. One goal is active again; the release is still incomplete.
+All previous product progress and the pause checkpoint were remote-confirmed at
+`2510c0aab37bc7ed2ded8e5c3ebd1a439296f6de` before resumption.
+
+- Relay diagnostics (`9b20fdf`) are now preserved through the parent/lifecycle report using
+  a fixed, exact scalar schema. No share IDs, credentials, URLs, signaling,
+  exception text or PCM are copied. The existing media, cleanup, revocation and
+  cancellation acceptance rules remain unchanged.
+- 39 focused diagnostic/parent/lifecycle/relay cases passed, with zero failures
+  or skips. Independent integration review caught a child-exit/native-exit
+  diagnostic distinction; that was corrected and the seven affected parent
+  cases passed again. The staged diff secret scan was clean. This is diagnostic
+  tooling evidence, not a passing live relay test or a product root cause.
+- Android source and retained evidence were reviewed without another build or
+  runtime attempt. Actual app pairing/reconnect/media qualification remains
+  missing; the variable first-Show result still does not establish a deterministic
+  product defect. Android currently supports the receiver path, not actual-media
+  handoff, background playback, microphone forwarding or remote input.
+- A fresh read-only check found an active phone session and its microphone input
+  route. No relay/authentication retry, phone operation, host restart or route
+  change was attempted. Revalidate the safe boundary before any live test.
+
+Next: bind and offline-validate the private credential reader/supervisor to the
+diagnostic schema and exact source, then make one bounded diagnostic relay attempt
+when the existing quiet-session/route gate permits it. Do not weaken the gate or
+repeat the old opaque failure. Sharing service, Android app qualification, final
+release validation, signed DMG/update feed and matching TestFlight publication
+remain open. The previous YouTube and real upgrade rehearsal deferrals remain.
+
+## Historical pause checkpoint — 2026-10-05
+
+**The earlier pause was not completion or deployment readiness.** This section
+preserves that stopping point and is superseded by the resumption above; it does
+not mark the broader roadmap complete.
 
 The implementation baseline is `ac30e456e1ef10b4da2c7de1be52fe81917d55f0`
 on `feat/phone-media-handoff`. This checkpoint changes documentation only. Detailed
@@ -49,9 +81,9 @@ processes exited, the scratch directory was removed, and the sticky CoreAudio
 monitor finished with zero notifications and clean teardown. The existing host
 and default audio routes were unchanged.
 
-**The underlying relay-test root cause is not yet established.** The parent
+**The underlying relay-test root cause was not established at pause.** The parent
 `admitFixtureOutcome` in
-`browser/beluga-audio/test/native-oracle/relay-parent-process.mjs` reduces the
+`browser/beluga-audio/test/native-oracle/relay-parent-process.mjs` then reduced the
 child's detailed report to `passed` and `cleanupVerified`; the retained lifecycle
 report therefore does not identify the failed assertion. Neither a TURN outage,
 a streaming defect, nor an oracle defect has been proved. Root-cause investigation
