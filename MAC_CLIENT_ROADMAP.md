@@ -1,4 +1,82 @@
-# Beluga Mac client 0.2
+# Beluga Mac client — release and migration ledger
+
+Current baseline: Mac 0.3.1/build102 is released; the user reports that it works.
+The Rust migration below is new source work, not a deployed replacement. Earlier
+dated checkpoints retain their original proof limits and are not current release status.
+
+## Rust migration goal — 2026-10-06
+
+The authorized goal is a behavior-preserving Rust rewrite of product core logic,
+not a claim that rewriting syntax fixes lifecycle bugs. Native SwiftUI/AppKit,
+AVFoundation, ScreenCaptureKit, Keychain and existing WebRTC bindings remain thin
+platform adapters while their policy and transaction ownership move into Rust.
+The live host, pairing records, phones and audio routes are not development targets.
+Browser-sharing and Android delivery remain paused; preserve their protocol compatibility.
+
+Migration stages (do not mark the whole goal complete after the first stage):
+
+- [x] Handoff menu admission (source/core/adapter checkpoint only): one Rust policy shared by actual menu enablement and
+      tests; retain the button when session authority disappears, with a disabled
+      explanation. Preserve exact-target dispatch and phone-confirmed Mac Pause.
+- [ ] Handoff transaction reducer: exact owner/operation, fixed deadline, one-use
+      consumption, confirmation and cancellation. Differential event traces against
+      the current implementation must cover replacement and late-result races.
+- [ ] Pairing/catalog/session core: durable replay counters, independent availability
+      versus media ownership, bounded admission and exact-generation retirement.
+      No Keychain migration or wire-format change as a rewrite side effect.
+- [ ] Media selection/commands and network adaptation: preserve sticky source selection,
+      native readback, acknowledged Show ownership and the visible video floor.
+- [ ] Audio lifecycle/control core: preserve immediate microphone privacy-stop,
+      exact native activation ownership, conditional input restoration and unchanged
+      outputs. Keep real-time callbacks allocation-free and bounded.
+- [ ] Updater transaction core: signed artifact/source binding, quiescent admission,
+      exclusive replacement, exact rollback and irreversible-commit semantics.
+- [ ] Remove superseded Swift business logic only after each production Rust call path
+      passes its parity gate. Native wrappers and third-party runtime behavior remain
+      separately audited; the Rust compiler cannot prove those foreign contracts.
+
+Each stage requires discovered non-skipping Rust tests, exhaustive small-state or
+property/event-sequence tests, assertion-failing negative mutants, and tests through
+the actual compiled C ABI and production Swift adapter. Unknown ABI/input values fail
+closed. Source and checked-in libraries are manifest-bound; release validation must
+reject stale or unbound artifacts. Keep the existing independent native, Simulator,
+physical and release gates, and add race/sanitizer/fuzz coverage where the migrated
+boundary introduces memory or concurrent ownership. No deployment claim from a
+successful reducer test or archive.
+
+Current diagnosis: the released menu conditionally removes the entire handoff control
+when `connectedMediaTarget` is nil. The coordinator ties that target to its generic
+`sessionPrepared` presentation phase, so an availability retry can hide it while the
+separate media lifetime survives. This is source-confirmed; the user's external Mac
+has not been observed at that exact transition. Stable presentation is separate from
+authorization: unavailable or replaced sessions must still refuse dispatch.
+
+First Rust build profile matches the current Mac release builder: Apple silicon only.
+Intel and phone Rust-core linkage are later migration work, not silently advertised.
+
+### First Rust checkpoint — 2026-10-06
+
+The production Mac package now links the new `BelugaCore.xcframework`. Rust owns
+handoff menu admission and the worldwide host lifecycle reducer; the former Swift
+lifecycle transition implementation has been removed. Availability and media owners
+remain independent. Swift is a copied-scalar/String bridge, preserving its existing
+canonical Unicode equality and each owner's original identifier spelling.
+
+Verification: 15 Rust tests pass together; all 126 focused Mac integration tests and
+all 470 discovered mandatory Mac regression tests pass with zero failures/skips.
+Actual archive C and Swift link/execution oracles pass, and five independently broken
+source variants fail their intended behavioral assertions. Release-gate self-tests
+pass 72 cases/1,388 assertions; they now require the core's exact source/artifact
+manifests, pinned link tools, test discovery and negative mutations. An independent
+read-only review found no concrete must-fix for this slice.
+
+Evidence is retained in `/Volumes/t7/beluga-rust-integration.S3img9` and the new
+crate's ignored `target/review-evidence.VV4nIc` directory. This is not a full release
+receipt, deployed menu/pixel proof, physical handoff proof, or completion of the whole
+Rust rewrite. Mac 0.3.1/build102 and the running host remain unchanged. Next: migrate
+transaction ownership without weakening phone-confirmed exact-source Mac Pause.
+
+## Earlier implementation ledger
 
 Status: implementation in progress; no DMG, updater, browser share, or new phone build deployed.
 This feature work does not modify a separately prepared driver recovery or any

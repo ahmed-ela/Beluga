@@ -106,9 +106,17 @@ final class BelugaMenuBarModel: ObservableObject {
     }
 
     var canMoveMedia: Bool {
-        !didFinish && hasStarted && !isChangingPhone && !isRequestingMediaHandoff
-            && presentation.phase == .sessionPrepared
-            && presentation.connectedMediaTarget != nil && phoneCommands?.moveMedia != nil
+        mediaHandoffControl.enabled
+    }
+
+    var mediaHandoffControl: BelugaMediaHandoffControlState {
+        BelugaRustHandoffPolicy.evaluate(
+            hasStarted: hasStarted, finished: didFinish, changingPhone: isChangingPhone,
+            requestInFlight: isRequestingMediaHandoff,
+            sessionReady: presentation.phase == .sessionPrepared,
+            targetPresent: presentation.connectedMediaTarget != nil,
+            commandInstalled: phoneCommands?.moveMedia != nil
+        )
     }
 
     @discardableResult
@@ -400,16 +408,7 @@ private struct BelugaMenuBarView: View {
                     Text("Selected phone: \(phone)").font(.caption)
                 }
                 phoneControls
-                if let target = model.presentation.connectedMediaTarget {
-                    Button("Move media to phone") { model.moveMedia(to: target) }
-                        .disabled(!model.canMoveMedia || updater.isUpdateInProgress)
-                    if model.isRequestingMediaHandoff {
-                        Text("Requesting playback on the phone…").font(.caption)
-                    }
-                    if let message = model.mediaHandoffMessage {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
+                mediaHandoffControls
                 if let invitation = model.presentation.invitation {
                     TimelineView(.periodic(from: .now, by: 1)) { context in
                         if invitation.isValid(at: context.date) {
@@ -461,6 +460,25 @@ private struct BelugaMenuBarView: View {
             BelugaAudioShareView(model: share, canStart: model.canShareAudio
                 && !updater.isUpdateInProgress, start: startShare,
                 close: { model.dismissAudioShare() })
+        }
+    }
+
+    private var mediaHandoffControls: some View {
+        let state = model.mediaHandoffControl
+        let target = model.presentation.connectedMediaTarget
+        return VStack(alignment: .leading, spacing: 8) {
+            if state.visible {
+                Button("Move media to phone") {
+                    if let target { model.moveMedia(to: target) }
+                }
+                .disabled(!state.enabled || updater.isUpdateInProgress)
+                if let reason = state.reason.message {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
+                }
+                if let message = model.mediaHandoffMessage {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+            }
         }
     }
 

@@ -22,6 +22,16 @@ module MicrophoneRegressionGate
                        include/opensteamer_audio_transaction_authority.h include/module.modulemap
                        scripts/build-xcframework.sh scripts/verify-xcframework.sh tests/reducer.rs tests/ffi.rs
                        tests/c_abi_smoke.c tests/swift_import_smoke.swift THIRD_PARTY_NOTICES.html].freeze
+  BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
+  BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
+  BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
+                               src/lib.rs src/host_lifecycle.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
+                               scripts/mutation-tests.rb].freeze
+  BELUGA_CORE_ARTIFACT_FILES = %w[Info.plist SOURCE_MANIFEST.sha256 BUILD_METADATA.txt THIRD_PARTY_NOTICES.html
+                                macos-arm64/libbeluga_core.a macos-arm64/Headers/beluga_core.h
+                                macos-arm64/Headers/module.modulemap].freeze
   C_PINNED = {
     'core invariant' => ['visible-first/writer-first joins and leaves', '1000 fresh epochs', 'concurrent lifecycle and timeline stress'],
     'driver interface' => ['shared timeline both start orders and restart seed',
@@ -97,11 +107,15 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideSharedClockEpochRecoveryTests
     CaptureServerTests.WorldwidePairedPhoneCatalogTests
     CaptureServerTests.WorldwideHostCoordinatorTests
+    CaptureServerTests.WorldwideHostLifecycleTests
     CaptureServerTests.WorldwidePairingCatalogBootstrapTests
     CaptureServerTests.BelugaPhoneCatalogMenuTests
     CaptureServerTests.WorldwidePairingStoreTests
     CaptureServerTests.WorldwideHostProcessLockTests
     CaptureServerTests.BelugaMenuBarTests
+    CaptureServerTests.BelugaMediaHandoffMenuTests
+    CaptureServerTests.BelugaRustHandoffPolicyTests
+    CaptureServerTests.BelugaRustHostLifecycleTests
     CaptureServerTests.BelugaUpdateCandidateMetadataTests
     CaptureServerTests.BelugaUpdateInstalledArtifactTests
     CaptureServerTests.BelugaUpdateSparkleSessionTests
@@ -130,6 +144,10 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideHostCoordinatorTests/testSelectionWaitsForExactOldCloseAndRechecksOwnerBeforeMutation
     CaptureServerTests.WorldwideHostCoordinatorTests/testActivePeerAndUnvalidatedSocketCannotAuthorizeCatalogActions
     CaptureServerTests.WorldwideHostCoordinatorTests/testStopDuringRecoverySendCannotPersistLateCompletionSent
+    CaptureServerTests.WorldwideHostLifecycleTests/testMediaDepartureReturnsPairedHostToAvailability
+    CaptureServerTests.WorldwideHostLifecycleTests/testInvitationMustCommitBeforeAvailabilityCanAcceptViewer
+    CaptureServerTests.WorldwideHostLifecycleTests/testBootstrapLossAfterDurableRecordMovesToAvailabilityRecovery
+    CaptureServerTests.WorldwideHostLifecycleTests/testStaleDepartureCannotClearNewExchange
     CaptureServerTests.WorldwidePairingCatalogBootstrapTests/testStopBeforeHeldCompletionReturnsCannotPersistCompletionSent
     CaptureServerTests.BelugaPhoneCatalogMenuTests/testPresentedConfirmationTicketIsStaleAfterCatalogRevisionChanges
     CaptureServerTests.BelugaPhoneCatalogMenuTests/testShutdownDropsLateSuccessAndFailureFromNonCooperativeCommand
@@ -139,6 +157,25 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideHostProcessLockTests/testSecondWorldwideHostCannotAcquireSamePerUserLock
     CaptureServerTests.BelugaMenuBarTests/testMenuStartsRuntimeAtMostOnce
     CaptureServerTests.BelugaMenuBarTests/testExpiredInvitationAndShutdownClearSecretPresentation
+    CaptureServerTests.BelugaMediaHandoffMenuTests/testControlStaysVisibleAcrossDisconnectReconnectAndUnavailablePresentation
+    CaptureServerTests.BelugaMediaHandoffMenuTests/testClickSendsExactTargetOnceAndDoesNotClaimTransferCompletion
+    CaptureServerTests.BelugaMediaHandoffMenuTests/testSessionChangeBeforeTaskRunsPreventsDispatch
+    CaptureServerTests.BelugaMediaHandoffMenuTests/testLateOldResultCannotPublishIntoReplacementSession
+    CaptureServerTests.BelugaMediaHandoffMenuTests/testShutdownClearsTargetAndIgnoresLateCompletionAndCallbacks
+    CaptureServerTests.BelugaRustHandoffPolicyTests/testEveryKnownInputMatchesIndependentAdmissionAndReasonSpecification
+    CaptureServerTests.BelugaRustHandoffPolicyTests/testUnknownAbiCannotEnableOrHideStartedControl
+    CaptureServerTests.BelugaRustHandoffPolicyTests/testEveryUnknownFlagBitFailsClosedEvenWhenAdmissionFlagsAreReady
+    CaptureServerTests.BelugaRustHandoffPolicyTests/testAbiFailureTakesPrecedenceOverUnknownFlagsAndRuntimeReadiness
+    CaptureServerTests.BelugaRustHandoffPolicyTests/testDisabledReasonsAlwaysHaveAnExplanationButReadyDoesNot
+    CaptureServerTests.BelugaRustHandoffPolicyTests/testMalformedForeignOutputFailsClosedWithoutHidingStartedControl
+    CaptureServerTests.BelugaRustHostLifecycleTests/testEveryReachableSmallStateAndEventMatchesIndependentReference
+    CaptureServerTests.BelugaRustHostLifecycleTests/testSeededLifecycleChurnHasTraceParityWithoutCollapsingAvailabilityAndMedia
+    CaptureServerTests.BelugaRustHostLifecycleTests/testDelayedDepartureCannotClearReplacementOrEndAnotherMediaOwner
+    CaptureServerTests.BelugaRustHostLifecycleTests/testExchangeAdmissionCountsUtf8BytesAndPreservesOpaqueStringContents
+    CaptureServerTests.BelugaRustHostLifecycleTests/testCanonicalEquivalentStringsRetainExistingSwiftEqualityButNotRewriteStoredBytes
+    CaptureServerTests.BelugaRustHostLifecycleTests/testStopIsTerminalIdempotentAndClearsBothIndependentOwners
+    CaptureServerTests.BelugaRustHostLifecycleTests/testValueCopiesAndEqualityPreserveIndependentLifecycleAuthority
+    CaptureServerTests.BelugaRustHostLifecycleTests/testEqualityDependsOnPublicStateNotPrivateTokenAllocationHistory
     CaptureServerTests.BelugaUpdateCandidateMetadataTests/testSignedSingleViewerSchemaIsRejectedEvenWithAHigherOrMaximumBuild
     CaptureServerTests.BelugaUpdateInstalledArtifactTests/testCatalogVersionMustBePresentExactIntegerNotInferredFromOwnershipOrHighBuild
     CaptureServerTests.BelugaUpdateInstalledArtifactTests/testCatalogMarkerIsCoveredByFullTreeAndTamperingCannotVerifyCandidate
@@ -148,6 +185,42 @@ module MicrophoneRegressionGate
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
     ordinary_raw_microphone_profile_rejects_other_policies_and_all_tuple_or_owner_changes
     ordinary_microphone_sharing_profile_does_not_expand_other_targets
+  ].freeze
+  BELUGA_CORE_PINNED = %w[
+    exhaustive_4096_flag_values_match_independent_specification
+    stable_visibility_survives_missing_target_and_session_churn
+    unknown_abi_versions_fail_closed_and_preserve_safe_visibility
+    every_unknown_bit_fails_closed
+    each_original_enabled_guard_is_required
+    disabled_reason_priority_is_stable
+    exported_scalar_abi_matches_safe_policy_and_layout
+    exhaustive_reachable_state_event_graph_matches_reference
+    availability_reconnect_does_not_replace_or_clear_old_media_owner
+    original_utf8_bound_applies_only_to_availability_admission
+    malformed_state_or_abi_fails_terminally_closed
+    stop_is_terminal_and_repeated_stop_is_idempotent
+    deterministic_long_churn_trace_matches_reference
+    lifecycle_scalar_exports_and_layout_match_safe_core
+    stale_media_end_preserves_current_media_owner
+  ].freeze
+  BELUGA_CORE_MUTANTS = %w[visibility-coupled-to-target unknown-flags-ignored command-admission-removed
+                          availability-departure-clears-media stale-media-end-clears-owner].freeze
+  GATE_PINNED = %w[
+    test_beluga_core_has_independent_discovered_non_skipping_coverage
+    test_beluga_core_phases_and_exact_crate_commands_are_mandatory
+    test_beluga_core_rehashed_results_cannot_omit_or_skip_discovered_cases
+    test_beluga_core_ignored_artifact_complete_bytes_are_source_bound
+    test_beluga_core_rejects_missing_unbound_symlinked_or_empty_artifact
+    test_beluga_core_rejects_absent_or_symlinked_artifact
+    test_beluga_core_actual_link_and_named_assertion_mutations_cannot_be_skipped
+    test_beluga_core_rejects_stale_or_missing_source_manifest_and_unbound_source
+    test_beluga_core_rejects_symlinked_source_and_duplicate_manifest_records
+    test_beluga_core_pinned_link_tools_cannot_be_omitted_or_replaced
+    test_beluga_core_rehashed_header_slice_or_tool_metadata_drift_is_rejected
+    test_handoff_menu_and_rust_policy_classes_and_critical_cases_are_mandatory
+    test_gate_named_inventory_pins_new_refusal_cases
+    test_gate_named_results_reject_omission_duplication_failure_skip_and_bad_footer
+    test_gate_named_phase_cannot_remove_verbose_or_rehash_skipped_results
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -180,8 +253,8 @@ module MicrophoneRegressionGate
     availabilityPublicCloseJoinsDistinctLateSuccessReclose
     pairingPublicCloseJoinsDistinctLateSuccessReclose
   ].map { |name| SHARED_SIGNALING_SUITE + '/' + name + '()' }.freeze
-  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation mac-discovery mac-tests shared-signaling-tests simulator-tests simulator-summary simulator-results simulator-signature
-              simulator-entitlements rust-discovery rust-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
+  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests simulator-tests simulator-summary simulator-results simulator-signature
+              simulator-entitlements rust-discovery rust-tests beluga-core-discovery beluga-core-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
               driver-build-2 driver-verifier driver-load driver-malformed-bundles].freeze
   PROTECTED_ROOTS = ['/Applications', '/Library', '/System', '/Users/ahmed/Library/Application Support/opensteamer'].freeze
 
@@ -235,6 +308,14 @@ module MicrophoneRegressionGate
     Find.find(artifact) do |path|
       require!(!File.symlink?(path), 'Rust XCFramework contains a symlink')
       paths << path.delete_prefix(root + '/') if File.file?(path)
+    end
+    core_artifact = File.join(root, BELUGA_CORE_ARTIFACT)
+    require!(File.directory?(core_artifact) && !File.symlink?(core_artifact) && File.realpath(core_artifact) == core_artifact,
+             'Beluga core XCFramework is absent, symlinked or noncanonical')
+    Find.find(core_artifact) do |path|
+      stat = File.lstat(path)
+      require!(!stat.symlink? && (stat.file? || stat.directory?), 'Beluga core XCFramework contains an unsupported node')
+      paths << path.delete_prefix(root + '/') if stat.file?
     end
     entries = paths.uniq.sort.map do |relative|
       require!(!relative.start_with?('/') && !relative.split('/').include?('..'), 'unsafe source path')
@@ -426,6 +507,13 @@ module MicrophoneRegressionGate
     methods.sort
   end
 
+  def self.beluga_core_inventory(text)
+    methods = utf8_text(text, 'Beluga core discovery').lines.map { |line| /\A([\w:]+): test\s*\z/.match(line)&.[](1) }.compact
+    require!(!methods.empty? && methods.uniq.length == methods.length, 'empty or duplicate Beluga core discovery')
+    BELUGA_CORE_PINNED.each { |id| require!(methods.include?(id), "missing critical Beluga core test: #{id}") }
+    methods.sort
+  end
+
   def self.validate_rust(text, expected)
     matches = text.lines.map { |line| /\A\s*test ([\w:]+) \.\.\. (ok|FAILED|ignored)\s*\z/.match(line) }.compact
     require!(matches.all? { |match| match[2] == 'ok' }, 'Rust test failed or was ignored')
@@ -485,6 +573,8 @@ module MicrophoneRegressionGate
     swift = File.join(developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swift')
     xcodebuild = File.join(developer, 'usr/bin/xcodebuild')
     require!(tools.key?(swift) && tools.key?(xcodebuild), 'recorded Xcode tools do not match invocation')
+    require!(tools.key?(File.join(developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc')) &&
+             tools.key?('/usr/bin/lipo') && tools.key?('/usr/bin/plutil'), 'recorded Beluga core tools do not match invocation')
     cargo_candidates = tools.keys.select { |path| File.basename(path) == 'cargo' }
     require!(cargo_candidates.length == 1, 'ambiguous Cargo identity')
     cargo = cargo_candidates.first
@@ -502,7 +592,7 @@ module MicrophoneRegressionGate
     make = ['/usr/bin/make', '-B', '-C', driver, 'BUILD_DIR=' + File.join(scratch, 'DriverBuild'), 'DEVELOPER_DIR=' + developer]
     bundles = [1, 2].map { |number| File.join(directory, 'driver-build-' + number.to_s, 'OpensteamerVirtualMicrophone.driver') }
     {
-      'gate-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-validate-microphone-regressions.rb')],
+      'gate-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-validate-microphone-regressions.rb'), '--verbose'],
       'simulator-signing-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-microphone-simulator-signing.rb'), '--verbose'],
       'release-hook-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-microphone-release-gate.rb')],
       'host-release-hook-self-tests' => ['/usr/bin/ruby', File.join(root, 'scripts/test-microphone-host-release-gate.rb')],
@@ -510,6 +600,9 @@ module MicrophoneRegressionGate
       'product-identity' => ['/bin/zsh', File.join(root, 'scripts/check-product-identity.sh'), root],
       'product-identity-mutations' => ['/bin/zsh', File.join(root, 'scripts/test-product-identity.sh')],
       'rust-artifact-validation' => ['/usr/bin/ruby', File.join(root, 'scripts/microphone-regression-gate.rb'), '--verify-rust-artifact'],
+      'beluga-core-artifact-validation' => ['/usr/bin/ruby', File.join(root, 'scripts/microphone-regression-gate.rb'), '--verify-beluga-core-artifact'],
+      'beluga-core-link' => ['/usr/bin/ruby', File.join(root, BELUGA_CORE_CRATE, 'scripts/verify-xcframework.rb'), File.join(root, BELUGA_CORE_ARTIFACT)],
+      'beluga-core-mutations' => ['/usr/bin/ruby', File.join(root, BELUGA_CORE_CRATE, 'scripts/mutation-tests.rb')],
       'mac-discovery' => swift_base + ['--list-tests'],
       'mac-tests' => swift_base + ['--skip-build', '--filter', filter, '--xunit-output', File.join(directory, 'mac-results.xml')],
       'shared-signaling-tests' => swift_base + ['--skip-build', '--disable-xctest', '--filter', SHARED_SIGNALING_FILTER],
@@ -520,6 +613,8 @@ module MicrophoneRegressionGate
       'simulator-entitlements' => ['/usr/bin/ruby', File.join(root, 'scripts/microphone-simulator-signing.rb'), app],
       'rust-discovery' => [cargo, 'test', '--offline', '--locked', '--', '--list'],
       'rust-tests' => [cargo, 'test', '--offline', '--locked', '--', '--test-threads=1'],
+      'beluga-core-discovery' => [cargo, 'test', '--offline', '--locked', '--manifest-path', File.join(root, BELUGA_CORE_CRATE, 'Cargo.toml'), '--', '--list'],
+      'beluga-core-tests' => [cargo, 'test', '--offline', '--locked', '--manifest-path', File.join(root, BELUGA_CORE_CRATE, 'Cargo.toml'), '--', '--test-threads=1'],
       'driver-tests' => make + %w[test-core test-driver],
       'driver-sanitizers' => make + %w[test-sanitizers],
       'driver-diagnostic-reader' => make + %w[test-diagnostic-snapshot-reader],
@@ -531,7 +626,32 @@ module MicrophoneRegressionGate
     }
   end
 
-  def self.validate_harness(text)
+  def self.gate_inventory(root)
+    source = utf8_text(File.binread(File.join(root, 'scripts/test-validate-microphone-regressions.rb')), 'Gate behavioral source')
+    methods = source.scan(/^\s*def (test\w+)(?:\(|\s|$)/).flatten
+    require!(methods.length >= 41 && methods.uniq.length == methods.length && (GATE_PINNED - methods).empty?,
+             'gate behavioral harness inventory is incomplete or duplicated')
+    methods.sort
+  end
+
+  def self.validate_harness(text, expected = nil)
+    text = utf8_text(text, 'Gate behavioral result')
+    if expected
+      lines = text.lines
+      case_lines = lines.each_with_index.select { |line, _| line.start_with?('MicrophoneRegressionGateTests#') }
+      cases = case_lines.map { |line, _| /\AMicrophoneRegressionGateTests#(test\w+) = \d+(?:\.\d+)? s = ([.SEF])\s*\z/.match(line) }
+      require!(!expected.empty? && cases.all? { |entry| entry && entry[2] == '.' } &&
+               cases.map { |entry| entry[1] }.sort == expected,
+               'gate behavioral results are absent, duplicated, unexpected, failed or skipped')
+      summaries = lines.each_with_index.map do |line, index|
+        match = /\A(\d+) runs, (\d+) assertions, (\d+) failures, (\d+) errors, (\d+) skips\s*\z/.match(line)
+        [match, index] if match
+      end.compact
+      require!(summaries.length == 1 && summaries.first[0][1].to_i == expected.length &&
+               summaries.first[0][2].to_i >= expected.length && summaries.first[0].captures.drop(2).all? { |value| value.to_i == 0 } &&
+               summaries.first[1] > case_lines.last[1], 'gate behavioral harness footer is incomplete')
+      return
+    end
     summaries = text.lines.map { |line| /\A(\d+) runs, (\d+) assertions, (\d+) failures, (\d+) errors, (\d+) skips\s*\z/.match(line) }.compact
     require!(summaries.length == 1 && summaries.first[1].to_i >= 41 && summaries.first[2].to_i >= summaries.first[1].to_i &&
              summaries.first.captures.drop(2).all? { |number| number.to_i == 0 }, 'gate behavioral harness has missing, failed or skipped coverage')
@@ -696,6 +816,104 @@ module MicrophoneRegressionGate
              paths.include?('ios-arm64_x86_64-simulator/libopensteamer_audio_transaction_authority-simulator.a'), 'Rust device or Simulator slice is missing')
   end
 
+  def self.beluga_core_files(directory, exclude: [])
+    require!(File.directory?(directory) && !File.symlink?(directory) && File.realpath(directory) == directory,
+             'Beluga core source or artifact directory is absent, symlinked or noncanonical')
+    paths = []
+    Find.find(directory) do |path|
+      stat = File.lstat(path)
+      require!(!stat.symlink? && (stat.file? || stat.directory?), 'Beluga core source or artifact contains an unsupported node')
+      relative = path.delete_prefix(directory + '/')
+      Find.prune if exclude.include?(relative) && stat.directory?
+      paths << relative if stat.file? && !exclude.include?(relative)
+    end
+    paths.sort
+  end
+
+  def self.beluga_core_plist_value(element)
+    case element.name
+    when 'dict'
+      children = element.elements.to_a
+      require!(children.length.even?, 'Beluga core XCFramework plist dictionary is malformed')
+      result = {}
+      children.each_slice(2) do |key, value|
+        require!(key.name == 'key' && key.text && !result.key?(key.text), 'Beluga core XCFramework plist has malformed or duplicate keys')
+        result[key.text] = beluga_core_plist_value(value)
+      end
+      result
+    when 'array' then element.elements.map { |value| beluga_core_plist_value(value) }
+    when 'string'
+      require!(element.elements.to_a.empty?, 'Beluga core XCFramework plist string is malformed')
+      element.text.to_s
+    else raise RuntimeError, 'Beluga core XCFramework plist contains an unsupported value'
+    end
+  end
+
+  def self.validate_beluga_core_artifacts(root)
+    crate = File.join(root, BELUGA_CORE_CRATE)
+    artifact = File.join(root, BELUGA_CORE_ARTIFACT)
+    source_manifest = File.join(crate, 'SOURCE_MANIFEST.sha256')
+    source_paths = beluga_core_files(crate, exclude: %w[target SOURCE_MANIFEST.sha256])
+    require!((BELUGA_CORE_SOURCE_FILES - source_paths).empty?, 'Beluga core required source files are missing')
+    regular!(source_manifest)
+    validate_checksum_manifest(crate, source_manifest, source_paths)
+    artifact_paths = beluga_core_files(artifact, exclude: %w[ARTIFACT_MANIFEST.sha256])
+    require!(artifact_paths == BELUGA_CORE_ARTIFACT_FILES.sort, 'Beluga core artifact has missing or unbound files')
+    require!(artifact_paths.all? { |path| regular!(File.join(artifact, path)).size.positive? }, 'Beluga core artifact contains an empty required file')
+    regular!(File.join(artifact, 'ARTIFACT_MANIFEST.sha256'))
+    validate_checksum_manifest(artifact, File.join(artifact, 'ARTIFACT_MANIFEST.sha256'), artifact_paths)
+    require!(File.binread(source_manifest) == File.binread(File.join(artifact, 'SOURCE_MANIFEST.sha256')), 'Beluga core published source manifest is stale')
+    { 'include/beluga_core.h' => 'macos-arm64/Headers/beluga_core.h',
+      'include/module.modulemap' => 'macos-arm64/Headers/module.modulemap',
+      'THIRD_PARTY_NOTICES.html' => 'THIRD_PARTY_NOTICES.html' }.each do |source, published|
+      require!(File.binread(File.join(crate, source)) == File.binread(File.join(artifact, published)), 'Beluga core published header, module or notice differs')
+    end
+    document = REXML::Document.new(utf8_text(File.binread(File.join(artifact, 'Info.plist')), 'Beluga core XCFramework plist'))
+    require!(document.root && document.root.name == 'plist' && document.root.attributes['version'] == '1.0' &&
+             document.root.elements.to_a.length == 1, 'Beluga core XCFramework plist root differs')
+    plist = beluga_core_plist_value(document.root.elements.to_a.first)
+    exact_keys!(plist, %w[AvailableLibraries CFBundlePackageType XCFrameworkFormatVersion], 'Beluga core XCFramework plist')
+    libraries = plist['AvailableLibraries']
+    require!(plist['CFBundlePackageType'] == 'XFWK' && plist['XCFrameworkFormatVersion'] == '1.0' &&
+             libraries.is_a?(Array) && libraries.length == 1, 'Beluga core XCFramework slice inventory differs')
+    library = libraries.first
+    keys = %w[HeadersPath LibraryIdentifier LibraryPath SupportedArchitectures SupportedPlatform]
+    keys << 'BinaryPath' if library.is_a?(Hash) && library.key?('BinaryPath')
+    exact_keys!(library, keys, 'Beluga core XCFramework slice')
+    require!(library['LibraryIdentifier'] == 'macos-arm64' && library['LibraryPath'] == 'libbeluga_core.a' &&
+             library['HeadersPath'] == 'Headers' && library['SupportedArchitectures'] == ['arm64'] &&
+             library['SupportedPlatform'] == 'macos' && (!library.key?('BinaryPath') || library['BinaryPath'] == 'libbeluga_core.a'),
+             'Beluga core XCFramework is not the exact macOS arm64 slice')
+    metadata = utf8_text(File.binread(File.join(artifact, 'BUILD_METADATA.txt')), 'Beluga core build metadata').lines.map(&:chomp)
+    prefix = ['rust-toolchain=' + RUST_VERSION, 'supported-target=aarch64-apple-darwin', 'supported-architecture=arm64', 'abi-version=1']
+    require!(metadata.take(prefix.length) == prefix && prefix.all? { |line| metadata.count(line) == 1 } &&
+             metadata.count('release: ' + RUST_VERSION) == 1 && metadata.count('host: aarch64-apple-darwin') == 1 &&
+             XCODE_VERSION.lines.map(&:chomp).all? { |line| metadata.count(line) == 1 } &&
+             metadata.count { |line| line.match?(/\Arustc 1\.97\.1 \(.+\)\z/) } == 1 &&
+             metadata.count { |line| line.match?(/\Amacos-sdk=\d+(?:\.\d+){0,2}\z/) } == 1,
+             'Beluga core build metadata differs from the reviewed Rust, Xcode or target identity')
+  rescue REXML::ParseException
+    raise RuntimeError, 'Beluga core XCFramework plist is malformed'
+  rescue SystemCallError
+    raise RuntimeError, 'Beluga core artifact validation could not read a required file'
+  end
+
+  def self.validate_beluga_core_link(text)
+    require!(utf8_text(text, 'Beluga core link result').lines.map(&:chomp).count('BELUGA_CORE_LINK_SMOKE_PASS') == 1,
+             'Beluga core actual archive C and Swift link oracle is incomplete')
+  end
+
+  def self.validate_beluga_core_mutations(text)
+    lines = utf8_text(text, 'Beluga core mutation result').lines.map(&:chomp)
+    expected = BELUGA_CORE_MUTANTS.map { |name| 'BELUGA_CORE_MUTANT_REJECTED ' + name + ' assertion-failed' }
+    observed = lines.select { |line| line.start_with?('BELUGA_CORE_MUTANT_REJECTED') }
+    footer = 'BELUGA_CORE_MUTATIONS_PASS cases=' + BELUGA_CORE_MUTANTS.length.to_s
+    require!(observed == expected && lines.count(footer) == 1 &&
+             lines.select { |line| line.start_with?('BELUGA_CORE_MUTATIONS_PASS') } == [footer] &&
+             expected.all? { |line| lines.index(line) < lines.index(footer) },
+             'Beluga core assertion-failing mutation oracle is incomplete, duplicate or out of order')
+  end
+
   class Executor
     def run(argv, environment, root, log, timeout)
       pid = Process.spawn(environment, *argv, chdir: root, out: log, err: [:child, :out], pgroup: true, unsetenv_others: true)
@@ -802,7 +1020,8 @@ module MicrophoneRegressionGate
       @environment = { 'PATH' => '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME' => Dir.home, 'DEVELOPER_DIR' => developer,
                        'TMPDIR' => @evidence, 'LC_ALL' => 'C', 'CARGO_NET_OFFLINE' => 'true', 'RUSTUP_HOME' => RUSTUP_HOME, 'CARGO_HOME' => CARGO_HOME }
       clang = File.join(developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang')
-      @tools = ([xcodebuild, swift, clang, '/usr/bin/make', '/usr/bin/ruby', '/usr/bin/xcrun'] +
+      swiftc = File.join(developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc')
+      @tools = ([xcodebuild, swift, swiftc, clang, '/usr/bin/lipo', '/usr/bin/make', '/usr/bin/ruby', '/usr/bin/xcrun'] +
                 MicrophoneSimulatorSigning::DEPENDENCIES).uniq.map { |path| [path, MicrophoneRegressionGate.sha(path)] }.to_h
       node = MicrophoneRegressionGate.resolve_node
       @tools[node] = MicrophoneRegressionGate.sha(node)
@@ -829,7 +1048,11 @@ module MicrophoneRegressionGate
       @environment['PATH'] = File.dirname(cargo) + ':' + @environment.fetch('PATH')
       @environment['RUSTUP_TOOLCHAIN'] = RUST_VERSION
       @environment['CARGO_TARGET_DIR'] = File.join(scratch, 'RustTarget')
-      MicrophoneRegressionGate.validate_harness(phase('gate-self-tests', ['/usr/bin/ruby', File.join(@root, 'scripts/test-validate-microphone-regressions.rb')]))
+      core_environment = @environment.merge('BELUGA_CORE_CARGO_BIN' => cargo, 'BELUGA_CORE_RUSTC_BIN' => rustc,
+                                           'BELUGA_CORE_CLANG_BIN' => clang, 'BELUGA_CORE_SWIFTC_BIN' => swiftc,
+                                           'BELUGA_CORE_WORK_DIRECTORY' => File.join(@evidence, 'beluga-core-work'))
+      MicrophoneRegressionGate.validate_harness(phase('gate-self-tests', ['/usr/bin/ruby', File.join(@root, 'scripts/test-validate-microphone-regressions.rb'), '--verbose']),
+                                               MicrophoneRegressionGate.gate_inventory(@root))
       signing_tests = phase('simulator-signing-self-tests', ['/usr/bin/ruby', File.join(@root, 'scripts/test-microphone-simulator-signing.rb'), '--verbose'])
       MicrophoneRegressionGate.validate_simulator_signing_harness(signing_tests, MicrophoneRegressionGate.simulator_signing_inventory(@root))
       release_tests = phase('release-hook-self-tests', ['/usr/bin/ruby', File.join(@root, 'scripts/test-microphone-release-gate.rb')])
@@ -844,6 +1067,12 @@ module MicrophoneRegressionGate
       MicrophoneRegressionGate.require!(identity_mutations.lines.map(&:chomp).count('opensteamer product identity regression tests passed') == 1, 'product identity mutations did not complete')
       phase('rust-artifact-validation', ['/usr/bin/ruby', File.join(@root, 'scripts/microphone-regression-gate.rb'), '--verify-rust-artifact'])
       MicrophoneRegressionGate.validate_rust_artifacts(@root)
+      phase('beluga-core-artifact-validation', ['/usr/bin/ruby', File.join(@root, 'scripts/microphone-regression-gate.rb'), '--verify-beluga-core-artifact'])
+      MicrophoneRegressionGate.validate_beluga_core_artifacts(@root)
+      MicrophoneRegressionGate.validate_beluga_core_link(phase('beluga-core-link',
+        ['/usr/bin/ruby', File.join(@root, BELUGA_CORE_CRATE, 'scripts/verify-xcframework.rb'), File.join(@root, BELUGA_CORE_ARTIFACT)], core_environment))
+      MicrophoneRegressionGate.validate_beluga_core_mutations(phase('beluga-core-mutations',
+        ['/usr/bin/ruby', File.join(@root, BELUGA_CORE_CRATE, 'scripts/mutation-tests.rb')], core_environment))
       swift_base = [swift, 'test', '--package-path', @root, '--scratch-path', @swift_scratch, '--jobs', '2']
       mac_discovery = phase('mac-discovery', swift_base + ['--list-tests'])
       mac_methods = MicrophoneRegressionGate.mac_inventory(mac_discovery)
@@ -886,6 +1115,9 @@ module MicrophoneRegressionGate
       crate = File.join(@root, 'iOS/opensteamer/Rust/AudioTransactionAuthority')
       rust_methods = MicrophoneRegressionGate.rust_inventory(phase('rust-discovery', [cargo, 'test', '--offline', '--locked', '--', '--list'], @environment, crate))
       MicrophoneRegressionGate.validate_rust(phase('rust-tests', [cargo, 'test', '--offline', '--locked', '--', '--test-threads=1'], @environment, crate), rust_methods)
+      core_base = [cargo, 'test', '--offline', '--locked', '--manifest-path', File.join(@root, BELUGA_CORE_CRATE, 'Cargo.toml'), '--']
+      core_methods = MicrophoneRegressionGate.beluga_core_inventory(phase('beluga-core-discovery', core_base + ['--list']))
+      MicrophoneRegressionGate.validate_rust(phase('beluga-core-tests', core_base + ['--test-threads=1']), core_methods)
       driver = File.join(@root, 'macOS/VirtualAudioDriver')
       c_methods = MicrophoneRegressionGate.c_inventory(@root)
       make_base = ['/usr/bin/make', '-B', '-C', driver, 'BUILD_DIR=' + File.join(scratch, 'DriverBuild'), 'DEVELOPER_DIR=' + developer]
@@ -915,7 +1147,7 @@ module MicrophoneRegressionGate
                   'invocation' => { 'developer_directory' => developer, 'scratch' => scratch, 'swift_scratch' => @swift_scratch, 'timeout_seconds' => @options.fetch(:timeout) },
                   'mac_format' => mac_format, 'phases' => @phases, 'artifacts' => artifacts,
                   'coverage' => { 'mac' => mac_methods, 'simulator' => sim_methods, 'intentional_simulator_skips' => SIMULATOR_SKIPS,
-                                  'rust' => rust_methods, 'c' => c_methods } }
+                                  'rust' => rust_methods, 'beluga_core' => core_methods, 'c' => c_methods } }
       path = File.join(@evidence, 'receipt.json')
       File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.pretty_generate(receipt) + "\n"); file.flush; file.fsync }
       digest = MicrophoneRegressionGate.sha(path)
@@ -942,7 +1174,7 @@ module MicrophoneRegressionGate
     require!(receipt['source'] == source_identity(root), 'receipt source identity is stale or changed')
     tools = receipt['tools']
     require!(tools.is_a?(Hash) && !tools.empty? && tools.any? { |tool, digest| tool.end_with?('/usr/bin/xcodebuild') && digest == XCODEBUILD_SHA256 } &&
-             %w[swift clang make ruby xcrun codesign cargo rustc node].all? { |name| tools.keys.any? { |tool| File.basename(tool) == name } } &&
+             %w[swift swiftc clang lipo make ruby xcrun codesign cargo rustc node].all? { |name| tools.keys.any? { |tool| File.basename(tool) == name } } &&
              tools.keys.count { |tool| File.basename(tool) == 'node' } == 1, 'receipt lacks reviewed tool identities')
     require!(MicrophoneSimulatorSigning::DEPENDENCIES.all? { |tool| tools.key?(tool) }, 'receipt lacks exact Simulator signing tool identities')
     tools.each { |tool, digest| require!(tool.start_with?('/') && sha(tool) == digest, 'receipt tool identity drifted') }
@@ -959,7 +1191,7 @@ module MicrophoneRegressionGate
       File.read(log)
     end
     PHASES.each { |name| read_phase.call(name) }
-    validate_harness(read_phase.call('gate-self-tests'))
+    validate_harness(read_phase.call('gate-self-tests'), gate_inventory(root))
     validate_simulator_signing_harness(read_phase.call('simulator-signing-self-tests'), simulator_signing_inventory(root))
     require!(read_phase.call('release-hook-self-tests').lines.map(&:chomp).count('microphone release gate behavior tests passed') == 1, 'release hook behavioral harness is incomplete')
     validate_host_release_harness(read_phase.call('host-release-hook-self-tests'))
@@ -967,6 +1199,9 @@ module MicrophoneRegressionGate
     require!(read_phase.call('product-identity').lines.map(&:chomp).count('Beluga product identity check passed') == 1, 'product identity checker is incomplete')
     require!(read_phase.call('product-identity-mutations').lines.map(&:chomp).count('opensteamer product identity regression tests passed') == 1, 'product identity mutations are incomplete')
     validate_rust_artifacts(root)
+    validate_beluga_core_artifacts(root)
+    validate_beluga_core_link(read_phase.call('beluga-core-link'))
+    validate_beluga_core_mutations(read_phase.call('beluga-core-mutations'))
     artifacts = receipt['artifacts']
     required_artifacts = %w[simulator-result driver-bundle-1 driver-bundle-2 simulator-app]
     required_artifacts << 'mac-xunit' if receipt['mac_format'] == 'xunit'
@@ -984,7 +1219,7 @@ module MicrophoneRegressionGate
     end
     check_artifacts.call
     coverage = receipt['coverage']
-    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips rust c], 'coverage')
+    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips rust beluga_core c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     require!(coverage['mac'] == mac, 'Mac coverage differs from discovery')
@@ -1004,6 +1239,9 @@ module MicrophoneRegressionGate
     rust = rust_inventory(read_phase.call('rust-discovery'))
     require!(coverage['rust'] == rust, 'Rust coverage differs from discovery')
     validate_rust(read_phase.call('rust-tests'), rust)
+    core = beluga_core_inventory(read_phase.call('beluga-core-discovery'))
+    require!(coverage['beluga_core'] == core, 'Beluga core coverage differs from discovery')
+    validate_rust(read_phase.call('beluga-core-tests'), core)
     native = c_inventory(root)
     require!(coverage['c'] == native, 'native inventory differs from source')
     validate_c(read_phase.call('driver-tests'), native)
@@ -1043,6 +1281,11 @@ module MicrophoneRegressionGate
     if arguments == ['--verify-rust-artifact']
       validate_rust_artifacts(root)
       puts 'microphone-regressions: Rust source and published artifact checksums verified'
+      return
+    end
+    if arguments == ['--verify-beluga-core-artifact']
+      validate_beluga_core_artifacts(root)
+      puts 'microphone-regressions: Beluga core source and published artifact checksums verified'
       return
     end
     if arguments == ['--help']

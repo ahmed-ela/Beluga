@@ -752,6 +752,38 @@ and the idle coordinator refusal test are not live positive-dispatch, rendered
 popover, phone-receiver or completed-transfer proof. Do not label an offer ID as a
 successful transfer, and retain the shared transport's default-off negotiation.
 
+#### Rust menu/lifecycle core checkpoint — 2026-10-06
+
+The production Mac menu now uses the linked `BelugaCore` Rust policy: visibility
+depends on having started, not on a transient optional connection target. Readiness,
+exact-target dispatch and all native handoff authority remain separate guards.
+`BelugaRustHandoffPolicyTests` exhaust all 128 known input combinations through the
+actual archive and reject unknown ABI/bits and malformed foreign outputs. The Rust
+policy tests independently exhaust 4,096 flag values. The actual model's control stays
+visible but disabled across disconnect, reconnect and unavailable presentation.
+
+The production `WorldwideHostLifecycle` now delegates transitions to the same Rust
+archive, with independently owned availability and media slots. Retain both the original
+`WorldwideHostLifecycleTests` and `BelugaRustHostLifecycleTests`: exhaustive reachable
+state/event comparisons and seeded churn must preserve delayed-departure behavior,
+terminal stop, value copies, public equality, UTF-8 admission bounds, canonical Unicode
+equality and each owner's original String bytes. The Swift bridge stores no foreign
+pointers; copied nonzero tokens are pruned to current owners and never recycled.
+
+The core builder/verifier binds exact source/artifact manifests, copied headers,
+arm64 slice/tool metadata and actual C/Swift import/link/execution smokes. Five mutants
+must compile and fail assertions: visibility coupled to target, ignored unknown flags,
+removed command admission, availability departure erasing media, and stale media end
+clearing another owner. Missing/skipped/discovery-incomplete tests and stale or unbound
+archives fail the mandatory release gate. This new core is Mac-arm64-only; iOS audio's
+existing Rust authority is distinct and its gates remain mandatory.
+
+Current source checkpoint passes 15 Rust tests, 126 focused Mac adapter/model tests,
+470 discovered mandatory Mac tests and 72 release-gate self-tests (1,388 assertions).
+The full signed Simulator/native producer/release receipt has not been regenerated
+for this source. Rendered live menu behavior and completed physical handoff remain
+separate evidence; a source-level visibility fix is not an installed-product claim.
+
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
 main-frame message bridge and teardown with inert local provider HTML, not a real

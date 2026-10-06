@@ -4,6 +4,102 @@ import XCTest
 
 @MainActor
 final class BelugaMediaHandoffMenuTests: XCTestCase {
+    func testControlStaysVisibleAcrossDisconnectReconnectAndUnavailablePresentation() {
+        let original = target(), probe = HandoffMenuProbe()
+        let model = started(probe, target: original)
+        assertControl(model, reason: .ready, enabled: true)
+
+        let waitingPhases: [BelugaHostPresentationPhase] = [
+            .pairedConnecting, .pairedWaiting, .preparingSession, .unavailable
+        ]
+        for (index, phase) in waitingPhases.enumerated() {
+            model.apply(presentation(UInt64(index + 2), target: nil, phase: phase))
+            assertControl(model, reason: .waitingForSession)
+            XCTAssertNil(model.moveMedia(to: original))
+        }
+        model.apply(presentation(6, target: nil))
+        assertControl(model, reason: .targetUnavailable)
+        XCTAssertNil(model.moveMedia(to: original))
+
+        let replacement = target()
+        model.apply(presentation(7, target: replacement))
+        assertControl(model, reason: .ready, enabled: true)
+        XCTAssertNil(model.moveMedia(to: original), "A visible control cannot retarget an old click")
+        XCTAssertEqual(probe.targets, [])
+    }
+
+    func testStartCommandAvailabilityAndStopHaveTruthfulDisabledReasons() {
+        let model = BelugaMenuBarModel(), current = target(), probe = HandoffMenuProbe()
+        assertControl(model, reason: .notStarted, visible: false)
+        model.apply(presentation(1, target: current))
+        model.start = { false }; model.begin()
+        assertControl(model, reason: .notStarted, visible: false)
+
+        model.start = { true }; model.begin()
+        assertControl(model, reason: .commandUnavailable)
+        model.installPhoneCommands(.init { _, _ in XCTFail("No catalog action expected") })
+        assertControl(model, reason: .commandUnavailable)
+        model.installPhoneCommands(probe.commands)
+        assertControl(model, reason: .ready, enabled: true)
+        model.installPhoneCommands(.init { _, _ in XCTFail("No catalog action expected") })
+        assertControl(model, reason: .commandUnavailable)
+        XCTAssertNil(model.moveMedia(to: current))
+
+        model.finished()
+        assertControl(model, reason: .stopped)
+        model.installPhoneCommands(probe.commands)
+        model.apply(presentation(2, target: current))
+        assertControl(model, reason: .stopped)
+        XCTAssertNil(model.moveMedia(to: current))
+        XCTAssertEqual(probe.targets, [])
+    }
+
+    func testChangingPhoneKeepsControlVisibleButCannotDispatch() async throws {
+        let current = target(), probe = HandoffMenuProbe()
+        let model = started(probe, target: current)
+        let ticket = WorldwidePhoneCatalogAction(
+            token: WorldwidePairedPhoneCatalogToken(catalogID: UUID(), revision: 1),
+            selectionEpoch: current.selectionEpoch
+        )
+        model.installPhoneCommands(.init(moveMedia: probe.commands.moveMedia, perform: { _, _ in }))
+        model.apply(.init(revision: 2, phase: .sessionPrepared, pairedPhoneName: "Test Phone",
+            invitation: nil,
+            phones: .init(items: [.init(id: current.phoneID, name: "Test Phone", needsPairingRecovery: false)],
+                selectedPhoneID: current.phoneID, action: ticket, canAddPhone: true),
+            connectedMediaTarget: current))
+        assertControl(model, reason: .ready, enabled: true)
+
+        let change = try XCTUnwrap(model.changePhone(.select(nil), ticket: ticket))
+        XCTAssertTrue(model.isChangingPhone)
+        assertControl(model, reason: .changingPhone)
+        XCTAssertNil(model.moveMedia(to: current))
+        XCTAssertEqual(probe.targets, [])
+        await change.value
+        assertControl(model, reason: .ready, enabled: true)
+    }
+
+    func testDisconnectRetiresInFlightRequestWithoutHidingControlOrPublishingLateResult() async throws {
+        let original = target(), probe = HandoffMenuProbe(holds: true)
+        defer { probe.release() }
+        let model = started(probe, target: original)
+        let request = try XCTUnwrap(model.moveMedia(to: original))
+        let entered = await probe.waitForEntry()
+        XCTAssertTrue(entered)
+        assertControl(model, reason: .requestInFlight)
+
+        model.apply(presentation(2, target: nil, phase: .pairedWaiting))
+        assertControl(model, reason: .waitingForSession)
+        XCTAssertFalse(model.isRequestingMediaHandoff)
+        let replacement = target()
+        model.apply(presentation(3, target: replacement))
+        assertControl(model, reason: .ready, enabled: true)
+        XCTAssertNil(model.moveMedia(to: original))
+        probe.release(); await request.value
+        assertControl(model, reason: .ready, enabled: true)
+        XCTAssertNil(model.mediaHandoffMessage)
+        XCTAssertEqual(probe.targets, [original])
+    }
+
     func testNeedsStartedRuntimeCurrentConnectedTargetAndInstalledCommand() {
         let model = BelugaMenuBarModel(), target = target()
         model.apply(presentation(1, target: target))
@@ -114,6 +210,16 @@ final class BelugaMediaHandoffMenuTests: XCTestCase {
             XCTAssertFalse(value.contains(target.phoneID.uuidString))
             XCTAssertFalse(value.contains(target.selectionEpoch.uuidString))
         }
+    }
+
+    private func assertControl(_ model: BelugaMenuBarModel,
+                               reason: BelugaMediaHandoffDisabledReason,
+                               enabled: Bool = false, visible: Bool = true,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(model.mediaHandoffControl.visible, visible, file: file, line: line)
+        XCTAssertEqual(model.mediaHandoffControl.enabled, enabled, file: file, line: line)
+        XCTAssertEqual(model.mediaHandoffControl.reason, reason, file: file, line: line)
+        XCTAssertEqual(model.canMoveMedia, enabled, file: file, line: line)
     }
 
     private func target() -> BelugaConnectedPhoneMediaTarget {

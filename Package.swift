@@ -37,6 +37,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
                 "BelugaUpdateCore",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS])),
                 "CaptureCore",
                 "MediaBridgeCore",
                 .target(
@@ -166,6 +167,10 @@ let package = Package(
                 .target(name: "LiveKitWebRTC")
             ],
             path: "shared/Sources/WebRTCTransport"
+        ),
+        .binaryTarget(
+            name: "BelugaCore",
+            path: "shared/Vendor/BelugaCore.xcframework"
         ),
         .binaryTarget(
             name: "LiveKitWebRTC",

@@ -24,6 +24,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
       "final class #{name}: XCTestCase {\n" + methods.map { |method| "func #{method.split('/').last}() {}\n" }.join + "}\n"
     end
     write(File.join(@root, 'iOS/opensteamer/Tests/AudioTests.swift'), classes.join)
+    @gate_methods = Gate.gate_inventory(File.dirname(File.dirname(File.realpath(__FILE__))))
+    write(File.join(@root, 'scripts/test-validate-microphone-regressions.rb'),
+          @gate_methods.map { |method| "def #{method}\nend\n" }.join)
     @signing_methods = Gate.simulator_signing_inventory(File.dirname(File.dirname(File.realpath(__FILE__))))
     write(File.join(@root, 'scripts/test-microphone-simulator-signing.rb'),
           @signing_methods.map { |method| "def #{method}\nend\n" }.join)
@@ -45,6 +48,34 @@ class MicrophoneRegressionGateTests < Minitest::Test
     write(File.join(artifact, 'ios-arm64_x86_64-simulator/libopensteamer_audio_transaction_authority-simulator.a'), 'Simulator library fixture')
     artifact_files = Dir.glob(File.join(artifact, '**', '*')).select { |path| File.file?(path) }
     write(File.join(artifact, 'ARTIFACT_MANIFEST.sha256'), artifact_files.map { |path| Gate.sha(path) + '  ./' + path.delete_prefix(artifact + '/') + "\n" }.join)
+    write(File.join(@root, '.gitignore'), "shared/Vendor/BelugaCore.xcframework/\n")
+    Gate::BELUGA_CORE_SOURCE_FILES.each { |path| write(File.join(core_crate, path), 'Beluga core source fixture ' + path) }
+    write(File.join(core_artifact, 'Info.plist'), <<~XML)
+      <?xml version="1.0" encoding="UTF-8"?>
+      <plist version="1.0"><dict>
+      <key>AvailableLibraries</key><array><dict>
+      <key>BinaryPath</key><string>libbeluga_core.a</string>
+      <key>HeadersPath</key><string>Headers</string>
+      <key>LibraryIdentifier</key><string>macos-arm64</string>
+      <key>LibraryPath</key><string>libbeluga_core.a</string>
+      <key>SupportedArchitectures</key><array><string>arm64</string></array>
+      <key>SupportedPlatform</key><string>macos</string>
+      </dict></array>
+      <key>CFBundlePackageType</key><string>XFWK</string>
+      <key>XCFrameworkFormatVersion</key><string>1.0</string>
+      </dict></plist>
+    XML
+    write(File.join(core_artifact, 'BUILD_METADATA.txt'),
+          "rust-toolchain=1.97.1\nsupported-target=aarch64-apple-darwin\nsupported-architecture=arm64\nabi-version=1\n" +
+          "rustc 1.97.1 (fixture 2026-09-30)\nrelease: 1.97.1\nhost: aarch64-apple-darwin\n" + Gate::XCODE_VERSION + "macos-sdk=26.6\n")
+    write(File.join(core_artifact, 'macos-arm64/libbeluga_core.a'), 'inert core archive fixture')
+    { 'include/beluga_core.h' => 'macos-arm64/Headers/beluga_core.h',
+      'include/module.modulemap' => 'macos-arm64/Headers/module.modulemap',
+      'THIRD_PARTY_NOTICES.html' => 'THIRD_PARTY_NOTICES.html' }.each do |source, published|
+      write(File.join(core_artifact, published), File.binread(File.join(core_crate, source)))
+    end
+    refresh_core_source_manifest
+    refresh_core_artifact_manifest
     %w[OpensteamerVirtualAudioCoreTests.c OpensteamerVirtualMicrophoneDriverTests.c].each do |name|
       label = name.include?('CoreTests') ? 'core invariant' : 'driver interface'
       entries = Gate::C_PINNED.fetch(label).map { |test| "{\"#{test}\", test_behavior},\n" }.join
@@ -55,12 +86,13 @@ class MicrophoneRegressionGateTests < Minitest::Test
       Gate::SHARED_SIGNALING_SUITE + '/' + name + '()'
     end).sort
     @rust_methods = Gate::RUST_PINNED.sort
+    @core_methods = (Gate::BELUGA_CORE_PINNED + ['additional_core_behavior_fixture']).sort
     @c_methods = Gate.c_inventory(@root)
     @developer = File.join(@temporary, 'fixture-Xcode.app/Contents/Developer')
-    @tools = %w[xcodebuild swift clang make ruby xcrun cargo rustc node].map do |name|
+    @tools = %w[xcodebuild swift swiftc clang make ruby xcrun cargo rustc node].map do |name|
       path = if name == 'xcodebuild'
                File.join(@developer, 'usr/bin', name)
-             elsif %w[swift clang].include?(name)
+             elsif %w[swift swiftc clang].include?(name)
                File.join(@developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin', name)
              else
                File.join(@temporary, 'fixture-tools/usr/bin', name)
@@ -70,6 +102,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
     end.to_h
     # The fixed read-only collector tools are hashed, never replaced or written.
     Signing::DEPENDENCIES.each { |path| @tools[path] = Gate.sha(path) }
+    @tools['/usr/bin/lipo'] = Gate.sha('/usr/bin/lipo')
     # Substitute only the reviewed tool pin in this test process; the executable
     # CLI has no override. All source, logs, artifacts and result checks are real.
     @production_xcode_pin = Gate::XCODEBUILD_SHA256
@@ -88,6 +121,27 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def write(path, text)
     FileUtils.mkdir_p(File.dirname(path), mode: 0700)
     File.write(path, text)
+  end
+
+  def core_crate
+    File.join(@root, Gate::BELUGA_CORE_CRATE)
+  end
+
+  def core_artifact
+    File.join(@root, Gate::BELUGA_CORE_ARTIFACT)
+  end
+
+  def refresh_core_source_manifest(publish: true)
+    paths = Gate.beluga_core_files(core_crate, exclude: %w[target SOURCE_MANIFEST.sha256])
+    text = paths.map { |path| Gate.sha(File.join(core_crate, path)) + '  ' + path + "\n" }.join
+    write(File.join(core_crate, 'SOURCE_MANIFEST.sha256'), text)
+    write(File.join(core_artifact, 'SOURCE_MANIFEST.sha256'), text) if publish
+  end
+
+  def refresh_core_artifact_manifest
+    paths = Gate.beluga_core_files(core_artifact, exclude: %w[ARTIFACT_MANIFEST.sha256])
+    text = paths.map { |path| Gate.sha(File.join(core_artifact, path)) + '  ./' + path + "\n" }.join
+    write(File.join(core_artifact, 'ARTIFACT_MANIFEST.sha256'), text)
   end
 
   def summary
@@ -110,8 +164,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
     end.join + "Test Suite 'Selected tests' passed at 2026-10-01 12:00:01.000.\n\t Executed #{methods.length} tests, with 0 failures (0 unexpected) in 1.000 (1.001) seconds\n"
   end
 
-  def rust_log
-    @rust_methods.map { |method| "test #{method} ... ok\n" }.join + "test result: ok. #{@rust_methods.length} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+  def rust_log(methods = @rust_methods)
+    methods.map { |method| "test #{method} ... ok\n" }.join + "test result: ok. #{methods.length} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
   end
 
   def c_log
@@ -124,6 +178,11 @@ class MicrophoneRegressionGateTests < Minitest::Test
     @signing_methods.map { |method| "MicrophoneSimulatorSigningTests##{method} = 0.00 s = .\n" }.join +
       "#{@signing_methods.length} runs, 184 assertions, 0 failures, 0 errors, 0 skips\n" +
       "microphone Simulator signing behavior tests passed\n"
+  end
+
+  def gate_log
+    @gate_methods.map { |method| "MicrophoneRegressionGateTests##{method} = 0.00 s = .\n" }.join +
+      "#{@gate_methods.length} runs, 349 assertions, 0 failures, 0 errors, 0 skips\n"
   end
 
   def producer_log
@@ -173,7 +232,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def receipt
     @collected_signing_record = signing_record_fixture
     log_texts = {
-      'gate-self-tests' => "41 runs, 349 assertions, 0 failures, 0 errors, 0 skips\n",
+      'gate-self-tests' => gate_log,
       'simulator-signing-self-tests' => signing_log,
       'release-hook-self-tests' => "microphone release gate behavior tests passed\n",
       'host-release-hook-self-tests' => "microphone host release gate behavior tests passed\n",
@@ -185,6 +244,11 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'simulator-summary' => JSON.generate(summary), 'simulator-results' => JSON.generate(results),
       'simulator-entitlements' => JSON.generate(@collected_signing_record),
       'rust-discovery' => @rust_methods.map { |method| method + ': test' }.join("\n") + "\n",
+      'beluga-core-discovery' => @core_methods.map { |method| method + ': test' }.join("\n") + "\n",
+      'beluga-core-tests' => rust_log(@core_methods),
+      'beluga-core-link' => "BELUGA_CORE_LINK_SMOKE_PASS\n",
+      'beluga-core-mutations' => Gate::BELUGA_CORE_MUTANTS.map { |name| "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n" }.join +
+                               "BELUGA_CORE_MUTATIONS_PASS cases=#{Gate::BELUGA_CORE_MUTANTS.length}\n",
       'rust-tests' => rust_log, 'driver-tests' => c_log, 'driver-sanitizers' => c_log * 2,
       'driver-load' => "VERIFIED_BUILT_DRIVER_BUNDLE_LOAD\nPASS: loaded production driver idle-registration pressure and exact PCM\nPASS: loaded driver pristine and retired idle contract mutations\n",
       'driver-malformed-bundles' => "ALL_DRIVER_BUNDLE_VERIFIER_MUTATIONS_REJECTED\n",
@@ -209,7 +273,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'created_at' => Time.now.to_i, 'source' => Gate.source_identity(@root), 'tools' => @tools, 'simulator' => SIMULATOR,
       'invocation' => invocation, 'mac_format' => 'darwin-xctest-log', 'phases' => phases, 'artifacts' => artifacts,
       'coverage' => { 'mac' => @mac_methods, 'simulator' => @sim_methods, 'intentional_simulator_skips' => Gate::SIMULATOR_SKIPS,
-                      'rust' => @rust_methods, 'c' => @c_methods } }
+                      'rust' => @rust_methods, 'beluga_core' => @core_methods, 'c' => @c_methods } }
   end
 
   def save_receipt(value)
@@ -239,6 +303,46 @@ class MicrophoneRegressionGateTests < Minitest::Test
     value = receipt
     assert_equal 'passed', verify(value)['status']
     assert_equal @sim_methods, Gate.simulator_inventory(@root)
+  end
+
+  def test_gate_named_inventory_pins_new_refusal_cases
+    assert_equal @gate_methods, Gate.gate_inventory(@root)
+    path = File.join(@root, 'scripts/test-validate-microphone-regressions.rb')
+    original = File.read(path)
+    Gate::GATE_PINNED.each do |method|
+      File.write(path, original.sub("def #{method}\nend\n", ''))
+      rejects('harness inventory') { Gate.gate_inventory(@root) }
+    end
+    File.write(path, original + "def #{@gate_methods.first}\nend\n")
+    rejects('harness inventory') { Gate.gate_inventory(@root) }
+  end
+
+  def test_gate_named_results_reject_omission_duplication_failure_skip_and_bad_footer
+    assert_nil Gate.validate_harness(gate_log, @gate_methods)
+    [gate_log.lines.drop(1).join, gate_log + gate_log.lines.first,
+     gate_log.sub(@gate_methods.first, 'testUnexpectedFixture'), gate_log.sub(' s = .', ' s = ?')].each do |text|
+      rejects('gate behavioral results') { Gate.validate_harness(text, @gate_methods) }
+    end
+    %w[S E F].each do |status|
+      rejects('gate behavioral results') { Gate.validate_harness(gate_log.sub(' s = .', ' s = ' + status), @gate_methods) }
+    end
+    footer = gate_log.lines.last
+    [gate_log.sub(footer, ''), gate_log + footer, footer + gate_log.sub(footer, ''),
+     gate_log.sub('0 skips', '1 skips'), gate_log.sub('349 assertions', '0 assertions'),
+     gate_log.sub("#{@gate_methods.length} runs", '0 runs')].each do |text|
+      rejects('gate behavioral harness footer') { Gate.validate_harness(text, @gate_methods) }
+    end
+  end
+
+  def test_gate_named_phase_cannot_remove_verbose_or_rehash_skipped_results
+    value = receipt
+    value['phases'].find { |phase| phase['name'] == 'gate-self-tests' }['argv'].delete('--verbose')
+    rejects('canonical offline invocation') { verify(value) }
+    value = receipt
+    path = File.join(@evidence, 'gate-self-tests.log')
+    File.write(path, gate_log.sub(' s = .', ' s = S'))
+    value['phases'].find { |phase| phase['name'] == 'gate-self-tests' }['sha256'] = Gate.sha(path)
+    rejects('gate behavioral results') { verify(value) }
   end
 
   def test_missing_critical_source_test_fails_inventory
@@ -315,6 +419,222 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('missing, duplicate') { Gate.validate_rust(rust_log.lines.drop(1).join, @rust_methods) }
     rejects('ignored') { Gate.validate_rust(rust_log.sub('... ok', '... ignored'), @rust_methods) }
     rejects('zero Rust') { Gate.validate_rust('test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;', @rust_methods) }
+  end
+
+  def test_beluga_core_has_independent_discovered_non_skipping_coverage
+    text = @core_methods.map { |method| method + ': test' }.join("\n")
+    assert_equal @core_methods, Gate.beluga_core_inventory(text)
+    refute (Gate::RUST_PINNED & @core_methods).any?
+    assert_equal @core_methods, Gate.validate_rust(rust_log(@core_methods), @core_methods)
+    rejects('critical Rust') { Gate.rust_inventory(text) }
+    Gate::BELUGA_CORE_PINNED.each do |id|
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory((@core_methods - [id]).map { |method| method + ': test' }.join("\n")) }
+    end
+    rejects('duplicate Beluga core') { Gate.beluga_core_inventory(text + "\n" + @core_methods.first + ': test') }
+    rejects('empty or duplicate Beluga core') { Gate.beluga_core_inventory('') }
+    rejects('valid UTF-8') { Gate.beluga_core_inventory(text.b + "\xFF".b) }
+    rejects('ignored') { Gate.validate_rust(rust_log(@core_methods).sub('... ok', '... ignored'), @core_methods) }
+    rejects('missing, duplicate') { Gate.validate_rust(rust_log(@core_methods.drop(1)), @core_methods) }
+    rejects('ignored coverage') { Gate.validate_rust(rust_log(@core_methods).sub('0 filtered out', '1 filtered out'), @core_methods) }
+  end
+
+  def test_beluga_core_phases_and_exact_crate_commands_are_mandatory
+    %w[beluga-core-artifact-validation beluga-core-link beluga-core-mutations beluga-core-discovery beluga-core-tests].each do |name|
+      value = receipt
+      value['phases'].reject! { |phase| phase['name'] == name }
+      rejects('absent, duplicate') { verify(value) }
+      value = receipt
+      value['phases'].find { |phase| phase['name'] == name }['argv'] = ['/usr/bin/true']
+      rejects('canonical offline invocation') { verify(value) }
+    end
+    %w[beluga-core-discovery beluga-core-tests].each do |name|
+      %w[--offline --locked --manifest-path].each do |option|
+        value = receipt
+        value['phases'].find { |phase| phase['name'] == name }['argv'].delete(option)
+        rejects('canonical offline invocation') { verify(value) }
+      end
+      value = receipt
+      argv = value['phases'].find { |phase| phase['name'] == name }['argv']
+      argv[argv.index('--manifest-path') + 1] = File.join(@root, 'iOS/opensteamer/Rust/AudioTransactionAuthority/Cargo.toml')
+      rejects('canonical offline invocation') { verify(value) }
+    end
+    value = receipt
+    value['coverage'].delete('beluga_core')
+    rejects('unrecognized field set') { verify(value) }
+    value = receipt
+    value['coverage']['beluga_core'] = @rust_methods
+    rejects('Beluga core coverage differs') { verify(value) }
+  end
+
+  def test_beluga_core_rehashed_results_cannot_omit_or_skip_discovered_cases
+    [rust_log(@core_methods.drop(1)), rust_log(@core_methods).sub('... ok', '... ignored')].each do |text|
+      value = receipt
+      path = File.join(@evidence, 'beluga-core-tests.log')
+      File.write(path, text)
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(path)
+      rejects(text.include?('... ignored') ? 'ignored' : 'missing, duplicate') { verify(value) }
+    end
+    value = receipt
+    id = Gate::BELUGA_CORE_PINNED.first
+    path = File.join(@evidence, 'beluga-core-discovery.log')
+    File.write(path, (@core_methods - [id]).map { |method| method + ': test' }.join("\n"))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(path)
+    value['coverage']['beluga_core'] = @core_methods - [id]
+    result = File.join(@evidence, 'beluga-core-tests.log')
+    File.write(result, rust_log(@core_methods - [id]))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(result)
+    rejects('missing critical Beluga core') { verify(value) }
+  end
+
+  def test_beluga_core_ignored_artifact_complete_bytes_are_source_bound
+    value = receipt
+    entries = value['source']['files'].select { |entry| entry.first.start_with?(Gate::BELUGA_CORE_ARTIFACT + '/') }
+    assert_equal (Gate::BELUGA_CORE_ARTIFACT_FILES + ['ARTIFACT_MANIFEST.sha256']).sort,
+                 entries.map { |entry| entry.first.delete_prefix(Gate::BELUGA_CORE_ARTIFACT + '/') }.sort
+    File.write(File.join(core_artifact, 'macos-arm64/libbeluga_core.a'), 'changed ignored archive')
+    rejects('source identity') { verify(value) }
+    rejects('checksum differs') { Gate.validate_beluga_core_artifacts(@root) }
+  end
+
+  def test_beluga_core_rejects_missing_unbound_symlinked_or_empty_artifact
+    path = File.join(core_artifact, 'macos-arm64/libbeluga_core.a')
+    original = File.binread(path)
+    File.unlink(path)
+    rejects('missing or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+    File.symlink(File.join(core_crate, 'src/lib.rs'), path)
+    rejects('unsupported node') { Gate.validate_beluga_core_artifacts(@root) }
+    File.unlink(path)
+    File.write(path, '')
+    refresh_core_artifact_manifest
+    rejects('empty required file') { Gate.validate_beluga_core_artifacts(@root) }
+    File.binwrite(path, original)
+    write(File.join(core_artifact, 'unbound-extra'), 'not enrolled')
+    refresh_core_artifact_manifest
+    rejects('missing or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+  end
+
+  def test_beluga_core_rejects_absent_or_symlinked_artifact
+    FileUtils.remove_entry_secure(core_artifact)
+    rejects('absent, symlinked or noncanonical') { Gate.source_identity(@root) }
+    rejects('absent, symlinked or noncanonical') { Gate.validate_beluga_core_artifacts(@root) }
+    File.symlink(core_crate, core_artifact)
+    rejects('absent, symlinked or noncanonical') { Gate.source_identity(@root) }
+    rejects('absent, symlinked or noncanonical') { Gate.validate_beluga_core_artifacts(@root) }
+    File.unlink(core_artifact)
+    FileUtils.mkdir_p(core_artifact)
+    parent = File.dirname(core_artifact)
+    retained = File.join(@temporary, 'private-vendor-parent')
+    FileUtils.mv(parent, retained)
+    File.symlink(retained, parent)
+    rejects('noncanonical') { Gate.source_identity(@root) }
+    rejects('noncanonical') { Gate.validate_beluga_core_artifacts(@root) }
+  end
+
+  def test_beluga_core_actual_link_and_named_assertion_mutations_cannot_be_skipped
+    %w[beluga-core-link beluga-core-mutations].each do |name|
+      value = receipt
+      path = File.join(@evidence, name + '.log')
+      File.write(path, 'PASS')
+      value['phases'].find { |phase| phase['name'] == name }['sha256'] = Gate.sha(path)
+      rejects(name == 'beluga-core-link' ? 'link oracle is incomplete' : 'mutation oracle is incomplete') { verify(value) }
+    end
+    rejects('link oracle is incomplete') { Gate.validate_beluga_core_link("BELUGA_CORE_LINK_SMOKE_PASS\n" * 2) }
+    markers = Gate::BELUGA_CORE_MUTANTS.map { |name| "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n" }
+    footer = "BELUGA_CORE_MUTATIONS_PASS cases=#{markers.length}\n"
+    [markers.drop(1).join + footer, markers.reverse.join + footer, markers.join + markers.first + footer,
+     footer + markers.join, markers.join + footer * 2, markers.join.sub('assertion-failed', 'compile-failed') + footer,
+     markers.join + footer.sub(markers.length.to_s, '0')].each do |text|
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(text) }
+    end
+  end
+
+  def test_beluga_core_rejects_stale_or_missing_source_manifest_and_unbound_source
+    path = File.join(core_crate, 'src/lib.rs')
+    File.write(path, 'changed source without rebuilt artifact')
+    rejects('checksum differs') { Gate.validate_beluga_core_artifacts(@root) }
+    refresh_core_source_manifest(publish: false)
+    rejects('published source manifest is stale') { Gate.validate_beluga_core_artifacts(@root) }
+    refresh_core_source_manifest
+    refresh_core_artifact_manifest
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+    write(File.join(core_crate, 'src/unbound.rs'), 'new source file without manifest entry')
+    rejects('missing, duplicate or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+    File.unlink(File.join(core_crate, 'SOURCE_MANIFEST.sha256'))
+    rejects('could not read a required file') { Gate.validate_beluga_core_artifacts(@root) }
+  end
+
+  def test_beluga_core_rejects_symlinked_source_and_duplicate_manifest_records
+    source = File.join(core_crate, 'src/lib.rs')
+    bytes = File.binread(source)
+    File.unlink(source)
+    File.symlink(File.join(core_crate, 'include/beluga_core.h'), source)
+    rejects('unsupported node') { Gate.validate_beluga_core_artifacts(@root) }
+    File.unlink(source)
+    File.binwrite(source, bytes)
+    manifest = File.join(core_crate, 'SOURCE_MANIFEST.sha256')
+    original = File.binread(manifest)
+    File.binwrite(manifest, original + original.lines.first)
+    rejects('missing, duplicate or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+    File.binwrite(manifest, original)
+    published = File.join(core_artifact, 'ARTIFACT_MANIFEST.sha256')
+    original = File.binread(published)
+    File.binwrite(published, original + original.lines.first)
+    rejects('missing, duplicate or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+  end
+
+  def test_beluga_core_pinned_link_tools_cannot_be_omitted_or_replaced
+    [File.join(@developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'), '/usr/bin/lipo'].each do |tool|
+      value = receipt
+      value['tools'] = value['tools'].dup
+      value['tools'].delete(tool)
+      rejects('reviewed tool identities') { verify(value) }
+      value = receipt
+      value['tools'] = value['tools'].dup
+      digest = value['tools'].delete(tool)
+      substitute = File.join(@temporary, 'fixture-tools/replaced', File.basename(tool))
+      write(substitute, 'unreviewed tool fixture')
+      value['tools'][substitute] = Gate.sha(substitute)
+      refute_equal digest, value['tools'][substitute]
+      rejects('recorded Beluga core tools') { verify(value) }
+    end
+  end
+
+  def test_beluga_core_rehashed_header_slice_or_tool_metadata_drift_is_rejected
+    path = File.join(core_artifact, 'macos-arm64/Headers/beluga_core.h')
+    original = File.binread(path)
+    File.write(path, 'different exported ABI')
+    refresh_core_artifact_manifest
+    rejects('published header, module or notice differs') { Gate.validate_beluga_core_artifacts(@root) }
+    File.binwrite(path, original)
+    plist_path = File.join(core_artifact, 'Info.plist')
+    plist = File.binread(plist_path)
+    [plist.sub('<string>macos</string>', '<string>ios</string>'),
+     plist.sub('<string>arm64</string>', '<string>x86_64</string>'),
+     plist.sub('<key>SupportedPlatform</key>', '<key>LibraryPath</key>'),
+     plist.sub('<key>LibraryPath</key>', '<key>SupportedPlatformVariant</key>')].each do |bytes|
+      File.binwrite(plist_path, bytes)
+      refresh_core_artifact_manifest
+      rejects('Beluga core XCFramework') { Gate.validate_beluga_core_artifacts(@root) }
+    end
+    File.binwrite(plist_path, plist)
+    metadata_path = File.join(core_artifact, 'BUILD_METADATA.txt')
+    metadata = File.binread(metadata_path)
+    [metadata.sub('1.97.1', '1.98.0'), metadata.sub('supported-architecture=arm64', 'supported-architecture=x86_64'),
+     metadata.sub('Xcode 26.6', 'Xcode 27.0'), metadata + "release: 1.97.1\n"].each do |bytes|
+      File.binwrite(metadata_path, bytes)
+      refresh_core_artifact_manifest
+      rejects('build metadata differs') { Gate.validate_beluga_core_artifacts(@root) }
+    end
+  end
+
+  def test_handoff_menu_and_rust_policy_classes_and_critical_cases_are_mandatory
+    %w[BelugaMediaHandoffMenuTests BelugaRustHandoffPolicyTests BelugaRustHostLifecycleTests WorldwideHostLifecycleTests].each do |name|
+      prefix = 'CaptureServerTests.' + name + '/'
+      rejects('missing Mac test class') { Gate.mac_inventory(@mac_methods.reject { |id| id.start_with?(prefix) }.join("\n")) }
+      pins = Gate::MAC_PINNED.select { |id| id.start_with?(prefix) }
+      refute_empty pins
+      pins.each { |id| rejects('missing critical Mac test') { Gate.mac_inventory((@mac_methods - [id]).join("\n")) } }
+    end
   end
 
   def test_c_missing_test_and_sanitizer_only_one_round_fail
