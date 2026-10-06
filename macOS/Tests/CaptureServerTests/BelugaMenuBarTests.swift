@@ -66,6 +66,52 @@ final class BelugaMenuBarTests: XCTestCase {
     }
 
     @MainActor
+    func testCurrentReleaseDoesNotOfferBrowserSharingFromIdleMenu() {
+        let model = BelugaMenuBarModel()
+        XCTAssertFalse(model.offersAudioSharing)
+        XCTAssertFalse(model.canShareAudio)
+        XCTAssertFalse(model.presentAudioShare())
+        XCTAssertFalse(model.showingAudioShare)
+    }
+
+    @MainActor
+    func testCurrentReleaseCannotOpenSharingEvenWhileHostOwnsAudio() {
+        let model = BelugaMenuBarModel()
+        model.start = { true }
+        model.begin()
+        model.apply(.init(revision: 1, phase: .sessionPrepared,
+                          pairedPhoneName: "iPhone", invitation: nil))
+        model.updateAudioShareOwnership(true)
+
+        XCTAssertTrue(model.hasStarted)
+        XCTAssertTrue(model.hostOwnsAudioForSharing)
+        XCTAssertFalse(model.offersAudioSharing)
+        XCTAssertFalse(model.canShareAudio)
+        XCTAssertFalse(model.presentAudioShare())
+        XCTAssertFalse(model.showingAudioShare)
+
+        model.updateAudioShareOwnership(false)
+        model.updateAudioShareOwnership(true)
+        XCTAssertFalse(model.presentAudioShare())
+        XCTAssertFalse(model.showingAudioShare)
+    }
+
+    @MainActor
+    func testShutdownRejectsLateSharingOwnershipAndPresentation() {
+        let model = BelugaMenuBarModel()
+        model.start = { true }
+        model.begin()
+        model.updateAudioShareOwnership(true)
+        model.finished()
+        model.updateAudioShareOwnership(true)
+
+        XCTAssertFalse(model.hostOwnsAudioForSharing)
+        XCTAssertFalse(model.canShareAudio)
+        XCTAssertFalse(model.presentAudioShare())
+        XCTAssertFalse(model.showingAudioShare)
+    }
+
+    @MainActor
     func testConsumedOrSupersededInvitationCannotReturnFromOlderCallback() throws {
         let model = BelugaMenuBarModel()
         let now = Date()

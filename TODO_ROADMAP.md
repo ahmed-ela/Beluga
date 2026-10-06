@@ -4,7 +4,37 @@ This roadmap records current work, not private deployment history. Completed ite
 foundations; they are not claims that every network, device, route, or distribution artifact has
 passed the corresponding physical release gate.
 
-## Resumed client-upgrade checkpoint — 2026-10-05
+## Mac and iPhone release first — 2026-10-06
+
+The user explicitly resumed the Mac client and iPhone release, with browser audio
+sharing and Android paused for now. This supersedes the earlier all-features
+deployment hold and the stopped checkpoint below; it does not complete the
+deferred features or restart their relay/runtime attempts.
+
+- Preserve QR pairing, saved Macs, the menu-bar client, versioned DMG and signed
+  updater, and the existing iPhone screen-awake behavior.
+- The implemented menu action is **Move media to phone**: continue the current
+  YouTube/Chrome item on the connected iPhone at the same position, then pause
+  that exact Mac item only after fresh phone playback success. It is not a
+  general Apple Music transfer or a replacement for ordinary Mac-audio streaming.
+- Do not promote unavailable browser sharing in the shipped menu. Keep its
+  production service disabled and its implementation/evidence saved for later.
+- Reuse the retained handoff, pairing and screen-awake evidence. Freeze the
+  scoped source, obtain the mandatory current source-bound release receipt,
+  and prepare/publish the matching Mac DMG/update feed and iPhone TestFlight.
+  Intended versions are Mac 0.3.0 (101) and iPhone build 95, subject to fresh
+  distribution metadata before upload.
+- Live YouTube transfer and the real old-to-new updater rehearsal remain
+  explicitly user-deferred, not passed. Publication, installation and actual
+  playback-transfer validation remain separate claims.
+
+The scoped menu/handoff/catalog/updater run passed 120 Mac tests with zero
+failures. Independent source review and the redacted diff secret scan passed.
+Fresh complete Apple build pagination confirms iPhone build 95 is unused.
+These checks are not a completed release receipt or native handoff proof.
+No new release has been published at this resumption checkpoint.
+
+## Historical resumed client-upgrade checkpoint — 2026-10-05
 
 ### Stopped at the user's checkpoint request — 2026-10-05
 

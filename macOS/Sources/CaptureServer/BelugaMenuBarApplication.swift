@@ -6,13 +6,17 @@ import Darwin
 import RemoteSessionCore
 import SwiftUI
 
+enum BelugaMenuReleasePolicy {
+    static let offersBrowserAudioSharing = false
+}
+
 @MainActor
 final class BelugaMenuBarModel: ObservableObject {
     @Published private(set) var presentation = BelugaHostPresentation.starting
     @Published private(set) var hasStarted = false
     @Published var allowRemoteControl = false
-    @Published var canShareAudio = false
-    @Published var showingAudioShare = false
+    @Published private(set) var hostOwnsAudioForSharing = false
+    @Published private(set) var showingAudioShare = false
     @Published private(set) var isChangingPhone = false
     @Published private(set) var phoneChangeMessage: String?
     @Published private(set) var isRequestingMediaHandoff = false
@@ -25,6 +29,28 @@ final class BelugaMenuBarModel: ObservableObject {
     private var phoneCommandID: UUID?
     private var didFinish = false
     var start: (() -> Bool)?
+
+    var offersAudioSharing: Bool { BelugaMenuReleasePolicy.offersBrowserAudioSharing }
+
+    var canShareAudio: Bool {
+        offersAudioSharing && !didFinish && hasStarted && hostOwnsAudioForSharing
+    }
+
+    func updateAudioShareOwnership(_ ownsAudio: Bool) {
+        hostOwnsAudioForSharing = !didFinish && ownsAudio
+        if !canShareAudio { dismissAudioShare() }
+    }
+
+    @discardableResult
+    func presentAudioShare() -> Bool {
+        guard canShareAudio else { return false }
+        showingAudioShare = true
+        return true
+    }
+
+    func dismissAudioShare() {
+        showingAudioShare = false
+    }
 
     func begin() {
         guard !hasStarted, let start, start() else { return }
@@ -53,6 +79,7 @@ final class BelugaMenuBarModel: ObservableObject {
 
     func finished() {
         didFinish = true
+        updateAudioShareOwnership(false)
         retireMediaHandoffRequest()
         phoneCommands = nil
         phoneCommandID = nil
@@ -196,7 +223,7 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
         self.runtime = runtime
         super.init()
         model.start = { [weak self] in self?.startRuntime() ?? false }
-        if let endpoint {
+        if BelugaMenuReleasePolicy.offersBrowserAudioSharing, let endpoint {
             let relay = BelugaAudioShareStatusRelay { [weak share] status, revision in
                 Task { @MainActor in share?.apply(status, revision: revision) }
             }
@@ -241,7 +268,7 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
             hasEndpoint: endpoint != nil || runtimeArguments != nil,
             quit: { [weak self] in self?.quit() },
             startShare: { [weak self] in
-                guard let self else { return }
+                guard let self, self.model.canShareAudio else { return }
                 self.share.start(ownerIsValid: self.shareOwner.isValid,
                                  updateInProgress: self.updater.isUpdateInProgress)
             }
@@ -291,7 +318,7 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
             CaptureAdditionalMediaLifetime(gate: shareOwner, becameOwned: { [weak self] in
                 Task { @MainActor in
                     guard let self else { return }
-                    self.model.canShareAudio = self.shareOwner.isValid && !self.explicitUserQuit
+                    self.model.updateAudioShareOwnership(self.shareOwner.isValid && !self.explicitUserQuit)
                 }
             }, shutdown: { await coordinator.stop() })
         }
@@ -301,7 +328,7 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
                 Task { @MainActor in self?.model.installPhoneCommands(commands) }
             }
             self?.shareOwner.revoke()
-            self?.model.canShareAudio = false
+            self?.model.updateAudioShareOwnership(false)
             self?.share.ownerStopped()
             self?.model.finished()
             self?.runtimeTask = nil
@@ -334,7 +361,7 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
     private func quit() {
         explicitUserQuit = true
         shareOwner.revoke()
-        model.canShareAudio = false
+        model.updateAudioShareOwnership(false)
         updater.updateAdmission(BelugaUpdateAdmission())
         NSApplication.shared.terminate(nil)
     }
@@ -396,11 +423,13 @@ private struct BelugaMenuBarView: View {
                 }
             }
             Divider()
-            Button("Share audio link…") { model.showingAudioShare = true }
-                .disabled(!model.canShareAudio || updater.isUpdateInProgress)
-            if !model.canShareAudio {
-                Text("Start this Mac’s Beluga host before sharing audio.")
-                    .font(.caption).foregroundStyle(.secondary)
+            if model.offersAudioSharing {
+                Button("Share audio link…") { model.presentAudioShare() }
+                    .disabled(!model.canShareAudio || updater.isUpdateInProgress)
+                if !model.canShareAudio {
+                    Text("Start this Mac’s Beluga host before sharing audio.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Button("Check for Updates…") { updater.checkForUpdates() }
                 .disabled(!updater.canCheckForUpdates)
@@ -424,10 +453,14 @@ private struct BelugaMenuBarView: View {
         } message: {
             Text("Remove \(phoneToForget?.label ?? "this phone") from this Mac? Other saved phones are kept. Pair it again to reconnect.")
         }
-        .sheet(isPresented: $model.showingAudioShare) {
+        .sheet(isPresented: Binding(get: {
+            model.offersAudioSharing && model.showingAudioShare
+        }, set: { presented in
+            if !presented { model.dismissAudioShare() }
+        })) {
             BelugaAudioShareView(model: share, canStart: model.canShareAudio
                 && !updater.isUpdateInProgress, start: startShare,
-                close: { model.showingAudioShare = false })
+                close: { model.dismissAudioShare() })
         }
     }
 
