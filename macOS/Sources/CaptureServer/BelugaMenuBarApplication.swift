@@ -24,7 +24,7 @@ final class BelugaMenuBarModel: ObservableObject {
     private var mediaHandoffTask: Task<Void, Never>?
     private var mediaHandoffRequestID: UUID?
     private var expirationTask: Task<Void, Never>?
-    private var phoneCommands: BelugaPhoneCatalogCommands?
+    @Published private var phoneCommands: BelugaPhoneCatalogCommands?
     private var phoneCommandTask: Task<Void, Never>?
     private var phoneCommandID: UUID?
     private var didFinish = false

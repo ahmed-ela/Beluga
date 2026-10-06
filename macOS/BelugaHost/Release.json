@@ -1,7 +1,7 @@
 {
   "schema": "beluga.mac-client-release.v1",
-  "version": "0.3.0",
-  "build": 101,
+  "version": "0.3.1",
+  "build": 102,
   "minimumSystemVersion": "14.0",
   "bundleIdentifier": "com.elamin.AudioStreamer.CaptureServer",
   "teamIdentifier": "MSMG8CJLB3",

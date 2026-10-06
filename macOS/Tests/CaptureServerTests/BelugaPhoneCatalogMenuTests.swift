@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import XCTest
 @testable import CaptureServer
@@ -79,6 +80,57 @@ final class BelugaPhoneCatalogMenuTests: XCTestCase {
         model.apply(presentation(revision: 2, ticket: nil, phase: .sessionPrepared))
         XCTAssertFalse(model.canChangePhone)
         XCTAssertNil(model.changePhone(.select(phoneA), ticket: action))
+        XCTAssertEqual(probe.invocations, [])
+    }
+
+    @MainActor
+    func testCommandBridgeInvalidatesObservedMenuWhenQuietPresentationArrivesFirst() {
+        let model = BelugaMenuBarModel()
+        let action = ticket()
+        model.start = { true }
+        model.begin()
+        model.apply(presentation(revision: 1, ticket: action))
+        XCTAssertFalse(model.canChangePhone)
+
+        var observedReadiness: [Bool] = []
+        let observation = model.objectWillChange.sink {
+            observedReadiness.append(model.canChangePhone)
+        }
+        defer { observation.cancel() }
+
+        let probe = CatalogMenuCommandProbe()
+        model.installPhoneCommands(probe.commands)
+
+        XCTAssertEqual(observedReadiness, [false],
+            "Installing the late command bridge must invalidate SwiftUI before pairing becomes ready.")
+        XCTAssertTrue(model.canChangePhone)
+        XCTAssertEqual(model.presentation.phones.action, action)
+        XCTAssertEqual(probe.invocations, [])
+    }
+
+    @MainActor
+    func testCommandBridgeBeforeQuietPresentationDoesNotEnablePairingPrematurely() {
+        let model = BelugaMenuBarModel()
+        model.start = { true }
+        model.begin()
+        let probe = CatalogMenuCommandProbe()
+
+        var observedReadiness: [Bool] = []
+        let observation = model.objectWillChange.sink {
+            observedReadiness.append(model.canChangePhone)
+        }
+        defer { observation.cancel() }
+
+        model.installPhoneCommands(probe.commands)
+        XCTAssertFalse(model.canChangePhone)
+        XCTAssertEqual(observedReadiness, [false])
+
+        let action = ticket()
+        model.apply(presentation(revision: 1, ticket: action))
+
+        XCTAssertEqual(observedReadiness, [false, false])
+        XCTAssertTrue(model.canChangePhone)
+        XCTAssertEqual(model.presentation.phones.action, action)
         XCTAssertEqual(probe.invocations, [])
     }
 
@@ -244,9 +296,15 @@ final class BelugaPhoneCatalogMenuTests: XCTestCase {
         let action = ticket()
         let model = startedModel(probe: probe, ticket: action)
         model.finished()
+
+        var lateUpdateCount = 0
+        let observation = model.objectWillChange.sink { lateUpdateCount += 1 }
+        defer { observation.cancel() }
+
         model.installPhoneCommands(probe.commands)
         model.apply(presentation(revision: 2, ticket: action))
         XCTAssertNil(model.changePhone(.pairAnother, ticket: action))
+        XCTAssertEqual(lateUpdateCount, 0)
         XCTAssertEqual(probe.invocations, [])
         XCTAssertEqual(model.presentation.phase, .stopped)
         XCTAssertNil(model.presentation.phones.action)
