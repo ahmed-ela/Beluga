@@ -12,12 +12,25 @@ fi
 
 ROOT="$(cd "$REPOSITORY" && pwd -P)"
 FAILURES=0
+typeset -a IDENTITY_DIAGNOSTICS=()
+typeset -a IDENTITY_MULTILINE_FIELDS=()
+typeset -a IDENTITY_MULTILINE_PATHS=()
+typeset -a IDENTITY_MULTILINE_EXPECTED=()
+typeset -a IDENTITY_MULTILINE_DESCRIPTIONS=()
+typeset -a IDENTITY_MULTILINE_SLOTS=()
 EXPECTED_IOS_TARGETS=$'MediaNotificationContent\nopensteamer\nopensteamerTests\nopensteamerUITests'
 EXPECTED_SCHEME_FILES=$'opensteamer.xcscheme\nopensteamerTestFlight.xcscheme\nopensteamerUITests.xcscheme'
 
 fail() {
-  print -u2 -r -- "product identity check failed: $1"
+  IDENTITY_DIAGNOSTICS+=("product identity check failed: $1")
   FAILURES=$((FAILURES + 1))
+}
+
+print_identity_diagnostics() {
+  local diagnostic
+  for diagnostic in "${IDENTITY_DIAGNOSTICS[@]}"; do
+    [[ -z "$diagnostic" ]] || print -u2 -r -- "$diagnostic"
+  done
 }
 
 assert_equal() {
@@ -179,8 +192,8 @@ assert_literal_count() {
   fi
 
   # Nearly every identity pin is one line. Avoid launching a JavaScript runtime for each of
-  # those assertions; fixed-string grep has the same non-overlapping count semantics. Preserve
-  # the byte-for-byte JavaScript implementation for the small set of multiline contracts.
+  # those assertions; fixed-string grep has the same non-overlapping count semantics. Multiline
+  # contracts retain the JavaScript UTF-8/indexOf counter in one invocation-local batch below.
   if [[ "$literal" != *$'\n'* ]]; then
     grep_matches=$(LC_ALL=C grep -F -o -- "$literal" \
       "$ROOT/$relative_path" 2>/dev/null)
@@ -202,23 +215,127 @@ assert_literal_count() {
     return
   fi
 
-  if ! actual_count=$(node -e '
+  # Reserve the original assertion's diagnostic position, including among ordinary failures.
+  # Nothing is cached: every request carries its source path and is read independently at flush.
+  IDENTITY_DIAGNOSTICS+=('')
+  IDENTITY_MULTILINE_SLOTS+=("${#IDENTITY_DIAGNOSTICS[@]}")
+  IDENTITY_MULTILINE_FIELDS+=("$ROOT/$relative_path" "$literal")
+  IDENTITY_MULTILINE_PATHS+=("$relative_path")
+  IDENTITY_MULTILINE_EXPECTED+=("$expected_count")
+  IDENTITY_MULTILINE_DESCRIPTIONS+=("$description")
+}
+
+flush_literal_count_batch() {
+  local request_count=${#IDENTITY_MULTILINE_PATHS[@]}
+  (( request_count > 0 )) || return 0
+  local batch_output
+  local batch_valid=1
+  local index field_offset slot actual_count description relative_path expected_count
+  local diagnostic read_error
+  local -a results
+
+  # NUL framing preserves multiline text, quotes, backslashes and empty result/error fields.
+  # The final nonempty marker also prevents command substitution's newline trimming from
+  # changing a read error. Any worker/pipe/protocol failure rejects the entire pending batch.
+  if ! batch_output=$(print -rN -- "${IDENTITY_MULTILINE_FIELDS[@]}" | node -e '
     const fs = require("node:fs");
-    const contents = fs.readFileSync(process.argv[1], "utf8");
-    const literal = process.argv[2];
-    if (literal.length === 0) process.exit(2);
-    let count = 0;
-    let offset = 0;
-    while ((offset = contents.indexOf(literal, offset)) >= 0) {
-      count += 1;
-      offset += literal.length;
+    const fields = fs.readFileSync(0, "utf8").split("\0");
+    const requestCount = Number(process.argv[1]);
+    if (!Number.isSafeInteger(requestCount) || requestCount <= 0 ||
+        fields.length !== requestCount * 2 + 1 || fields.pop() !== "") {
+      process.exit(2);
     }
-    process.stdout.write(String(count));
-  ' "$ROOT/$relative_path" "$literal"); then
-    fail "$description: could not count the required literal in $relative_path"
-    return
+    const results = [];
+    for (let index = 0; index < requestCount; index += 1) {
+      try {
+        const contents = fs.readFileSync(fields[index * 2], "utf8");
+        const literal = fields[index * 2 + 1];
+        if (literal.length === 0) throw new Error("empty required literal");
+        let count = 0;
+        let offset = 0;
+        while ((offset = contents.indexOf(literal, offset)) >= 0) {
+          count += 1;
+          offset += literal.length;
+        }
+        results.push(String(index + 1), "ok", String(count), "");
+      } catch (error) {
+        const diagnostic = String(error.stack || error);
+        if (diagnostic.includes("\0")) process.exit(3);
+        results.push(String(index + 1), "error", "", diagnostic);
+      }
+    }
+    results.push(String(requestCount), "complete");
+    process.stdout.write(results.join("\0"));
+  ' "$request_count"); then
+    batch_valid=0
+  else
+    results=("${(@0)batch_output}")
+    if (( ${#results[@]} != request_count * 4 + 2 )) \
+        || [[ "${results[-2]}" != "$request_count" \
+          || "${results[-1]}" != complete ]]; then
+      batch_valid=0
+    else
+      for (( index = 1; index <= request_count; index++ )); do
+        field_offset=$(( (index - 1) * 4 ))
+        if [[ "${results[field_offset + 1]}" != "$index" ]]; then
+          batch_valid=0
+          break
+        fi
+        case "${results[field_offset + 2]}" in
+          ok)
+            actual_count=${results[field_offset + 3]}
+            if [[ "$actual_count" != 0 \
+                && ("$actual_count" != [1-9]* || "$actual_count" == *[^0-9]*) ]] \
+                || [[ -n "${results[field_offset + 4]}" ]]; then
+              batch_valid=0
+              break
+            fi
+            ;;
+          error)
+            if [[ -n "${results[field_offset + 3]}" \
+                || -z "${results[field_offset + 4]}" ]]; then
+              batch_valid=0
+              break
+            fi
+            ;;
+          *)
+            batch_valid=0
+            break
+            ;;
+        esac
+      done
+    fi
   fi
-  assert_equal "$description" "$expected_count" "$actual_count"
+
+  for (( index = 1; index <= request_count; index++ )); do
+    slot=${IDENTITY_MULTILINE_SLOTS[index]}
+    description=${IDENTITY_MULTILINE_DESCRIPTIONS[index]}
+    relative_path=${IDENTITY_MULTILINE_PATHS[index]}
+    expected_count=${IDENTITY_MULTILINE_EXPECTED[index]}
+    field_offset=$(( (index - 1) * 4 ))
+    diagnostic=''
+    if (( batch_valid == 0 )); then
+      diagnostic="product identity check failed: $description: could not count the required literal in $relative_path"
+    elif [[ "${results[field_offset + 2]}" == error ]]; then
+      read_error=${results[field_offset + 4]}
+      diagnostic="$read_error"$'\n'"product identity check failed: $description: could not count the required literal in $relative_path"
+    else
+      actual_count=${results[field_offset + 3]}
+      if [[ "$actual_count" != "$expected_count" ]]; then
+        diagnostic="product identity check failed: $description: expected [$expected_count], found [$actual_count]"
+      fi
+    fi
+    if [[ -n "$diagnostic" ]]; then
+      IDENTITY_DIAGNOSTICS[slot]=$diagnostic
+      FAILURES=$((FAILURES + 1))
+    fi
+  done
+
+  IDENTITY_MULTILINE_FIELDS=()
+  IDENTITY_MULTILINE_PATHS=()
+  IDENTITY_MULTILINE_EXPECTED=()
+  IDENTITY_MULTILINE_DESCRIPTIONS=()
+  IDENTITY_MULTILINE_SLOTS=()
 }
 
 assert_function_sha256() {
@@ -281,6 +398,7 @@ for required_tool in awk find grep node plutil sed sort xmllint; do
   fi
 done
 if (( FAILURES > 0 )); then
+  print_identity_diagnostics
   exit 1
 fi
 
@@ -2447,6 +2565,12 @@ assert_toml_name services/RendezvousWorker/wrangler.toml audiostreamer-rendezvou
 assert_toml_name services/RendezvousWorker/wrangler.test.toml opensteamer-rendezvous-test \
   'test Worker name'
 
+# Resolve every deferred assertion before admission. A skipped/broken flush is not a pass.
+flush_literal_count_batch
+if (( ${#IDENTITY_MULTILINE_PATHS[@]} > 0 )); then
+  fail 'multiline literal-count assertions remain unflushed'
+fi
+print_identity_diagnostics
 if (( FAILURES > 0 )); then
   print -u2 -- "Beluga product identity check rejected $FAILURES mismatch(es)"
   exit 1

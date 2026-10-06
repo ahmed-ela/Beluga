@@ -34,6 +34,15 @@ Fresh complete Apple build pagination confirms iPhone build 95 is unused.
 These checks are not a completed release receipt or native handoff proof.
 No new release has been published at this resumption checkpoint.
 
+The first complete source-gate attempt stopped at the identity-mutation phase's
+60-minute deadline, before signing or upload. The finite suite repeatedly starts
+a Node process for each multiline literal assertion. The release-tooling repair
+batches those assertions within each checker invocation, retaining the original
+UTF-8/non-overlapping count semantics, every mutation, diagnostic ordering, and
+the same deadline. It must pass focused counter coverage, independent review,
+and a fresh complete source-bound gate; the timed-out attempt is not a receipt.
+The Mac/iPhone candidate versions and product scope remain unchanged.
+
 ## Historical resumed client-upgrade checkpoint — 2026-10-05
 
 ### Stopped at the user's checkpoint request — 2026-10-05

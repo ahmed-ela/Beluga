@@ -15,6 +15,7 @@ zmodload zsh/system || {
 }
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+node "$ROOT_DIR/scripts/test-product-identity-literals.mjs"
 readonly IDENTITY_TEST_TEMP_ROOT='/Volumes/t7'
 [[ "${IDENTITY_TEST_TEMP_ROOT:A}" == "${IDENTITY_TEST_TEMP_ROOT}" \
     && "${IDENTITY_TEST_TEMP_ROOT:h}" == '/Volumes' \
