@@ -1,4 +1,0 @@
-module BelugaCore {
-    header "beluga_core.h"
-    export *
-}

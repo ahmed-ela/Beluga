@@ -17,7 +17,25 @@ mutants = [
    'availability_reconnect_does_not_replace_or_clear_old_media_owner'],
   ['stale-media-end-clears-owner', 'src/host_lifecycle.rs', 'host_lifecycle',
    'Some(token)) if media == token =>', 'Some(token)) if true =>',
-   'stale_media_end_preserves_current_media_owner']
+   'stale_media_end_preserves_current_media_owner'],
+  ['transaction-busy-admission-removed', 'src/handoff_transactions.rs', 'handoff_transactions',
+   'if self.host.is_busy() { return output; }', 'if false { return output; }',
+   'host_busy_rejects_replacement_without_revocation'],
+  ['transaction-receipt-match-removed', 'src/handoff_transactions.rs', 'handoff_transactions',
+   'if owned_receipt == receipt && owned_envelope == envelope =>',
+   'if owned_envelope == envelope =>', 'host_completion_requires_exact_receipt_and_envelope'],
+  ['transaction-envelope-match-removed', 'src/handoff_transactions.rs', 'handoff_transactions',
+   'if owned_receipt == receipt && owned_envelope == envelope =>',
+   'if owned_receipt == receipt =>', 'host_completion_requires_exact_receipt_and_envelope'],
+  ['transaction-conflicting-reply-accepted', 'src/handoff_transactions.rs', 'handoff_transactions',
+   '&& cached == result =>', '=>', 'cached_reply_is_idempotent_and_conflicting_reply_rejected'],
+  ['transaction-revocation-removed', 'src/handoff_transactions.rs', 'handoff_transactions',
+   'output.effects |= REVOKE_HOST; output.revoked_receipt = receipt.raw();', 'let _ = receipt;',
+   'host_revocation_occurs_on_finish_replacement_and_clear'],
+  ['transaction-timeout-reports-success', 'src/handoff_transactions.rs', 'handoff_transactions',
+   "emit(&mut output, viewer.offer, Completion::Unknown);\n                self.viewer = None;",
+   "emit(&mut output, viewer.offer, Completion::MacPaused);\n                self.viewer = None;",
+   'clear_and_expiry_report_unknown_once_without_pause_effect']
 ]
 mutants.each do |name, path, suite, original, changed, test|
   production = File.binread(File.join(BelugaCoreArtifact::CRATE, path))
@@ -40,5 +58,5 @@ mutants.each do |name, path, suite, original, changed, test|
     puts "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed"
   end
 end
-puts 'BelugaCore mutation oracles PASS: 5 assertion-failing mutants'
-puts 'BELUGA_CORE_MUTATIONS_PASS cases=5'
+puts "BelugaCore mutation oracles PASS: #{mutants.size} assertion-failing mutants"
+puts "BELUGA_CORE_MUTATIONS_PASS cases=#{mutants.size}"

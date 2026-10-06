@@ -4,6 +4,7 @@
 //! authorizes a target identity. Native transaction fencing remains mandatory.
 
 pub mod host_lifecycle;
+pub mod handoff_transactions;
 
 /// Current scalar-only C ABI. Future snapshots must not reinterpret version 1.
 pub const ABI_VERSION: u32 = 1;

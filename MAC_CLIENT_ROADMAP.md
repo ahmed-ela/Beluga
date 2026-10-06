@@ -51,8 +51,9 @@ separate media lifetime survives. This is source-confirmed; the user's external 
 has not been observed at that exact transition. Stable presentation is separate from
 authorization: unavailable or replaced sessions must still refuse dispatch.
 
-First Rust build profile matches the current Mac release builder: Apple silicon only.
-Intel and phone Rust-core linkage are later migration work, not silently advertised.
+Current Rust build profile is Mac arm64, iOS device arm64 and iOS Simulator
+arm64/x86_64. Native Intel Mac support is not advertised. Cross-linking the phone
+archive is distinct from signed Simulator execution and physical-phone behavior.
 
 ### First Rust checkpoint — 2026-10-06
 
@@ -75,6 +76,36 @@ crate's ignored `target/review-evidence.VV4nIc` directory. This is not a full re
 receipt, deployed menu/pixel proof, physical handoff proof, or completion of the whole
 Rust rewrite. Mac 0.3.1/build102 and the running host remain unchanged. Next: migrate
 transaction ownership without weakening phone-confirmed exact-source Mac Pause.
+
+### Shared Rust handoff ledger — 2026-10-06
+
+The production `WebRTCTransport` host/viewer transaction slots now use the same
+`BelugaCore` archive on Mac and iOS. The old Swift transaction reducer is removed.
+Rust owns bounded admission, exact opaque-token matching, cached reply conflicts,
+receipt retirement and unknown cancellation/expiry outcomes. Swift retains at most
+the two original native values, preserving UUID/String equality, Unicode spelling,
+NaN behavior and exact native execution revocation. It validates copied-output
+custody before consuming effects; malformed results cannot manufacture a successful
+Pause or silently discard an owned receipt. No native Pause executes in Rust.
+
+Each of the three slices packages the static archive inside a namespaced
+`BelugaCore.framework`; its module map is under `Modules/`, not a shared global
+include output. This corrects the actual Simulator build collision with the existing
+audio-authority library without repackaging that independent library. The artifact
+is bound to the exact crate inventory, manifests and pinned tools. C and Swift
+execute the Mac archive's transaction ABI; both languages also
+cross-link against the actual device and two Simulator architectures. Ten new Rust
+ledger tests include 85 reachable scalar states with 2,890 transitions and 20,000
+churn events. Six additional compiled behavioral mutants must fail their intended
+assertions. The release gate now also requires the discovered shared handoff tests,
+production bridge differential/Unicode/value-copy/custody tests, real ordered-channel
+peer cases and signed Simulator operation/WK/audio-lease tests without new skips.
+
+This migrates the bounded ledger, not the full handoff stage: native offer authority,
+deadline policy, phone player operations and provider readback still need their
+separate Rust migration and native proof. The existing immediate microphone-stop,
+privacy, exact-source Pause and release gates remain mandatory. This source change
+does not install a new Mac or TestFlight build or prove physical transfer.
 
 ## Earlier implementation ledger
 

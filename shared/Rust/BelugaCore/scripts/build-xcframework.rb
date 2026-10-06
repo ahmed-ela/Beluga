@@ -17,12 +17,36 @@ target = File.join(CRATE, 'target/cargo')
 env = BelugaCoreArtifact.environment(target)
 metadata = BelugaCoreArtifact.pinned_tools!(env)
 FileUtils.mkdir_p(File.join(CRATE, 'target'))
-BelugaCoreArtifact.run!(CARGO, 'build', '--offline', '--locked', '--release', '--target', TARGET, env: env)
+TARGETS.each do |rust_target|
+  sdk_name = rust_target == TARGET ? 'macosx' : (rust_target == 'aarch64-apple-ios' ? 'iphoneos' : 'iphonesimulator')
+  sdk = BelugaCoreArtifact.capture!('/usr/bin/xcrun', '--sdk', sdk_name, '--show-sdk-path', env: env).strip
+  deployment = rust_target == TARGET ? { 'MACOSX_DEPLOYMENT_TARGET' => '13.0' } : { 'IPHONEOS_DEPLOYMENT_TARGET' => '16.0' }
+  BelugaCoreArtifact.run!(CARGO, 'build', '--offline', '--locked', '--release', '--target', rust_target,
+                         env: env.merge('SDKROOT' => sdk).merge(deployment))
+end
 Dir.mktmpdir('stage-', File.join(CRATE, 'target')) do |scratch|
   staged = File.join(scratch, 'BelugaCore.xcframework')
-  BelugaCoreArtifact.run!("#{DEVELOPER}/usr/bin/xcodebuild", '-create-xcframework',
-    '-library', File.join(target, TARGET, 'release/libbeluga_core.a'),
-    '-headers', File.join(CRATE, 'include'), '-output', staged, env: env)
+  simulator = File.join(scratch, 'simulator/libbeluga_core.a')
+  FileUtils.mkdir_p(File.dirname(simulator))
+  BelugaCoreArtifact.run!('/usr/bin/lipo', '-create',
+    File.join(target, 'aarch64-apple-ios-sim/release/libbeluga_core.a'),
+    File.join(target, 'x86_64-apple-ios/release/libbeluga_core.a'), '-output', simulator, env: env)
+  libraries = [File.join(target, TARGET, 'release/libbeluga_core.a'),
+               File.join(target, 'aarch64-apple-ios/release/libbeluga_core.a'), simulator]
+  frameworks = SLICES.keys.zip(libraries).map do |identifier, library|
+    framework = File.join(scratch, 'frameworks', identifier, FRAMEWORK_NAME)
+    FileUtils.mkdir_p(File.join(framework, 'Headers'))
+    FileUtils.mkdir_p(File.join(framework, 'Modules'))
+    FileUtils.cp(library, File.join(framework, 'BelugaCore'))
+    FileUtils.cp(File.join(CRATE, 'include/beluga_core.h'), File.join(framework, 'Headers/beluga_core.h'))
+    FileUtils.cp(File.join(CRATE, 'include/module.modulemap'), File.join(framework, 'Modules/module.modulemap'))
+    plist = File.join(framework, 'Info.plist')
+    File.binwrite(plist, JSON.generate(BelugaCoreArtifact.framework_info(identifier)))
+    BelugaCoreArtifact.run!('/usr/bin/plutil', '-convert', 'xml1', plist, env: env)
+    framework
+  end
+  arguments = frameworks.flat_map { |framework| ['-framework', framework] }
+  BelugaCoreArtifact.run!("#{DEVELOPER}/usr/bin/xcodebuild", '-create-xcframework', *arguments, '-output', staged, env: env)
   %w[SOURCE_MANIFEST.sha256 THIRD_PARTY_NOTICES.html].each { |name| FileUtils.cp(File.join(CRATE, name), File.join(staged, name)) }
   File.binwrite(File.join(staged, 'BUILD_METADATA.txt'), metadata)
   File.binwrite(File.join(staged, 'ARTIFACT_MANIFEST.sha256'), BelugaCoreArtifact.manifest(staged, ARTIFACT_FILES))
@@ -32,4 +56,4 @@ Dir.mktmpdir('stage-', File.join(CRATE, 'target')) do |scratch|
   File.rename(staged, output)
 end
 BelugaCoreArtifact.verify!(output)
-puts "Built verified arm64-only BelugaCore: #{output}"
+puts "Built verified Mac arm64 + iOS device/Simulator BelugaCore: #{output}"

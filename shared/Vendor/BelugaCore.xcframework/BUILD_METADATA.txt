@@ -1,6 +1,11 @@
 rust-toolchain=1.97.1
+packaging-profile=static-framework-v1
 supported-target=aarch64-apple-darwin
+supported-target=aarch64-apple-ios
+supported-target=aarch64-apple-ios-sim
+supported-target=x86_64-apple-ios
 supported-architecture=arm64
+simulator-architectures=arm64,x86_64
 abi-version=1
 rustc 1.97.1 (8bab26f4f 2026-07-14)
 binary: rustc
@@ -12,3 +17,5 @@ LLVM version: 22.1.6
 Xcode 26.6
 Build version 17F113
 macos-sdk=26.5
+iphoneos-sdk=26.5
+iphonesimulator-sdk=26.5

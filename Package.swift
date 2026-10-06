@@ -152,6 +152,7 @@ let package = Package(
             name: "WebRTCTransport",
             dependencies: [
                 "RemoteSessionCore",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS])),
                 .target(
                     name: "OpensteamerAudioTransactionAuthority",
                     condition: .when(platforms: [.iOS])

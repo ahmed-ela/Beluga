@@ -752,7 +752,7 @@ and the idle coordinator refusal test are not live positive-dispatch, rendered
 popover, phone-receiver or completed-transfer proof. Do not label an offer ID as a
 successful transfer, and retain the shared transport's default-off negotiation.
 
-#### Rust menu/lifecycle core checkpoint — 2026-10-06
+#### Rust menu/lifecycle core first checkpoint — 2026-10-06
 
 The production Mac menu now uses the linked `BelugaCore` Rust policy: visibility
 depends on having started, not on a transient optional connection target. Readiness,
@@ -778,11 +778,46 @@ clearing another owner. Missing/skipped/discovery-incomplete tests and stale or 
 archives fail the mandatory release gate. This new core is Mac-arm64-only; iOS audio's
 existing Rust authority is distinct and its gates remain mandatory.
 
-Current source checkpoint passes 15 Rust tests, 126 focused Mac adapter/model tests,
+The earlier menu/lifecycle source checkpoint passes 15 Rust tests, 126 focused Mac adapter/model tests,
 470 discovered mandatory Mac tests and 72 release-gate self-tests (1,388 assertions).
 The full signed Simulator/native producer/release receipt has not been regenerated
 for this source. Rendered live menu behavior and completed physical handoff remain
 separate evidence; a source-level visibility fix is not an installed-product claim.
+
+#### Shared Rust handoff transaction ledger — 2026-10-06
+
+`WebRTCTransport.MediaHandoffTransactions` now consumes the production Rust ledger
+through copied nonzero tokens and bounded native host/viewer bindings. Retain all
+original transaction/protocol and real-peer ordered-channel tests. The new
+`BelugaRustHandoffTransactionTests` independently replays the original Swift reducer
+against actual linked Rust effects, including exhaustive finite traces, seeded churn,
+exact receipts, cached results, expiry/clear, native revocation, value copies,
+canonical Unicode and non-reflexive malformed NaN envelopes. A host receipt's native
+validity remains the caller's boundary; do not add a second validity gate in the
+ledger or replace native equality with a lossy hash.
+
+Copied-result decoder tests must reject missing host retirement, dropped viewer
+outcomes, completion with a retained viewer, wrong identities/results, fabricated
+no-change/rejection on clear and unknown ABI/status/effect fields. They also admit
+every legitimate custody pattern; fail-closed decoding is not a Swift fallback
+business reducer. Rust's ten ledger tests add exhaustive 85-state/34-event coverage
+and churn. The core gate discovers all 25 Rust tests and requires eleven compiled,
+assertion-failing mutants, including busy-host replacement, wrong receipt/envelope,
+conflicting cached reply, missing retirement and successful expiry substitutions.
+
+Artifact validation now requires exactly Mac arm64, iOS arm64 and universal iOS
+Simulator arm64/x86_64 slices with matching headers/source/artifact manifests and
+pinned tool/SDK metadata. Each slice must be a static `BelugaCore.framework` with
+its exact bundle metadata, `Headers/beluga_core.h` and namespaced
+`Modules/module.modulemap`. A rehashed flat archive/Headers layout is rejected: it
+collides with the independent audio-authority library during the actual iOS build.
+The mandatory link phase executes both Mac C/Swift smokes
+and cross-links both languages against all three phone target architectures; those
+cross-links do not claim phone execution. The new shared-handoff phase validates
+every discovered named non-skipping result. The signed Simulator operation, real WK
+bridge and composed real-peer/audio-lease tests are separate mandatory execution
+evidence. Existing physical-only exclusions are unchanged, and no archive, reducer
+pass or Simulator test substitutes for physical playback and exact-source Mac Pause.
 
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,

@@ -50,30 +50,21 @@ class MicrophoneRegressionGateTests < Minitest::Test
     write(File.join(artifact, 'ARTIFACT_MANIFEST.sha256'), artifact_files.map { |path| Gate.sha(path) + '  ./' + path.delete_prefix(artifact + '/') + "\n" }.join)
     write(File.join(@root, '.gitignore'), "shared/Vendor/BelugaCore.xcframework/\n")
     Gate::BELUGA_CORE_SOURCE_FILES.each { |path| write(File.join(core_crate, path), 'Beluga core source fixture ' + path) }
-    write(File.join(core_artifact, 'Info.plist'), <<~XML)
-      <?xml version="1.0" encoding="UTF-8"?>
-      <plist version="1.0"><dict>
-      <key>AvailableLibraries</key><array><dict>
-      <key>BinaryPath</key><string>libbeluga_core.a</string>
-      <key>HeadersPath</key><string>Headers</string>
-      <key>LibraryIdentifier</key><string>macos-arm64</string>
-      <key>LibraryPath</key><string>libbeluga_core.a</string>
-      <key>SupportedArchitectures</key><array><string>arm64</string></array>
-      <key>SupportedPlatform</key><string>macos</string>
-      </dict></array>
-      <key>CFBundlePackageType</key><string>XFWK</string>
-      <key>XCFrameworkFormatVersion</key><string>1.0</string>
-      </dict></plist>
-    XML
+    write(File.join(core_artifact, 'Info.plist'), core_plist)
     write(File.join(core_artifact, 'BUILD_METADATA.txt'),
-          "rust-toolchain=1.97.1\nsupported-target=aarch64-apple-darwin\nsupported-architecture=arm64\nabi-version=1\n" +
-          "rustc 1.97.1 (fixture 2026-09-30)\nrelease: 1.97.1\nhost: aarch64-apple-darwin\n" + Gate::XCODE_VERSION + "macos-sdk=26.6\n")
-    write(File.join(core_artifact, 'macos-arm64/libbeluga_core.a'), 'inert core archive fixture')
-    { 'include/beluga_core.h' => 'macos-arm64/Headers/beluga_core.h',
-      'include/module.modulemap' => 'macos-arm64/Headers/module.modulemap',
-      'THIRD_PARTY_NOTICES.html' => 'THIRD_PARTY_NOTICES.html' }.each do |source, published|
-      write(File.join(core_artifact, published), File.binread(File.join(core_crate, source)))
+          Gate::BELUGA_CORE_METADATA_PREFIX.join("\n") + "\n" +
+          "rustc 1.97.1 (abcdef123 2026-09-30)\nbinary: rustc\ncommit-hash: " + 'a' * 40 +
+          "\ncommit-date: 2026-09-30\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.6\n" +
+          Gate::XCODE_VERSION + "macos-sdk=26.6\niphoneos-sdk=26.6\niphonesimulator-sdk=26.6\n")
+    Gate::BELUGA_CORE_SLICES.keys.each do |slice|
+      framework = File.join(core_artifact, slice, Gate::BELUGA_CORE_FRAMEWORK)
+      write(File.join(framework, 'BelugaCore'), core_archive_fixture(slice))
+      { 'beluga_core.h' => 'Headers/beluga_core.h', 'module.modulemap' => 'Modules/module.modulemap' }.each do |name, published|
+        write(File.join(framework, published), File.binread(File.join(core_crate, 'include', name)))
+      end
+      write(File.join(framework, 'Info.plist'), fixture_plist(Gate.beluga_core_framework_info(slice)))
     end
+    write(File.join(core_artifact, 'THIRD_PARTY_NOTICES.html'), File.binread(File.join(core_crate, 'THIRD_PARTY_NOTICES.html')))
     refresh_core_source_manifest
     refresh_core_artifact_manifest
     %w[OpensteamerVirtualAudioCoreTests.c OpensteamerVirtualMicrophoneDriverTests.c].each do |name|
@@ -85,11 +76,12 @@ class MicrophoneRegressionGateTests < Minitest::Test
     @shared_methods = (Gate::SHARED_SIGNALING_PINNED + %w[firstConcurrentFixture secondConcurrentFixture].map do |name|
       Gate::SHARED_SIGNALING_SUITE + '/' + name + '()'
     end).sort
+    @handoff_methods = (Gate::SHARED_HANDOFF_CLASSES.map { |name| name + '/testFixture' } + Gate::SHARED_HANDOFF_PINNED).uniq.sort
     @rust_methods = Gate::RUST_PINNED.sort
     @core_methods = (Gate::BELUGA_CORE_PINNED + ['additional_core_behavior_fixture']).sort
     @c_methods = Gate.c_inventory(@root)
     @developer = File.join(@temporary, 'fixture-Xcode.app/Contents/Developer')
-    @tools = %w[xcodebuild swift swiftc clang make ruby xcrun cargo rustc node].map do |name|
+    @tools = %w[xcodebuild swift swiftc clang make ruby cargo rustc node].map do |name|
       path = if name == 'xcodebuild'
                File.join(@developer, 'usr/bin', name)
              elsif %w[swift swiftc clang].include?(name)
@@ -103,6 +95,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
     # The fixed read-only collector tools are hashed, never replaced or written.
     Signing::DEPENDENCIES.each { |path| @tools[path] = Gate.sha(path) }
     @tools['/usr/bin/lipo'] = Gate.sha('/usr/bin/lipo')
+    @tools['/usr/bin/xcrun'] = Gate.sha('/usr/bin/xcrun')
     # Substitute only the reviewed tool pin in this test process; the executable
     # CLI has no override. All source, logs, artifacts and result checks are real.
     @production_xcode_pin = Gate::XCODEBUILD_SHA256
@@ -129,6 +122,40 @@ class MicrophoneRegressionGateTests < Minitest::Test
 
   def core_artifact
     File.join(@root, Gate::BELUGA_CORE_ARTIFACT)
+  end
+
+  def core_plist(libraries = nil)
+    libraries ||= Gate::BELUGA_CORE_SLICES.map do |identifier, properties|
+      properties.merge('LibraryIdentifier' => identifier,
+                       'LibraryPath' => 'BelugaCore.framework', 'BinaryPath' => 'BelugaCore.framework/BelugaCore')
+    end
+    values = libraries.map do |library|
+      fixture_plist_dict(library)
+    end.join
+    '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>AvailableLibraries</key><array>' + values +
+      '</array><key>CFBundlePackageType</key><string>XFWK</string><key>XCFrameworkFormatVersion</key><string>1.0</string></dict></plist>'
+  end
+
+  def fixture_plist_dict(values)
+    '<dict>' + values.map do |key, value|
+      rendered = value.is_a?(Array) ? '<array>' + value.map { |item| '<string>' + item + '</string>' }.join + '</array>' : '<string>' + value + '</string>'
+      '<key>' + key + '</key>' + rendered
+    end.join + '</dict>'
+  end
+
+  def fixture_plist(values)
+    '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0">' + fixture_plist_dict(values) + '</plist>'
+  end
+
+  def core_archive_fixture(slice)
+    member = "!<arch>\ninert core archive fixture\n".b
+    return member if slice != 'ios-arm64_x86_64-simulator'
+    [0xcafebabe, 2, 0x0100000c, 0, 48, member.bytesize, 0,
+     0x01000007, 3, 48 + member.bytesize, member.bytesize, 0].pack('N*') + member * 2
+  end
+
+  def core_link_log
+    "BELUGA_CORE_LINK_SMOKE_PASS\n" + Gate::BELUGA_CORE_TARGETS.drop(1).map { |target| "BELUGA_CORE_CROSS_LINK_PASS target=#{target}\n" }.join
   end
 
   def refresh_core_source_manifest(publish: true)
@@ -239,14 +266,15 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'mac-producer-contract-tests' => producer_log,
       'product-identity' => "Beluga product identity check passed\n",
       'product-identity-mutations' => "opensteamer product identity regression tests passed\n",
-      'mac-discovery' => (@mac_methods + @shared_methods).join("\n") + "\n", 'mac-tests' => mac_log,
+      'mac-discovery' => (@mac_methods + @shared_methods + @handoff_methods).join("\n") + "\n", 'mac-tests' => mac_log,
       'shared-signaling-tests' => shared_log,
+      'shared-handoff-tests' => mac_log(@handoff_methods),
       'simulator-summary' => JSON.generate(summary), 'simulator-results' => JSON.generate(results),
       'simulator-entitlements' => JSON.generate(@collected_signing_record),
       'rust-discovery' => @rust_methods.map { |method| method + ': test' }.join("\n") + "\n",
       'beluga-core-discovery' => @core_methods.map { |method| method + ': test' }.join("\n") + "\n",
       'beluga-core-tests' => rust_log(@core_methods),
-      'beluga-core-link' => "BELUGA_CORE_LINK_SMOKE_PASS\n",
+      'beluga-core-link' => core_link_log,
       'beluga-core-mutations' => Gate::BELUGA_CORE_MUTANTS.map { |name| "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n" }.join +
                                "BELUGA_CORE_MUTATIONS_PASS cases=#{Gate::BELUGA_CORE_MUTANTS.length}\n",
       'rust-tests' => rust_log, 'driver-tests' => c_log, 'driver-sanitizers' => c_log * 2,
@@ -255,7 +283,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'driver-diagnostic-reader' => "DIAGNOSTIC_SNAPSHOT_READER_TESTS_PASSED_WITHOUT_CORE_AUDIO_IO\n"
     }
     invocation = { 'developer_directory' => @developer, 'scratch' => @scratch, 'swift_scratch' => File.join(@scratch, 'SwiftPM'), 'timeout_seconds' => 1800 }
-    commands = Gate.commands(@root, @evidence, invocation, @tools, SIMULATOR, @mac_methods)
+    commands = Gate.commands(@root, @evidence, invocation, @tools, SIMULATOR, @mac_methods, @handoff_methods)
     phases = Gate::PHASES.map do |name|
       log = name + '.log'
       path = File.join(@evidence, log)
@@ -273,7 +301,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'created_at' => Time.now.to_i, 'source' => Gate.source_identity(@root), 'tools' => @tools, 'simulator' => SIMULATOR,
       'invocation' => invocation, 'mac_format' => 'darwin-xctest-log', 'phases' => phases, 'artifacts' => artifacts,
       'coverage' => { 'mac' => @mac_methods, 'simulator' => @sim_methods, 'intentional_simulator_skips' => Gate::SIMULATOR_SKIPS,
-                      'rust' => @rust_methods, 'beluga_core' => @core_methods, 'c' => @c_methods } }
+                      'rust' => @rust_methods, 'beluga_core' => @core_methods, 'shared_handoff' => @handoff_methods, 'c' => @c_methods } }
   end
 
   def save_receipt(value)
@@ -491,13 +519,13 @@ class MicrophoneRegressionGateTests < Minitest::Test
     entries = value['source']['files'].select { |entry| entry.first.start_with?(Gate::BELUGA_CORE_ARTIFACT + '/') }
     assert_equal (Gate::BELUGA_CORE_ARTIFACT_FILES + ['ARTIFACT_MANIFEST.sha256']).sort,
                  entries.map { |entry| entry.first.delete_prefix(Gate::BELUGA_CORE_ARTIFACT + '/') }.sort
-    File.write(File.join(core_artifact, 'macos-arm64/libbeluga_core.a'), 'changed ignored archive')
+    File.write(File.join(core_artifact, 'macos-arm64/BelugaCore.framework/BelugaCore'), 'changed ignored archive')
     rejects('source identity') { verify(value) }
     rejects('checksum differs') { Gate.validate_beluga_core_artifacts(@root) }
   end
 
   def test_beluga_core_rejects_missing_unbound_symlinked_or_empty_artifact
-    path = File.join(core_artifact, 'macos-arm64/libbeluga_core.a')
+    path = File.join(core_artifact, 'macos-arm64/BelugaCore.framework/BelugaCore')
     original = File.binread(path)
     File.unlink(path)
     rejects('missing or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
@@ -558,7 +586,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
     refresh_core_artifact_manifest
     assert_nil Gate.validate_beluga_core_artifacts(@root)
     write(File.join(core_crate, 'src/unbound.rs'), 'new source file without manifest entry')
-    rejects('missing, duplicate or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+    rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+    File.unlink(File.join(core_crate, 'src/unbound.rs'))
     File.unlink(File.join(core_crate, 'SOURCE_MANIFEST.sha256'))
     rejects('could not read a required file') { Gate.validate_beluga_core_artifacts(@root) }
   end
@@ -583,7 +612,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def test_beluga_core_pinned_link_tools_cannot_be_omitted_or_replaced
-    [File.join(@developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'), '/usr/bin/lipo'].each do |tool|
+    [File.join(@developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc'),
+     File.join(@developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/clang'), '/usr/bin/lipo', '/usr/bin/xcrun',
+     @tools.keys.find { |path| File.basename(path) == 'rustc' }].each do |tool|
       value = receipt
       value['tools'] = value['tools'].dup
       value['tools'].delete(tool)
@@ -595,12 +626,12 @@ class MicrophoneRegressionGateTests < Minitest::Test
       write(substitute, 'unreviewed tool fixture')
       value['tools'][substitute] = Gate.sha(substitute)
       refute_equal digest, value['tools'][substitute]
-      rejects('recorded Beluga core tools') { verify(value) }
+      rejects(File.basename(tool) == 'rustc' ? 'recorded Beluga core Rust compiler' : 'recorded Beluga core tools') { verify(value) }
     end
   end
 
   def test_beluga_core_rehashed_header_slice_or_tool_metadata_drift_is_rejected
-    path = File.join(core_artifact, 'macos-arm64/Headers/beluga_core.h')
+    path = File.join(core_artifact, 'macos-arm64/BelugaCore.framework/Headers/beluga_core.h')
     original = File.binread(path)
     File.write(path, 'different exported ABI')
     refresh_core_artifact_manifest
@@ -627,6 +658,212 @@ class MicrophoneRegressionGateTests < Minitest::Test
     end
   end
 
+  def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
+    assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
+    assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
+    assert_equal 20, Gate::BELUGA_CORE_SOURCE_FILES.length
+    %w[src/handoff_transactions.rs tests/handoff_transactions.rs].each { |path| assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path }
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+    Gate::BELUGA_CORE_SLICES.keys.each do |slice|
+      path = File.join(core_artifact, slice, 'BelugaCore.framework/BelugaCore')
+      bytes = File.binread(path)
+      File.unlink(path)
+      refresh_core_artifact_manifest
+      rejects('missing or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+      File.binwrite(path, bytes)
+      %w[Headers/beluga_core.h Modules/module.modulemap].each do |name|
+        path = File.join(core_artifact, slice, 'BelugaCore.framework', name)
+        bytes = File.binread(path)
+        File.write(path, 'stale ABI copy for ' + slice)
+        refresh_core_artifact_manifest
+        rejects('published header, module or notice differs') { Gate.validate_beluga_core_artifacts(@root) }
+        File.binwrite(path, bytes)
+      end
+    end
+    plist_path = File.join(core_artifact, 'Info.plist')
+    original = File.binread(plist_path)
+    libraries = Gate.beluga_core_plist_value(REXML::Document.new(original).root.elements.to_a.first)['AvailableLibraries']
+    File.write(plist_path, core_plist(libraries.reverse))
+    refresh_core_artifact_manifest
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+    variations = [libraries.drop(1), libraries + [libraries.first], [libraries.first] * libraries.length]
+    libraries.each_index do |index|
+      ['LibraryIdentifier', 'HeadersPath', 'LibraryPath', 'BinaryPath', 'SupportedArchitectures', 'SupportedPlatform', 'SupportedPlatformVariant'].each do |key|
+        copy = Marshal.load(Marshal.dump(libraries))
+        copy[index][key] = key == 'SupportedArchitectures' ? ['x86_64'] : 'wrong'
+        variations << copy
+        copy = Marshal.load(Marshal.dump(libraries))
+        copy[index].delete(key)
+        variations << copy if libraries[index].key?(key)
+      end
+    end
+    variations.each do |changed|
+      File.write(plist_path, core_plist(changed))
+      refresh_core_artifact_manifest
+      rejects('Beluga core XCFramework') { Gate.validate_beluga_core_artifacts(@root) }
+    end
+    File.binwrite(plist_path, original)
+    refresh_core_artifact_manifest
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+  end
+
+  def test_beluga_core_framework_layout_rejects_flat_header_collision_and_wrong_bundle_metadata
+    assert_equal 'BelugaCore.framework', Gate::BELUGA_CORE_FRAMEWORK
+    assert_includes Gate::BELUGA_CORE_METADATA_PREFIX, 'packaging-profile=static-framework-v1'
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+    Gate::BELUGA_CORE_SLICES.keys.each do |slice|
+      framework = File.join(core_artifact, slice, 'BelugaCore.framework')
+      path = File.join(framework, 'Info.plist')
+      original = File.binread(path)
+      info = Gate.beluga_core_plist(original, 'Fixture framework plist')
+      assert_equal 9, info.length
+      assert_equal 'BelugaCore', info['CFBundleExecutable']
+      assert_equal 'FMWK', info['CFBundlePackageType']
+      assert_equal 'com.elamin.beluga.core', info['CFBundleIdentifier']
+      info.each_key do |key|
+        changed = info.dup
+        changed[key] = info[key].is_a?(Array) ? ['WrongPlatform'] : 'wrong'
+        File.write(path, fixture_plist(changed))
+        refresh_core_artifact_manifest
+        rejects('framework bundle metadata differs') { Gate.validate_beluga_core_artifacts(@root) }
+        changed = info.dup
+        changed.delete(key)
+        File.write(path, fixture_plist(changed))
+        refresh_core_artifact_manifest
+        rejects('framework bundle metadata differs') { Gate.validate_beluga_core_artifacts(@root) }
+      end
+      File.write(path, fixture_plist(info.merge('HeadersPath' => 'Headers')))
+      refresh_core_artifact_manifest
+      rejects('framework bundle metadata differs') { Gate.validate_beluga_core_artifacts(@root) }
+      duplicate = original.sub('</dict>', '<key>CFBundleExecutable</key><string>BelugaCore</string></dict>')
+      File.write(path, duplicate)
+      refresh_core_artifact_manifest
+      rejects('malformed or duplicate keys') { Gate.validate_beluga_core_artifacts(@root) }
+      File.binwrite(path, original)
+      flat_header = File.join(core_artifact, slice, 'Headers/module.modulemap')
+      write(flat_header, 'module BelugaCore { header "beluga_core.h" export * }')
+      refresh_core_artifact_manifest
+      rejects('missing or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+      File.unlink(flat_header)
+      flat_archive = File.join(core_artifact, slice, 'libbeluga_core.a')
+      write(flat_archive, 'old colliding flat static archive')
+      refresh_core_artifact_manifest
+      rejects('missing or unbound files') { Gate.validate_beluga_core_artifacts(@root) }
+      File.unlink(flat_archive)
+    end
+    path = File.join(core_artifact, 'Info.plist')
+    original = File.binread(path)
+    libraries = Gate.beluga_core_plist(original, 'Fixture XCFramework plist').fetch('AvailableLibraries')
+    old = libraries.map do |library|
+      library.merge('LibraryPath' => 'libbeluga_core.a', 'BinaryPath' => 'libbeluga_core.a', 'HeadersPath' => 'Headers')
+    end
+    File.write(path, core_plist(old))
+    refresh_core_artifact_manifest
+    rejects('exact reviewed platform, architecture or ABI slice') { Gate.validate_beluga_core_artifacts(@root) }
+    File.binwrite(path, original)
+    metadata = File.join(core_artifact, 'BUILD_METADATA.txt')
+    original = File.binread(metadata)
+    File.binwrite(metadata, original.sub("packaging-profile=static-framework-v1\n", ''))
+    refresh_core_artifact_manifest
+    rejects('build metadata differs') { Gate.validate_beluga_core_artifacts(@root) }
+    File.binwrite(metadata, original)
+    refresh_core_artifact_manifest
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+  end
+
+  def test_beluga_core_static_framework_executable_refuses_dynamic_or_malformed_fat_payload
+    Gate::BELUGA_CORE_SLICES.keys.each do |slice|
+      path = File.join(core_artifact, slice, 'BelugaCore.framework/BelugaCore')
+      original = File.binread(path)
+      File.binwrite(path, "\xcf\xfa\xed\xfe".b + 'dynamic framework fixture')
+      refresh_core_artifact_manifest
+      rejects(slice == 'ios-arm64_x86_64-simulator' ? 'reviewed universal static archive' : 'not a static archive') { Gate.validate_beluga_core_artifacts(@root) }
+      File.binwrite(path, original)
+    end
+    path = File.join(core_artifact, 'ios-arm64_x86_64-simulator/BelugaCore.framework/BelugaCore')
+    original = File.binread(path)
+    mutations = [original.byteslice(0, 36), original.dup, original.dup, original.dup, original.dup, original.dup]
+    mutations[1][4, 4] = [1].pack('N')
+    mutations[2][28, 4] = [0x0100000c].pack('N')
+    mutations[3][36, 4] = [48].pack('N')
+    mutations[4][16, 4] = [0xffffffff].pack('N')
+    mutations[5][48, 8] = 'not-ar!!'
+    mutations.each do |changed|
+      File.binwrite(path, changed)
+      refresh_core_artifact_manifest
+      rejects('Beluga core Simulator') { Gate.validate_beluga_core_artifacts(@root) }
+    end
+    File.binwrite(path, original)
+    refresh_core_artifact_manifest
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+  end
+
+  def test_beluga_core_all_reviewed_targets_sdks_and_cross_links_are_mandatory
+    assert_equal %w[aarch64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios], Gate::BELUGA_CORE_TARGETS
+    path = File.join(core_artifact, 'BUILD_METADATA.txt')
+    original = File.binread(path)
+    mutations = [original + "unexpected-field=true\n", original.sub('simulator-architectures=arm64,x86_64', 'simulator-architectures=arm64'),
+                 original.sub('binary: rustc', 'binary: unbound'), original.sub('commit-hash: ' + 'a' * 40, 'commit-hash: unknown')]
+    Gate::BELUGA_CORE_TARGETS.each do |target|
+      line = 'supported-target=' + target + "\n"
+      mutations += [original.sub(line, ''), original.sub(line, line * 2), original.sub(line, "supported-target=wrong\n")]
+    end
+    %w[macos iphoneos iphonesimulator].each do |sdk|
+      line = sdk + "-sdk=26.6\n"
+      mutations += [original.sub(line, ''), original.sub(line, line * 2), original.sub(line, sdk + "-sdk=unknown\n")]
+    end
+    mutations.each do |changed|
+      File.binwrite(path, changed)
+      refresh_core_artifact_manifest
+      rejects('build metadata differs') { Gate.validate_beluga_core_artifacts(@root) }
+    end
+    File.binwrite(path, original)
+    refresh_core_artifact_manifest
+    assert_nil Gate.validate_beluga_core_artifacts(@root)
+    assert_nil Gate.validate_beluga_core_link(core_link_log)
+    core_link_log.lines.each do |marker|
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker, '')) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log + marker) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker, marker.sub('PASS', 'SKIPPED'))) }
+    end
+    rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.lines.reverse.join) }
+    rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log + "BELUGA_CORE_CROSS_LINK_PASS target=unreviewed\n") }
+    value = receipt
+    log = File.join(@evidence, 'beluga-core-link.log')
+    File.write(log, "BELUGA_CORE_LINK_SMOKE_PASS\n")
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-link' }['sha256'] = Gate.sha(log)
+    rejects('link oracle is incomplete') { verify(value) }
+  end
+
+  def test_beluga_core_transaction_tests_and_each_negative_mutant_are_mandatory
+    tests = %w[exhaustive_transaction_state_event_graph_matches_reference host_busy_rejects_replacement_without_revocation
+               host_completion_requires_exact_receipt_and_envelope cached_reply_is_idempotent_and_conflicting_reply_rejected
+               host_revocation_occurs_on_finish_replacement_and_clear viewer_completion_and_expiry_require_exact_identity
+               clear_and_expiry_report_unknown_once_without_pause_effect invalid_transaction_inputs_fail_closed
+               transaction_scalar_exports_and_layout_match_core deterministic_transaction_churn_matches_reference]
+    assert_equal 25, Gate::BELUGA_CORE_PINNED.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    tests.each do |id|
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory((@core_methods - [id]).map { |method| method + ': test' }.join("\n")) }
+    end
+    mutants = %w[transaction-busy-admission-removed transaction-receipt-match-removed transaction-envelope-match-removed
+                 transaction-conflicting-reply-accepted transaction-revocation-removed transaction-timeout-reports-success]
+    assert_equal 11, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.last(mutants.length)
+    markers = Gate::BELUGA_CORE_MUTANTS.map { |name| "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n" }
+    footer = "BELUGA_CORE_MUTATIONS_PASS cases=11\n"
+    assert_nil Gate.validate_beluga_core_mutations(markers.join + footer)
+    markers.each do |marker|
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(markers.join.sub(marker, '') + footer) }
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(markers.join.sub(marker, marker.sub('assertion-failed', 'compile-failed')) + footer) }
+    end
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, markers.first(5).join + "BELUGA_CORE_MUTATIONS_PASS cases=5\n")
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
   def test_handoff_menu_and_rust_policy_classes_and_critical_cases_are_mandatory
     %w[BelugaMediaHandoffMenuTests BelugaRustHandoffPolicyTests BelugaRustHostLifecycleTests WorldwideHostLifecycleTests].each do |name|
       prefix = 'CaptureServerTests.' + name + '/'
@@ -634,6 +871,70 @@ class MicrophoneRegressionGateTests < Minitest::Test
       pins = Gate::MAC_PINNED.select { |id| id.start_with?(prefix) }
       refute_empty pins
       pins.each { |id| rejects('missing critical Mac test') { Gate.mac_inventory((@mac_methods - [id]).join("\n")) } }
+    end
+  end
+
+  def test_shared_handoff_classes_and_every_critical_source_case_are_mandatory
+    %w[testCopiedScalarBoundaryRejectsMissingRetirementEffectsAndReplay
+       testCopiedScalarBoundaryAcceptsLegitimateCustodyTransitions].each do |method|
+      assert_includes Gate::SHARED_HANDOFF_PINNED, 'WebRTCTransportTests.BelugaRustHandoffTransactionTests/' + method
+    end
+    discovery = @handoff_methods.join("\n")
+    assert_equal @handoff_methods, Gate.shared_handoff_inventory(discovery)
+    Gate::SHARED_HANDOFF_CLASSES.each do |name|
+      rejects('missing shared handoff class') { Gate.shared_handoff_inventory(@handoff_methods.reject { |id| id.start_with?(name + '/') }.join("\n")) }
+    end
+    Gate::SHARED_HANDOFF_PINNED.each do |id|
+      rejects('missing critical shared handoff test') { Gate.shared_handoff_inventory((@handoff_methods - [id]).join("\n")) }
+    end
+    rejects('malformed or duplicated') { Gate.shared_handoff_inventory(discovery + "\n" + @handoff_methods.first) }
+    rejects('malformed or duplicated') { Gate.shared_handoff_inventory(discovery + "\n" + Gate::SHARED_HANDOFF_CLASSES.first + '/testMalformed()') }
+    rejects('malformed or duplicated') { Gate.shared_handoff_inventory('') }
+  end
+
+  def test_shared_handoff_phase_cannot_skip_cases_weaken_filter_or_borrow_old_coverage
+    value = receipt
+    value['phases'].reject! { |phase| phase['name'] == 'shared-handoff-tests' }
+    rejects('absent, duplicate') { verify(value) }
+    value = receipt
+    value['coverage'].delete('shared_handoff')
+    rejects('unrecognized field set') { verify(value) }
+    value = receipt
+    argv = value['phases'].find { |phase| phase['name'] == 'shared-handoff-tests' }['argv']
+    argv[argv.index('--filter') + 1] = 'MediaHandoff'
+    rejects('canonical offline invocation') { verify(value) }
+    [mac_log(@handoff_methods.drop(1)), mac_log(@handoff_methods).sub('passed (0.001 seconds)', 'skipped (0.001 seconds)')].each do |text|
+      value = receipt
+      path = File.join(@evidence, 'shared-handoff-tests.log')
+      File.write(path, text)
+      value['phases'].find { |phase| phase['name'] == 'shared-handoff-tests' }['sha256'] = Gate.sha(path)
+      rejects(text.include?('skipped') ? 'failed, skipped' : 'missing Mac result') { verify(value) }
+    end
+    value = receipt
+    value['coverage']['shared_handoff'] = @mac_methods
+    rejects('shared handoff coverage differs') { verify(value) }
+  end
+
+  def test_simulator_handoff_completion_cleanup_and_audio_leases_cannot_be_omitted_or_skipped
+    classes = %w[YouTubeHandoffOperationTests YouTubeHandoffWebViewTests]
+    classes.each do |name|
+      assert_includes Gate::SIMULATOR_CLASSES, name
+      pins = Gate::SIMULATOR_PINNED.select { |id| id.start_with?(name + '/') }
+      refute_empty pins
+    end
+    pins = Gate::SIMULATOR_PINNED.select do |id|
+      classes.any? { |name| id.start_with?(name + '/') } || id.start_with?('WorldwideAudioLifecycleTests/testMediaHandoff') ||
+        id.start_with?('WorldwideAudioLifecycleTests/testComposedHandoff')
+    end
+    refute_empty pins
+    assert_empty pins & Gate::SIMULATOR_SKIPS
+    pins.each do |id|
+      value = results
+      value['testNodes'].reject! { |node| node['nodeIdentifier'] == id + '()' }
+      rejects('missing or duplicate') { Gate.validate_simulator(summary, value, @sim_methods, SIMULATOR) }
+      value = results
+      value['testNodes'].find { |node| node['nodeIdentifier'] == id + '()' }['result'] = 'Skipped'
+      rejects('unexpected failure, skip') { Gate.validate_simulator(summary, value, @sim_methods, SIMULATOR) }
     end
   end
 

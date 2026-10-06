@@ -72,6 +72,44 @@ beluga_core_host_lifecycle_result_t beluga_core_host_lifecycle_step(
     uint32_t abi_version, beluga_core_host_lifecycle_state_t state,
     beluga_core_host_lifecycle_event_t event);
 
+/* Exact native receipt/envelope identities are bridged to nonzero tokens.
+ * Effects revoke or return results; no effect authorizes a native pause. */
+typedef struct {
+    uint32_t abi_version;
+    uint32_t host_phase; /* empty=0, admitted=1, replied=2 */
+    uint64_t host_receipt;
+    uint64_t host_envelope;
+    uint32_t host_result; /* none=0, mac paused=1, not applied=2, unknown=3 */
+    uint32_t reserved;
+    uint64_t viewer_envelope;
+    uint64_t viewer_offer;
+} beluga_core_handoff_transactions_state_t;
+
+typedef struct {
+    uint32_t opcode; /* admit=0, finish=1, begin viewer=2, complete=3, expire=4, clear=5 */
+    uint32_t argument; /* begin viewer only: native envelope validity, 0 or 1 */
+    uint64_t receipt_token;
+    uint64_t envelope_token;
+    uint64_t offer_token;
+    uint32_t result;
+    uint32_t reserved;
+} beluga_core_handoff_transactions_event_t;
+
+typedef struct {
+    beluga_core_handoff_transactions_state_t state;
+    uint32_t status; /* applied=0, rejected=1, no change=2, invalid=3 */
+    uint32_t effects; /* revoke host=1, return host reply=2, emit viewer completion=4 */
+    uint64_t revoked_receipt;
+    uint64_t completed_offer;
+    uint32_t completed_result;
+    uint32_t reserved;
+} beluga_core_handoff_transactions_result_t;
+
+beluga_core_handoff_transactions_state_t beluga_core_handoff_transactions_initial(void);
+beluga_core_handoff_transactions_result_t beluga_core_handoff_transactions_step(
+    uint32_t abi_version, beluga_core_handoff_transactions_state_t state,
+    beluga_core_handoff_transactions_event_t event);
+
 #ifdef __cplusplus
 }
 #endif

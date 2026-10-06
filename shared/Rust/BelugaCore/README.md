@@ -1,8 +1,8 @@
 # Beluga product core: incremental migration
 
 This dependency-free Rust crate currently owns **media-handoff menu admission and
-the worldwide host lifecycle state machine**. It is not the complete product-core
-rewrite. Swift/native code still owns observation, target identity fences, transfer transactions,
+the worldwide host lifecycle state machine, and the handoff transaction ledger**. It is not the complete product-core
+rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
 
 ABI 1 accepts seven flags (bits 0–6): started, finished, changing phone,
@@ -18,8 +18,21 @@ original spelling, and the original 1–64 UTF-8-byte availability admission bou
 a bounded map bridges those primitives to opaque nonzero scalar tokens. Rust
 owns the transition policy, not the native String primitive or media effects.
 
-`BelugaCore.xcframework` has **one macos-arm64 slice**, matching the existing Mac
-release architecture. Intel Macs, iOS, and Android do not use this core yet.
+The handoff ledger retains one host receipt/reply and one viewer commit. Native
+Swift supplies nonzero identity tokens using exact UUID and envelope equality,
+including canonical String equality and nonreflexive NaN comparisons. Rust owns
+busy admission, exact completion matching, cached reply idempotence, revocation,
+and timeout/clear unknown outcomes. Effects never authorize native media pause.
+
+The reviewed artifact profile has **macos-arm64, ios-arm64, and
+ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
+Each slice is a **static `BelugaCore.framework`**, with its module map under
+`Modules/` and public header under `Headers/`. The framework namespace prevents
+SwiftPM/Xcode from flattening its module map into the same global include output
+as the independent audio-authority static library. The main framework binary is
+the unchanged Rust static archive, not a dynamically loaded library.
+Intel Macs and Android do not use this core yet. A candidate does not become the
+checked production artifact until the native adapter integration is ready.
 Supporting another target requires a reviewed, already-installed pinned target
 and additional actual cross-language link tests; the builder never installs tools.
 
@@ -36,10 +49,13 @@ ruby scripts/mutation-tests.rb
 Builds refuse to overwrite any existing artifact. To reproduce without replacing
 the checked artifact, pass an absent output path to the builder, then verify it.
 Source and artifact manifests enforce exact file membership and bytes. The
-verifier compiles, links, and executes inert C and Swift truth-table smoke programs
-against the actual archive; they never open apps, access phones, or change routes.
+verifier compiles, links, and executes inert Mac C and Swift smoke programs against
+the actual archive, and cross-links both languages for iOS device and each Simulator
+architecture without launching them. Cross-link success is not physical-phone proof.
+These programs never open apps, access phones, or change routes.
 
 Source-only mutation tests must fail on behavioral assertions for the original
 visibility defect, ignored unknown bits, missing command admission, availability
-departure erasing an independent media owner, and stale media-end ownership. They use
+departure erasing an independent media owner, stale media-end ownership, transaction
+busy/exact identity/conflicting-reply guards, revocation, and unknown timeout outcomes. They use
 temporary copies and never modify the production archive or source.

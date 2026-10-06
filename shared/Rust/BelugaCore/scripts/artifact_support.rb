@@ -18,18 +18,31 @@ module BelugaCoreArtifact
   CARGO = ENV.fetch('BELUGA_CORE_CARGO_BIN', "#{TOOLCHAIN}/bin/cargo").freeze
   RUSTC = ENV.fetch('BELUGA_CORE_RUSTC_BIN', "#{TOOLCHAIN}/bin/rustc").freeze
   TARGET = 'aarch64-apple-darwin'.freeze
+  TARGETS = %w[aarch64-apple-darwin aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios].freeze
+  FRAMEWORK_NAME = 'BelugaCore.framework'.freeze
+  FRAMEWORK_FILES = %w[BelugaCore Headers/beluga_core.h Modules/module.modulemap Info.plist].freeze
+  SLICES = {
+    'macos-arm64' => { 'architectures' => %w[arm64], 'platform' => 'macos' },
+    'ios-arm64' => { 'architectures' => %w[arm64], 'platform' => 'ios' },
+    'ios-arm64_x86_64-simulator' => { 'architectures' => %w[arm64 x86_64], 'platform' => 'ios', 'variant' => 'simulator' }
+  }.freeze
+  LINK_TARGETS = [
+    [TARGET, 'macos-arm64', 'macosx', 'arm64-apple-macos13.0', true],
+    ['aarch64-apple-ios', 'ios-arm64', 'iphoneos', 'arm64-apple-ios16.0', false],
+    ['aarch64-apple-ios-sim', 'ios-arm64_x86_64-simulator', 'iphonesimulator', 'arm64-apple-ios16.0-simulator', false],
+    ['x86_64-apple-ios', 'ios-arm64_x86_64-simulator', 'iphonesimulator', 'x86_64-apple-ios16.0-simulator', false]
+  ].freeze
   SOURCE_FILES = %w[
     .gitignore Cargo.lock Cargo.toml README.md THIRD_PARTY_NOTICES.html
     include/beluga_core.h include/module.modulemap rust-toolchain.toml
     scripts/artifact_support.rb scripts/build-xcframework.rb scripts/mutation-tests.rb
-    scripts/verify-xcframework.rb src/lib.rs src/host_lifecycle.rs tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs
+    scripts/verify-xcframework.rb src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs
+    tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
-  ARTIFACT_FILES = %w[
+  ARTIFACT_FILES = (%w[
     BUILD_METADATA.txt Info.plist SOURCE_MANIFEST.sha256 THIRD_PARTY_NOTICES.html
-    macos-arm64/Headers/beluga_core.h macos-arm64/Headers/module.modulemap
-    macos-arm64/libbeluga_core.a
-  ].sort.freeze
+  ] + SLICES.keys.flat_map { |slice| FRAMEWORK_FILES.map { |name| "#{slice}/#{FRAMEWORK_NAME}/#{name}" } }).sort.freeze
 
   def self.assert(condition, message)
     raise message unless condition
@@ -96,6 +109,37 @@ module BelugaCoreArtifact
     names.sort.map { |name| "#{Digest::SHA256.file(File.join(root, name)).hexdigest}  #{name}\n" }.join
   end
 
+  def self.framework_info(identifier)
+    platform = { 'macos-arm64' => 'MacOSX', 'ios-arm64' => 'iPhoneOS', 'ios-arm64_x86_64-simulator' => 'iPhoneSimulator' }.fetch(identifier)
+    info = { 'CFBundleExecutable' => 'BelugaCore', 'CFBundleIdentifier' => 'com.elamin.beluga.core',
+             'CFBundleInfoDictionaryVersion' => '6.0', 'CFBundleName' => 'BelugaCore',
+             'CFBundlePackageType' => 'FMWK', 'CFBundleShortVersionString' => '0.1.0',
+             'CFBundleVersion' => '1', 'CFBundleSupportedPlatforms' => [platform] }
+    info[platform == 'MacOSX' ? 'LSMinimumSystemVersion' : 'MinimumOSVersion'] = platform == 'MacOSX' ? '13.0' : '16.0'
+    info
+  end
+
+  def self.verify_static_archive!(library, architectures)
+    File.open(library, 'rb') do |file|
+      magic = file.read(8)
+      if architectures.size == 1
+        assert(magic == "!<arch>\n", 'Framework main binary is not a static archive')
+      else
+        assert(magic&.byteslice(0, 4) == "\xca\xfe\xba\xbe".b && magic.byteslice(4, 4).unpack1('N') == 2,
+               'Simulator main binary is not the reviewed two-architecture fat archive')
+        entries = file.read(40)
+        assert(entries&.bytesize == 40, 'Fat archive descriptor truncated')
+        offsets = 2.times.map { |index| entries.byteslice(index * 20, 20).unpack('N5') }
+        assert(offsets.map(&:first).sort == [0x01000007, 0x0100000c], 'Fat archive CPU types differ')
+        offsets.each do |_, _, offset, size, _|
+          assert(offset >= 48 && size >= 8 && offset + size <= file.stat.size, 'Fat archive range invalid')
+          file.seek(offset)
+          assert(file.read(8) == "!<arch>\n", 'Simulator slice is not a static archive')
+        end
+      end
+    end
+  end
+
   def self.verify_source!
     assert(files(CRATE, exclude: %w[target SOURCE_MANIFEST.sha256]) == SOURCE_FILES,
            'Source inventory differs from the reviewed exact list')
@@ -107,6 +151,9 @@ module BelugaCoreArtifact
   def self.pinned_tools!(env)
     assert(ENV.fetch('DEVELOPER_DIR', DEVELOPER) == DEVELOPER, 'Unexpected Xcode path')
     assert(CARGO == "#{TOOLCHAIN}/bin/cargo" && RUSTC == "#{TOOLCHAIN}/bin/rustc", 'Unbound Rust tool path')
+    %w[xcrun lipo plutil].each do |tool|
+      assert(ENV.fetch("BELUGA_CORE_#{tool.upcase}_BIN", "/usr/bin/#{tool}") == "/usr/bin/#{tool}", "Unbound #{tool} path")
+    end
     [CARGO, RUSTC, "#{DEVELOPER}/usr/bin/xcodebuild",
      "#{DEVELOPER}/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
      "#{DEVELOPER}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"].each do |path|
@@ -116,11 +163,12 @@ module BelugaCoreArtifact
     assert(version.lines.include?("release: 1.97.1\n"), 'Pinned rustc release differs')
     assert(version.lines.include?("host: aarch64-apple-darwin\n"), 'Unsupported Rust host')
     sysroot = capture!(RUSTC, '--print', 'sysroot', env: env).strip
-    assert(File.directory?(File.join(sysroot, 'lib/rustlib', TARGET, 'lib')), 'Pinned Darwin target absent')
+    assert(sysroot == TOOLCHAIN, 'Pinned Rust sysroot differs')
+    TARGETS.each { |target| assert(File.directory?(File.join(sysroot, 'lib/rustlib', target, 'lib')), "Reviewed installed target absent: #{target}") }
     xcode = capture!("#{DEVELOPER}/usr/bin/xcodebuild", '-version', env: env)
     assert(xcode == "Xcode 26.6\nBuild version 17F113\n", 'Pinned Xcode version differs')
-    sdk = capture!('/usr/bin/xcrun', '--sdk', 'macosx', '--show-sdk-version', env: env).strip
-    "rust-toolchain=1.97.1\nsupported-target=#{TARGET}\nsupported-architecture=arm64\nabi-version=1\n#{version}#{xcode}macos-sdk=#{sdk}\n"
+    sdk = %w[macosx iphoneos iphonesimulator].map { |name| capture!('/usr/bin/xcrun', '--sdk', name, '--show-sdk-version', env: env).strip }
+    "rust-toolchain=1.97.1\npackaging-profile=static-framework-v1\n#{TARGETS.map { |target| "supported-target=#{target}\n" }.join}supported-architecture=arm64\nsimulator-architectures=arm64,x86_64\nabi-version=1\n#{version}#{xcode}macos-sdk=#{sdk[0]}\niphoneos-sdk=#{sdk[1]}\niphonesimulator-sdk=#{sdk[2]}\n"
   end
 
   def self.verify!(artifact, smoke: true)
@@ -133,37 +181,60 @@ module BelugaCoreArtifact
     %w[SOURCE_MANIFEST.sha256 THIRD_PARTY_NOTICES.html].each do |name|
       assert(File.binread(File.join(artifact, name)) == File.binread(File.join(CRATE, name)), "#{name} copy differs")
     end
-    %w[beluga_core.h module.modulemap].each do |name|
-      assert(File.binread(File.join(artifact, 'macos-arm64/Headers', name)) == File.binread(File.join(CRATE, 'include', name)), "#{name} copy differs")
+    SLICES.each_key do |slice|
+      { 'beluga_core.h' => 'Headers', 'module.modulemap' => 'Modules' }.each do |name, directory|
+        assert(File.binread(File.join(artifact, slice, FRAMEWORK_NAME, directory, name)) == File.binread(File.join(CRATE, 'include', name)), "#{slice}/#{name} copy differs")
+      end
+      framework_plist = JSON.parse(capture!('/usr/bin/plutil', '-convert', 'json', '-o', '-', File.join(artifact, slice, FRAMEWORK_NAME, 'Info.plist')))
+      assert(framework_plist == framework_info(slice), "#{slice} framework Info.plist differs")
     end
     info = JSON.parse(capture!('/usr/bin/plutil', '-convert', 'json', '-o', '-', File.join(artifact, 'Info.plist')))
-    expected_library = { 'HeadersPath' => 'Headers', 'LibraryIdentifier' => 'macos-arm64', 'BinaryPath' => 'libbeluga_core.a',
-                         'LibraryPath' => 'libbeluga_core.a', 'SupportedArchitectures' => ['arm64'],
-                         'SupportedPlatform' => 'macos' }
-    assert(info == { 'AvailableLibraries' => [expected_library], 'CFBundlePackageType' => 'XFWK',
+    expected_libraries = SLICES.map do |identifier, slice|
+      library = { 'LibraryIdentifier' => identifier, 'BinaryPath' => "#{FRAMEWORK_NAME}/BelugaCore",
+                  'LibraryPath' => FRAMEWORK_NAME, 'SupportedArchitectures' => slice.fetch('architectures'),
+                  'SupportedPlatform' => slice.fetch('platform') }
+      library['SupportedPlatformVariant'] = slice.fetch('variant') if slice.key?('variant')
+      library
+    end.sort_by { |entry| entry.fetch('LibraryIdentifier') }
+    assert(info['AvailableLibraries'].is_a?(Array), 'XCFramework library metadata absent')
+    info['AvailableLibraries'] = info.fetch('AvailableLibraries').sort_by { |entry| entry.fetch('LibraryIdentifier') }
+    assert(info == { 'AvailableLibraries' => expected_libraries, 'CFBundlePackageType' => 'XFWK',
                      'XCFrameworkFormatVersion' => '1.0' }, 'Unexpected XCFramework slice metadata')
-    library = File.join(artifact, 'macos-arm64/libbeluga_core.a')
-    assert(capture!('/usr/bin/lipo', '-archs', library).strip == 'arm64', 'Archive must contain only arm64')
+    SLICES.each do |identifier, slice|
+      library = File.join(artifact, identifier, FRAMEWORK_NAME, 'BelugaCore')
+      assert(capture!('/usr/bin/lipo', '-archs', library).split.sort == slice.fetch('architectures').sort, "#{identifier} archive architectures differ")
+      verify_static_archive!(library, slice.fetch('architectures'))
+    end
     Dir.mktmpdir('verify-', work_directory) do |scratch|
       env = environment(File.join(CRATE, 'target/cargo'))
       metadata = pinned_tools!(env)
       assert(File.binread(File.join(artifact, 'BUILD_METADATA.txt')) == metadata, 'Artifact build-tool metadata differs')
       if smoke
-        headers = File.join(artifact, 'macos-arm64/Headers')
-        sdk = capture!('/usr/bin/xcrun', '--sdk', 'macosx', '--show-sdk-path', env: env).strip
         clang = "#{DEVELOPER}/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
         swift = "#{DEVELOPER}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"
         assert(ENV.fetch('BELUGA_CORE_CLANG_BIN', clang) == clang, 'Unbound clang path')
         assert(ENV.fetch('BELUGA_CORE_SWIFTC_BIN', swift) == swift, 'Unbound swiftc path')
-        run!(clang, '-target', 'arm64-apple-macos13.0', '-isysroot', sdk,
-             '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', headers,
-             File.join(CRATE, 'tests/c_abi_smoke.c'), library, '-o', File.join(scratch, 'c-smoke'), env: env)
-        run!(File.join(scratch, 'c-smoke'), env: env)
-        run!(swift, '-target', 'arm64-apple-macos13.0', '-sdk', sdk, '-I', headers,
-             File.join(CRATE, 'tests/swift_import_smoke.swift'), library,
-             '-o', File.join(scratch, 'swift-smoke'), env: env)
-        run!(File.join(scratch, 'swift-smoke'), env: env)
-        puts 'BELUGA_CORE_LINK_SMOKE_PASS'
+        LINK_TARGETS.each do |rust_target, slice, sdk_name, link_target, runnable|
+          framework_directory = File.join(artifact, slice)
+          sdk = capture!('/usr/bin/xcrun', '--sdk', sdk_name, '--show-sdk-path', env: env).strip
+          c_output = File.join(scratch, "c-smoke-#{rust_target}")
+          swift_output = File.join(scratch, "swift-smoke-#{rust_target}")
+          run!(clang, '-target', link_target, '-isysroot', sdk,
+             '-std=c11', '-Wall', '-Wextra', '-Werror', '-F', framework_directory,
+             File.join(CRATE, 'tests/c_abi_smoke.c'), '-framework', 'BelugaCore', '-o', c_output, env: env)
+          run!(swift, '-target', link_target, '-sdk', sdk, '-F', framework_directory,
+             File.join(CRATE, 'tests/swift_import_smoke.swift'), '-framework', 'BelugaCore',
+             '-o', swift_output, env: env)
+          [c_output, swift_output].each do |path|
+            assert(capture!('/usr/bin/lipo', '-archs', path).strip == link_target.split('-').first, 'Linked smoke architecture differs')
+          end
+          if runnable
+            run!(c_output, env: env); run!(swift_output, env: env)
+            puts 'BELUGA_CORE_LINK_SMOKE_PASS'
+          else
+            puts "BELUGA_CORE_CROSS_LINK_PASS target=#{rust_target}"
+          end
+        end
       end
     end
     puts "Verified BelugaCore artifact: #{artifact}"
