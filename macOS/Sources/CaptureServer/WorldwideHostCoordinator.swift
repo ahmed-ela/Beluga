@@ -19,6 +19,20 @@ protocol WorldwideHostAvailabilityTransport: AnyObject, Sendable {
 
 extension PairedAvailabilitySignalingClient: WorldwideHostAvailabilityTransport {}
 
+/// Exact media-owner boundary. Test implementations never construct native capture services.
+/// Admission remains in the coordinator; implementations cannot mint a prepared menu target.
+protocol WorldwideHostMediaService: AnyObject, Sendable {
+    var completion: AsyncStream<Void> { get }
+    func startPairedSession() async throws
+    func stop() async
+    func hasUnconfirmedNativeCaptureStop() async -> Bool
+    func moveMediaToConnectedPhone() async throws -> UUID
+    func iPhoneMicrophoneForwardingSnapshot() async
+        -> WorldwideIPhoneMicrophoneForwardingHostSnapshot
+}
+
+extension WorldwideScreenService: WorldwideHostMediaService {}
+
 /// Supervises durable pairing, availability signaling, and one active media session.
 ///
 /// Actor isolation is the ownership boundary for lifecycle state, cryptographic records,
@@ -63,6 +77,8 @@ actor WorldwideHostCoordinator {
     private let catalogOwnerIsValid: @Sendable () -> Bool
     private let makePairingClient: @Sendable (URL, RemoteInvitationCode) throws
         -> any WorldwideHostPairingTransport
+    private let makeMediaService: (@Sendable (RemoteRendezvousCredential) throws
+        -> any WorldwideHostMediaService)?
 
     private var lifecycle = WorldwideHostLifecycle()
     private var identity: RemoteDeviceIdentity?
@@ -84,7 +100,16 @@ actor WorldwideHostCoordinator {
     private var firstPairActivationIsEligible = false
     private var firstPairActivationIntent: FirstPairActivationIntent?
     private var availabilityClient: (any WorldwideHostAvailabilityTransport)?
-    private var mediaService: WorldwideScreenService?
+    // Retained until native teardown is confirmed, even after menu admission is revoked.
+    private var mediaService: (any WorldwideHostMediaService)?
+    private struct PreparedMediaOwner {
+        let id: UUID
+        let service: any WorldwideHostMediaService
+        let selectionEpoch: UUID
+        let exchangeID: String
+        let record: RemotePairedDeviceRecord
+    }
+    private var preparedMediaOwner: PreparedMediaOwner?
     private var pairingTask: Task<Void, Never>?
     private var pairingPresentationTask: Task<Void, Never>?
     private var presentationRevision: UInt64 = 0
@@ -143,6 +168,8 @@ actor WorldwideHostCoordinator {
             -> any WorldwideHostPairingTransport = { endpoint, invitation in
                 try PairingBootstrapSignalingClient(endpoint: endpoint, invitation: invitation, role: .host)
             },
+        mediaServiceFactory: (@Sendable (RemoteRendezvousCredential) throws
+            -> any WorldwideHostMediaService)? = nil,
         logger: Logger
     ) {
         let pair = AsyncThrowingStream<Void, Error>.makeStream(
@@ -177,6 +204,7 @@ actor WorldwideHostCoordinator {
         self.catalogMutationIsAuthorized = catalogMutationIsAuthorized
         self.catalogOwnerIsValid = catalogOwnerIsValid
         makePairingClient = pairingClientFactory
+        makeMediaService = mediaServiceFactory
         self.logger = logger
     }
 
@@ -402,6 +430,7 @@ actor WorldwideHostCoordinator {
         let operation = UUID()
         catalogActionID = operation
         // Retire generation before the first await. Old callbacks cannot persist or claim media.
+        preparedMediaOwner = nil
         selectionEpoch = UUID()
         let retirement = (id: operation, client: availabilityClient, task: availabilityTask)
         retiringAvailability = retirement
@@ -453,6 +482,7 @@ actor WorldwideHostCoordinator {
 
     private func resumeSelectedPhone() {
         guard !isStopped, catalogOwnerIsValid() else { return }
+        preparedMediaOwner = nil
         pairedRecord = phoneCatalog?.selectedRecord
         lifecycle = WorldwideHostLifecycle()
         if pairedRecord != nil {
@@ -874,11 +904,21 @@ actor WorldwideHostCoordinator {
 
     private var connectedMediaTarget: BelugaConnectedPhoneMediaTarget? {
         guard !isStopped, !shutdownIsInProgress, catalogOwnerIsValid(),
-              currentPresentationPhase == .sessionPrepared, mediaService != nil,
-              let exchangeID = lifecycle.mediaExchangeID,
+              let owner = preparedMediaOwner, let service = mediaService,
+              service === owner.service, selectionEpoch == owner.selectionEpoch,
+              lifecycle.mediaExchangeID == owner.exchangeID,
               let record = pairedRecord, record.pairingState == .active,
-              phoneCatalog?.selectedRecord == record else { return nil }
-        return .init(phoneID: record.remoteDeviceID, selectionEpoch: selectionEpoch, exchangeID: exchangeID)
+              record == owner.record, phoneCatalog?.selectedRecord == record else { return nil }
+        return .init(phoneID: record.remoteDeviceID, selectionEpoch: owner.selectionEpoch,
+                     exchangeID: owner.exchangeID, mediaOwnerID: owner.id)
+    }
+
+    /// Revoke only this exact owner's menu admission before suspending for native teardown.
+    /// This must not release retained source ownership or grant a quiet catalog boundary.
+    private func retirePreparedMediaOwner(service: (any WorldwideHostMediaService)?) {
+        guard let service, let owner = preparedMediaOwner, owner.service === service else { return }
+        preparedMediaOwner = nil
+        publishPresentation(currentPresentationPhase, invitation: currentInvitation)
     }
 
     /// Never reinterpret a delayed menu click as permission to address a newer phone/session.
@@ -914,6 +954,7 @@ actor WorldwideHostCoordinator {
         // The replay high-water mark must be durable before any response is sent.
         try persistSelected(record, client: client)
         pairedRecord = record
+        let admittedSelectionEpoch = selectionEpoch
 
         try await stopActiveMediaSession()
         guard !isStopped,
@@ -922,25 +963,30 @@ actor WorldwideHostCoordinator {
             throw CancellationError()
         }
 
-        let service = try WorldwideScreenService(
-            endpoint: endpoint,
-            sessionCredential: responder.credential,
-            forceRelay: forceRelay,
-            screenDisplayID: screenDisplayID,
-            screenDisplayRequirement: screenDisplayRequirement,
-            systemAudioDisplayID: systemAudioDisplayID,
-            maximumWidth: maximumWidth,
-            framesPerSecond: framesPerSecond,
-            maximumVideoBitrate: maximumVideoBitrate,
-            featureProfile: .fullPrimary,
-            remoteInputController: remoteInputController,
-            captureLifetime: captureLifetime,
-            iPhoneMicrophoneForwardingPolicy:
-                iPhoneMicrophoneForwardingPolicy,
-            makeServiceTeardownWatchdog: makeMediaServiceTeardownWatchdog,
-            makeNativeCaptureWatchdog: makeNativeCaptureWatchdog,
-            logger: logger
-        )
+        let service: any WorldwideHostMediaService
+        if let makeMediaService {
+            service = try makeMediaService(responder.credential)
+        } else {
+            service = try WorldwideScreenService(
+                endpoint: endpoint,
+                sessionCredential: responder.credential,
+                forceRelay: forceRelay,
+                screenDisplayID: screenDisplayID,
+                screenDisplayRequirement: screenDisplayRequirement,
+                systemAudioDisplayID: systemAudioDisplayID,
+                maximumWidth: maximumWidth,
+                framesPerSecond: framesPerSecond,
+                maximumVideoBitrate: maximumVideoBitrate,
+                featureProfile: .fullPrimary,
+                remoteInputController: remoteInputController,
+                captureLifetime: captureLifetime,
+                iPhoneMicrophoneForwardingPolicy:
+                    iPhoneMicrophoneForwardingPolicy,
+                makeServiceTeardownWatchdog: makeMediaServiceTeardownWatchdog,
+                makeNativeCaptureWatchdog: makeNativeCaptureWatchdog,
+                logger: logger
+            )
+        }
         try lifecycle.mediaStarted(exchangeID: exchangeID)
         mediaService = service
         do {
@@ -956,8 +1002,16 @@ actor WorldwideHostCoordinator {
                 await self?.mediaDidEnd(service: service, exchangeID: exchangeID)
             }
             try await client.send(.reconnectResponse(responder.response))
-            guard isCurrentAvailabilityClient(client), lifecycle.activeExchangeID == exchangeID,
-                  mediaService === service else { throw CancellationError() }
+            guard !isStopped, !shutdownIsInProgress, !Task.isCancelled,
+                  isCurrentAvailabilityClient(client), lifecycle.activeExchangeID == exchangeID,
+                  lifecycle.mediaExchangeID == exchangeID, mediaService === service,
+                  selectionEpoch == admittedSelectionEpoch, catalogOwnerIsValid(),
+                  pairedRecord == record, record.pairingState == .active,
+                  phoneCatalog?.selectedRecord == record else { throw CancellationError() }
+            // A fresh nonce distinguishes replacement services even on the same availability
+            // exchange. A retained service or generic availability phase never grants this.
+            preparedMediaOwner = .init(id: UUID(), service: service,
+                selectionEpoch: admittedSelectionEpoch, exchangeID: exchangeID, record: record)
             recordConnectionTelemetry(
                 .reconnectResponseSent,
                 exchangeID: exchangeID
@@ -969,6 +1023,7 @@ actor WorldwideHostCoordinator {
             logger.info("A fresh encrypted media rendezvous is ready for the paired iPhone")
             publishPresentation(.sessionPrepared)
         } catch {
+            retirePreparedMediaOwner(service: service)
             await service.stop()
             if await service.hasUnconfirmedNativeCaptureStop() {
                 let stopError = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
@@ -980,20 +1035,27 @@ actor WorldwideHostCoordinator {
                 mediaService = nil
                 mediaCompletionTask?.cancel()
                 mediaCompletionTask = nil
+                if lifecycle.mediaExchangeID == exchangeID {
+                    lifecycle.mediaEnded(exchangeID: exchangeID)
+                }
             }
-            lifecycle.mediaEnded(exchangeID: exchangeID)
             throw error
         }
     }
 
     /// Releases only the media service that still owns the active exchange.
     private func mediaDidEnd(
-        service: WorldwideScreenService,
+        service: any WorldwideHostMediaService,
         exchangeID: String
     ) async {
         guard mediaService === service else { return }
+        retirePreparedMediaOwner(service: service)
         let nativeStopIsUnconfirmed = await service.hasUnconfirmedNativeCaptureStop()
-        guard mediaService === service, !isStopped else { return }
+        guard mediaService === service else {
+            logger.debug("A retired media completion was ignored")
+            return
+        }
+        guard !isStopped else { return }
         if nativeStopIsUnconfirmed {
             let error = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
             logger.error(error.localizedDescription)
@@ -1013,6 +1075,7 @@ actor WorldwideHostCoordinator {
         mediaCompletionTask = nil
         let service = mediaService
         let exchangeID = lifecycle.mediaExchangeID
+        retirePreparedMediaOwner(service: service)
         await service?.stop()
         if let service, await service.hasUnconfirmedNativeCaptureStop() {
             let error = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
@@ -1022,9 +1085,9 @@ actor WorldwideHostCoordinator {
         }
         if mediaService === service {
             mediaService = nil
-        }
-        if let exchangeID {
-            lifecycle.mediaEnded(exchangeID: exchangeID)
+            if let exchangeID, lifecycle.mediaExchangeID == exchangeID {
+                lifecycle.mediaEnded(exchangeID: exchangeID)
+            }
         }
     }
 
@@ -1047,6 +1110,7 @@ actor WorldwideHostCoordinator {
         }
         teardownDidBegin()
         isStopped = true
+        preparedMediaOwner = nil
         firstPairActivationIsEligible = false
         firstPairActivationIntent = nil
         catalogActionID = nil
@@ -1149,6 +1213,7 @@ actor WorldwideHostCoordinator {
     /// Retries an exact source retained by a failed native stop and preserves it on uncertainty.
     private func retryRetainedMediaStopIfNeeded() async -> Bool {
         guard let media = mediaService else { return true }
+        retirePreparedMediaOwner(service: media)
         await media.stop()
         guard await media.hasUnconfirmedNativeCaptureStop() else {
             if mediaService === media {

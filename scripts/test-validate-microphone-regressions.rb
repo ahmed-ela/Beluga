@@ -1699,7 +1699,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def test_handoff_menu_and_rust_policy_classes_and_critical_cases_are_mandatory
-    %w[BelugaMediaHandoffMenuTests BelugaRustHandoffPolicyTests BelugaRustHostLifecycleTests WorldwideHostLifecycleTests].each do |name|
+    %w[BelugaMediaHandoffMenuTests WorldwidePreparedMediaMenuIntegrationTests BelugaRustHandoffPolicyTests BelugaRustHostLifecycleTests WorldwideHostLifecycleTests].each do |name|
       prefix = 'CaptureServerTests.' + name + '/'
       rejects('missing Mac test class') { Gate.mac_inventory(@mac_methods.reject { |id| id.start_with?(prefix) }.join("\n")) }
       pins = Gate::MAC_PINNED.select { |id| id.start_with?(prefix) }

@@ -18,7 +18,8 @@ final class BelugaMediaHandoffMenuTests: XCTestCase {
             XCTAssertNil(model.moveMedia(to: original))
         }
         model.apply(presentation(6, target: nil))
-        assertControl(model, reason: .targetUnavailable)
+        // A generic availability phase cannot manufacture prepared media admission.
+        assertControl(model, reason: .waitingForSession)
         XCTAssertNil(model.moveMedia(to: original))
 
         let replacement = target()
@@ -52,6 +53,36 @@ final class BelugaMediaHandoffMenuTests: XCTestCase {
         assertControl(model, reason: .stopped)
         XCTAssertNil(model.moveMedia(to: current))
         XCTAssertEqual(probe.targets, [])
+    }
+
+    func testPreparedTargetAndInFlightRequestSurviveAvailabilityPresentationChanges() async throws {
+        let current = target(), probe = HandoffMenuProbe(holds: true)
+        defer { probe.release() }
+        let model = started(probe, target: current)
+        model.apply(presentation(2, target: current, phase: .unavailable))
+        assertControl(model, reason: .ready, enabled: true)
+        model.apply(presentation(3, target: current, phase: .preparingSession))
+        assertControl(model, reason: .ready, enabled: true)
+
+        let task = try XCTUnwrap(model.moveMedia(to: current))
+        let entered = await probe.waitForEntry()
+        XCTAssertTrue(entered)
+        for (offset, phase) in [BelugaHostPresentationPhase.unavailable, .preparingSession].enumerated() {
+            model.apply(presentation(UInt64(offset + 4), target: current, phase: phase))
+            assertControl(model, reason: .requestInFlight)
+            XCTAssertTrue(model.isRequestingMediaHandoff)
+            XCTAssertEqual(model.presentation.connectedMediaTarget, current)
+            XCTAssertFalse(task.isCancelled, "Availability is not retirement of the media owner")
+        }
+        probe.release()
+        await task.value
+        assertControl(model, reason: .ready, enabled: true)
+        XCTAssertEqual(probe.targets, [current])
+        XCTAssertNotNil(model.mediaHandoffMessage)
+
+        model.apply(presentation(6, target: nil, phase: .preparingSession))
+        assertControl(model, reason: .waitingForSession)
+        XCTAssertNil(model.moveMedia(to: current))
     }
 
     func testChangingPhoneKeepsControlVisibleButCannotDispatch() async throws {
@@ -138,9 +169,14 @@ final class BelugaMediaHandoffMenuTests: XCTestCase {
         let target = target(), probe = HandoffMenuProbe()
         let model = started(probe, target: target)
         for stale in [
-            BelugaConnectedPhoneMediaTarget(phoneID: UUID(), selectionEpoch: target.selectionEpoch, exchangeID: target.exchangeID),
-            BelugaConnectedPhoneMediaTarget(phoneID: target.phoneID, selectionEpoch: UUID(), exchangeID: target.exchangeID),
-            BelugaConnectedPhoneMediaTarget(phoneID: target.phoneID, selectionEpoch: target.selectionEpoch, exchangeID: "other")
+            BelugaConnectedPhoneMediaTarget(phoneID: UUID(), selectionEpoch: target.selectionEpoch,
+                exchangeID: target.exchangeID, mediaOwnerID: target.mediaOwnerID),
+            BelugaConnectedPhoneMediaTarget(phoneID: target.phoneID, selectionEpoch: UUID(),
+                exchangeID: target.exchangeID, mediaOwnerID: target.mediaOwnerID),
+            BelugaConnectedPhoneMediaTarget(phoneID: target.phoneID, selectionEpoch: target.selectionEpoch,
+                exchangeID: "other", mediaOwnerID: target.mediaOwnerID),
+            BelugaConnectedPhoneMediaTarget(phoneID: target.phoneID, selectionEpoch: target.selectionEpoch,
+                exchangeID: target.exchangeID, mediaOwnerID: UUID())
         ] { XCTAssertNil(model.moveMedia(to: stale)) }
         XCTAssertEqual(probe.targets, [])
         XCTAssertTrue(model.canMoveMedia)
@@ -223,7 +259,8 @@ final class BelugaMediaHandoffMenuTests: XCTestCase {
     }
 
     private func target() -> BelugaConnectedPhoneMediaTarget {
-        .init(phoneID: UUID(), selectionEpoch: UUID(), exchangeID: UUID().uuidString)
+        .init(phoneID: UUID(), selectionEpoch: UUID(), exchangeID: UUID().uuidString,
+              mediaOwnerID: UUID())
     }
     private func presentation(_ revision: UInt64, target: BelugaConnectedPhoneMediaTarget?,
                               phase: BelugaHostPresentationPhase = .sessionPrepared) -> BelugaHostPresentation {

@@ -113,7 +113,7 @@ final class BelugaMenuBarModel: ObservableObject {
         BelugaRustHandoffPolicy.evaluate(
             hasStarted: hasStarted, finished: didFinish, changingPhone: isChangingPhone,
             requestInFlight: isRequestingMediaHandoff,
-            sessionReady: presentation.phase == .sessionPrepared,
+            sessionReady: presentation.mediaSessionIsPrepared,
             targetPresent: presentation.connectedMediaTarget != nil,
             commandInstalled: phoneCommands?.moveMedia != nil
         )

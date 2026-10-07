@@ -17,7 +17,8 @@ final class WorldwideHostCoordinatorTests: XCTestCase {
         let presentations = LockedValues<BelugaHostPresentation>()
         let coordinator = makeCoordinator(store: WorldwidePairingStore(dataStore: memory),
             catalogMutationIsAuthorized: { true }, presentation: { presentations.append($0) })
-        let target = BelugaConnectedPhoneMediaTarget(phoneID: UUID(), selectionEpoch: UUID(), exchangeID: "TESTONLY")
+        let target = BelugaConnectedPhoneMediaTarget(phoneID: UUID(), selectionEpoch: UUID(),
+            exchangeID: "TESTONLY", mediaOwnerID: UUID())
         for stage in 0..<3 {
             if stage == 1 { _ = try await coordinator.start(resetPairing: false) }
             if stage == 2 { await coordinator.stop() }

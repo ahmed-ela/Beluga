@@ -44,12 +44,22 @@ physical and release gates, and add race/sanitizer/fuzz coverage where the migra
 boundary introduces memory or concurrent ownership. No deployment claim from a
 successful reducer test or archive.
 
-Current diagnosis: the released menu conditionally removes the entire handoff control
+Released-menu diagnosis: the released menu conditionally removes the entire handoff control
 when `connectedMediaTarget` is nil. The coordinator ties that target to its generic
 `sessionPrepared` presentation phase, so an availability retry can hide it while the
 separate media lifetime survives. This is source-confirmed; the user's external Mac
 has not been observed at that exact transition. Stable presentation is separate from
 authorization: unavailable or replaced sessions must still refuse dispatch.
+
+Current source repair (not released): menu readiness now follows the retained,
+prepared concrete media owner rather than the availability presentation phase.
+The target is issued only after startup and authenticated response-send return;
+each concrete service receives a fresh owner nonce, including same-exchange
+replacement. It is retired before stop/query suspension, while uncertain native
+teardown still retains the service. Exact paired-record, catalog, service and
+generation guards remain mandatory. The control stays visible with a disabled
+explanation when there is no current target. This does not grant transport health
+or bypass source readback, phone confirmation, or native microphone policy.
 
 Current Rust build profile is Mac arm64, iOS device arm64 and iOS Simulator
 arm64/x86_64. Native Intel Mac support is not advertised. Cross-linking the phone
@@ -163,6 +173,31 @@ The final-source 32-phase canonical gate is required before this checkpoint can
 be committed or released; the focused proof does not substitute it. This is not
 real YouTube, actual Mac Pause, physical-phone or deployment proof. The broader
 Rust rewrite remains incomplete; pairing/catalog/session policy is the next seam.
+
+### Latest local policy checkpoint and menu regression coverage — 2026-10-07
+
+Local checkpoint `38948b256aa352236877560b3d741de023c5afac` includes Rust invitation
+acceptance ownership and the copied-output native custody boundary. Its complete
+38-phase source-bound gate and retained evidence passed independent audits. It
+was committed locally, not pushed or deployed; later menu changes cannot borrow
+that checkpoint's release receipt.
+
+Prepared-media repair adds 17 tests through the actual coordinator and menu with
+genuine cryptographic pairing/reconnect records. Together with the existing menu
+and coordinator suites, 62 focused tests pass. They cover availability-only churn,
+startup/send suspension, same-exchange replacement, stale requests/results, late
+completion, replay/forged requests, uncertain native stop, shutdown and exact
+microphone snapshot forwarding. Both stop and completion-query barriers are held
+to observe revocation before either cleanup path returns. Compiled negative
+controls restore the old phase rule, reuse a service nonce, and delay both cleanup
+revocations; each must fail ordinary assertions for its intended defect. The new
+class and all 17 methods are mandatory release-gate pins, not optional fixtures.
+
+The restored source still requires its own full 38-phase canonical receipt before
+the menu repair is checkpointed or released. This is offline source/adapter proof,
+not a live reproduction on the user's Mac, a phone handoff or deployment. The full
+Rust rewrite remains active; signaling replay and the remaining policy seams are
+not completed by the invitation or menu work.
 
 ## Earlier implementation ledger
 

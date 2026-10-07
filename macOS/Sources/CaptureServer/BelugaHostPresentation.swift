@@ -52,6 +52,9 @@ struct BelugaHostPresentation: Sendable, CustomStringConvertible, CustomDebugStr
     let invitation: BelugaPairingInvitation?
     let phones: BelugaPhoneCatalogPresentation
     let connectedMediaTarget: BelugaConnectedPhoneMediaTarget?
+    /// Value projection of the coordinator's exact prepared media owner, not availability or
+    /// ICE health. The native service still validates live transport and source at dispatch.
+    var mediaSessionIsPrepared: Bool { connectedMediaTarget != nil }
 
     init(revision: UInt64, phase: BelugaHostPresentationPhase, pairedPhoneName: String?,
          invitation: BelugaPairingInvitation?, phones: BelugaPhoneCatalogPresentation = .unavailable,

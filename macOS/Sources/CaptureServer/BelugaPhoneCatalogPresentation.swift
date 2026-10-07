@@ -57,6 +57,7 @@ struct BelugaConnectedPhoneMediaTarget: Equatable, Sendable, CustomStringConvert
     let phoneID: UUID
     let selectionEpoch: UUID
     let exchangeID: String
+    let mediaOwnerID: UUID
     var description: String { "[Beluga connected-phone media target]" }
     var debugDescription: String { description }
 }
