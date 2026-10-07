@@ -41,6 +41,27 @@ function originalCount(bytes, literal) {
   return count;
 }
 
+// Independent receiving-boundary oracle for the unchanged single-line BSD grep behavior.
+// This is the former shell expression, not the production batch or a second byte counter.
+function originalSingleLineCount(file, literal) {
+  const result = spawnSync("/bin/zsh", ["-c", `
+matches=$(LC_ALL=C /usr/bin/grep -F -o -- "$2" "$1" 2>/dev/null)
+counter_status=$?
+case "$counter_status" in
+  0) counter_lines=("\${(f)matches}"); print -r -- "\${#counter_lines[@]}" ;;
+  1) print -r -- 0 ;;
+  *) exit 3 ;;
+esac
+`, "original-single-line-counter", file, literal], {
+    encoding: "utf8", timeout: 15_000, maxBuffer: 2 * 1024 * 1024,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.signal, null);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^(0|[1-9][0-9]*)\n$/);
+  return Number(result.stdout.trim());
+}
+
 function scenario(name, { files = {}, commands, expected = [], nodeOverride, inspect, setup }) {
   const directory = path.join(scratch, name);
   fs.mkdirSync(directory, { mode: 0o700 });
@@ -108,15 +129,41 @@ try {
     inspect: ({ calls }) => assert.equal(calls, 1, "multiline requests launched more than one Node"),
   });
 
-  scenario("single-line-grep-unchanged", {
+  scenario("single-line-byte-semantics-batched", {
     files: { "one.txt": "aaa\n--flag --flag\n" },
     commands: [
       assertion("one.txt", "aa", 1, "single-line nonoverlap"),
       assertion("one.txt", "--flag", 2, "leading dash"),
       assertion("one.txt", "not present", 0, "single-line absence"),
     ].join("\n"),
-    inspect: ({ calls }) => assert.equal(calls, 0, "single-line branch unexpectedly launched Node"),
+    inspect: ({ calls }) => assert.equal(calls, 1, "single-line requests did not share one batch"),
   });
+
+  const byteCases = [
+    ["ascii.txt", "aaaaa --flag --flag\r\nlast", "aa"],
+    ["ascii.txt", "aaaaa --flag --flag\r\nlast", "--flag"],
+    ["ascii.txt", "aaaaa --flag --flag\r\nlast", "--flag\r"],
+    ["ascii.txt", "aaaaa --flag --flag\r\nlast", "absent"],
+    ["unicode.txt", "🙂🙂🙂 e\u0301 é e\u0301", "🙂🙂"],
+    ["unicode.txt", "🙂🙂🙂 e\u0301 é e\u0301", "e\u0301"],
+    ["malformed.txt", Buffer.from([0xc3, 0x28, 0x0a, 0x78]), "�"],
+    ["malformed.txt", Buffer.from([0xc3, 0x28, 0x0a, 0x78]), "("],
+    ["binary.txt", Buffer.from("aa\0aa\naa"), "aa"],
+    ["binary.txt", Buffer.from("aa\0aa\naa"), "absent"],
+    [oddPath, Buffer.from("aa\0aa\naa"), "aa"],
+    ["space ' and\n\nUnicode-終.txt", Buffer.from("aa\0aa\naa"), "aa"],
+  ];
+  for (const [index, [file, bytes, literal]] of byteCases.entries()) {
+    scenario(`single-line-reference-${index}`, {
+      files: { [file]: bytes },
+      setup: (directory) => {
+        const count = originalSingleLineCount(path.join(directory, file), literal);
+        fs.writeFileSync(path.join(directory, "expected"), String(count));
+      },
+      commands: `expected=$(< "$ROOT/expected")\nassert_literal_count ${quote(file)} ${quote(literal)} "$expected" 'independent old grep parity'`,
+      inspect: ({ calls }) => assert.equal(calls, 1),
+    });
+  }
 
   scenario("ordered-mixed-diagnostics", {
     files: { "one.txt": "a\nb\n--flag\n" },
@@ -168,6 +215,20 @@ try {
     },
   });
 
+  scenario("single-line-source-removed-before-read", {
+    files: { "gone.txt": "a", "healthy.txt": "a" },
+    commands: [
+      assertion("gone.txt", "absent", 0, "single-line read failure is not zero"),
+      '/bin/rm -- "$ROOT/gone.txt"',
+      assertion("healthy.txt", "a", 1, "healthy single-line after failure"),
+    ].join("\n"),
+    expected: ["single-line read failure is not zero: could not count the required literal in gone.txt"],
+    inspect: ({ result, calls }) => {
+      assert.equal(calls, 1);
+      assert.ok(!result.stderr.includes("ENOENT"), "single-line branch changed its suppressed read diagnostic");
+    },
+  });
+
   scenario("unreadable-source", {
     files: { "denied.txt": "a\nb" },
     commands: assertion("denied.txt", "not\npresent", 0, "denied read is not zero"),
@@ -188,6 +249,49 @@ fs.readFileSync = function(file, ...args) {
     inspect: ({ result }) => assert.ok(result.stderr.includes("EACCES")),
   });
 
+  scenario("single-line-unreadable-source", {
+    files: { "denied.txt": "a" },
+    commands: assertion("denied.txt", "absent", 0, "single-line denied read is not zero"),
+    setup: (directory) => fs.writeFileSync(path.join(directory, "deny-read.cjs"), `
+const fs = require("node:fs");
+const original = fs.readFileSync;
+fs.readFileSync = function(file, ...args) {
+  if (file === ${JSON.stringify(path.join(directory, "denied.txt"))}) {
+    const error = new Error("EACCES: permission denied, read");
+    error.code = "EACCES";
+    throw error;
+  }
+  return original.call(this, file, ...args);
+};
+`),
+    nodeOverride: `${quote(process.execPath)} --require "$ROOT/deny-read.cjs" "$@"`,
+    expected: ["single-line denied read is not zero: could not count the required literal in denied.txt"],
+    inspect: ({ result }) => assert.ok(!result.stderr.includes("EACCES")),
+  });
+
+  scenario("independent-same-file-reads-not-a-content-cache", {
+    files: { "one.txt": "aa" },
+    commands: [
+      assertion("one.txt", "aa", 1, "first fresh read"),
+      assertion("one.txt", "aa", 2, "second fresh read"),
+    ].join("\n"),
+    setup: (directory) => fs.writeFileSync(path.join(directory, "advance-read.cjs"), `
+const fs = require("node:fs");
+const original = fs.readFileSync;
+let reads = 0;
+fs.readFileSync = function(file, ...args) {
+  const bytes = original.call(this, file, ...args);
+  if (file === ${JSON.stringify(path.join(directory, "one.txt"))}) {
+    reads += 1;
+    if (reads === 1) fs.writeFileSync(file, "aaaa");
+  }
+  return bytes;
+};
+`),
+    nodeOverride: `${quote(process.execPath)} --require "$ROOT/advance-read.cjs" "$@"`,
+    inspect: ({ calls }) => assert.equal(calls, 1),
+  });
+
   scenario("empty-worker-literal-is-not-zero", {
     files: { "one.txt": "a\nb" },
     commands: `${assertion("one.txt", "a\nb", 0, "empty worker literal")}
@@ -197,7 +301,7 @@ IDENTITY_MULTILINE_FIELDS[2]=''`,
   });
 
   const pending = [
-    assertion("one.txt", "a\nb", 0, "first pending"),
+    assertion("one.txt", "a", 0, "first pending"),
     assertion("two.txt", "x\ny", 0, "second pending"),
   ].join("\n");
   const rejectedPending = [

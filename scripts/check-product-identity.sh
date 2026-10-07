@@ -18,6 +18,7 @@ typeset -a IDENTITY_MULTILINE_PATHS=()
 typeset -a IDENTITY_MULTILINE_EXPECTED=()
 typeset -a IDENTITY_MULTILINE_DESCRIPTIONS=()
 typeset -a IDENTITY_MULTILINE_SLOTS=()
+typeset -a IDENTITY_LITERAL_IS_MULTILINE=()
 EXPECTED_IOS_TARGETS=$'MediaNotificationContent\nopensteamer\nopensteamerTests\nopensteamerUITests'
 EXPECTED_SCHEME_FILES=$'opensteamer.xcscheme\nopensteamerTestFlight.xcscheme\nopensteamerUITests.xcscheme'
 
@@ -180,45 +181,23 @@ assert_literal_count() {
   local literal=$2
   local expected_count=$3
   local description=$4
-  local actual_count
-  local grep_matches
-  local grep_status
-  local -a grep_match_lines
-
   require_file "$relative_path" || return
   if [[ -z "$literal" ]]; then
     fail "$description: cannot count an empty required literal in $relative_path"
     return
   fi
 
-  # Nearly every identity pin is one line. Avoid launching a JavaScript runtime for each of
-  # those assertions; fixed-string grep has the same non-overlapping count semantics. Multiline
-  # contracts retain the JavaScript UTF-8/indexOf counter in one invocation-local batch below.
-  if [[ "$literal" != *$'\n'* ]]; then
-    grep_matches=$(LC_ALL=C grep -F -o -- "$literal" \
-      "$ROOT/$relative_path" 2>/dev/null)
-    grep_status=$?
-    case "$grep_status" in
-      0)
-        grep_match_lines=("${(f)grep_matches}")
-        actual_count=${#grep_match_lines[@]}
-        ;;
-      1)
-        actual_count=0
-        ;;
-      *)
-        fail "$description: could not count the required literal in $relative_path"
-        return
-        ;;
-    esac
-    assert_equal "$description" "$expected_count" "$actual_count"
-    return
-  fi
-
+  # One invocation-local batch avoids hundreds of parser/grep process starts. Preserve the
+  # former single-line byte counter and multiline UTF-8 counter as distinct algorithms.
+  # Every request reads its file independently at flush; neither content nor verdict is cached.
   # Reserve the original assertion's diagnostic position, including among ordinary failures.
-  # Nothing is cached: every request carries its source path and is read independently at flush.
   IDENTITY_DIAGNOSTICS+=('')
   IDENTITY_MULTILINE_SLOTS+=("${#IDENTITY_DIAGNOSTICS[@]}")
+  if [[ "$literal" == *$'\n'* ]]; then
+    IDENTITY_LITERAL_IS_MULTILINE+=(1)
+  else
+    IDENTITY_LITERAL_IS_MULTILINE+=(0)
+  fi
   IDENTITY_MULTILINE_FIELDS+=("$ROOT/$relative_path" "$literal")
   IDENTITY_MULTILINE_PATHS+=("$relative_path")
   IDENTITY_MULTILINE_EXPECTED+=("$expected_count")
@@ -239,6 +218,7 @@ flush_literal_count_batch() {
   # changing a read error. Any worker/pipe/protocol failure rejects the entire pending batch.
   if ! batch_output=$(print -rN -- "${IDENTITY_MULTILINE_FIELDS[@]}" | node -e '
     const fs = require("node:fs");
+    const { spawnSync } = require("node:child_process");
     const fields = fs.readFileSync(0, "utf8").split("\0");
     const requestCount = Number(process.argv[1]);
     if (!Number.isSafeInteger(requestCount) || requestCount <= 0 ||
@@ -248,14 +228,40 @@ flush_literal_count_batch() {
     const results = [];
     for (let index = 0; index < requestCount; index += 1) {
       try {
-        const contents = fs.readFileSync(fields[index * 2], "utf8");
+        const file = fields[index * 2];
+        const bytes = fs.readFileSync(file);
         const literal = fields[index * 2 + 1];
         if (literal.length === 0) throw new Error("empty required literal");
         let count = 0;
-        let offset = 0;
-        while ((offset = contents.indexOf(literal, offset)) >= 0) {
-          count += 1;
-          offset += literal.length;
+        if (literal.includes("\n")) {
+          const contents = bytes.toString("utf8");
+          let offset = 0;
+          while ((offset = contents.indexOf(literal, offset)) >= 0) {
+            count += 1;
+            offset += literal.length;
+          }
+        } else if (bytes.includes(0) || literal.includes("\0")) {
+          // BSD grep has special binary-output semantics. Retain the actual old command for
+          // that exceptional input rather than pretending a text counter is equivalent.
+          const result = spawnSync("grep", ["-F", "-o", "--", literal, file], {
+            env: { ...process.env, LC_ALL: "C" }, maxBuffer: 64 * 1024 * 1024,
+          });
+          if (result.error || result.signal !== null || ![0, 1].includes(result.status)) {
+            throw result.error || new Error("fixed-string binary counter failed");
+          }
+          if (result.status === 0) {
+            const output = result.stdout.toString("utf8").replace(/\n+$/, "");
+            // Quoted zsh ${(f)...} elides interior empty split fields, but retains one
+            // empty element when command substitution yields the empty string.
+            count = output.length === 0 ? 1 : output.split("\n").filter(line => line.length > 0).length;
+          }
+        } else {
+          const needle = Buffer.from(literal, "utf8");
+          let offset = 0;
+          while ((offset = bytes.indexOf(needle, offset)) >= 0) {
+            count += 1;
+            offset += needle.length;
+          }
         }
         results.push(String(index + 1), "ok", String(count), "");
       } catch (error) {
@@ -318,7 +324,10 @@ flush_literal_count_batch() {
       diagnostic="product identity check failed: $description: could not count the required literal in $relative_path"
     elif [[ "${results[field_offset + 2]}" == error ]]; then
       read_error=${results[field_offset + 4]}
-      diagnostic="$read_error"$'\n'"product identity check failed: $description: could not count the required literal in $relative_path"
+      diagnostic="product identity check failed: $description: could not count the required literal in $relative_path"
+      if [[ "${IDENTITY_LITERAL_IS_MULTILINE[index]}" == 1 ]]; then
+        diagnostic="$read_error"$'\n'"$diagnostic"
+      fi
     else
       actual_count=${results[field_offset + 3]}
       if [[ "$actual_count" != "$expected_count" ]]; then
@@ -336,6 +345,7 @@ flush_literal_count_batch() {
   IDENTITY_MULTILINE_EXPECTED=()
   IDENTITY_MULTILINE_DESCRIPTIONS=()
   IDENTITY_MULTILINE_SLOTS=()
+  IDENTITY_LITERAL_IS_MULTILINE=()
 }
 
 assert_function_sha256() {
