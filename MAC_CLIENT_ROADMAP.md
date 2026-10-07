@@ -362,7 +362,7 @@ It is not proof for the changed eleventh source. Browser sharing/Android deliver
 remain paused. Neither checkpoint represents an installed-host/phone update or
 full migration completion.
 
-### Supported-player arbitration — eleventh source integration, not released
+### Supported-player arbitration — eleventh local checkpoint, not released
 
 The two-provider browser/Music selection policy now uses a stateless Rust reducer
 through copied 20-byte input and 16-byte output values. It preserves the original
@@ -382,14 +382,70 @@ The first native build exposed a test-local generic-inference error; evidence wa
 preserved and explicit Bool specialization passed the fresh attempt. No product
 assertion was removed. Gate parser self-tests passed 133 cases/15,179 assertions.
 
-The canonical gate now enrolls 176 core tests, 111 compiled Rust mutation controls,
-550 Mac cases and 139 critical Mac cases while preserving the previous coverage
-prefixes, phase order and 22 physical-only Simulator exclusions. Enrollment does
-not claim a completed gate. Independent native compiled controls and a fresh full
-source-bound gate are the remaining validation boundaries for this integration.
+The fresh canonical gate passed all 43 phases: 176 core tests, 35 microphone Rust
+tests, 111 compiled intended Rust assertion controls, 550 Mac cases/139 critical,
+516 signed Simulator passes plus unchanged 22 physical-only exclusions, and 108
+inert pairing cases. Independent terminal audits and current-source receipt
+verification passed. Three native compiled controls failed only at their intended
+ordinary assertions, followed by exact source restoration and 34 passing tests;
+the other nine planned native controls are not claimed as executed.
+Local commit is `11b68c2608bfc6b6cbb613365c7ff8fbee5da442`; full-gate receipt SHA
+is `2baeb14171e64c59c812eb466ff990470cf3432190f33dce04beccf416677bb7`.
+That receipt binds the predecessor's exact source, not this changed documentation
+or subsequent batch. Crosslinks/isolated driver loading are not physical or
+installed HAL proof; only six pairing phases retain equivalent process sidecars.
 Detailed progress and terminal evidence are retained outside source in
 `/Volumes/t7/beluga-supported-player-validation.TLmvsI/RESULTS.md`. The installed
 Mac menu transition, physical phone behavior and deployment remain unverified.
+
+### Connection/recovery batch — source integration in progress
+
+Four small policies are being migrated together: availability retry, safe-output
+attempt budget/cooldown, system-audio start/resume, and hosted-call scalar
+observation/evidence/peer-generation admission. Availability source integration
+is present, with actual-C-first fault tests and real supervisor exit observation.
+All four copied Rust policies/exports and real native actor callers are now
+source-integrated. Forty actual-crate focused tests passed (15 availability,
+11 safe-output,4 system-audio,10 hosted-call), including independent malformed
+constructor/peer fields. A fresh four-target library was built, its Mac C/Swift
+smokes executed, and its three iOS crosslinks passed. It replaced only the source
+dependency; no installed app was changed.
+
+Actual native compilation and 47 focused tests passed, including the inert real
+actor, callback joins and supervisor lifecycle. The first attempt exposed a
+test-only duplicate-ready setup error; the corrected valid transition and a new
+duplicate-ready regression passed without changing product code. Six compiled
+native singleton controls failed exclusively at their intended ordinary
+assertions. Two other controls produced mixed assertion/timeout or unexpected
+error results and are explicitly not credited as clean kills. Exact full source
+restoration was checked; a fresh restored-baseline run and full gate remain.
+
+The expanded gate requires all 44 new native methods, 186 total critical Mac
+methods, exact reviewed native bodies, and unchanged historical phases and
+physical exclusions. Independent static review passed; fresh gate execution and
+a new local checkpoint remain pending. Detailed receipts and preserved failures
+are in `/Volumes/t7/beluga-batch-a-validation.5JlLEU/RESULTS.md`. Earlier focused
+receipts do not bind subsequent gate/documentation edits or prove live effects.
+No full-gate pass, new checkpoint, installed runtime or deployment is claimed.
+Native sockets, timers, route transactions, authorization identity, callback
+ownership, and observation high-water assignment before evidence-state rejection
+remain native. A malformed bridge must never mint authorization or reset retry
+state. Full product-core migration remains active and incomplete.
+
+The first retained fresh full-gate attempt stopped at the identity mutation
+phase's 1,800-second deadline; it did not produce a full-gate receipt or establish
+a product assertion failure. A measured validator took 4.324 seconds, repeated
+410 times by the unchanged mutation suite before fixture copying and behavior
+checks. Invocation-local literal batching reduced the measured validator to
+2.029 seconds. Every assertion still independently reads its file, retains its
+diagnostic position, and fails closed on worker/protocol/read failure. Single-line
+byte counting and the actual binary grep fallback remain separate from multiline
+UTF-8 counting. No source-content or verdict cache, skipped mutation, enlarged
+deadline, or live runtime change is introduced. The expanded focused suite also
+found and reproduced a consecutive-newline binary-filename parity error; its
+empty-field splitting is corrected. Fresh focused verification, independent
+review and the entire unchanged full gate are still required. Evidence is in
+`/Volumes/t7/beluga-identity-cost.FeTdwU` and the external batch ledger above.
 
 ## Earlier implementation ledger
 

@@ -29,7 +29,16 @@ module MicrophoneRegressionGate
                                src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs src/pairing_catalog_checkpoint.rs src/reconnect_counters.rs src/pairing_commit.rs src/supported_player_arbitration.rs include/beluga_core.h include/module.modulemap
                                tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/pairing_catalog_checkpoint.rs tests/reconnect_counters.rs tests/pairing_commit.rs tests/supported_player_arbitration.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
-                               scripts/mutation-tests.rb].freeze
+                               scripts/mutation-tests.rb
+    src/availability_retry.rs
+    tests/availability_retry.rs
+    src/safe_output_retry.rs
+    tests/safe_output_retry.rs
+    src/system_audio_start.rs
+    tests/system_audio_start.rs
+    src/hosted_call_policy.rs
+    tests/hosted_call_policy.rs
+  ].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
   BELUGA_CORE_SLICES = {
     'macos-arm64' => { 'SupportedArchitectures' => ['arm64'], 'SupportedPlatform' => 'macos' },
@@ -360,6 +369,101 @@ module MicrophoneRegressionGate
     ]
   }.transform_values(&:freeze).freeze
 
+  # Exact reviewed bodies. The coordinator is separately bound by the existing
+  # pairing map to preserve that family's refusal ordering and diagnostics.
+  BATCH_A_NATIVE_SOURCE_SHA256 = {
+    'macOS/Sources/CaptureServer/BelugaRustAvailabilityRetry.swift' => '49fae2bf28a0b5f7aafbf3d531e979475eedfc6df1377dbf1c672d44973ca4ae',
+    'macOS/Sources/CaptureServer/InertBatchARoutingObserverJoin.swift' => '2128c2468754ba927d7e8bbde6b17c540f592a8de034cd5e18c1eb00cb61d6d4',
+    'macOS/Sources/CaptureServer/WorldwideHostLifecycle.swift' => '74d5f9ab042933f3ae9df7421043c3c1aca9d73f1be1ce3a752967ceefc0f7f1',
+    'macOS/Sources/CaptureServer/WorldwideIPhoneMicrophoneForwardingDriver.swift' => 'f858dd89fc822d0a69a9cc369e5a869ebd2a0fa0a51dc5db39597f6fa3938daa',
+    'macOS/Sources/CaptureServer/WorldwideMacHostedCallPolicies.swift' => '4761079aad79da792df639bed0adfcac9848125a85523f332d265a1b235aaeee',
+    'macOS/Sources/CaptureServer/WorldwideSafeOutputInvariantRetryPolicy.swift' => '75e12a1781ccb95f96f79215236b3cb3385803e3ef48f12916fd0751ee427d9b',
+    'macOS/Sources/CaptureServer/WorldwideScreenService.swift' => '3bd0169d15aa9abdc72e47cd33a45615cc9c61f9c134d466257665804bc5ae51',
+    'macOS/Sources/CaptureServer/WorldwideScreenServiceAudioRoutingDependencies.swift' => '0afa9c4a0fdd13b5a430e90b7fb37c760df7d6d98858b7419f25aa7a39349575',
+    'macOS/Sources/CaptureServer/WorldwideSystemAudioRecoveryPolicy.swift' => 'c3eabf280010b36f74d8ddac55b04e68dba7ca2aa379fc10bf1e964c619b7b3e',
+    'macOS/Tests/CaptureServerTests/AvailabilityRetryOriginalReference.swift' => '67e656ef51cff56e47745d5dbd3987f725eb2d30b95b52b4f0eceb9748c17952',
+    'macOS/Tests/CaptureServerTests/BelugaRustAvailabilityRetryTests.swift' => '15f5e23682ba1522813cb5e424813a9248b0b775fa026f86caf743328e8b4802',
+    'macOS/Tests/CaptureServerTests/BelugaRustBatchAPolicyFacadeTests.swift' => 'c91aff6b8bb3c3c4aff3028f4db9bb113851502b23278ad6701a32086a0db83e',
+    'macOS/Tests/CaptureServerTests/InertBatchAAudioRoutingFixture.swift' => 'd92fd86f92b64eae9a3093654fbe40df56e4fc1f1393b84671710a839e189435',
+    'macOS/Tests/CaptureServerTests/WorldwideAvailabilityRetryCoordinatorTests.swift' => '6ff33071df215369dfcf13e918bd4d8e9614f14b2d9cf273e83e9f058e2197bf',
+    'macOS/Tests/CaptureServerTests/WorldwideHostLifecycleTests.swift' => 'a115621eba5bb8366a17948e23b8d6743a259bc235251e40778e079fd02a9e26',
+    'macOS/Tests/CaptureServerTests/WorldwideMacHostedCallObservationPolicyTests.swift' => '748cf680db492738702723f7f583de068e9a3e366bf95a29a5187cda677b78f0',
+    'macOS/Tests/CaptureServerTests/WorldwideScreenServiceBatchAFaultTests.swift' => 'f5966786f3a5c4e9b65857991973f026e567c82eb5bc2d1810c124ce770d5c4e',
+    'macOS/Tests/CaptureServerTests/WorldwideScreenServiceBatchASuccessorTests.swift' => '9017cc304acdbe53dc90a58ff053f4fa04ce5bcb9704faeb2e7c1965ef41fbed',
+    'macOS/Tests/CaptureServerTests/WorldwideSystemAudioRecoveryTests.swift' => '7ecb3d6a348559d3e5cfcb25abf7d3ca941ede127ecd7b7e1e284879907b08ee',
+  }.freeze
+
+  # Exact reviewed native test declaration and discovery enrollment.
+  BATCH_A_NATIVE_FILES = {
+    'CaptureServerTests.BelugaRustAvailabilityRetryTests' => 'macOS/Tests/CaptureServerTests/BelugaRustAvailabilityRetryTests.swift',
+    'CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests' => 'macOS/Tests/CaptureServerTests/WorldwideAvailabilityRetryCoordinatorTests.swift',
+    'CaptureServerTests.BelugaRustBatchAPolicyFacadeTests' => 'macOS/Tests/CaptureServerTests/BelugaRustBatchAPolicyFacadeTests.swift',
+    'CaptureServerTests.WorldwideSystemAudioRecoveryTests' => 'macOS/Tests/CaptureServerTests/WorldwideSystemAudioRecoveryTests.swift',
+    'CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests' => 'macOS/Tests/CaptureServerTests/WorldwideMacHostedCallObservationPolicyTests.swift',
+    'CaptureServerTests.WorldwideScreenServiceBatchAFaultTests' => 'macOS/Tests/CaptureServerTests/WorldwideScreenServiceBatchAFaultTests.swift',
+    'CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests' => 'macOS/Tests/CaptureServerTests/WorldwideScreenServiceBatchASuccessorTests.swift',
+  }.freeze
+  BATCH_A_NATIVE_PINNED = {
+    'CaptureServerTests.BelugaRustAvailabilityRetryTests' => %w[
+      CaptureServerTests.BelugaRustAvailabilityRetryTests/testActualCABIAndAllFourteenLegalTransitionsMatchOriginal
+      CaptureServerTests.BelugaRustAvailabilityRetryTests/testIndependentOriginalTracesPreserveDelayBooleanEqualityAndCopies
+      CaptureServerTests.BelugaRustAvailabilityRetryTests/testEveryMalformedCopiedOutputRetainsRawStateAndFaultsWithoutRemint
+      CaptureServerTests.BelugaRustAvailabilityRetryTests/testBoundaryRejectsAllUnknownRawFieldsAndImpossibleValidatedStates
+      CaptureServerTests.BelugaRustAvailabilityRetryTests/testFailureUsesActualPriorDelayAndResetsValidatedOnlyAfterCommit
+      CaptureServerTests.BelugaRustAvailabilityRetryTests/testCopyFaultCustodyDoesNotResetOrFaultAnIndependentOriginal
+    ],
+    'CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests' => %w[
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testAvailabilityUpgradeThenServerErrorBackoffUsesOneActualFailureProposal
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testAvailabilityWaitingAndReadyResetOnlyAfterNativeHandling
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testMalformedValidStateProposalClosesExactClientBeforeDistinctTerminalError
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testMalformedFailureProposalClosesExactClientThenStopsWithoutSleeping
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testCancellationOrOwnerReplacementDuringExactCloseCannotStopSuccessor
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testRetrySleepFailureDoesNotConsumeSecondPolicyProposalForSameFailure
+      CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testDuplicateReadyRefusesBeforeResetAndRetriesOnlyAfterExactClose
+    ],
+    'CaptureServerTests.BelugaRustBatchAPolicyFacadeTests' => %w[
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryEveryInitialOutputFieldFaultIsStickyAndNonAuthorizing
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryEveryTransitionOutputFieldFaultRetainsExactBeforeSnapshot
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryCopiesKeepIndependentCountersAndFaultLifetimes
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryActualCClampsArbitrarySignedNativeLimitsAndKeepsLiteralTrace
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testSystemAudioEveryOutputFieldRefusesAcrossAll64TypedInputs
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testHostedEveryOutputFieldRefusesAcrossAdmissionAndEvidenceFunctions
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testHostedUUIDTupleAndMaximumNumericValuesProjectLosslessly
+      CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testHostedValidPoisonAndAbsentGenerationStayLegitimateRefusals
+    ],
+    'CaptureServerTests.WorldwideSystemAudioRecoveryTests' => %w[
+      CaptureServerTests.WorldwideSystemAudioRecoveryTests/testStartPolicyResumesOnlyAnExactPausedPeerGeneration
+      CaptureServerTests.WorldwideSystemAudioRecoveryTests/testPauseResumeRotatesTransportAndEvidenceTokensWithoutCopyingProof
+      CaptureServerTests.WorldwideSystemAudioRecoveryTests/testStaleAudioAuthorizationCannotForwardAfterRollover
+      CaptureServerTests.WorldwideSystemAudioRecoveryTests/testEvidenceTokenRequiresChallengeAndRotatesForEpochMismatch
+      CaptureServerTests.WorldwideSystemAudioRecoveryTests/testInactiveEvidenceIsOneShotAndEpochBound
+      CaptureServerTests.WorldwideSystemAudioRecoveryTests/testServiceRecoveryRetainsSourceAndFullStopDestroysIt
+    ],
+    'CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests' => %w[
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testWireEvidenceStateDistinguishesProspectiveArmFromPoison
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsReorderedObservationEvenWhenChallengeMatches
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsObservationFromPriorChallenge
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsPriorSequenceWhenNonceIsReused
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsWrongCallEpochEvenWhenSequenceAndNonceMatch
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsMissingOrInvalidChallenge
+      CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testPeerGenerationFenceRejectsStaleSourceOrChallenge
+    ],
+    'CaptureServerTests.WorldwideScreenServiceBatchAFaultTests' => %w[
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testStickyFaultRefusesAdmissionWhenNeedsRedriveIsFalse
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testSuccessResetFaultRevokesCommittedNativeProofBeforeReturningFalse
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testStopResetFaultContinuesRealTeardown
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testSecondaryProfileFaultHasNoRouteOperations
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testForeignFailureHistorySurvivesStickyFault
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testHostedNoneAndEvidenceFaultConsumeWatermark
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testHostedObservationFaultAndMissingPeerDoNotConsumeWatermark
+      CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testHostedHealthyProjectionAndOldChallengeKeepExactOrder
+    ],
+    'CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests' => %w[
+      CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests/testStartupJoinsExactInitialObserverBeforeTransportStaging
+      CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests/testSuccessResetTypedCatchPreservesForeignHistoryAfterActualInputCallbacksJoin
+    ],
+  }.transform_values(&:freeze).freeze
+
   MAC_CLASSES = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests
     CaptureCoreTests.CoreAudioProcessTapStartupDiagnosticsTests
@@ -392,6 +496,13 @@ module MicrophoneRegressionGate
     CaptureServerTests.BelugaUpdateSparkleSessionTests
     CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests
     CaptureServerTests.MacSupportedNowPlayingRuntimeTests
+    CaptureServerTests.BelugaRustAvailabilityRetryTests
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests
+    CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests
   ].freeze
   MAC_PINNED = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests/testEveryFreshAggregateStartsWithoutWaitingForTappedPlayback
@@ -533,6 +644,53 @@ module MicrophoneRegressionGate
     CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testDuplicateCallbacksCannotOverwriteFirstSourceResultOrCompleteTwice
     CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testFetchCompletionAfterStopCannotReviveSelection
     CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testMissingPlayersClearSelectionAndDiagnosticsContainNoMediaContent
+    CaptureServerTests.BelugaRustAvailabilityRetryTests/testActualCABIAndAllFourteenLegalTransitionsMatchOriginal
+    CaptureServerTests.BelugaRustAvailabilityRetryTests/testIndependentOriginalTracesPreserveDelayBooleanEqualityAndCopies
+    CaptureServerTests.BelugaRustAvailabilityRetryTests/testEveryMalformedCopiedOutputRetainsRawStateAndFaultsWithoutRemint
+    CaptureServerTests.BelugaRustAvailabilityRetryTests/testBoundaryRejectsAllUnknownRawFieldsAndImpossibleValidatedStates
+    CaptureServerTests.BelugaRustAvailabilityRetryTests/testFailureUsesActualPriorDelayAndResetsValidatedOnlyAfterCommit
+    CaptureServerTests.BelugaRustAvailabilityRetryTests/testCopyFaultCustodyDoesNotResetOrFaultAnIndependentOriginal
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testAvailabilityUpgradeThenServerErrorBackoffUsesOneActualFailureProposal
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testAvailabilityWaitingAndReadyResetOnlyAfterNativeHandling
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testMalformedValidStateProposalClosesExactClientBeforeDistinctTerminalError
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testMalformedFailureProposalClosesExactClientThenStopsWithoutSleeping
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testCancellationOrOwnerReplacementDuringExactCloseCannotStopSuccessor
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testRetrySleepFailureDoesNotConsumeSecondPolicyProposalForSameFailure
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryEveryInitialOutputFieldFaultIsStickyAndNonAuthorizing
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryEveryTransitionOutputFieldFaultRetainsExactBeforeSnapshot
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryCopiesKeepIndependentCountersAndFaultLifetimes
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testRetryActualCClampsArbitrarySignedNativeLimitsAndKeepsLiteralTrace
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testSystemAudioEveryOutputFieldRefusesAcrossAll64TypedInputs
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testHostedEveryOutputFieldRefusesAcrossAdmissionAndEvidenceFunctions
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testHostedUUIDTupleAndMaximumNumericValuesProjectLosslessly
+    CaptureServerTests.BelugaRustBatchAPolicyFacadeTests/testHostedValidPoisonAndAbsentGenerationStayLegitimateRefusals
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests/testStartPolicyResumesOnlyAnExactPausedPeerGeneration
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests/testPauseResumeRotatesTransportAndEvidenceTokensWithoutCopyingProof
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests/testStaleAudioAuthorizationCannotForwardAfterRollover
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests/testEvidenceTokenRequiresChallengeAndRotatesForEpochMismatch
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests/testInactiveEvidenceIsOneShotAndEpochBound
+    CaptureServerTests.WorldwideSystemAudioRecoveryTests/testServiceRecoveryRetainsSourceAndFullStopDestroysIt
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testWireEvidenceStateDistinguishesProspectiveArmFromPoison
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsReorderedObservationEvenWhenChallengeMatches
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsObservationFromPriorChallenge
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsPriorSequenceWhenNonceIsReused
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsWrongCallEpochEvenWhenSequenceAndNonceMatch
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testRejectsMissingOrInvalidChallenge
+    CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests/testPeerGenerationFenceRejectsStaleSourceOrChallenge
+    CaptureServerTests.WorldwideHostLifecycleTests/testSafeOutputRetryPolicyBacksOffThenProbesAfterCappedCooldown
+    CaptureServerTests.WorldwideHostLifecycleTests/testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError
+    CaptureServerTests.WorldwideHostLifecycleTests/testValidAvailabilityStateResetsBackoffAndIsReportedOncePerConnection
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testStickyFaultRefusesAdmissionWhenNeedsRedriveIsFalse
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testSuccessResetFaultRevokesCommittedNativeProofBeforeReturningFalse
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testStopResetFaultContinuesRealTeardown
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testSecondaryProfileFaultHasNoRouteOperations
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testForeignFailureHistorySurvivesStickyFault
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testHostedNoneAndEvidenceFaultConsumeWatermark
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testHostedObservationFaultAndMissingPeerDoNotConsumeWatermark
+    CaptureServerTests.WorldwideScreenServiceBatchAFaultTests/testHostedHealthyProjectionAndOldChallengeKeepExactOrder
+    CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests/testStartupJoinsExactInitialObserverBeforeTransportStaging
+    CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests/testSuccessResetTypedCatchPreservesForeignHistoryAfterActualInputCallbacksJoin
+    CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testDuplicateReadyRefusesBeforeResetAndRetriesOnlyAfterExactClose
   ].freeze
   RUST_PINNED = %w[
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
@@ -716,6 +874,46 @@ module MicrophoneRegressionGate
     reserved_input_is_canonical_invalid_not_a_selection
     unknown_selected_source_is_not_normalized_to_none
     unknown_child_observation_is_not_normalized_to_retry
+    availability_retry_layout_and_actual_export_are_exact
+    availability_retry_all_fourteen_literal_transitions_match
+    availability_retry_reset_and_became_marker_match_each_state
+    availability_retry_repeated_valid_state_is_reported_only_once
+    availability_retry_failure_returns_old_delay_and_clears_validation
+    availability_retry_failures_double_then_saturate_at_thirty
+    availability_retry_valid_failure_valid_rearms_marker
+    availability_retry_bounded_histories_match_original_native_and_literals
+    availability_retry_long_traces_remain_bounded_without_counter_overflow
+    availability_retry_closed_raw_state_domains_never_normalize
+    availability_retry_unknown_call_abi_is_invalid_unchanged
+    availability_retry_closed_event_opcode_and_reserved_never_reset
+    availability_retry_two_invalid_fields_preserve_exact_raw_state
+    availability_retry_no_websocket_upgrade_operation_exists
+    availability_retry_value_inputs_are_unmodified_for_valid_and_refused_calls
+    literal_cooldown_does_not_probe_one_tick_early_or_rearm_at_cap
+    default_failure_budget_has_exact_literal_delays_and_sixty_tick_cooldown
+    signed_constructor_preserves_every_limit_domain_and_clamps_to_one
+    one_attempt_budget_and_maximum_counters_do_not_overflow
+    failure_when_exhausted_preserves_partially_elapsed_cooldown
+    exponent_caps_at_thirty_without_an_invented_sixty_four_entry_limit
+    copies_are_independent_and_read_only_ticks_do_not_create_failure_history
+    bounded_adversarial_histories_match_frozen_original_not_production_helpers
+    invalid_bridge_never_resets_or_normalizes_a_state
+    invalid_constructor_envelope_preserves_requested_values_but_is_not_accepted
+    copied_abi_layout_and_c_exports_bind_actual_production
+    sixty_four_literal_cases_and_frozen_guards_match_actual_production
+    new_start_ignores_generation_but_resume_and_live_require_it
+    every_closed_field_refuses_against_every_valid_combination
+    legitimate_no_match_is_not_invalid_bridge_and_c_export_is_exact
+    literal_observation_watermarks_are_strict_and_never_wrap_at_u64_max
+    invalid_or_missing_challenge_is_legitimate_refusal_not_bridge_error
+    old_sequence_nonce_and_epoch_each_refuse_independently
+    cartesian_boundary_observations_match_frozen_original_without_identity_truncation
+    four_literal_evidence_states_distinguish_poison_from_empty_prospective_arm
+    literal_peer_fence_distinguishes_absence_zero_and_extreme_generation
+    invalid_observation_fields_refuse_instead_of_authorizing
+    invalid_evidence_fields_do_not_alias_legitimate_poison
+    invalid_peer_fields_refuse_even_with_matching_generation_payloads
+    uuid_bytes_layout_and_observation_c_export_are_exact
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -829,6 +1027,56 @@ module MicrophoneRegressionGate
     'supported-player-reserved-output-is-nonzero' => 'every_valid_output_has_closed_action_source_and_zero_reserved',
     'supported-player-input-field-offsets-are-reordered' => 'copied_layout_pins_every_field_offset_size_and_alignment',
     'supported-player-output-field-offsets-are-reordered' => 'copied_layout_pins_every_field_offset_size_and_alignment',
+    'availability-valid-reset-removed' => 'availability_retry_reset_and_became_marker_match_each_state',
+    'availability-repeated-valid-marker-inverted' => 'availability_retry_repeated_valid_state_is_reported_only_once',
+    'availability-failure-returns-doubled-delay' => 'availability_retry_failure_returns_old_delay_and_clears_validation',
+    'availability-failure-state-not-advanced-or-cleared' => 'availability_retry_all_fourteen_literal_transitions_match',
+    'availability-sixteen-never-reaches-cap' => 'availability_retry_failures_double_then_saturate_at_thirty',
+    'availability-cap-wraps-to-one' => 'availability_retry_failures_double_then_saturate_at_thirty',
+    'availability-zero-delay-normalized' => 'availability_retry_closed_raw_state_domains_never_normalize',
+    'availability-validated-delay-invariant-removed' => 'availability_retry_closed_raw_state_domains_never_normalize',
+    'availability-nonboolean-validation-accepted' => 'availability_retry_closed_raw_state_domains_never_normalize',
+    'availability-call-abi-ignored' => 'availability_retry_unknown_call_abi_is_invalid_unchanged',
+    'availability-state-abi-ignored' => 'availability_retry_closed_raw_state_domains_never_normalize',
+    'availability-state-reserved-ignored' => 'availability_retry_closed_raw_state_domains_never_normalize',
+    'availability-event-reserved-ignored' => 'availability_retry_closed_event_opcode_and_reserved_never_reset',
+    'availability-unknown-operation-becomes-failure' => 'availability_retry_closed_event_opcode_and_reserved_never_reset',
+    'availability-refusal-resets-raw-state' => 'availability_retry_two_invalid_fields_preserve_exact_raw_state',
+    'availability-result-reserved-not-zero' => 'availability_retry_all_fourteen_literal_transitions_match',
+    'safe-output-budget-tick-equality' => 'literal_cooldown_does_not_probe_one_tick_early_or_rearm_at_cap',
+    'safe-output-cooldown-stalls' => 'literal_cooldown_does_not_probe_one_tick_early_or_rearm_at_cap',
+    'safe-output-cap-rearms-partly-elapsed-cooldown' => 'failure_when_exhausted_preserves_partially_elapsed_cooldown',
+    'safe-output-exponent-cap-thirty-one' => 'exponent_caps_at_thirty_without_an_invented_sixty_four_entry_limit',
+    'safe-output-clamp-failed-to-two' => 'signed_constructor_preserves_every_limit_domain_and_clamps_to_one',
+    'safe-output-clamp-backoff-to-two' => 'signed_constructor_preserves_every_limit_domain_and_clamps_to_one',
+    'safe-output-clamp-cooldown-to-two' => 'signed_constructor_preserves_every_limit_domain_and_clamps_to_one',
+    'safe-output-no-capped-cooldown' => 'default_failure_budget_has_exact_literal_delays_and_sixty_tick_cooldown',
+    'safe-output-backoff-tick-admits' => 'literal_cooldown_does_not_probe_one_tick_early_or_rearm_at_cap',
+    'safe-output-reset-leaves-one-failure' => 'copies_are_independent_and_read_only_ticks_do_not_create_failure_history',
+    'system-audio-resume-needs-authorization' => 'sixty_four_literal_cases_and_frozen_guards_match_actual_production',
+    'system-audio-resume-ignores-peer-generation' => 'new_start_ignores_generation_but_resume_and_live_require_it',
+    'system-audio-new-start-adds-generation-fence' => 'new_start_ignores_generation_but_resume_and_live_require_it',
+    'system-audio-live-accepts-paused' => 'sixty_four_literal_cases_and_frozen_guards_match_actual_production',
+    'system-audio-invalid-boolean-becomes-false' => 'every_closed_field_refuses_against_every_valid_combination',
+    'hosted-call-equal-watermark-admits' => 'literal_observation_watermarks_are_strict_and_never_wrap_at_u64_max',
+    'hosted-call-ignores-challenge-sequence' => 'old_sequence_nonce_and_epoch_each_refuse_independently',
+    'hosted-call-ignores-observation-nonce' => 'old_sequence_nonce_and_epoch_each_refuse_independently',
+    'hosted-call-ignores-observation-epoch' => 'old_sequence_nonce_and_epoch_each_refuse_independently',
+    'hosted-call-accepts-other-positive-protocol' => 'invalid_or_missing_challenge_is_legitimate_refusal_not_bridge_error',
+    'hosted-call-accepts-zero-challenge-sequence' => 'invalid_or_missing_challenge_is_legitimate_refusal_not_bridge_error',
+    'hosted-call-accepts-zero-nonce' => 'invalid_or_missing_challenge_is_legitimate_refusal_not_bridge_error',
+    'hosted-call-accepts-zero-epoch' => 'invalid_or_missing_challenge_is_legitimate_refusal_not_bridge_error',
+    'hosted-call-accepts-identical-nonce-and-epoch' => 'invalid_or_missing_challenge_is_legitimate_refusal_not_bridge_error',
+    'hosted-call-peer-current-zero-admits' => 'literal_peer_fence_distinguishes_absence_zero_and_extreme_generation',
+    'hosted-call-peer-ignores-audio-generation' => 'literal_peer_fence_distinguishes_absence_zero_and_extreme_generation',
+    'hosted-call-peer-ignores-challenge-generation' => 'literal_peer_fence_distinguishes_absence_zero_and_extreme_generation',
+    'hosted-call-poison-becomes-active' => 'four_literal_evidence_states_distinguish_poison_from_empty_prospective_arm',
+    'hosted-call-inactive-becomes-none' => 'four_literal_evidence_states_distinguish_poison_from_empty_prospective_arm',
+    'hosted-call-invalid-boolean-becomes-true' => 'invalid_evidence_fields_do_not_alias_legitimate_poison',
+    'safe-output-initializer-envelope-or-becomes-and' => 'invalid_constructor_envelope_preserves_requested_values_but_is_not_accepted',
+    'safe-output-invalid-initializer-fabricates-failure-counter' => 'invalid_constructor_envelope_preserves_requested_values_but_is_not_accepted',
+    'hosted-call-peer-accepts-zero-abi' => 'invalid_peer_fields_refuse_even_with_matching_generation_payloads',
+    'hosted-call-peer-ignores-reserved-one' => 'invalid_peer_fields_refuse_even_with_matching_generation_payloads',
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -843,6 +1091,10 @@ module MicrophoneRegressionGate
     'BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
     'BelugaCore C pairing commit ABI PASS: exact layouts, phase plans, auth ordering and unchanged refusal',
     'BelugaCore C supported player arbitration ABI PASS: exact layouts, 48 literal choices and 720 closed-field refusals',
+    'BelugaCore C availability retry ABI PASS: exact layouts, 14 literal transitions and 280 unchanged refusals',
+    'BelugaCore C safe output retry ABI PASS: exact layouts, frozen literal transitions and unchanged refusals',
+    'BelugaCore C system audio start ABI PASS: exact layouts, 64 literal choices and 1152 closed-field refusals',
+    'BelugaCore C hosted call ABI PASS: exact layouts, strict watermark and generation identity, unchanged refusals',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
@@ -853,7 +1105,11 @@ module MicrophoneRegressionGate
     'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback',
     'BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
     'BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal',
-    'BelugaCore Swift supported player arbitration import/link PASS: exact layouts, 48 literal choices and 720 closed-field refusals'
+    'BelugaCore Swift supported player arbitration import/link PASS: exact layouts, 48 literal choices and 720 closed-field refusals',
+    'BelugaCore Swift availability retry import/link PASS: exact layouts, 14 literal transitions and 280 unchanged refusals',
+    'BelugaCore Swift safe output retry import/link PASS: exact layouts, frozen literal transitions and unchanged refusals',
+    'BelugaCore Swift system audio start import/link PASS: exact layouts, 64 literal choices and 1152 closed-field refusals',
+    'BelugaCore Swift hosted call import/link PASS: exact layouts, strict watermark and generation identity, unchanged refusals',
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -932,6 +1188,16 @@ module MicrophoneRegressionGate
     test_supported_player_native_companions_reject_changed_missing_and_linked_bytes
     test_supported_player_native_results_and_rehashed_coverage_cannot_be_borrowed
     test_supported_player_enrollment_preserves_exact_previous_prefixes
+    test_batch_a_core_source_and_named_cases_are_mandatory
+    test_batch_a_link_contract_cannot_be_borrowed
+    test_batch_a_each_compiled_assertion_mutant_is_mandatory
+    test_batch_a_native_source_discovery_and_original_lifecycle_cases_are_mandatory
+    test_batch_a_native_source_declaration_drift_missing_and_linked_bytes_are_rejected
+    test_batch_a_native_results_and_rehashed_coverage_cannot_be_borrowed
+    test_batch_a_enrollment_preserves_exact_previous_prefixes
+    test_batch_a_actor_source_discovery_and_each_exact_case_are_mandatory
+    test_batch_a_native_body_companions_reject_rehashed_tamper_missing_and_linked_bytes
+    test_batch_a_actor_enrollment_preserves_prior_complete_inventory
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -1049,7 +1315,7 @@ module MicrophoneRegressionGate
   SHARED_PAIRING_COMMIT_SUITE = 'RemoteSessionCoreTests.BelugaRustPairingCommitTests'.freeze
   SHARED_PAIRING_COMMIT_FILE = 'shared/Tests/RemoteSessionCoreTests/BelugaRustPairingCommitTests.swift'.freeze
   SHARED_PAIRING_COMMIT_SOURCE_SHA256 = {
-    'macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift' => 'ead928d68dce9a0eed5060ebe635b840c5d510a6854aae7553f4f6d14db4e5cf',
+    'macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift' => 'be95b82e366197cd4fa9f1f2835699c210350614ea3ee5be0ef67a169b93fa8b',
     'macOS/Sources/CaptureServer/WorldwidePairedPhoneCatalogStore.swift' => '94b2cc4456bb47b0d52d705b5a01dd9cf6d6c5b915569650471cc4e0254402f7',
     'macOS/Sources/CaptureServer/WorldwidePairingStore.swift' => 'a00a3c47ecba1c7021d136a9c9e2d93d7c1d0ed10f94e65fc8a4faa8c07a3914',
     'iOS/opensteamer/Sources/Security/ViewerPairingStore.swift' => 'e365d5907849d5aac26dbc8db72e1df2b8c72709b5fdb5d0f81066b194387c2a',
@@ -1403,6 +1669,50 @@ module MicrophoneRegressionGate
                ids.uniq.length == ids.length && ids.sort == SUPPORTED_PLAYER_PINNED.fetch(suite).sort,
                'supported player native source inventory is incomplete, malformed or duplicated: ' + suite)
       [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.validate_batch_a_native_sources(root)
+    BATCH_A_NATIVE_SOURCE_SHA256.each do |relative, expected|
+      path = File.join(root, relative)
+      require!(File.exist?(path), 'Batch A native source companion is missing: ' + relative)
+      stat = regular!(path)
+      require!(File.realpath(path) == path && stat.size <= 2 * 1024 * 1024 && sha(path) == expected,
+               'Batch A reviewed native/reference source changed: ' + relative)
+      utf8_text(File.binread(path), 'Batch A native source companion')
+    end
+    nil
+  end
+
+  def self.batch_a_native_source_inventory(root)
+    validate_batch_a_native_sources(root)
+    BATCH_A_NATIVE_FILES.map do |suite, relative|
+      path = File.join(root, relative)
+      require!(File.exist?(path), 'Batch A native source companion is missing: ' + relative)
+      stat = regular!(path)
+      require!(File.realpath(path) == path && stat.size <= 2 * 1024 * 1024,
+               'Batch A native source companion is not canonical or is unbounded: ' + relative)
+      source = utf8_text(File.binread(path), 'Batch A native test source')
+      name = suite.split('.').last
+      methods = source.scan(/^[ \t]*func (test\w+)[ \t]*\(/).flatten
+      ids = methods.map { |method| suite + '/' + method }
+      require!(source.scan(/^[ \t]*final class #{Regexp.escape(name)}[ \t]*:[ \t]*XCTestCase[ \t]*\{/).length == 1 &&
+               ids.uniq.length == ids.length && ids.sort == BATCH_A_NATIVE_PINNED.fetch(suite).sort,
+               'Batch A native source inventory is incomplete, malformed or duplicated: ' + suite)
+      [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.batch_a_native_inventory(root, text)
+    source = batch_a_native_source_inventory(root)
+    lines = utf8_text(text, 'Batch A native discovery').lines.map(&:strip)
+    source.map do |suite, expected|
+      methods = lines.select { |line| line.start_with?(suite + '/') }
+      require!(methods.uniq.length == methods.length &&
+               methods.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/test\w+\z/) } &&
+               methods.sort == expected,
+               'Batch A native discovery differs from exact source inventory: ' + suite)
+      [suite, methods.sort]
     end.to_h
   end
 
@@ -2842,6 +3152,7 @@ module MicrophoneRegressionGate
       mac_discovery = phase('mac-discovery', swift_base + ['--list-tests'])
       mac_methods = MicrophoneRegressionGate.mac_inventory(mac_discovery)
       MicrophoneRegressionGate.supported_player_inventory(@root, mac_discovery)
+      MicrophoneRegressionGate.batch_a_native_inventory(@root, mac_discovery)
       shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
       replay_methods = MicrophoneRegressionGate.shared_replay_inventory(@root, mac_discovery)
       reconnect_methods = MicrophoneRegressionGate.shared_reconnect_counter_inventory(@root, mac_discovery)
@@ -3006,6 +3317,7 @@ module MicrophoneRegressionGate
     exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff shared_replay shared_reconnect_counters shared_pairing_commit c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
     supported_player_inventory(root, read_phase.call('mac-discovery'))
+    batch_a_native_inventory(root, read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     replay = shared_replay_inventory(root, read_phase.call('mac-discovery'))
     reconnect = shared_reconnect_counter_inventory(root, read_phase.call('mac-discovery'))

@@ -875,14 +875,18 @@ actor WorldwideScreenService {
     private let captureLifetimeIsRequired: Bool
     private let iPhoneMicrophoneForwardingPolicy:
         WorldwideIPhoneMicrophoneForwardingPolicy
-    private let blackHoleDeviceAvailabilityMonitor =
-        BlackHoleDeviceAvailabilityMonitor()
-    private let blackHoleDefaultInputLease =
-        BlackHoleDefaultInputLease()
-    private let worldwideSafeOutputInvariant =
-        WorldwideSafeOutputInvariant()
-    private let blackHoleMicrophoneOutputAuthorizationGate =
-        BlackHoleMicrophoneOutputAuthorizationGate()
+    private let blackHoleDeviceAvailabilityMonitor: BlackHoleDeviceAvailabilityMonitor
+    private let blackHoleDefaultInputLease: BlackHoleDefaultInputLease
+    private let worldwideSafeOutputInvariant: WorldwideSafeOutputInvariant
+    private let blackHoleMicrophoneOutputAuthorizationGate: BlackHoleMicrophoneOutputAuthorizationGate?
+    private let blackHoleAudioRoutingCleanupRetainer: any WorldwideBlackHoleAudioRoutingCleanupRetaining
+    private let deferredBlackHoleDefaultInputCleanup: @Sendable (Int) -> Bool
+    private let hostedCallPolicyProducer: BelugaRustMacHostedCallProducer
+    #if DEBUG
+    private let audioRoutingIsInertPolicyFixture: Bool
+    private let batchAInertRoutingObserverJoin: InertBatchARoutingObserverJoin?
+    private var batchANativeAdmissionCallCount = 0
+    #endif
     private let blackHoleRoutingEpoch =
         WorldwideScreenService.makeBlackHoleRoutingEpoch()
     private let blackHoleAudioRoutingCleanupID =
@@ -1155,8 +1159,8 @@ actor WorldwideScreenService {
     private var stopCompletionWaiters: [CheckedContinuation<Void, Never>] = []
     private var safeOutputInvariantNeedsRedrive = false
     private var safeOutputInvariantVerificationWasFailing = false
-    private var safeOutputInvariantRetryPolicy =
-        WorldwideSafeOutputInvariantRetryPolicy()
+    private var safeOutputInvariantRetryPolicy: WorldwideSafeOutputInvariantRetryPolicy
+    private var safeOutputRetryBridgeFaultWasReported = false
 
     /// Fail-closed aggregate gate required before exposing either media source.
     private var transportAllowsCapture: Bool {
@@ -1187,6 +1191,9 @@ actor WorldwideScreenService {
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         makeServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        audioRoutingDependencies: WorldwideScreenServiceAudioRoutingDependencies? = nil,
+        safeOutputRetryPolicy: WorldwideSafeOutputInvariantRetryPolicy = .init(),
+        hostedCallPolicyProducer: BelugaRustMacHostedCallProducer = .actual,
         logger: Logger
     ) throws {
         let completionPair = AsyncStream<Void>.makeStream(
@@ -1211,9 +1218,22 @@ actor WorldwideScreenService {
             .maximumVideoBitrate(configured: maximumVideoBitrate)
         self.maximumVideoBitrate = effectiveMaximumVideoBitrate
         self.featureProfile = featureProfile
+        let audioRouting = audioRoutingDependencies ?? .live()
+        blackHoleDeviceAvailabilityMonitor = audioRouting.monitor
+        blackHoleDefaultInputLease = audioRouting.lease
+        worldwideSafeOutputInvariant = audioRouting.invariant
+        blackHoleMicrophoneOutputAuthorizationGate = audioRouting.writerGate
+        blackHoleAudioRoutingCleanupRetainer = audioRouting.cleanupRetainer
+        deferredBlackHoleDefaultInputCleanup = audioRouting.deferredInputCleanup
+        safeOutputInvariantRetryPolicy = safeOutputRetryPolicy
+        self.hostedCallPolicyProducer = hostedCallPolicyProducer
+        #if DEBUG
+        audioRoutingIsInertPolicyFixture = audioRouting.isInertPolicyFixture
+        batchAInertRoutingObserverJoin = audioRouting.isInertPolicyFixture ? .init() : nil
+        #endif
         audioClientDiagnosticsReportWriter = featureProfile
             .allowsAudioClientDiagnostics
-                ? WorldwideAudioClientDiagnosticsReportWriter()
+                ? audioRouting.makeDiagnosticsWriter()
                 : nil
         screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
             configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
@@ -1252,6 +1272,9 @@ actor WorldwideScreenService {
             WorldwideIPhoneMicrophoneForwardingPolicy = .enabled,
         makeServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        audioRoutingDependencies: WorldwideScreenServiceAudioRoutingDependencies? = nil,
+        safeOutputRetryPolicy: WorldwideSafeOutputInvariantRetryPolicy = .init(),
+        hostedCallPolicyProducer: BelugaRustMacHostedCallProducer = .actual,
         logger: Logger
     ) throws {
         let completionPair = AsyncStream<Void>.makeStream(
@@ -1275,9 +1298,22 @@ actor WorldwideScreenService {
             .maximumVideoBitrate(configured: maximumVideoBitrate)
         self.maximumVideoBitrate = effectiveMaximumVideoBitrate
         self.featureProfile = featureProfile
+        let audioRouting = audioRoutingDependencies ?? .live()
+        blackHoleDeviceAvailabilityMonitor = audioRouting.monitor
+        blackHoleDefaultInputLease = audioRouting.lease
+        worldwideSafeOutputInvariant = audioRouting.invariant
+        blackHoleMicrophoneOutputAuthorizationGate = audioRouting.writerGate
+        blackHoleAudioRoutingCleanupRetainer = audioRouting.cleanupRetainer
+        deferredBlackHoleDefaultInputCleanup = audioRouting.deferredInputCleanup
+        safeOutputInvariantRetryPolicy = safeOutputRetryPolicy
+        self.hostedCallPolicyProducer = hostedCallPolicyProducer
+        #if DEBUG
+        audioRoutingIsInertPolicyFixture = audioRouting.isInertPolicyFixture
+        batchAInertRoutingObserverJoin = audioRouting.isInertPolicyFixture ? .init() : nil
+        #endif
         audioClientDiagnosticsReportWriter = featureProfile
             .allowsAudioClientDiagnostics
-                ? WorldwideAudioClientDiagnosticsReportWriter()
+                ? audioRouting.makeDiagnosticsWriter()
                 : nil
         screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
             configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
@@ -1380,7 +1416,7 @@ actor WorldwideScreenService {
         defer { finishStopping() }
         safeOutputInvariantNeedsRedrive = false
         safeOutputInvariantVerificationWasFailing = false
-        safeOutputInvariantRetryPolicy.reset()
+        _ = resetSafeOutputRetryPolicy(context: "service stop")
         cancelSharedClockEpochRecovery(
             resetPolicy: true,
             clearCompatibilityBlock: true
@@ -1646,7 +1682,7 @@ actor WorldwideScreenService {
         )
         safeOutputInvariantNeedsRedrive = false
         safeOutputInvariantVerificationWasFailing = false
-        safeOutputInvariantRetryPolicy.reset()
+        _ = resetSafeOutputRetryPolicy(context: "new peer")
         peerGeneration &+= 1
         let generation = peerGeneration
         resetAutomaticScreenMediaSuspensionState()
@@ -5487,6 +5523,158 @@ actor WorldwideScreenService {
 
     // MARK: - iPhone microphone to BlackHole
 
+    private func observeSafeOutputRetryBridgeFault(_ error: Error, context: String) {
+        safeOutputInvariantNeedsRedrive = true
+        if featureProfile.allowsIPhoneMicrophoneAndDefaultInputRouting {
+            _ = revokeWorldwideMicrophoneForUnsafeOutputInvariant(
+                preservingSharedClockUnsafeFailure: true,
+                preservingFormatUnsafeFailure: true)
+        }
+        if !safeOutputRetryBridgeFaultWasReported {
+            safeOutputRetryBridgeFaultWasReported = true
+            logger.error("Worldwide microphone routing refused a Rust retry bridge fault during "
+                + context + ": " + error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    private func resetSafeOutputRetryPolicy(context: String) -> Bool {
+        do {
+            try safeOutputInvariantRetryPolicy.reset()
+            return true
+        } catch {
+            observeSafeOutputRetryBridgeFault(error, context: context)
+            return false
+        }
+    }
+
+    private func safeOutputRetryBridgeIsHealthy(context: String) -> Bool {
+        guard let fault = safeOutputInvariantRetryPolicy.bridgeFault else { return true }
+        observeSafeOutputRetryBridgeFault(fault, context: context)
+        return false
+    }
+
+    /// Called only after the existing native source/auth/liveness/peer-generation
+    /// guards. Observation projection precedes the original exact-peer gate;
+    /// watermark mutation precedes legitimate nil or evidence bridge refusal.
+    private func consumeMacHostedCallObservationAfterNativeGuards(
+        observation: SystemAudioMacFaceTimeActivityObservation,
+        challenge: WebRTCMacHostedCallChallenge,
+        exactPeerIsPresent: () -> Bool
+    ) throws -> WebRTCMacHostedCallEvidence.State? {
+        guard try WorldwideMacHostedCallObservationPolicy.admits(
+            observationSequence: observation.observationSequence,
+            highestAdmittedSequence: highestMacFaceTimeObservationSequence,
+            observationChallenge: observation.challenge,
+            currentChallenge: challenge, producer: hostedCallPolicyProducer
+        ), exactPeerIsPresent() else { return nil }
+        highestMacFaceTimeObservationSequence = observation.observationSequence
+        return try WorldwideMacHostedCallEvidenceStatePolicy.state(
+            isCausallyBoundActive: observation.isCausallyBoundActive,
+            isCausallyArmed: observation.isCausallyArmed,
+            producer: hostedCallPolicyProducer)
+    }
+
+    #if DEBUG
+    struct BatchAPolicyFixtureSnapshot: Sendable {
+        let needsRedrive: Bool
+        let fault: WorldwideSafeOutputInvariantRetryBridgeError?
+        let gateOpen: Bool
+        let safeProofPresent: Bool
+        let endpointProofPresent: Bool
+        let inputProofPresent: Bool
+        let stopped: Bool
+        let stopInProgress: Bool
+        let highestHostedObservation: UInt64
+        let retryConfiguration: [Int]
+        let retryCounters: [Int]
+        let nativeAdmissionCallCount: Int
+    }
+
+    private func requireInertBatchAPolicyFixture() {
+        precondition(audioRoutingIsInertPolicyFixture)
+        precondition(peer == nil && audioSource == nil && audioSink == nil
+                     && captureSource == nil && captureSink == nil)
+    }
+
+    func batchAStartOnlyInertRoutingMonitorForTesting() async {
+        requireInertBatchAPolicyFixture()
+        await startIPhoneMicrophoneDeviceMonitoringIfNeeded()
+        await batchADrainOwnedInertRoutingObserversForTesting()
+    }
+
+    func batchADrainOwnedInertRoutingObserversForTesting() async {
+        requireInertBatchAPolicyFixture()
+        guard let join = batchAInertRoutingObserverJoin else {
+            preconditionFailure("Only explicitly inert fixture owns a callback join")
+        }
+        await join.drainAllRetainedTasks()
+        precondition(join.snapshot().retainedHandleCount == 0)
+    }
+
+    func batchAObserverJoinSnapshotForTesting() -> InertBatchARoutingObserverJoin.Snapshot {
+        requireInertBatchAPolicyFixture()
+        guard let join = batchAInertRoutingObserverJoin else {
+            preconditionFailure("Only explicitly inert fixture owns a callback join")
+        }
+        return join.snapshot()
+    }
+
+    func batchAStageAggregateTransportForTesting(needsRedrive: Bool) {
+        requireInertBatchAPolicyFixture()
+        precondition(!isStarted && !isStopped && !captureLifetimeIsRequired)
+        precondition(batchAInertRoutingObserverJoin?.snapshot().retainedHandleCount == 0)
+        peerIsConnected = true
+        iceIsConnected = true
+        controlChannelIsOpen = true
+        isRecovering = false
+        peerGeneration = 1
+        safeOutputInvariantNeedsRedrive = needsRedrive
+    }
+
+    func batchAAdmitForTesting() -> Bool {
+        requireInertBatchAPolicyFixture()
+        return admitBlackHoleInputWithinSafeOutputFence().outputsAreSafe
+    }
+
+    func batchASeedForeignFailureForTesting(
+        _ category: WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) {
+        requireInertBatchAPolicyFixture()
+        iPhoneMicrophoneForwarding.seedUnauthorizedFailureForTesting(category)
+    }
+
+    func batchAPolicyFixtureSnapshotForTesting() -> BatchAPolicyFixtureSnapshot {
+        requireInertBatchAPolicyFixture()
+        return .init(needsRedrive: safeOutputInvariantNeedsRedrive,
+            fault: safeOutputInvariantRetryPolicy.bridgeFault,
+            gateOpen: blackHoleMicrophoneOutputAuthorizationGate?.isOpen == true,
+            safeProofPresent: safeOutputInvariantAuthorization != nil,
+            endpointProofPresent: blackHoleEndpointPairAuthorization != nil,
+            inputProofPresent: blackHoleDefaultInputAuthorization != nil,
+            stopped: isStopped, stopInProgress: stopIsInProgress,
+            highestHostedObservation: highestMacFaceTimeObservationSequence,
+            retryConfiguration: [safeOutputInvariantRetryPolicy.maximumFailedAttemptCount,
+                safeOutputInvariantRetryPolicy.maximumBackoffTickCount,
+                safeOutputInvariantRetryPolicy.cappedCooldownTickCount],
+            retryCounters: [safeOutputInvariantRetryPolicy.failedAttemptCount,
+                safeOutputInvariantRetryPolicy.backoffTickCount,
+                safeOutputInvariantRetryPolicy.cooldownTickCount],
+            nativeAdmissionCallCount: batchANativeAdmissionCallCount)
+    }
+
+    func batchAConsumeHostedTailForTesting(
+        observation: SystemAudioMacFaceTimeActivityObservation,
+        challenge: WebRTCMacHostedCallChallenge,
+        exactPeerIsPresent: Bool = true
+    ) throws -> WebRTCMacHostedCallEvidence.State? {
+        requireInertBatchAPolicyFixture()
+        return try consumeMacHostedCallObservationAfterNativeGuards(
+            observation: observation, challenge: challenge,
+            exactPeerIsPresent: { exactPeerIsPresent })
+    }
+    #endif
+
     /// Keeps the exact output listeners registered through input-only admission.
     /// LAN coexistence retains its legacy policy and never reaches this ownership path.
     private func admitBlackHoleInputWithinSafeOutputFence(
@@ -5498,10 +5686,13 @@ actor WorldwideScreenService {
             outputsAreSafe: Bool,
             snapshot: BlackHoleDeviceAvailabilitySnapshot?
         ) {
+        guard safeOutputRetryBridgeIsHealthy(context: "safe-output admission") else {
+            return (false, nil)
+        }
         guard iPhoneMicrophoneForwardingPolicy == .enabled else {
             safeOutputInvariantNeedsRedrive = false
             safeOutputInvariantVerificationWasFailing = false
-            safeOutputInvariantRetryPolicy.reset()
+            _ = resetSafeOutputRetryPolicy(context: "microphone-disabled admission")
             return (false, nil)
         }
         guard transportAllowsCapture else {
@@ -5532,10 +5723,15 @@ actor WorldwideScreenService {
             authorizationGate.close()
             return (false, nil)
         }
-        if safeOutputInvariantNeedsRedrive,
-           !safeOutputInvariantRetryPolicy
-            .shouldAttemptOnCurrentTick() {
-            return (false, nil)
+        if safeOutputInvariantNeedsRedrive {
+            do {
+                guard try safeOutputInvariantRetryPolicy.shouldAttemptOnCurrentTick() else {
+                    return (false, nil)
+                }
+            } catch {
+                observeSafeOutputRetryBridgeFault(error, context: "safe-output retry tick")
+                return (false, nil)
+            }
         }
 
         var admittedOutcomes:
@@ -5551,6 +5747,9 @@ actor WorldwideScreenService {
             BlackHoleMicrophoneOutputAuthorizationGate
                 .OpeningPreparation?
         do {
+            #if DEBUG
+            batchANativeAdmissionCallCount += 1
+            #endif
             let transaction = try worldwideSafeOutputInvariant
                 .enforceDuringAdmission(
                     monitoringEpoch: monitoringEpoch,
@@ -5721,7 +5920,7 @@ actor WorldwideScreenService {
                 )
             safeOutputInvariantNeedsRedrive = false
             safeOutputInvariantVerificationWasFailing = false
-            safeOutputInvariantRetryPolicy.reset()
+            try safeOutputInvariantRetryPolicy.reset()
             if transaction.invariant.changedAnything {
                 logger.info(
                     "Worldwide audio routing moved the virtual microphone off the " +
@@ -5738,6 +5937,16 @@ actor WorldwideScreenService {
                 recordBlackHoleDefaultInputOutcome(outcome)
             }
             return (true, transaction.admission)
+        } catch let bridgeFault as WorldwideSafeOutputInvariantRetryBridgeError {
+            observeSafeOutputRetryBridgeFault(bridgeFault,
+                context: "safe-output committed admission reset")
+            if let preMutationOutcome {
+                recordBlackHoleDefaultInputOutcome(preMutationOutcome)
+            }
+            if let rollbackOutcome {
+                recordBlackHoleDefaultInputOutcome(rollbackOutcome)
+            }
+            return (false, nil)
         } catch {
             authorizationGate.close()
             safeOutputInvariantAuthorization = nil
@@ -5762,7 +5971,11 @@ actor WorldwideScreenService {
                 )
             }
             safeOutputInvariantNeedsRedrive = true
-            safeOutputInvariantRetryPolicy.recordFailure()
+            do {
+                try safeOutputInvariantRetryPolicy.recordFailure()
+            } catch {
+                observeSafeOutputRetryBridgeFault(error, context: "safe-output failure bookkeeping")
+            }
             logger.error(
                 "Worldwide iPhone microphone routing remains disabled " +
                     "because the safe-output invariant could not be " +
@@ -5776,6 +5989,7 @@ actor WorldwideScreenService {
     /// synchronously revokes microphone admission and default-input ownership before
     /// a capped, backed-off mutation attempt can run.
     private func maintainWorldwideSafeOutputInvariant() async {
+        guard safeOutputRetryBridgeIsHealthy(context: "safe-output maintenance") else { return }
         guard iPhoneMicrophoneForwardingPolicy == .enabled else {
             return
         }
@@ -5814,11 +6028,11 @@ actor WorldwideScreenService {
 
         if safeOutputInvariantVerificationWasFailing {
             safeOutputInvariantVerificationWasFailing = false
-            safeOutputInvariantRetryPolicy.reset()
+            guard resetSafeOutputRetryPolicy(context: "verification recovered") else { return }
         }
 
         if verification.isSatisfied {
-            safeOutputInvariantRetryPolicy.reset()
+            guard resetSafeOutputRetryPolicy(context: "verification satisfied") else { return }
             guard safeOutputInvariantNeedsRedrive else {
                 return
             }
@@ -5828,7 +6042,7 @@ actor WorldwideScreenService {
         }
 
         if verification.changedSincePreviousObservation {
-            safeOutputInvariantRetryPolicy.reset()
+            guard resetSafeOutputRetryPolicy(context: "verification changed") else { return }
         }
         safeOutputInvariantNeedsRedrive = true
         revokeWorldwideMicrophoneForUnsafeOutputInvariant()
@@ -5857,7 +6071,7 @@ actor WorldwideScreenService {
         blackHoleEndpointPairAuthorization = nil
         blackHoleDefaultInputAuthorization = nil
         safeOutputInvariantNeedsRedrive = true
-        safeOutputInvariantRetryPolicy.reset()
+        guard resetSafeOutputRetryPolicy(context: "safe-output uncertainty") else { return }
         revokeWorldwideMicrophoneForUnsafeOutputInvariant()
         await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
     }
@@ -5921,6 +6135,7 @@ actor WorldwideScreenService {
             BlackHoleDefaultInputLeaseParkingProof? = nil
     )
         async {
+        guard safeOutputRetryBridgeIsHealthy(context: "microphone resume") else { return }
         guard transportAllowsCapture else { return }
         let routingAdmission =
             admitBlackHoleInputWithinSafeOutputFence(
@@ -6524,6 +6739,9 @@ actor WorldwideScreenService {
 
     private func startIPhoneMicrophoneDeviceMonitoringIfNeeded()
         async {
+        #if DEBUG
+        let observerJoin = batchAInertRoutingObserverJoin
+        #endif
         guard iPhoneMicrophoneForwardingPolicy == .enabled else {
             return
         }
@@ -6531,9 +6749,9 @@ actor WorldwideScreenService {
         guard WorldwideBlackHoleAudioRoutingStartupGate
             .redriveAndPermitNewOwnership(
                 retainer:
-                    WorldwideBlackHoleAudioRoutingCleanupRetainer
-                        .shared,
-                maximumAttemptCount: 1
+                    blackHoleAudioRoutingCleanupRetainer,
+                maximumAttemptCount: 1,
+                deferredDefaultInputCleanup: deferredBlackHoleDefaultInputCleanup
             ) else {
             blackHoleDeviceMonitorEpoch = nil
             logger.error(
@@ -6558,10 +6776,13 @@ actor WorldwideScreenService {
             // This is the raw default-input selector callback. Close the
             // realtime writer before the lease or actor can reconcile it.
             authorizationGate.close()
-            Task { [weak self] in
+            let callbackTask = Task<Void, Never> { [weak self] in
                 await self?
                     .blackHoleDefaultInputDidBecomeUncertain(event)
             }
+            #if DEBUG
+            observerJoin?.retain(callbackTask, kind: .inputUncertainty)
+            #endif
         }
 
         do {
@@ -6572,13 +6793,16 @@ actor WorldwideScreenService {
                         epoch,
                         eventSequence in
                         authorizationGate.close()
-                        Task { [weak self] in
+                        let callbackTask = Task<Void, Never> { [weak self] in
                             await self?
                                 .safeOutputInvariantDidBecomeUncertain(
                                     epoch: epoch,
                                     eventSequence: eventSequence
                                 )
                         }
+                        #if DEBUG
+                        observerJoin?.retain(callbackTask, kind: .safeOutputUncertainty)
+                        #endif
                     }
         } catch {
             safeOutputInvariantMonitoringEpoch = nil
@@ -6601,20 +6825,26 @@ actor WorldwideScreenService {
                     // synchronously before the monitor dispatches refresh or
                     // either reconciliation Task can reach this actor.
                     authorizationGate.close()
-                    Task { [weak self] in
+                    let callbackTask = Task<Void, Never> { [weak self] in
                         await self?
                             .blackHoleDeviceInventoryDidBecomeUncertain(
                                 monitorEpoch: monitorEpoch,
                                 eventSequence: eventSequence
                             )
                     }
+                    #if DEBUG
+                    observerJoin?.retain(callbackTask, kind: .inventoryUncertainty)
+                    #endif
                 },
                 observer: { [weak self] snapshot in
-                    Task { [weak self] in
+                    let callbackTask = Task<Void, Never> { [weak self] in
                         await self?.blackHoleDeviceAvailabilityDidChange(
                             snapshot
                         )
                     }
+                    #if DEBUG
+                    observerJoin?.retain(callbackTask, kind: .inventoryObservation)
+                    #endif
                 }
             )
             blackHoleDeviceMonitorEpoch = epoch
@@ -6723,7 +6953,7 @@ actor WorldwideScreenService {
         // validation failure may already have revoked that same generation.
         // Re-read the exact pair so only fresh evidence can restore routing.
         if safeOutputInvariantNeedsRedrive {
-            safeOutputInvariantRetryPolicy.reset()
+            guard resetSafeOutputRetryPolicy(context: "device availability changed") else { return }
         }
         await consumeCurrentBlackHoleDeviceSnapshot()
     }
@@ -6750,7 +6980,7 @@ actor WorldwideScreenService {
         blackHoleEndpointPairAuthorization = nil
         blackHoleDefaultInputAuthorization = nil
         safeOutputInvariantNeedsRedrive = true
-        safeOutputInvariantRetryPolicy.reset()
+        guard resetSafeOutputRetryPolicy(context: "device inventory uncertainty") else { return }
         revokeWorldwideMicrophoneForUnsafeOutputInvariant()
         await resumeWorldwideMicrophoneAfterSafeOutputInvariant()
     }
@@ -6787,6 +7017,7 @@ actor WorldwideScreenService {
         sharedClockRecoveryTaskGeneration: UInt64? = nil
     )
         async {
+        guard safeOutputRetryBridgeIsHealthy(context: "microphone authorization") else { return }
         if let activeRecoveryTaskGeneration =
                 sharedClockEpochRecoveryReadmissionTaskGeneration {
             guard sharedClockRecoveryTaskGeneration
@@ -6842,8 +7073,7 @@ actor WorldwideScreenService {
             let monitor =
                 blackHoleDeviceAvailabilityMonitor
             let invariant = worldwideSafeOutputInvariant
-            WorldwideBlackHoleAudioRoutingCleanupRetainer
-                .shared
+            blackHoleAudioRoutingCleanupRetainer
                 .retain(
                     id: blackHoleAudioRoutingCleanupID
                 ) {
@@ -6886,8 +7116,7 @@ actor WorldwideScreenService {
                     )
                 }
             }
-            WorldwideBlackHoleAudioRoutingCleanupRetainer
-                .shared
+            blackHoleAudioRoutingCleanupRetainer
                 .remove(
                     id: blackHoleAudioRoutingCleanupID
                 )
@@ -7703,17 +7932,23 @@ actor WorldwideScreenService {
             throw WorldwideScreenServiceError.audioCapturerUnavailable
         }
         let generation = peerGeneration
-        let mode = WorldwideSystemAudioRecoveryPolicy.startMode(
-            isLive: systemAudioIsLive,
-            isPausedForRecovery:
-                systemAudioIsPausedForTransportRecovery,
-            hasSource: audioSource != nil,
-            hasSink: audioSink != nil,
-            hasValidAuthorization:
-                audioAuthorization?.isValid == true,
-            peerGenerationMatches:
-                audioPeerGeneration == generation
-        )
+        let mode: WorldwideSystemAudioStartMode?
+        do {
+            mode = try WorldwideSystemAudioRecoveryPolicy.startMode(
+                isLive: systemAudioIsLive,
+                isPausedForRecovery:
+                    systemAudioIsPausedForTransportRecovery,
+                hasSource: audioSource != nil,
+                hasSink: audioSink != nil,
+                hasValidAuthorization:
+                    audioAuthorization?.isValid == true,
+                peerGenerationMatches:
+                    audioPeerGeneration == generation
+            )
+        } catch {
+            logger.error("Worldwide system-audio start refused a Rust policy bridge fault")
+            throw WorldwideScreenServiceError.transportUnavailable
+        }
         guard let mode else {
             throw WorldwideScreenServiceError.transportUnavailable
         }
@@ -7988,24 +8223,29 @@ actor WorldwideScreenService {
     private func installCurrentMacHostedCallChallenge(
         on source: SystemAudioCaptureSource
     ) {
-        guard audioSource === source,
-              WorldwideMacHostedCallPeerGenerationPolicy.admits(
-                  audioPeerGeneration: audioPeerGeneration,
-                  challengePeerGeneration:
-                      macHostedCallChallengePeerGeneration,
-                  currentPeerGeneration: peerGeneration
-              ),
-              let challenge = macHostedCallChallenge,
-              challenge.isValid else {
-            return
-        }
-        _ = source.installMacFaceTimeActivityChallenge(
-            SystemAudioMacFaceTimeActivityChallenge(
-                sequence: challenge.sequence,
-                nonce: challenge.nonce,
-                callEpochNonce: challenge.callEpochNonce
+        do {
+            guard audioSource === source,
+                  try WorldwideMacHostedCallPeerGenerationPolicy.admits(
+                      audioPeerGeneration: audioPeerGeneration,
+                      challengePeerGeneration:
+                          macHostedCallChallengePeerGeneration,
+                      currentPeerGeneration: peerGeneration,
+                      producer: hostedCallPolicyProducer
+                  ),
+                  let challenge = macHostedCallChallenge,
+                  challenge.isValid else {
+                return
+            }
+            _ = source.installMacFaceTimeActivityChallenge(
+                SystemAudioMacFaceTimeActivityChallenge(
+                    sequence: challenge.sequence,
+                    nonce: challenge.nonce,
+                    callEpochNonce: challenge.callEpochNonce
+                )
             )
-        )
+        } catch {
+            logger.error("Mac-hosted call challenge refused a Rust policy bridge fault")
+        }
     }
 
     /// Binds every activity heartbeat to the exact live capture source, authorization, peer,
@@ -8017,68 +8257,60 @@ actor WorldwideScreenService {
         evidenceAuthorization:
             WebRTCMacHostedCallEvidenceAuthorization
     ) async {
-        guard audioSource === source,
-              audioAuthorization === authorization,
-              authorization.isValid,
-              systemAudioIsLive,
-              transportAllowsCapture,
-              WorldwideMacHostedCallPeerGenerationPolicy.admits(
-                  audioPeerGeneration: audioPeerGeneration,
-                  challengePeerGeneration:
-                      macHostedCallChallengePeerGeneration,
-                  currentPeerGeneration: peerGeneration
-              ),
-              let challenge = macHostedCallChallenge,
-              WorldwideMacHostedCallObservationPolicy.admits(
-                  observationSequence:
-                      observation.observationSequence,
-                  highestAdmittedSequence:
-                      highestMacFaceTimeObservationSequence,
-                  observationChallenge: observation.challenge,
-                  currentChallenge: challenge
-              ),
-              let peer,
-              self.peer === peer else {
-            return
-        }
-        highestMacFaceTimeObservationSequence =
-            observation.observationSequence
-        guard let evidenceState =
-            WorldwideMacHostedCallEvidenceStatePolicy.state(
-                isCausallyBoundActive:
-                    observation.isCausallyBoundActive,
-                isCausallyArmed: observation.isCausallyArmed
-            ) else {
-            return
-        }
         do {
-            try await peer.updateMacHostedCallEvidenceIfTransportHealthy(
-                state: evidenceState,
-                challenge: challenge,
-                nativeObservationSequence:
-                    observation.observationSequence,
-                authorization: authorization,
-                evidenceAuthorization: evidenceAuthorization
-            )
-        } catch let error as WebRTCTransportError {
-            switch error {
-            case .transportNotHealthy,
-                 .audioAuthorizationRevoked,
-                 .macHostedCallEvidenceAuthorizationRevoked,
-                 .transportClosed:
-                // A missing heartbeat is intentionally fail-closed on the iPhone.
-                break
-            default:
+            guard audioSource === source,
+                  audioAuthorization === authorization,
+                  authorization.isValid,
+                  systemAudioIsLive,
+                  transportAllowsCapture,
+                  try WorldwideMacHostedCallPeerGenerationPolicy.admits(
+                      audioPeerGeneration: audioPeerGeneration,
+                      challengePeerGeneration: macHostedCallChallengePeerGeneration,
+                      currentPeerGeneration: peerGeneration,
+                      producer: hostedCallPolicyProducer
+                  ),
+                  let challenge = macHostedCallChallenge else { return }
+            var admittedPeer: WebRTCPeer?
+            guard let evidenceState = try consumeMacHostedCallObservationAfterNativeGuards(
+                observation: observation, challenge: challenge,
+                exactPeerIsPresent: {
+                    guard let currentPeer = self.peer,
+                          self.peer === currentPeer else { return false }
+                    admittedPeer = currentPeer
+                    return true
+                }
+            ), let peer = admittedPeer else { return }
+            do {
+                try await peer.updateMacHostedCallEvidenceIfTransportHealthy(
+                    state: evidenceState,
+                    challenge: challenge,
+                    nativeObservationSequence:
+                        observation.observationSequence,
+                    authorization: authorization,
+                    evidenceAuthorization: evidenceAuthorization
+                )
+            } catch let error as WebRTCTransportError {
+                switch error {
+                case .transportNotHealthy,
+                     .audioAuthorizationRevoked,
+                     .macHostedCallEvidenceAuthorizationRevoked,
+                     .transportClosed:
+                    // A missing heartbeat is intentionally fail-closed on the iPhone.
+                    break
+                default:
+                    logger.error(
+                        "Mac-hosted call evidence send failed: "
+                            + error.localizedDescription
+                    )
+                }
+            } catch {
                 logger.error(
                     "Mac-hosted call evidence send failed: "
                         + error.localizedDescription
                 )
             }
         } catch {
-            logger.error(
-                "Mac-hosted call evidence send failed: "
-                    + error.localizedDescription
-            )
+            logger.error("Mac-hosted call evidence refused a Rust policy bridge fault")
         }
     }
 

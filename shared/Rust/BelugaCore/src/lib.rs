@@ -11,6 +11,52 @@ pub mod invitation_acceptance;
 pub mod replay_policy;
 pub mod pairing_catalog_checkpoint;
 pub mod supported_player_arbitration;
+pub mod availability_retry;
+pub mod safe_output_retry;
+pub mod system_audio_start;
+pub mod hosted_call_policy;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_safe_output_retry_initialize(input: safe_output_retry::RawConfig) -> safe_output_retry::RawResult {
+    safe_output_retry::initialize(input)
+}
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_safe_output_retry_transition(input: safe_output_retry::RawState, event: u32) -> safe_output_retry::RawResult {
+    safe_output_retry::transition(input, event)
+}
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_system_audio_start(input: system_audio_start::RawFacts) -> system_audio_start::RawDecision {
+    system_audio_start::decide(input)
+}
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_hosted_call_observation(input: hosted_call_policy::RawObservationFacts) -> hosted_call_policy::RawDecision {
+    hosted_call_policy::decide_observation(input)
+}
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_hosted_call_evidence(input: hosted_call_policy::RawEvidenceFacts) -> hosted_call_policy::RawDecision {
+    hosted_call_policy::decide_evidence(input)
+}
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_hosted_call_peer_generation(input: hosted_call_policy::RawPeerFacts) -> hosted_call_policy::RawDecision {
+    hosted_call_policy::decide_peer_generation(input)
+}
+
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_availability_retry_step(
+    abi_version: u32,
+    state: availability_retry::RawState,
+    event: availability_retry::RawEvent,
+) -> availability_retry::RawResult {
+    availability_retry::step(abi_version, state, event)
+}
 
 // Eleventh copied scalar contract: source choice only; no native authority or effects.
 #[no_mangle]

@@ -855,3 +855,523 @@ func supportedPlayerArbitrationSmoke() {
     print("BelugaCore Swift supported player arbitration import/link PASS: exact layouts, 48 literal choices and 720 closed-field refusals")
 }
 supportedPlayerArbitrationSmoke()
+
+func availabilityRetrySmoke() {
+    typealias State = beluga_core_availability_retry_state_t
+    typealias Event = beluga_core_availability_retry_event_t
+    typealias Output = beluga_core_availability_retry_result_t
+    precondition(MemoryLayout<State>.size == 16 && MemoryLayout<State>.stride == 16)
+    precondition(MemoryLayout<State>.alignment == 4)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.next_delay_seconds) == 4)
+    precondition(MemoryLayout<State>.offset(of: \.has_validated_connection) == 8)
+    precondition(MemoryLayout<State>.offset(of: \.reserved) == 12)
+    precondition(MemoryLayout<Event>.size == 8 && MemoryLayout<Event>.stride == 8)
+    precondition(MemoryLayout<Event>.alignment == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Output>.size == 32 && MemoryLayout<Output>.stride == 32)
+    precondition(MemoryLayout<Output>.alignment == 4)
+    precondition(MemoryLayout<Output>.offset(of: \.candidate_state) == 0)
+    precondition(MemoryLayout<Output>.offset(of: \.decision) == 16)
+    precondition(MemoryLayout<Output>.offset(of: \.became_validated) == 20)
+    precondition(MemoryLayout<Output>.offset(of: \.retry_delay_seconds) == 24)
+    precondition(MemoryLayout<Output>.offset(of: \.reserved) == 28)
+
+    func assertState(_ actual: State, _ expected: State) {
+        precondition(actual.abi_version == expected.abi_version)
+        precondition(actual.next_delay_seconds == expected.next_delay_seconds)
+        precondition(actual.has_validated_connection == expected.has_validated_connection)
+        precondition(actual.reserved == expected.reserved)
+    }
+    func assertRefused(_ abi: UInt32, _ before: State, _ event: Event) -> Int {
+        let copiedState = before
+        let copiedEvent = event
+        let output = beluga_core_availability_retry_step(abi, before, event)
+        assertState(output.candidate_state, before)
+        precondition(output.decision == 2 && output.became_validated == 0)
+        precondition(output.retry_delay_seconds == 0 && output.reserved == 0)
+        assertState(before, copiedState)
+        precondition(event.opcode == copiedEvent.opcode && event.reserved == copiedEvent.reserved)
+        return 1
+    }
+    // Frozen original rows; expected transitions never call a Swift policy.
+    let literals: [[UInt32]] = [
+        [1,0,0,1,1,0,1,0], [1,0,1,2,0,1,0,1],
+        [2,0,0,1,1,0,1,0], [2,0,1,4,0,1,0,2],
+        [4,0,0,1,1,0,1,0], [4,0,1,8,0,1,0,4],
+        [8,0,0,1,1,0,1,0], [8,0,1,16,0,1,0,8],
+        [16,0,0,1,1,0,1,0], [16,0,1,30,0,1,0,16],
+        [30,0,0,1,1,0,1,0], [30,0,1,30,0,1,0,30],
+        [1,1,0,1,1,0,0,0], [1,1,1,2,0,1,0,1]
+    ]
+    let invalids: [[UInt32]] = [
+        [0,2,UInt32.max], [0,2,UInt32.max], [0,3,32,UInt32.max],
+        [2,UInt32.max], [1,UInt32.max], [2,UInt32.max], [1,UInt32.max]
+    ]
+    precondition(literals.count == 14)
+    var refusedAttempts = 0
+    for literal in literals {
+        precondition(literal.count == 8)
+        let before = State(abi_version: 1, next_delay_seconds: literal[0],
+            has_validated_connection: literal[1], reserved: 0)
+        let event = Event(opcode: literal[2], reserved: 0)
+        let output = beluga_core_availability_retry_step(1, before, event)
+        assertState(output.candidate_state, State(abi_version: 1,
+            next_delay_seconds: literal[3], has_validated_connection: literal[4], reserved: 0))
+        precondition(output.decision == literal[5] && output.became_validated == literal[6])
+        precondition(output.retry_delay_seconds == literal[7] && output.reserved == 0)
+        for field in 0..<7 {
+            for bad in invalids[field] {
+                var callABI: UInt32 = 1
+                var rawState = before
+                var rawEvent = event
+                switch field {
+                case 0: callABI = bad
+                case 1: rawState.abi_version = bad
+                case 2: rawState.next_delay_seconds = bad
+                case 3: rawState.has_validated_connection = bad
+                case 4: rawState.reserved = bad
+                case 5: rawEvent.opcode = bad
+                case 6: rawEvent.reserved = bad
+                default: preconditionFailure("unknown availability smoke field")
+                }
+                refusedAttempts += assertRefused(callABI, rawState, rawEvent)
+            }
+        }
+        var rawState = before
+        rawState.next_delay_seconds = 2
+        rawState.has_validated_connection = 1
+        refusedAttempts += assertRefused(1, rawState, event)
+        rawState = before
+        rawState.abi_version = 9
+        rawState.reserved = 17
+        refusedAttempts += assertRefused(0, rawState, Event(opcode: 7, reserved: UInt32.max))
+        assertState(before, State(abi_version: 1, next_delay_seconds: literal[0],
+            has_validated_connection: literal[1], reserved: 0))
+        precondition(event.opcode == literal[2] && event.reserved == 0)
+    }
+    precondition(refusedAttempts == 280)
+    print("BelugaCore Swift availability retry import/link PASS: exact layouts, 14 literal transitions and 280 unchanged refusals")
+}
+availabilityRetrySmoke()
+
+// PRIVATE additive actual-C smoke. Uncompiled and unexecuted.
+func batchAPolicySmoke() {
+    typealias Config = beluga_core_safe_output_retry_config_t
+    typealias State = beluga_core_safe_output_retry_state_t
+    typealias Retry = beluga_core_safe_output_retry_result_t
+    typealias Start = beluga_core_system_audio_start_facts_t
+    typealias StartDecision = beluga_core_system_audio_start_decision_t
+    typealias Observation = beluga_core_hosted_call_observation_facts_t
+    typealias Evidence = beluga_core_hosted_call_evidence_facts_t
+    typealias Peer = beluga_core_hosted_call_peer_facts_t
+    typealias HostedDecision = beluga_core_hosted_call_decision_t
+    typealias UUIDBytes = (UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,
+                          UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8,UInt8)
+    precondition(MemoryLayout<Config>.size == 32 && MemoryLayout<Config>.stride == 32)
+    precondition(MemoryLayout<Config>.alignment == 8)
+    precondition(MemoryLayout<Config>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Config>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Config>.offset(of: \.maximum_failed_attempt_count) == 8)
+    precondition(MemoryLayout<Config>.offset(of: \.maximum_backoff_tick_count) == 16)
+    precondition(MemoryLayout<Config>.offset(of: \.capped_cooldown_tick_count) == 24)
+    precondition(MemoryLayout<State>.size == 56 && MemoryLayout<State>.stride == 56)
+    precondition(MemoryLayout<State>.alignment == 8)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<State>.offset(of: \.maximum_failed_attempt_count) == 8)
+    precondition(MemoryLayout<State>.offset(of: \.maximum_backoff_tick_count) == 16)
+    precondition(MemoryLayout<State>.offset(of: \.capped_cooldown_tick_count) == 24)
+    precondition(MemoryLayout<State>.offset(of: \.failed_attempt_count) == 32)
+    precondition(MemoryLayout<State>.offset(of: \.backoff_tick_count) == 40)
+    precondition(MemoryLayout<State>.offset(of: \.cooldown_tick_count) == 48)
+    precondition(MemoryLayout<Retry>.size == 64 && MemoryLayout<Retry>.stride == 64)
+    precondition(MemoryLayout<Retry>.alignment == 8)
+    precondition(MemoryLayout<Retry>.offset(of: \.state) == 0)
+    precondition(MemoryLayout<Retry>.offset(of: \.status) == 56)
+    precondition(MemoryLayout<Retry>.offset(of: \.tick_decision) == 60)
+    precondition(MemoryLayout<Start>.size == 32 && MemoryLayout<Start>.stride == 32)
+    precondition(MemoryLayout<Start>.alignment == 4)
+    precondition(MemoryLayout<Start>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Start>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Start>.offset(of: \.is_live) == 8)
+    precondition(MemoryLayout<Start>.offset(of: \.is_paused_for_recovery) == 12)
+    precondition(MemoryLayout<Start>.offset(of: \.has_source) == 16)
+    precondition(MemoryLayout<Start>.offset(of: \.has_sink) == 20)
+    precondition(MemoryLayout<Start>.offset(of: \.has_valid_authorization) == 24)
+    precondition(MemoryLayout<Start>.offset(of: \.peer_generation_matches) == 28)
+    precondition(MemoryLayout<StartDecision>.size == 16 && MemoryLayout<StartDecision>.stride == 16)
+    precondition(MemoryLayout<StartDecision>.alignment == 4)
+    precondition(MemoryLayout<StartDecision>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<StartDecision>.offset(of: \.status) == 4)
+    precondition(MemoryLayout<StartDecision>.offset(of: \.mode) == 8)
+    precondition(MemoryLayout<StartDecision>.offset(of: \.reserved) == 12)
+    precondition(MemoryLayout<Observation>.size == 120 && MemoryLayout<Observation>.stride == 120)
+    precondition(MemoryLayout<Observation>.alignment == 8)
+    precondition(MemoryLayout<Observation>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Observation>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Observation>.offset(of: \.observation_sequence) == 8)
+    precondition(MemoryLayout<Observation>.offset(of: \.highest_admitted_sequence) == 16)
+    precondition(MemoryLayout<Observation>.offset(of: \.observation_challenge_present) == 24)
+    precondition(MemoryLayout<Observation>.offset(of: \.current_challenge_present) == 28)
+    precondition(MemoryLayout<Observation>.offset(of: \.current_protocol_version) == 32)
+    precondition(MemoryLayout<Observation>.offset(of: \.observation_challenge_sequence) == 40)
+    precondition(MemoryLayout<Observation>.offset(of: \.current_challenge_sequence) == 48)
+    precondition(MemoryLayout<Observation>.offset(of: \.observation_nonce) == 56)
+    precondition(MemoryLayout<Observation>.offset(of: \.observation_call_epoch_nonce) == 72)
+    precondition(MemoryLayout<Observation>.offset(of: \.current_nonce) == 88)
+    precondition(MemoryLayout<Observation>.offset(of: \.current_call_epoch_nonce) == 104)
+    precondition(MemoryLayout<Evidence>.size == 16 && MemoryLayout<Evidence>.stride == 16)
+    precondition(MemoryLayout<Evidence>.alignment == 4)
+    precondition(MemoryLayout<Evidence>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Evidence>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Evidence>.offset(of: \.active) == 8)
+    precondition(MemoryLayout<Evidence>.offset(of: \.armed) == 12)
+    precondition(MemoryLayout<Peer>.size == 40 && MemoryLayout<Peer>.stride == 40)
+    precondition(MemoryLayout<Peer>.alignment == 8)
+    precondition(MemoryLayout<Peer>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Peer>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Peer>.offset(of: \.audio_present) == 8)
+    precondition(MemoryLayout<Peer>.offset(of: \.challenge_present) == 12)
+    precondition(MemoryLayout<Peer>.offset(of: \.audio_generation) == 16)
+    precondition(MemoryLayout<Peer>.offset(of: \.challenge_generation) == 24)
+    precondition(MemoryLayout<Peer>.offset(of: \.current_generation) == 32)
+    precondition(MemoryLayout<HostedDecision>.size == 16 && MemoryLayout<HostedDecision>.stride == 16)
+    precondition(MemoryLayout<HostedDecision>.alignment == 4)
+    precondition(MemoryLayout<HostedDecision>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<HostedDecision>.offset(of: \.status) == 4)
+    precondition(MemoryLayout<HostedDecision>.offset(of: \.value) == 8)
+    precondition(MemoryLayout<HostedDecision>.offset(of: \.reserved) == 12)
+
+    func configFields(_ x: Config) -> [Int64] {
+        [Int64(x.abi_version),Int64(x.reserved),x.maximum_failed_attempt_count,
+         x.maximum_backoff_tick_count,x.capped_cooldown_tick_count]
+    }
+    func stateFields(_ x: State) -> [Int64] {
+        [Int64(x.abi_version),Int64(x.reserved),x.maximum_failed_attempt_count,
+         x.maximum_backoff_tick_count,x.capped_cooldown_tick_count,
+         x.failed_attempt_count,x.backoff_tick_count,x.cooldown_tick_count]
+    }
+    func startFields(_ x: Start) -> [UInt32] {
+        [x.abi_version,x.reserved,x.is_live,x.is_paused_for_recovery,x.has_source,
+         x.has_sink,x.has_valid_authorization,x.peer_generation_matches]
+    }
+    func uuidFields(_ x: UUIDBytes) -> [UInt8] {
+        [x.0,x.1,x.2,x.3,x.4,x.5,x.6,x.7,x.8,x.9,x.10,x.11,x.12,x.13,x.14,x.15]
+    }
+    func uuid(_ x: [UInt8]) -> UUIDBytes {
+        precondition(x.count == 16)
+        return (x[0],x[1],x[2],x[3],x[4],x[5],x[6],x[7],x[8],x[9],x[10],x[11],x[12],x[13],x[14],x[15])
+    }
+    func observationScalars(_ x: Observation) -> [UInt64] {
+        [UInt64(x.abi_version),UInt64(x.reserved),x.observation_sequence,x.highest_admitted_sequence,
+         UInt64(x.observation_challenge_present),UInt64(x.current_challenge_present),
+         UInt64(bitPattern:x.current_protocol_version),x.observation_challenge_sequence,x.current_challenge_sequence]
+    }
+    func observationUUIDs(_ x: Observation) -> [[UInt8]] {
+        [uuidFields(x.observation_nonce),uuidFields(x.observation_call_epoch_nonce),
+         uuidFields(x.current_nonce),uuidFields(x.current_call_epoch_nonce)]
+    }
+    func evidenceFields(_ x: Evidence) -> [UInt32] { [x.abi_version,x.reserved,x.active,x.armed] }
+    func peerFields(_ x: Peer) -> [UInt64] {
+        [UInt64(x.abi_version),UInt64(x.reserved),UInt64(x.audio_present),UInt64(x.challenge_present),
+         x.audio_generation,x.challenge_generation,x.current_generation]
+    }
+    // Exactly one actual export call per wrapper, then all caller-owned fields
+    // are compared with a pre-call copy. No production output computes expected values.
+    func initialize(_ input: Config) -> Retry {
+        let before = input
+        let output = beluga_core_safe_output_retry_initialize(input)
+        precondition(configFields(input) == configFields(before))
+        return output
+    }
+    func transition(_ input: State, _ event: UInt32) -> Retry {
+        let before = input, beforeEvent = event
+        let output = beluga_core_safe_output_retry_transition(input,event)
+        precondition(stateFields(input) == stateFields(before) && event == beforeEvent)
+        return output
+    }
+    func start(_ input: Start) -> StartDecision {
+        let before = input
+        let output = beluga_core_system_audio_start(input)
+        precondition(startFields(input) == startFields(before))
+        return output
+    }
+    func observation(_ input: Observation) -> HostedDecision {
+        let before = input
+        let output = beluga_core_hosted_call_observation(input)
+        precondition(observationScalars(input) == observationScalars(before))
+        precondition(observationUUIDs(input) == observationUUIDs(before))
+        return output
+    }
+    func evidence(_ input: Evidence) -> HostedDecision {
+        let before = input
+        let output = beluga_core_hosted_call_evidence(input)
+        precondition(evidenceFields(input) == evidenceFields(before))
+        return output
+    }
+    func peer(_ input: Peer) -> HostedDecision {
+        let before = input
+        let output = beluga_core_hosted_call_peer_generation(input)
+        precondition(peerFields(input) == peerFields(before))
+        return output
+    }
+    func config(_ f: Int64, _ b: Int64, _ c: Int64) -> Config {
+        var x = Config(); x.abi_version = 1
+        x.maximum_failed_attempt_count = f; x.maximum_backoff_tick_count = b
+        x.capped_cooldown_tick_count = c; return x
+    }
+    func counts(_ x: Retry, _ status: UInt32, _ tick: UInt32, _ f: Int64, _ b: Int64, _ c: Int64) {
+        precondition(x.status == status && x.tick_decision == tick)
+        precondition(x.state.failed_attempt_count == f && x.state.backoff_tick_count == b && x.state.cooldown_tick_count == c)
+    }
+    func preservedConfig(_ x: State, _ f: Int64, _ b: Int64, _ c: Int64) {
+        precondition(x.abi_version == 1 && x.reserved == 0)
+        precondition(x.maximum_failed_attempt_count == f && x.maximum_backoff_tick_count == b && x.capped_cooldown_tick_count == c)
+    }
+    func invalidRetry(_ raw: State) {
+        for event: UInt32 in 1...3 {
+            let x = transition(raw,event)
+            precondition(x.status == 0 && x.tick_decision == 0 && stateFields(x.state) == stateFields(raw))
+        }
+    }
+
+    let requested: [Int64] = [.min,-9,0,1,2,.max]
+    let normalized: [Int64] = [1,1,1,1,2,.max]
+    for f in 0..<6 { for b in 0..<6 { for c in 0..<6 {
+        let x = initialize(config(requested[f],requested[b],requested[c]))
+        counts(x,1,0,0,0,0); preservedConfig(x.state,normalized[f],normalized[b],normalized[c])
+    } } }
+    let trace: [(UInt32,Int64,Int64,Int64,UInt32)] = [
+        (1,0,0,0,2),(2,1,1,0,0),(1,1,0,0,1),(1,1,0,0,2),(2,2,2,0,0),
+        (1,2,1,0,1),(1,2,0,0,1),(1,2,0,0,2),(2,3,0,3,0),(2,3,0,3,0),
+        (1,3,0,2,1),(1,3,0,1,1),(1,3,0,0,1),(1,0,0,0,2),(2,1,1,0,0),
+        (3,0,0,0,0),(1,0,0,0,2),(3,0,0,0,0),(1,0,0,0,2)
+    ]
+    precondition(trace.count == 19)
+    var raw = initialize(config(3,4,3)).state
+    for (event,f,b,c,tick) in trace {
+        let x = transition(raw,event); counts(x,1,tick,f,b,c)
+        preservedConfig(x.state,3,4,3); raw = x.state
+    }
+    let defaultRows: [(Int64,Int64,Int64)] = [(1,1,0),(2,2,0),(3,4,0),(4,8,0),(5,16,0),(6,0,60)]
+    raw = initialize(config(6,16,60)).state
+    for (f,b,c) in defaultRows {
+        let x = transition(raw,2); counts(x,1,0,f,b,c); preservedConfig(x.state,6,16,60); raw = x.state
+    }
+    for tick: Int64 in 0..<60 {
+        let x = transition(raw,1); counts(x,1,1,6,0,59-tick); raw = x.state
+    }
+    counts(transition(raw,1),1,2,0,0,0)
+    raw = initialize(config(1,.max,.max)).state
+    let cap = transition(raw,2); counts(cap,1,0,1,0,.max)
+    let waited = transition(cap.state,1); counts(waited,1,1,1,0,Int64.max-1)
+    let retained = transition(waited.state,2)
+    precondition(retained.status == 1 && retained.tick_decision == 0)
+    precondition(stateFields(retained.state) == stateFields(waited.state))
+    raw = initialize(config(.max,.max,.max)).state; raw.failed_attempt_count = Int64.max-1
+    counts(transition(raw,2),1,0,.max,0,.max)
+    let priors: [Int64] = [30,31,32,64,999,Int64.max-2]
+    for prior in priors {
+        raw = initialize(config(.max,.max,5)).state; raw.failed_attempt_count = prior
+        counts(transition(raw,2),1,0,prior+1,1_073_741_824,0)
+    }
+    raw = initialize(config(1000,7,5)).state; raw.failed_attempt_count = 998
+    counts(transition(raw,2),1,0,999,7,0)
+
+    let envelopes: [(UInt32,UInt32)] = [(0,0),(2,0),(.max,0),(1,1),(1,2),(1,.max),(9,17)]
+    for requested in [config(.min,-7,.max),config(3,4,3)] {
+        for (version,reserved) in envelopes {
+            var input = requested; input.abi_version = version; input.reserved = reserved
+            var expected = State(); expected.abi_version = version; expected.reserved = reserved
+            expected.maximum_failed_attempt_count = requested.maximum_failed_attempt_count
+            expected.maximum_backoff_tick_count = requested.maximum_backoff_tick_count
+            expected.capped_cooldown_tick_count = requested.capped_cooldown_tick_count
+            let x = initialize(input)
+            precondition(x.status == 0 && x.tick_decision == 0)
+            precondition(stateFields(x.state) == stateFields(expected))
+        }
+    }
+    let initial = initialize(config(3,4,3)).state
+    let pending = transition(initial,2).state
+    let capped = transition(transition(pending,2).state,2).state
+    for base in [initial,pending,capped] {
+        for event: UInt32 in [0,4,.max] {
+            let x = transition(base,event)
+            precondition(x.status == 0 && x.tick_decision == 0 && stateFields(x.state) == stateFields(base))
+        }
+        var bad = base; bad.abi_version = 0; invalidRetry(bad)
+        bad = base; bad.abi_version = 2; invalidRetry(bad)
+        bad = base; bad.reserved = 1; invalidRetry(bad)
+        for limit: Int64 in [.min,-1,0] {
+            bad = base; bad.maximum_failed_attempt_count = limit; invalidRetry(bad)
+            bad = base; bad.maximum_backoff_tick_count = limit; invalidRetry(bad)
+            bad = base; bad.capped_cooldown_tick_count = limit; invalidRetry(bad)
+        }
+        bad = base; bad.failed_attempt_count = -1; invalidRetry(bad)
+        bad = base; bad.failed_attempt_count = 4; invalidRetry(bad)
+        bad = base; bad.backoff_tick_count = -1; invalidRetry(bad)
+        bad = base; bad.backoff_tick_count = 9; invalidRetry(bad)
+        bad = base; bad.cooldown_tick_count = -1; invalidRetry(bad)
+        bad = base; bad.cooldown_tick_count = 4; invalidRetry(bad)
+    }
+    raw = initial; raw.cooldown_tick_count = 1; invalidRetry(raw)
+    raw = pending; raw.cooldown_tick_count = 1; invalidRetry(raw)
+    raw = capped; raw.backoff_tick_count = 1; invalidRetry(raw)
+    let reset = transition(pending,3); counts(reset,1,0,0,0,0)
+    precondition(stateFields(reset.state) == stateFields(initial))
+    precondition(pending.failed_attempt_count == 1 && pending.backoff_tick_count == 1)
+    print("BelugaCore Swift safe output retry import/link PASS: exact layouts, frozen literal transitions and unchanged refusals")
+
+    func startInput(_ bits: UInt32) -> Start {
+        var x = Start(); x.abi_version = 1
+        x.is_live = bits & 1; x.is_paused_for_recovery = (bits >> 1) & 1
+        x.has_source = (bits >> 2) & 1; x.has_sink = (bits >> 3) & 1
+        x.has_valid_authorization = (bits >> 4) & 1; x.peer_generation_matches = (bits >> 5) & 1
+        return x
+    }
+    func assertStart(_ x: StartDecision, _ status: UInt32, _ mode: UInt32) {
+        precondition(x.abi_version == 1 && x.status == status && x.mode == mode && x.reserved == 0)
+    }
+    let modes: [UInt32] = [
+        3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        3,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0
+    ]
+    precondition(modes.count == 64)
+    let malformed: [UInt32] = [2,.max]
+    for bits: UInt32 in 0..<64 {
+        let base = startInput(bits); assertStart(start(base),1,modes[Int(bits)])
+        for field in 0..<8 { for bad in malformed {
+            var x = base
+            switch field {
+            case 0: x.abi_version = bad
+            case 1: x.reserved = bad
+            case 2: x.is_live = bad
+            case 3: x.is_paused_for_recovery = bad
+            case 4: x.has_source = bad
+            case 5: x.has_sink = bad
+            case 6: x.has_valid_authorization = bad
+            default: x.peer_generation_matches = bad
+            }
+            assertStart(start(x),0,0)
+        } }
+        var x = base; x.abi_version = 0; assertStart(start(x),0,0)
+        x = base; x.reserved = 1; assertStart(start(x),0,0)
+    }
+    print("BelugaCore Swift system audio start import/link PASS: exact layouts, 64 literal choices and 1152 closed-field refusals")
+
+    let nonce: [UInt8] = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
+    let epoch: [UInt8] = [16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1]
+    let zeroUUID = uuid(Array(repeating:0,count:16))
+    func observationInput() -> Observation {
+        var x = Observation(); x.abi_version = 1
+        x.observation_sequence = 11; x.highest_admitted_sequence = 10
+        x.observation_challenge_present = 1; x.current_challenge_present = 1
+        x.current_protocol_version = 3; x.observation_challenge_sequence = 7; x.current_challenge_sequence = 7
+        x.observation_nonce = uuid(nonce); x.current_nonce = uuid(nonce)
+        x.observation_call_epoch_nonce = uuid(epoch); x.current_call_epoch_nonce = uuid(epoch)
+        return x
+    }
+    func assertHosted(_ x: HostedDecision, _ status: UInt32, _ value: UInt32) {
+        precondition(x.abi_version == 1 && x.status == status && x.value == value && x.reserved == 0)
+    }
+    func peerInput(_ ap: UInt32, _ a: UInt64, _ cp: UInt32, _ c: UInt64, _ current: UInt64) -> Peer {
+        var x = Peer(); x.abi_version = 1; x.audio_present = ap; x.challenge_present = cp
+        x.audio_generation = a; x.challenge_generation = c; x.current_generation = current; return x
+    }
+    let watermarks: [(UInt64,UInt64,UInt32)] = [
+        (0,0,0),(1,0,1),(10,10,0),(11,10,1),(10,11,0),(.max,0,1),(0,.max,0),
+        (.max,UInt64.max-1,1),(.max,.max,0),(UInt64.max-1,.max,0)
+    ]
+    for (sequence,highest,value) in watermarks {
+        var x = observationInput(); x.observation_sequence = sequence; x.highest_admitted_sequence = highest
+        assertHosted(observation(x),1,value)
+    }
+    let versions: [(Int64,UInt32)] = [(.min,0),(-1,0),(0,0),(1,0),(2,0),(3,1),(4,0),(.max,0)]
+    for (version,value) in versions {
+        var x = observationInput(); x.current_protocol_version = version; assertHosted(observation(x),1,value)
+    }
+    for (sequence,value): (UInt64,UInt32) in [(0,0),(1,1),(.max,1)] {
+        var x = observationInput(); x.observation_challenge_sequence = sequence; x.current_challenge_sequence = sequence
+        assertHosted(observation(x),1,value)
+    }
+    for (op,cp): (UInt32,UInt32) in [(0,0),(0,1),(1,0)] {
+        var x = observationInput(); x.observation_challenge_present = op; x.current_challenge_present = cp
+        x.current_protocol_version = .min; x.current_challenge_sequence = .max
+        assertHosted(observation(x),1,0)
+    }
+    var x = observationInput(); x.observation_nonce = zeroUUID; x.current_nonce = zeroUUID
+    assertHosted(observation(x),1,0)
+    x = observationInput(); x.observation_call_epoch_nonce = zeroUUID; x.current_call_epoch_nonce = zeroUUID
+    assertHosted(observation(x),1,0)
+    x = observationInput(); x.observation_call_epoch_nonce = uuid(nonce); x.current_call_epoch_nonce = uuid(nonce)
+    assertHosted(observation(x),1,0)
+    x = observationInput(); x.observation_challenge_sequence = 6; assertHosted(observation(x),1,0)
+    for byte in 0..<16 { for field in 0..<4 {
+        x = observationInput()
+        var bytes = observationUUIDs(x)[field]; bytes[byte] ^= 0x80
+        switch field {
+        case 0: x.observation_nonce = uuid(bytes)
+        case 1: x.observation_call_epoch_nonce = uuid(bytes)
+        case 2: x.current_nonce = uuid(bytes)
+        default: x.current_call_epoch_nonce = uuid(bytes)
+        }
+        assertHosted(observation(x),1,0)
+    } }
+    for field in 0..<4 { for bad in malformed {
+        x = observationInput()
+        switch field {
+        case 0: x.abi_version = bad
+        case 1: x.reserved = bad
+        case 2: x.observation_challenge_present = bad
+        default: x.current_challenge_present = bad
+        }
+        assertHosted(observation(x),0,0)
+    } }
+    x = observationInput(); x.abi_version = 0; assertHosted(observation(x),0,0)
+    x = observationInput(); x.reserved = 1; assertHosted(observation(x),0,0)
+    let evidenceRows: [(UInt32,UInt32,UInt32)] = [(0,0,1),(0,1,2),(1,0,3),(1,1,0)]
+    for (active,armed,value) in evidenceRows {
+        var e = Evidence(); e.abi_version = 1; e.active = active; e.armed = armed
+        assertHosted(evidence(e),1,value)
+        for field in 0..<4 { for bad in malformed {
+            var input = e
+            switch field {
+            case 0: input.abi_version = bad
+            case 1: input.reserved = bad
+            case 2: input.active = bad
+            default: input.armed = bad
+            }
+            assertHosted(evidence(input),0,0)
+        } }
+        var input = e; input.abi_version = 0; assertHosted(evidence(input),0,0)
+        input = e; input.reserved = 1; assertHosted(evidence(input),0,0)
+    }
+    let peers: [(UInt32,UInt64,UInt32,UInt64,UInt64,UInt32)] = [
+        (0,0,0,0,0,0),(1,0,1,0,0,0),(0,0,1,7,7,0),(1,7,0,0,7,0),
+        (1,6,1,7,7,0),(1,7,1,6,7,0),(1,7,1,7,7,1),(1,1,1,1,1,1),
+        (1,.max,1,.max,.max,1),(1,UInt64.max-1,1,.max,.max,0),
+        (1,0,1,7,7,0),(1,7,1,0,7,0)
+    ]
+    for (ap,a,cp,c,current,value) in peers { assertHosted(peer(peerInput(ap,a,cp,c,current)),1,value) }
+    assertHosted(peer(peerInput(0,.max,0,.max,7)),1,0)
+    for base in [peerInput(1,7,1,7,7),peerInput(0,0,0,0,7),peerInput(1,0,1,0,0)] {
+        for field in 0..<4 { for bad in malformed {
+            var input = base
+            switch field {
+            case 0: input.abi_version = bad
+            case 1: input.reserved = bad
+            case 2: input.audio_present = bad
+            default: input.challenge_present = bad
+            }
+            assertHosted(peer(input),0,0)
+        } }
+        var input = base; input.abi_version = 0; assertHosted(peer(input),0,0)
+        input = base; input.reserved = 1; assertHosted(peer(input),0,0)
+    }
+    print("BelugaCore Swift hosted call import/link PASS: exact layouts, strict watermark and generation identity, unchanged refusals")
+}
+batchAPolicySmoke()

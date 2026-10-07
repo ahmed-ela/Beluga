@@ -43,6 +43,10 @@ module BelugaCoreArtifact
     src/reconnect_counters.rs tests/reconnect_counters.rs
     src/pairing_commit.rs tests/pairing_commit.rs
     src/supported_player_arbitration.rs tests/supported_player_arbitration.rs
+    src/availability_retry.rs tests/availability_retry.rs
+    src/safe_output_retry.rs tests/safe_output_retry.rs
+    src/system_audio_start.rs tests/system_audio_start.rs
+    src/hosted_call_policy.rs tests/hosted_call_policy.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
   ARTIFACT_FILES = (%w[

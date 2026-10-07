@@ -5,9 +5,9 @@ import Foundation
 import XCTest
 
 final class WorldwideSystemAudioRecoveryTests: XCTestCase {
-    func testStartPolicyResumesOnlyAnExactPausedPeerGeneration() {
+    func testStartPolicyResumesOnlyAnExactPausedPeerGeneration() throws {
         XCTAssertEqual(
-            startMode(
+            try startMode(
                 isLive: true,
                 isPaused: false,
                 hasSource: true,
@@ -18,7 +18,7 @@ final class WorldwideSystemAudioRecoveryTests: XCTestCase {
             .alreadyLive
         )
         XCTAssertEqual(
-            startMode(
+            try startMode(
                 isLive: false,
                 isPaused: true,
                 hasSource: true,
@@ -29,7 +29,7 @@ final class WorldwideSystemAudioRecoveryTests: XCTestCase {
             .resumeExisting
         )
         XCTAssertEqual(
-            startMode(
+            try startMode(
                 isLive: false,
                 isPaused: false,
                 hasSource: false,
@@ -40,7 +40,7 @@ final class WorldwideSystemAudioRecoveryTests: XCTestCase {
             .startNew
         )
         XCTAssertNil(
-            startMode(
+            try startMode(
                 isLive: false,
                 isPaused: true,
                 hasSource: true,
@@ -50,7 +50,7 @@ final class WorldwideSystemAudioRecoveryTests: XCTestCase {
             )
         )
         XCTAssertNil(
-            startMode(
+            try startMode(
                 isLive: false,
                 isPaused: true,
                 hasSource: true,
@@ -280,8 +280,8 @@ final class WorldwideSystemAudioRecoveryTests: XCTestCase {
         hasSink: Bool,
         hasAuthorization: Bool,
         generationMatches: Bool
-    ) -> WorldwideSystemAudioStartMode? {
-        WorldwideSystemAudioRecoveryPolicy.startMode(
+    ) throws -> WorldwideSystemAudioStartMode? {
+        try WorldwideSystemAudioRecoveryPolicy.startMode(
             isLive: isLive,
             isPausedForRecovery: isPaused,
             hasSource: hasSource,

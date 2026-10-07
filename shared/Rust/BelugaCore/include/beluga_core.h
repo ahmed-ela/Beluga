@@ -519,6 +519,100 @@ typedef struct {
 beluga_core_supported_player_arbitration_output_t beluga_core_supported_player_arbitrate(
     beluga_core_supported_player_arbitration_input_t input);
 
+/* Copied availability retry policy; no socket, session, timer or native effects.
+ * States: delay in {1,2,4,8,16,30}/validated0, or delay1/validated1.
+ * Event0: successfully handled parsed waiting/ready; event1: iteration failure.
+ * A WebSocket upgrade alone is not a policy event.
+ * Decision0: observed valid state; decision1: retry after the original delay;
+ * decision2: invalid input, preserving the exact raw state and zeroing outputs.
+ * ABI1 and reserved0 only. Native must validate correlation before commitment.
+ */
+typedef struct {
+    uint32_t abi_version;
+    uint32_t next_delay_seconds;
+    uint32_t has_validated_connection;
+    uint32_t reserved;
+} beluga_core_availability_retry_state_t;
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t reserved;
+} beluga_core_availability_retry_event_t;
+
+typedef struct {
+    beluga_core_availability_retry_state_t candidate_state;
+    uint32_t decision;
+    uint32_t became_validated;
+    uint32_t retry_delay_seconds;
+    uint32_t reserved;
+} beluga_core_availability_retry_result_t;
+
+beluga_core_availability_retry_result_t beluga_core_availability_retry_step(
+    uint32_t abi_version,
+    beluga_core_availability_retry_state_t before,
+    beluga_core_availability_retry_event_t event);
+
+
+/* Three copied scalar policies; ABI1, reserved0, closed status/decision domains.
+ * Safe-output retry: signed 64-bit constructor limits independently clamp to1;
+ * transition events1=tick/2=failure/3=reset. Status0 refuses exact unchanged raw
+ * state; status1 accepts. Tick0=none/1=wait/2=attempt. No timing or route effect.
+ * System start: closed booleans; status1/mode0 is legitimate no-match, not an
+ * invalid bridge. Modes1=alreadyLive/2=resumeExisting/3=startNew.
+ * Hosted-call results: status1/value0 is legitimate refusal/None. Admission
+ * values0/1; evidence0=None/1=inactive/2=preflightArmed/3=active. Presence0
+ * ignores payload; UUID bytes and u64 counters are copied without truncation.
+ * These projections mint no native authority. Native validates correlation
+ * before committing state or effects; all ownership/effect guards stay native.
+ * Public declarations remain C++-compatible; layout assertions live in smokes.
+ */
+typedef struct {
+    uint32_t abi_version, reserved;
+    int64_t maximum_failed_attempt_count, maximum_backoff_tick_count, capped_cooldown_tick_count;
+} beluga_core_safe_output_retry_config_t;
+typedef struct {
+    uint32_t abi_version, reserved;
+    int64_t maximum_failed_attempt_count, maximum_backoff_tick_count, capped_cooldown_tick_count;
+    int64_t failed_attempt_count, backoff_tick_count, cooldown_tick_count;
+} beluga_core_safe_output_retry_state_t;
+typedef struct {
+    beluga_core_safe_output_retry_state_t state;
+    uint32_t status, tick_decision;
+} beluga_core_safe_output_retry_result_t;
+typedef struct {
+    uint32_t abi_version, reserved;
+    uint32_t is_live, is_paused_for_recovery, has_source, has_sink;
+    uint32_t has_valid_authorization, peer_generation_matches;
+} beluga_core_system_audio_start_facts_t;
+typedef struct {
+    uint32_t abi_version, status, mode, reserved;
+} beluga_core_system_audio_start_decision_t;
+typedef struct {
+    uint32_t abi_version, reserved;
+    uint64_t observation_sequence, highest_admitted_sequence;
+    uint32_t observation_challenge_present, current_challenge_present;
+    int64_t current_protocol_version;
+    uint64_t observation_challenge_sequence, current_challenge_sequence;
+    uint8_t observation_nonce[16], observation_call_epoch_nonce[16];
+    uint8_t current_nonce[16], current_call_epoch_nonce[16];
+} beluga_core_hosted_call_observation_facts_t;
+typedef struct {
+    uint32_t abi_version, reserved, active, armed;
+} beluga_core_hosted_call_evidence_facts_t;
+typedef struct {
+    uint32_t abi_version, reserved, audio_present, challenge_present;
+    uint64_t audio_generation, challenge_generation, current_generation;
+} beluga_core_hosted_call_peer_facts_t;
+typedef struct {
+    uint32_t abi_version, status, value, reserved;
+} beluga_core_hosted_call_decision_t;
+beluga_core_safe_output_retry_result_t beluga_core_safe_output_retry_initialize(beluga_core_safe_output_retry_config_t);
+beluga_core_safe_output_retry_result_t beluga_core_safe_output_retry_transition(beluga_core_safe_output_retry_state_t, uint32_t event);
+beluga_core_system_audio_start_decision_t beluga_core_system_audio_start(beluga_core_system_audio_start_facts_t);
+beluga_core_hosted_call_decision_t beluga_core_hosted_call_observation(beluga_core_hosted_call_observation_facts_t);
+beluga_core_hosted_call_decision_t beluga_core_hosted_call_evidence(beluga_core_hosted_call_evidence_facts_t);
+beluga_core_hosted_call_decision_t beluga_core_hosted_call_peer_generation(beluga_core_hosted_call_peer_facts_t);
+
 #ifdef __cplusplus
 }
 #endif

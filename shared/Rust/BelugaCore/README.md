@@ -5,7 +5,9 @@ the worldwide host lifecycle state machine, the handoff transaction ledger, and
 the one-use offer/timeline reducer, the phone playback-operation reducer, and
 the invitation acceptance policy, the bounded signaling replay window, and
 catalog-checkpoint attempt admission/revocation, durable reconnect counter
-proposals, pairing-commit phase/recovery plans, and supported-player arbitration**.
+proposals, pairing-commit phase/recovery plans, supported-player arbitration,
+availability retry proposals, safe-output retry/cooldown, system-audio start
+selection, and hosted-call scalar admission/projection**.
 It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
@@ -141,6 +143,20 @@ Verification includes independent literal 48-case traces, closed-field and
 copied-output refusal cases, native stale/recovery histories and retained command
 admission, with actual C/Swift layout and link checks. An ordinal or policy pass
 does not prove live discovery, phone continuation, native pause or acoustic output.
+
+Availability retry has exactly seven admitted copied states: delays 1/2/4/8/16/30
+before validation, and delay1 after validation. Only successfully handled parsed
+waiting/ready events reset backoff; a WebSocket upgrade alone cannot do so. Failure
+returns the prior delay and then doubles the successor up to30. The by-value ABI
+uses State16/Event8/Result32, alignment4, preserving exact raw state on malformed
+inputs. Native rejection-only correlation checks every result before commitment;
+a bridge fault retains the prior scalars, becomes sticky and terminates only
+after the exact socket's original cleanup and current-generation guards.
+Sockets, crypto/authentication, native event handling, timers, cancellation and
+supervisor task ownership are not transferred to Rust. Tests use frozen original
+arithmetic/literal histories, actual-C-first copied corruption and the real inert
+supervisor; its empty-default immutable exit observer conveys no authorization.
+Source integration alone is not an archive/link, network or installed-host pass.
 
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.

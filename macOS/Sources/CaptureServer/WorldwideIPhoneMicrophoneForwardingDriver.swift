@@ -411,6 +411,21 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var isStopped = false
     private var mediaFreshnessWatchdogTask: Task<Void, Never>?
 
+    #if DEBUG
+    func seedUnauthorizedFailureForTesting(
+        isolation: isolated (any Actor)? = #isolation,
+        _ category: WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) {
+        precondition(category == .sharedClockUnsafe || category == .formatUnsafe)
+        precondition(!isStopped && currentAttempt == nil && peer == nil && track == nil)
+        precondition(!transportAuthorized && mediaFreshnessWatchdogTask == nil)
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        lastFailureCategory = category
+        phase = category == .sharedClockUnsafe ? .sharedClockUnsafe : .formatUnsafe
+    }
+    #endif
+
     init(
         policy: WorldwideIPhoneMicrophoneForwardingPolicy,
         makeOutput: @escaping OutputFactory,

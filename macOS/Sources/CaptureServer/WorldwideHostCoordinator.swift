@@ -65,6 +65,8 @@ actor WorldwideHostCoordinator {
         RemoteAvailabilityLocator
     ) throws -> any WorldwideHostAvailabilityTransport
     private let availabilityRetrySleep: @Sendable (Int) async throws -> Void
+    private let availabilityRetryProducer: BelugaRustAvailabilityRetryProducer
+    private let availabilityLoopDidEndObserver: @Sendable () -> Void
     private let availabilityLoopOverride: (@Sendable () async -> Void)?
     private let connectionTelemetry: any ConnectionTelemetryRecording
     private let teardownDidBegin: @Sendable () -> Void
@@ -155,6 +157,8 @@ actor WorldwideHostCoordinator {
         availabilityRetrySleep: @escaping @Sendable (Int) async throws -> Void = {
             try await Task.sleep(for: .seconds($0))
         },
+        availabilityRetryProducer: BelugaRustAvailabilityRetryProducer = .actual,
+        availabilityLoopDidEndObserver: @escaping @Sendable () -> Void = {},
         availabilityLoopOverride: (@Sendable () async -> Void)? = nil,
         connectionTelemetry: any ConnectionTelemetryRecording =
             NoopConnectionTelemetryRecorder(),
@@ -195,6 +199,8 @@ actor WorldwideHostCoordinator {
         self.availabilityMarkerGenerationNonce = availabilityMarkerGenerationNonce
         makeAvailabilityClient = availabilityClientFactory
         self.availabilityRetrySleep = availabilityRetrySleep
+        self.availabilityRetryProducer = availabilityRetryProducer
+        self.availabilityLoopDidEndObserver = availabilityLoopDidEndObserver
         self.availabilityLoopOverride = availabilityLoopOverride
         self.connectionTelemetry = connectionTelemetry
         self.teardownDidBegin = teardownDidBegin
@@ -627,6 +633,7 @@ actor WorldwideHostCoordinator {
 
     /// Converts an unsanctioned current-loop exit into a fatal host failure.
     private func availabilityLoopDidEnd(generation: UUID) async {
+        defer { availabilityLoopDidEndObserver() }
         guard availabilityGeneration == generation else { return }
         availabilityGeneration = nil
         availabilityBinding = nil
@@ -682,7 +689,7 @@ actor WorldwideHostCoordinator {
                     try await handleAvailabilityEvent(event, client: client)
                     guard isCurrentAvailabilityClient(client) else { return }
                     if event.validatesHostAvailability,
-                       retryPolicy.observedValidAvailabilityState() {
+                       try retryPolicy.observedValidAvailabilityState(using: availabilityRetryProducer) {
                         retryOrdinal = 0
                         logger.info(
                             "Worldwide paired-device availability is online " +
@@ -708,7 +715,18 @@ actor WorldwideHostCoordinator {
                 }
                 await iterationClient?.close()
                 guard !Task.isCancelled, ownsAvailabilityGeneration(generation, epoch: epoch) else { return }
-                let retryDelaySeconds = retryPolicy.delayAfterFailure()
+                // A copied-policy fault is not a transport failure and must not consume a second proposal.
+                if error is WorldwideAvailabilityRetryError {
+                    await failAvailabilityRetryBridge()
+                    return
+                }
+                let retryDelaySeconds: Int
+                do {
+                    retryDelaySeconds = try retryPolicy.delayAfterFailure(using: availabilityRetryProducer)
+                } catch {
+                    await failAvailabilityRetryBridge()
+                    return
+                }
                 recordConnectionTelemetry(
                     .retryScheduled,
                     retryOrdinal: retryOrdinal,
@@ -734,6 +752,13 @@ actor WorldwideHostCoordinator {
                 }
             }
         }
+    }
+
+    /// Called only after this iteration's exact client was closed and current generation rechecked.
+    private func failAvailabilityRetryBridge() async {
+        recordConnectionTelemetry(.attemptFailed, failure: .unknown, terminal: .failed)
+        logger.error("Worldwide availability retry policy bridge invalid; host stopped")
+        await shutdown(throwing: WorldwideAvailabilityRetryError.invalidBridge)
     }
 
     /// Uses object identity to reject callbacks from a replaced signaling connection.

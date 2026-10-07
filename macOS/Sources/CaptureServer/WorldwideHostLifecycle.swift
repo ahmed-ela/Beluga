@@ -134,29 +134,6 @@ struct WorldwideHostLifecycle: Equatable, Sendable {
     }
 }
 
-/// Bounded exponential backoff for the durable availability WebSocket.
-struct WorldwideAvailabilityRetryPolicy: Equatable, Sendable {
-    private(set) var nextDelaySeconds = 1
-    private(set) var hasValidatedConnection = false
-
-    /// A WebSocket open callback is insufficient because the Worker can accept the upgrade and
-    /// immediately return a protocol error. Only a parsed waiting/ready event proves this socket
-    /// owns the availability role and may reset backoff.
-    mutating func observedValidAvailabilityState() -> Bool {
-        let becameValidated = !hasValidatedConnection
-        hasValidatedConnection = true
-        nextDelaySeconds = 1
-        return becameValidated
-    }
-
-    /// Returns the current retry delay, then doubles it up to thirty seconds.
-    mutating func delayAfterFailure() -> Int {
-        let delay = nextDelaySeconds
-        nextDelaySeconds = min(nextDelaySeconds * 2, 30)
-        hasValidatedConnection = false
-        return delay
-    }
-}
 
 /// Signals an attempted transition that violates worldwide-host ownership rules.
 enum WorldwideHostLifecycleError: LocalizedError, Equatable {

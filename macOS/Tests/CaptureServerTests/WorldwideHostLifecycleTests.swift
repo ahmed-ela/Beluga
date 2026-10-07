@@ -329,61 +329,61 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         XCTAssertFalse(message.contains("nonce"))
     }
 
-    func testSafeOutputRetryPolicyBacksOffThenProbesAfterCappedCooldown() {
+    func testSafeOutputRetryPolicyBacksOffThenProbesAfterCappedCooldown() throws {
         var policy = WorldwideSafeOutputInvariantRetryPolicy(
             maximumFailedAttemptCount: 3,
             maximumBackoffTickCount: 4,
             cappedCooldownTickCount: 3
         )
 
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
-        policy.recordFailure()
-        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
+        try policy.recordFailure()
+        XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
 
-        policy.recordFailure()
-        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
-        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        try policy.recordFailure()
+        XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
+        XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
 
-        policy.recordFailure()
+        try policy.recordFailure()
         for _ in 0..<3 {
-            XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
+            XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
         }
         XCTAssertEqual(policy.failedAttemptCount, 3)
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
         XCTAssertEqual(policy.failedAttemptCount, 0)
 
-        policy.recordFailure()
-        policy.reset()
+        try policy.recordFailure()
+        try policy.reset()
         XCTAssertEqual(policy.failedAttemptCount, 0)
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
     }
 
-    func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() {
+    func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() throws {
         var policy = WorldwideAvailabilityRetryPolicy()
 
-        XCTAssertEqual(policy.delayAfterFailure(), 1)
-        XCTAssertEqual(policy.delayAfterFailure(), 2)
-        XCTAssertEqual(policy.delayAfterFailure(), 4)
-        XCTAssertEqual(policy.delayAfterFailure(), 8)
-        XCTAssertEqual(policy.delayAfterFailure(), 16)
-        XCTAssertEqual(policy.delayAfterFailure(), 30)
-        XCTAssertEqual(policy.delayAfterFailure(), 30)
+        XCTAssertEqual(try policy.delayAfterFailure(), 1)
+        XCTAssertEqual(try policy.delayAfterFailure(), 2)
+        XCTAssertEqual(try policy.delayAfterFailure(), 4)
+        XCTAssertEqual(try policy.delayAfterFailure(), 8)
+        XCTAssertEqual(try policy.delayAfterFailure(), 16)
+        XCTAssertEqual(try policy.delayAfterFailure(), 30)
+        XCTAssertEqual(try policy.delayAfterFailure(), 30)
         XCTAssertFalse(policy.hasValidatedConnection)
     }
 
-    func testValidAvailabilityStateResetsBackoffAndIsReportedOncePerConnection() {
+    func testValidAvailabilityStateResetsBackoffAndIsReportedOncePerConnection() throws {
         var policy = WorldwideAvailabilityRetryPolicy()
-        XCTAssertEqual(policy.delayAfterFailure(), 1)
-        XCTAssertEqual(policy.delayAfterFailure(), 2)
+        XCTAssertEqual(try policy.delayAfterFailure(), 1)
+        XCTAssertEqual(try policy.delayAfterFailure(), 2)
 
-        XCTAssertTrue(policy.observedValidAvailabilityState())
-        XCTAssertFalse(policy.observedValidAvailabilityState())
+        XCTAssertTrue(try policy.observedValidAvailabilityState())
+        XCTAssertFalse(try policy.observedValidAvailabilityState())
         XCTAssertTrue(policy.hasValidatedConnection)
-        XCTAssertEqual(policy.delayAfterFailure(), 1)
+        XCTAssertEqual(try policy.delayAfterFailure(), 1)
 
-        XCTAssertTrue(policy.observedValidAvailabilityState())
+        XCTAssertTrue(try policy.observedValidAvailabilityState())
         XCTAssertEqual(policy.nextDelaySeconds, 1)
     }
 

@@ -777,6 +777,552 @@ static void supported_player_arbitration_smoke(void) {
     puts("BelugaCore C supported player arbitration ABI PASS: exact layouts, 48 literal choices and 720 closed-field refusals");
 }
 
+_Static_assert(sizeof(beluga_core_availability_retry_state_t) == 16, "availability state size");
+_Static_assert(_Alignof(beluga_core_availability_retry_state_t) == 4, "availability state alignment");
+_Static_assert(offsetof(beluga_core_availability_retry_state_t, abi_version) == 0, "availability state ABI offset");
+_Static_assert(offsetof(beluga_core_availability_retry_state_t, next_delay_seconds) == 4, "availability delay offset");
+_Static_assert(offsetof(beluga_core_availability_retry_state_t, has_validated_connection) == 8, "availability validation offset");
+_Static_assert(offsetof(beluga_core_availability_retry_state_t, reserved) == 12, "availability state reserved offset");
+_Static_assert(sizeof(beluga_core_availability_retry_event_t) == 8, "availability event size");
+_Static_assert(_Alignof(beluga_core_availability_retry_event_t) == 4, "availability event alignment");
+_Static_assert(offsetof(beluga_core_availability_retry_event_t, opcode) == 0, "availability event opcode offset");
+_Static_assert(offsetof(beluga_core_availability_retry_event_t, reserved) == 4, "availability event reserved offset");
+_Static_assert(sizeof(beluga_core_availability_retry_result_t) == 32, "availability result size");
+_Static_assert(_Alignof(beluga_core_availability_retry_result_t) == 4, "availability result alignment");
+_Static_assert(offsetof(beluga_core_availability_retry_result_t, candidate_state) == 0, "availability result state offset");
+_Static_assert(offsetof(beluga_core_availability_retry_result_t, decision) == 16, "availability result decision offset");
+_Static_assert(offsetof(beluga_core_availability_retry_result_t, became_validated) == 20, "availability result became offset");
+_Static_assert(offsetof(beluga_core_availability_retry_result_t, retry_delay_seconds) == 24, "availability result delay offset");
+_Static_assert(offsetof(beluga_core_availability_retry_result_t, reserved) == 28, "availability result reserved offset");
+
+static void availability_retry_assert_state(
+    beluga_core_availability_retry_state_t actual,
+    beluga_core_availability_retry_state_t expected) {
+    assert(actual.abi_version == expected.abi_version);
+    assert(actual.next_delay_seconds == expected.next_delay_seconds);
+    assert(actual.has_validated_connection == expected.has_validated_connection);
+    assert(actual.reserved == expected.reserved);
+}
+
+static size_t availability_retry_assert_refused(
+    uint32_t abi_version,
+    beluga_core_availability_retry_state_t before,
+    beluga_core_availability_retry_event_t event) {
+    const beluga_core_availability_retry_state_t copied_state = before;
+    const beluga_core_availability_retry_event_t copied_event = event;
+    const beluga_core_availability_retry_result_t output =
+        beluga_core_availability_retry_step(abi_version, before, event);
+    availability_retry_assert_state(output.candidate_state, before);
+    assert(output.decision == 2 && output.became_validated == 0);
+    assert(output.retry_delay_seconds == 0 && output.reserved == 0);
+    availability_retry_assert_state(before, copied_state);
+    assert(event.opcode == copied_event.opcode && event.reserved == copied_event.reserved);
+    return 1;
+}
+
+static void availability_retry_smoke(void) {
+    /* Frozen original rows: before delay/validated, opcode, candidate delay/validated,
+     * decision, became validated, original retry delay. No expected reducer call. */
+    const uint32_t literals[14][8] = {
+        {1,0,0,1,1,0,1,0}, {1,0,1,2,0,1,0,1},
+        {2,0,0,1,1,0,1,0}, {2,0,1,4,0,1,0,2},
+        {4,0,0,1,1,0,1,0}, {4,0,1,8,0,1,0,4},
+        {8,0,0,1,1,0,1,0}, {8,0,1,16,0,1,0,8},
+        {16,0,0,1,1,0,1,0}, {16,0,1,30,0,1,0,16},
+        {30,0,0,1,1,0,1,0}, {30,0,1,30,0,1,0,30},
+        {1,1,0,1,1,0,0,0}, {1,1,1,2,0,1,0,1}
+    };
+    const uint32_t invalids[7][4] = {
+        {0,2,UINT32_MAX,0}, {0,2,UINT32_MAX,0}, {0,3,32,UINT32_MAX},
+        {2,UINT32_MAX,0,0}, {1,UINT32_MAX,0,0},
+        {2,UINT32_MAX,0,0}, {1,UINT32_MAX,0,0}
+    };
+    const size_t invalid_counts[7] = {3,3,4,2,2,2,2};
+    size_t refused_attempts = 0;
+    for (size_t row = 0; row < 14; ++row) {
+        const uint32_t *literal = literals[row];
+        const beluga_core_availability_retry_state_t before = {1,literal[0],literal[1],0};
+        const beluga_core_availability_retry_event_t event = {literal[2],0};
+        const beluga_core_availability_retry_result_t output =
+            beluga_core_availability_retry_step(1, before, event);
+        const beluga_core_availability_retry_state_t expected = {1,literal[3],literal[4],0};
+        availability_retry_assert_state(output.candidate_state, expected);
+        assert(output.decision == literal[5] && output.became_validated == literal[6]);
+        assert(output.retry_delay_seconds == literal[7] && output.reserved == 0);
+        for (size_t field = 0; field < 7; ++field) {
+            for (size_t bad = 0; bad < invalid_counts[field]; ++bad) {
+                uint32_t call_abi = 1;
+                beluga_core_availability_retry_state_t raw_state = before;
+                beluga_core_availability_retry_event_t raw_event = event;
+                const uint32_t value = invalids[field][bad];
+                switch (field) {
+                    case 0: call_abi = value; break;
+                    case 1: raw_state.abi_version = value; break;
+                    case 2: raw_state.next_delay_seconds = value; break;
+                    case 3: raw_state.has_validated_connection = value; break;
+                    case 4: raw_state.reserved = value; break;
+                    case 5: raw_event.opcode = value; break;
+                    case 6: raw_event.reserved = value; break;
+                    default: assert(0); break;
+                }
+                refused_attempts += availability_retry_assert_refused(call_abi, raw_state, raw_event);
+            }
+        }
+        beluga_core_availability_retry_state_t raw_state = before;
+        raw_state.next_delay_seconds = 2;
+        raw_state.has_validated_connection = 1;
+        refused_attempts += availability_retry_assert_refused(1, raw_state, event);
+        raw_state = before;
+        raw_state.abi_version = 9;
+        raw_state.reserved = 17;
+        refused_attempts += availability_retry_assert_refused(0, raw_state,
+            (beluga_core_availability_retry_event_t){7,UINT32_MAX});
+        availability_retry_assert_state(before,
+            (beluga_core_availability_retry_state_t){1,literal[0],literal[1],0});
+        assert(event.opcode == literal[2] && event.reserved == 0);
+    }
+    assert(refused_attempts == 280);
+    puts("BelugaCore C availability retry ABI PASS: exact layouts, 14 literal transitions and 280 unchanged refusals");
+}
+
+/* PRIVATE, UNCOMPILED, UNEXECUTED additive fragment for the existing C smoke.
+ * Include after BelugaCore.h and invoke smoke_batch_a_policies() from its main.
+ * All calls use the six actual production exports, not a shadow reducer.
+ */
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#ifdef NDEBUG
+#error "Batch A smoke requires enabled ordinary assertions"
+#endif
+
+#define BA_LAYOUT(T, S, A) _Static_assert(sizeof(T) == (S), #T " size"); _Static_assert(_Alignof(T) == (A), #T " alignment")
+#define BA_OFFSET(T, F, N) _Static_assert(offsetof(T, F) == (N), #T "." #F " offset")
+BA_LAYOUT(beluga_core_safe_output_retry_config_t, 32, 8);
+BA_OFFSET(beluga_core_safe_output_retry_config_t, abi_version, 0);
+BA_OFFSET(beluga_core_safe_output_retry_config_t, reserved, 4);
+BA_OFFSET(beluga_core_safe_output_retry_config_t, maximum_failed_attempt_count, 8);
+BA_OFFSET(beluga_core_safe_output_retry_config_t, maximum_backoff_tick_count, 16);
+BA_OFFSET(beluga_core_safe_output_retry_config_t, capped_cooldown_tick_count, 24);
+BA_LAYOUT(beluga_core_safe_output_retry_state_t, 56, 8);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, abi_version, 0);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, reserved, 4);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, maximum_failed_attempt_count, 8);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, maximum_backoff_tick_count, 16);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, capped_cooldown_tick_count, 24);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, failed_attempt_count, 32);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, backoff_tick_count, 40);
+BA_OFFSET(beluga_core_safe_output_retry_state_t, cooldown_tick_count, 48);
+BA_LAYOUT(beluga_core_safe_output_retry_result_t, 64, 8);
+BA_OFFSET(beluga_core_safe_output_retry_result_t, state, 0);
+BA_OFFSET(beluga_core_safe_output_retry_result_t, status, 56);
+BA_OFFSET(beluga_core_safe_output_retry_result_t, tick_decision, 60);
+BA_LAYOUT(beluga_core_system_audio_start_facts_t, 32, 4);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, abi_version, 0);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, reserved, 4);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, is_live, 8);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, is_paused_for_recovery, 12);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, has_source, 16);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, has_sink, 20);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, has_valid_authorization, 24);
+BA_OFFSET(beluga_core_system_audio_start_facts_t, peer_generation_matches, 28);
+BA_LAYOUT(beluga_core_system_audio_start_decision_t, 16, 4);
+BA_OFFSET(beluga_core_system_audio_start_decision_t, abi_version, 0);
+BA_OFFSET(beluga_core_system_audio_start_decision_t, status, 4);
+BA_OFFSET(beluga_core_system_audio_start_decision_t, mode, 8);
+BA_OFFSET(beluga_core_system_audio_start_decision_t, reserved, 12);
+BA_LAYOUT(beluga_core_hosted_call_observation_facts_t, 120, 8);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, abi_version, 0);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, reserved, 4);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, observation_sequence, 8);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, highest_admitted_sequence, 16);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, observation_challenge_present, 24);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, current_challenge_present, 28);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, current_protocol_version, 32);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, observation_challenge_sequence, 40);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, current_challenge_sequence, 48);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, observation_nonce, 56);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, observation_call_epoch_nonce, 72);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, current_nonce, 88);
+BA_OFFSET(beluga_core_hosted_call_observation_facts_t, current_call_epoch_nonce, 104);
+BA_LAYOUT(beluga_core_hosted_call_evidence_facts_t, 16, 4);
+BA_OFFSET(beluga_core_hosted_call_evidence_facts_t, abi_version, 0);
+BA_OFFSET(beluga_core_hosted_call_evidence_facts_t, reserved, 4);
+BA_OFFSET(beluga_core_hosted_call_evidence_facts_t, active, 8);
+BA_OFFSET(beluga_core_hosted_call_evidence_facts_t, armed, 12);
+BA_LAYOUT(beluga_core_hosted_call_peer_facts_t, 40, 8);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, abi_version, 0);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, reserved, 4);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, audio_present, 8);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, challenge_present, 12);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, audio_generation, 16);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, challenge_generation, 24);
+BA_OFFSET(beluga_core_hosted_call_peer_facts_t, current_generation, 32);
+BA_LAYOUT(beluga_core_hosted_call_decision_t, 16, 4);
+BA_OFFSET(beluga_core_hosted_call_decision_t, abi_version, 0);
+BA_OFFSET(beluga_core_hosted_call_decision_t, status, 4);
+BA_OFFSET(beluga_core_hosted_call_decision_t, value, 8);
+BA_OFFSET(beluga_core_hosted_call_decision_t, reserved, 12);
+#undef BA_LAYOUT
+#undef BA_OFFSET
+
+/* Every wrapper invokes actual C once, then checks the caller-owned complete
+ * input bytes. All structs are initialized to zero, including copied payloads.
+ * Result expectations below are literal/native-reference assertions.
+ */
+static beluga_core_safe_output_retry_result_t ba_initialize(beluga_core_safe_output_retry_config_t input) {
+    const beluga_core_safe_output_retry_config_t before = input;
+    const beluga_core_safe_output_retry_result_t result = beluga_core_safe_output_retry_initialize(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    return result;
+}
+static beluga_core_safe_output_retry_result_t ba_transition(beluga_core_safe_output_retry_state_t input, uint32_t event) {
+    const beluga_core_safe_output_retry_state_t before = input;
+    const uint32_t before_event = event;
+    const beluga_core_safe_output_retry_result_t result = beluga_core_safe_output_retry_transition(input, event);
+    assert(memcmp(&input, &before, sizeof(input)) == 0 && event == before_event);
+    return result;
+}
+static beluga_core_system_audio_start_decision_t ba_start(beluga_core_system_audio_start_facts_t input) {
+    const beluga_core_system_audio_start_facts_t before = input;
+    const beluga_core_system_audio_start_decision_t result = beluga_core_system_audio_start(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    return result;
+}
+static beluga_core_hosted_call_decision_t ba_observation(beluga_core_hosted_call_observation_facts_t input) {
+    const beluga_core_hosted_call_observation_facts_t before = input;
+    const beluga_core_hosted_call_decision_t result = beluga_core_hosted_call_observation(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    return result;
+}
+static beluga_core_hosted_call_decision_t ba_evidence(beluga_core_hosted_call_evidence_facts_t input) {
+    const beluga_core_hosted_call_evidence_facts_t before = input;
+    const beluga_core_hosted_call_decision_t result = beluga_core_hosted_call_evidence(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    return result;
+}
+static beluga_core_hosted_call_decision_t ba_peer(beluga_core_hosted_call_peer_facts_t input) {
+    const beluga_core_hosted_call_peer_facts_t before = input;
+    const beluga_core_hosted_call_decision_t result = beluga_core_hosted_call_peer_generation(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    return result;
+}
+static beluga_core_safe_output_retry_config_t ba_config(int64_t failed, int64_t backoff, int64_t cooldown) {
+    beluga_core_safe_output_retry_config_t x = {0};
+    x.abi_version = 1;
+    x.maximum_failed_attempt_count = failed;
+    x.maximum_backoff_tick_count = backoff;
+    x.capped_cooldown_tick_count = cooldown;
+    return x;
+}
+static void ba_retry_counts(beluga_core_safe_output_retry_result_t x, uint32_t status, uint32_t tick,
+    int64_t failed, int64_t backoff, int64_t cooldown) {
+    assert(x.status == status && x.tick_decision == tick);
+    assert(x.state.failed_attempt_count == failed && x.state.backoff_tick_count == backoff
+        && x.state.cooldown_tick_count == cooldown);
+}
+static void ba_retry_config(beluga_core_safe_output_retry_state_t x, int64_t failed, int64_t backoff, int64_t cooldown) {
+    assert(x.abi_version == 1 && x.reserved == 0);
+    assert(x.maximum_failed_attempt_count == failed && x.maximum_backoff_tick_count == backoff
+        && x.capped_cooldown_tick_count == cooldown);
+}
+static void ba_invalid_retry(beluga_core_safe_output_retry_state_t raw) {
+    for (uint32_t event = 1; event <= 3; ++event) {
+        const beluga_core_safe_output_retry_result_t x = ba_transition(raw, event);
+        assert(x.status == 0 && x.tick_decision == 0);
+        assert(memcmp(&x.state, &raw, sizeof(raw)) == 0);
+    }
+}
+
+static void ba_safe_output_smoke(void) {
+    const int64_t requested[] = {INT64_MIN, -9, 0, 1, 2, INT64_MAX};
+    const int64_t normalized[] = {1, 1, 1, 1, 2, INT64_MAX};
+    for (size_t f = 0; f < 6; ++f) for (size_t b = 0; b < 6; ++b) for (size_t c = 0; c < 6; ++c) {
+        const beluga_core_safe_output_retry_result_t x = ba_initialize(ba_config(requested[f], requested[b], requested[c]));
+        ba_retry_counts(x, 1, 0, 0, 0, 0);
+        ba_retry_config(x.state, normalized[f], normalized[b], normalized[c]);
+    }
+    const struct { uint32_t event; int64_t failed, backoff, cooldown; uint32_t tick; } trace[] = {
+        {1,0,0,0,2}, {2,1,1,0,0}, {1,1,0,0,1}, {1,1,0,0,2}, {2,2,2,0,0},
+        {1,2,1,0,1}, {1,2,0,0,1}, {1,2,0,0,2}, {2,3,0,3,0}, {2,3,0,3,0},
+        {1,3,0,2,1}, {1,3,0,1,1}, {1,3,0,0,1}, {1,0,0,0,2}, {2,1,1,0,0},
+        {3,0,0,0,0}, {1,0,0,0,2}, {3,0,0,0,0}, {1,0,0,0,2}
+    };
+    beluga_core_safe_output_retry_state_t raw = ba_initialize(ba_config(3,4,3)).state;
+    for (size_t i = 0; i < sizeof(trace)/sizeof(trace[0]); ++i) {
+        const beluga_core_safe_output_retry_result_t x = ba_transition(raw, trace[i].event);
+        ba_retry_counts(x, 1, trace[i].tick, trace[i].failed, trace[i].backoff, trace[i].cooldown);
+        ba_retry_config(x.state, 3,4,3);
+        raw = x.state;
+    }
+    const int64_t default_rows[][3] = {{1,1,0},{2,2,0},{3,4,0},{4,8,0},{5,16,0},{6,0,60}};
+    raw = ba_initialize(ba_config(6,16,60)).state;
+    for (size_t i = 0; i < 6; ++i) {
+        const beluga_core_safe_output_retry_result_t x = ba_transition(raw, 2);
+        ba_retry_counts(x, 1,0,default_rows[i][0],default_rows[i][1],default_rows[i][2]);
+        ba_retry_config(x.state, 6,16,60);
+        raw = x.state;
+    }
+    for (int64_t tick = 0; tick < 60; ++tick) {
+        const beluga_core_safe_output_retry_result_t x = ba_transition(raw, 1);
+        ba_retry_counts(x, 1,1,6,0,59-tick);
+        raw = x.state;
+    }
+    ba_retry_counts(ba_transition(raw, 1), 1,2,0,0,0);
+    raw = ba_initialize(ba_config(1,INT64_MAX,INT64_MAX)).state;
+    const beluga_core_safe_output_retry_result_t cap = ba_transition(raw, 2);
+    ba_retry_counts(cap, 1,0,1,0,INT64_MAX);
+    const beluga_core_safe_output_retry_result_t waited = ba_transition(cap.state, 1);
+    ba_retry_counts(waited, 1,1,1,0,INT64_MAX-1);
+    const beluga_core_safe_output_retry_result_t retained = ba_transition(waited.state, 2);
+    assert(retained.status == 1 && retained.tick_decision == 0);
+    assert(memcmp(&retained.state, &waited.state, sizeof(retained.state)) == 0);
+    raw = ba_initialize(ba_config(INT64_MAX,INT64_MAX,INT64_MAX)).state;
+    raw.failed_attempt_count = INT64_MAX-1;
+    ba_retry_counts(ba_transition(raw, 2), 1,0,INT64_MAX,0,INT64_MAX);
+    const int64_t prior[] = {30,31,32,64,999,INT64_MAX-2};
+    for (size_t i = 0; i < 6; ++i) {
+        raw = ba_initialize(ba_config(INT64_MAX,INT64_MAX,5)).state;
+        raw.failed_attempt_count = prior[i];
+        ba_retry_counts(ba_transition(raw, 2), 1,0,prior[i]+1,INT64_C(1073741824),0);
+    }
+    raw = ba_initialize(ba_config(1000,7,5)).state;
+    raw.failed_attempt_count = 998;
+    ba_retry_counts(ba_transition(raw, 2), 1,0,999,7,0);
+
+    const uint32_t envelopes[][2] = {{0,0},{2,0},{UINT32_MAX,0},{1,1},{1,2},{1,UINT32_MAX},{9,17}};
+    const beluga_core_safe_output_retry_config_t configs[] = {ba_config(INT64_MIN,-7,INT64_MAX),ba_config(3,4,3)};
+    for (size_t i = 0; i < 2; ++i) for (size_t j = 0; j < 7; ++j) {
+        beluga_core_safe_output_retry_config_t input = configs[i];
+        input.abi_version = envelopes[j][0]; input.reserved = envelopes[j][1];
+        beluga_core_safe_output_retry_state_t expected = {0};
+        expected.abi_version = input.abi_version; expected.reserved = input.reserved;
+        expected.maximum_failed_attempt_count = input.maximum_failed_attempt_count;
+        expected.maximum_backoff_tick_count = input.maximum_backoff_tick_count;
+        expected.capped_cooldown_tick_count = input.capped_cooldown_tick_count;
+        const beluga_core_safe_output_retry_result_t x = ba_initialize(input);
+        assert(x.status == 0 && x.tick_decision == 0);
+        assert(memcmp(&x.state, &expected, sizeof(expected)) == 0);
+    }
+    const beluga_core_safe_output_retry_state_t initial = ba_initialize(ba_config(3,4,3)).state;
+    const beluga_core_safe_output_retry_state_t pending = ba_transition(initial, 2).state;
+    const beluga_core_safe_output_retry_state_t capped = ba_transition(ba_transition(pending, 2).state, 2).state;
+    const beluga_core_safe_output_retry_state_t bases[] = {initial,pending,capped};
+    const uint32_t unknown_events[] = {0,4,UINT32_MAX};
+    const int64_t bad_limits[] = {INT64_MIN,-1,0};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t e = 0; e < 3; ++e) {
+            const beluga_core_safe_output_retry_result_t x = ba_transition(bases[i], unknown_events[e]);
+            assert(x.status == 0 && x.tick_decision == 0);
+            assert(memcmp(&x.state, &bases[i], sizeof(x.state)) == 0);
+        }
+        beluga_core_safe_output_retry_state_t bad = bases[i];
+        bad.abi_version = 0; ba_invalid_retry(bad);
+        bad = bases[i]; bad.abi_version = 2; ba_invalid_retry(bad);
+        bad = bases[i]; bad.reserved = 1; ba_invalid_retry(bad);
+        for (size_t limit = 0; limit < 3; ++limit) {
+            bad = bases[i]; bad.maximum_failed_attempt_count = bad_limits[limit]; ba_invalid_retry(bad);
+            bad = bases[i]; bad.maximum_backoff_tick_count = bad_limits[limit]; ba_invalid_retry(bad);
+            bad = bases[i]; bad.capped_cooldown_tick_count = bad_limits[limit]; ba_invalid_retry(bad);
+        }
+        bad = bases[i]; bad.failed_attempt_count = -1; ba_invalid_retry(bad);
+        bad = bases[i]; bad.failed_attempt_count = 4; ba_invalid_retry(bad);
+        bad = bases[i]; bad.backoff_tick_count = -1; ba_invalid_retry(bad);
+        bad = bases[i]; bad.backoff_tick_count = 9; ba_invalid_retry(bad);
+        bad = bases[i]; bad.cooldown_tick_count = -1; ba_invalid_retry(bad);
+        bad = bases[i]; bad.cooldown_tick_count = 4; ba_invalid_retry(bad);
+    }
+    raw = initial; raw.cooldown_tick_count = 1; ba_invalid_retry(raw);
+    raw = pending; raw.cooldown_tick_count = 1; ba_invalid_retry(raw);
+    raw = capped; raw.backoff_tick_count = 1; ba_invalid_retry(raw);
+    const beluga_core_safe_output_retry_result_t reset = ba_transition(pending, 3);
+    ba_retry_counts(reset, 1,0,0,0,0);
+    assert(memcmp(&reset.state, &initial, sizeof(initial)) == 0);
+    assert(pending.failed_attempt_count == 1 && pending.backoff_tick_count == 1);
+    puts("BelugaCore C safe output retry ABI PASS: exact layouts, frozen literal transitions and unchanged refusals");
+}
+
+static beluga_core_system_audio_start_facts_t ba_start_input(uint32_t bits) {
+    beluga_core_system_audio_start_facts_t x = {0};
+    x.abi_version = 1;
+    x.is_live = bits & 1; x.is_paused_for_recovery = (bits >> 1) & 1;
+    x.has_source = (bits >> 2) & 1; x.has_sink = (bits >> 3) & 1;
+    x.has_valid_authorization = (bits >> 4) & 1; x.peer_generation_matches = (bits >> 5) & 1;
+    return x;
+}
+static void ba_assert_start(beluga_core_system_audio_start_decision_t x, uint32_t status, uint32_t mode) {
+    assert(x.abi_version == 1 && x.status == status && x.mode == mode && x.reserved == 0);
+}
+static void ba_system_audio_smoke(void) {
+    /* Frozen literal native table, not generated by a production guard. */
+    const uint32_t modes[64] = {
+        3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        3,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0
+    };
+    const uint32_t malformed[] = {2,UINT32_MAX};
+    for (uint32_t bits = 0; bits < 64; ++bits) {
+        const beluga_core_system_audio_start_facts_t base = ba_start_input(bits);
+        ba_assert_start(ba_start(base), 1,modes[bits]);
+        for (uint32_t field = 0; field < 8; ++field) for (size_t b = 0; b < 2; ++b) {
+            beluga_core_system_audio_start_facts_t raw = base;
+            switch (field) {
+                case 0: raw.abi_version = malformed[b]; break;
+                case 1: raw.reserved = malformed[b]; break;
+                case 2: raw.is_live = malformed[b]; break;
+                case 3: raw.is_paused_for_recovery = malformed[b]; break;
+                case 4: raw.has_source = malformed[b]; break;
+                case 5: raw.has_sink = malformed[b]; break;
+                case 6: raw.has_valid_authorization = malformed[b]; break;
+                default: raw.peer_generation_matches = malformed[b]; break;
+            }
+            ba_assert_start(ba_start(raw), 0,0);
+        }
+        beluga_core_system_audio_start_facts_t raw = base;
+        raw.abi_version = 0; ba_assert_start(ba_start(raw), 0,0);
+        raw = base; raw.reserved = 1; ba_assert_start(ba_start(raw), 0,0);
+    }
+    puts("BelugaCore C system audio start ABI PASS: exact layouts, 64 literal choices and 1152 closed-field refusals");
+}
+
+static const uint8_t ba_nonce[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+static const uint8_t ba_epoch[16] = {16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1};
+static beluga_core_hosted_call_observation_facts_t ba_observation_input(void) {
+    beluga_core_hosted_call_observation_facts_t x = {0};
+    x.abi_version = 1; x.observation_sequence = 11; x.highest_admitted_sequence = 10;
+    x.observation_challenge_present = 1; x.current_challenge_present = 1;
+    x.current_protocol_version = 3; x.observation_challenge_sequence = 7; x.current_challenge_sequence = 7;
+    memcpy(x.observation_nonce,ba_nonce,16); memcpy(x.current_nonce,ba_nonce,16);
+    memcpy(x.observation_call_epoch_nonce,ba_epoch,16); memcpy(x.current_call_epoch_nonce,ba_epoch,16);
+    return x;
+}
+static void ba_assert_hosted(beluga_core_hosted_call_decision_t x, uint32_t status, uint32_t value) {
+    assert(x.abi_version == 1 && x.status == status && x.value == value && x.reserved == 0);
+}
+static beluga_core_hosted_call_peer_facts_t ba_peer_input(uint32_t audio_present, uint64_t audio,
+    uint32_t challenge_present, uint64_t challenge, uint64_t current) {
+    beluga_core_hosted_call_peer_facts_t x = {0};
+    x.abi_version = 1; x.audio_present = audio_present; x.challenge_present = challenge_present;
+    x.audio_generation = audio; x.challenge_generation = challenge; x.current_generation = current;
+    return x;
+}
+static void ba_hosted_smoke(void) {
+    const struct { uint64_t sequence, highest; uint32_t value; } watermarks[] = {
+        {0,0,0},{1,0,1},{10,10,0},{11,10,1},{10,11,0},{UINT64_MAX,0,1},{0,UINT64_MAX,0},
+        {UINT64_MAX,UINT64_MAX-1,1},{UINT64_MAX,UINT64_MAX,0},{UINT64_MAX-1,UINT64_MAX,0}
+    };
+    for (size_t i = 0; i < 10; ++i) {
+        beluga_core_hosted_call_observation_facts_t x = ba_observation_input();
+        x.observation_sequence = watermarks[i].sequence; x.highest_admitted_sequence = watermarks[i].highest;
+        ba_assert_hosted(ba_observation(x), 1,watermarks[i].value);
+    }
+    const int64_t versions[] = {INT64_MIN,-1,0,1,2,3,4,INT64_MAX};
+    const uint32_t version_values[] = {0,0,0,0,0,1,0,0};
+    for (size_t i = 0; i < 8; ++i) {
+        beluga_core_hosted_call_observation_facts_t x = ba_observation_input();
+        x.current_protocol_version = versions[i]; ba_assert_hosted(ba_observation(x), 1,version_values[i]);
+    }
+    const uint64_t sequences[] = {0,1,UINT64_MAX};
+    const uint32_t sequence_values[] = {0,1,1};
+    for (size_t i = 0; i < 3; ++i) {
+        beluga_core_hosted_call_observation_facts_t x = ba_observation_input();
+        x.observation_challenge_sequence = sequences[i]; x.current_challenge_sequence = sequences[i];
+        ba_assert_hosted(ba_observation(x), 1,sequence_values[i]);
+    }
+    const uint32_t absent[][2] = {{0,0},{0,1},{1,0}};
+    for (size_t i = 0; i < 3; ++i) {
+        beluga_core_hosted_call_observation_facts_t x = ba_observation_input();
+        x.observation_challenge_present = absent[i][0]; x.current_challenge_present = absent[i][1];
+        x.current_protocol_version = INT64_MIN; x.current_challenge_sequence = UINT64_MAX;
+        ba_assert_hosted(ba_observation(x), 1,0); /* Present flags absent: payload ignored, accepted refusal. */
+    }
+    beluga_core_hosted_call_observation_facts_t x = ba_observation_input();
+    memset(x.observation_nonce,0,16); memset(x.current_nonce,0,16); ba_assert_hosted(ba_observation(x), 1,0);
+    x = ba_observation_input(); memset(x.observation_call_epoch_nonce,0,16); memset(x.current_call_epoch_nonce,0,16);
+    ba_assert_hosted(ba_observation(x), 1,0);
+    x = ba_observation_input(); memcpy(x.observation_call_epoch_nonce,ba_nonce,16); memcpy(x.current_call_epoch_nonce,ba_nonce,16);
+    ba_assert_hosted(ba_observation(x), 1,0);
+    x = ba_observation_input(); x.observation_challenge_sequence = 6; ba_assert_hosted(ba_observation(x), 1,0);
+    for (size_t byte = 0; byte < 16; ++byte) for (uint32_t field = 0; field < 4; ++field) {
+        x = ba_observation_input();
+        switch (field) {
+            case 0: x.observation_nonce[byte] ^= 0x80; break;
+            case 1: x.observation_call_epoch_nonce[byte] ^= 0x80; break;
+            case 2: x.current_nonce[byte] ^= 0x80; break;
+            default: x.current_call_epoch_nonce[byte] ^= 0x80; break;
+        }
+        ba_assert_hosted(ba_observation(x), 1,0);
+    }
+    const uint32_t malformed[] = {2,UINT32_MAX};
+    for (uint32_t field = 0; field < 4; ++field) for (size_t b = 0; b < 2; ++b) {
+        x = ba_observation_input();
+        switch (field) {
+            case 0: x.abi_version = malformed[b]; break;
+            case 1: x.reserved = malformed[b]; break;
+            case 2: x.observation_challenge_present = malformed[b]; break;
+            default: x.current_challenge_present = malformed[b]; break;
+        }
+        ba_assert_hosted(ba_observation(x), 0,0);
+    }
+    x = ba_observation_input(); x.abi_version = 0; ba_assert_hosted(ba_observation(x), 0,0);
+    x = ba_observation_input(); x.reserved = 1; ba_assert_hosted(ba_observation(x), 0,0);
+    const uint32_t evidence_rows[][3] = {{0,0,1},{0,1,2},{1,0,3},{1,1,0}};
+    for (size_t i = 0; i < 4; ++i) {
+        beluga_core_hosted_call_evidence_facts_t e = {0};
+        e.abi_version = 1; e.active = evidence_rows[i][0]; e.armed = evidence_rows[i][1];
+        ba_assert_hosted(ba_evidence(e), 1,evidence_rows[i][2]);
+        for (uint32_t field = 0; field < 4; ++field) for (size_t b = 0; b < 2; ++b) {
+            beluga_core_hosted_call_evidence_facts_t bad = e;
+            switch (field) {
+                case 0: bad.abi_version = malformed[b]; break;
+                case 1: bad.reserved = malformed[b]; break;
+                case 2: bad.active = malformed[b]; break;
+                default: bad.armed = malformed[b]; break;
+            }
+            ba_assert_hosted(ba_evidence(bad), 0,0);
+        }
+        beluga_core_hosted_call_evidence_facts_t bad = e;
+        bad.abi_version = 0; ba_assert_hosted(ba_evidence(bad), 0,0);
+        bad = e; bad.reserved = 1; ba_assert_hosted(ba_evidence(bad), 0,0);
+    }
+    const struct { uint32_t ap; uint64_t a; uint32_t cp; uint64_t c, current; uint32_t value; } peers[] = {
+        {0,0,0,0,0,0},{1,0,1,0,0,0},{0,0,1,7,7,0},{1,7,0,0,7,0},
+        {1,6,1,7,7,0},{1,7,1,6,7,0},{1,7,1,7,7,1},{1,1,1,1,1,1},
+        {1,UINT64_MAX,1,UINT64_MAX,UINT64_MAX,1},{1,UINT64_MAX-1,1,UINT64_MAX,UINT64_MAX,0},
+        {1,0,1,7,7,0},{1,7,1,0,7,0}
+    };
+    for (size_t i = 0; i < 12; ++i)
+        ba_assert_hosted(ba_peer(ba_peer_input(peers[i].ap,peers[i].a,peers[i].cp,peers[i].c,peers[i].current)), 1,peers[i].value);
+    beluga_core_hosted_call_peer_facts_t absent_payload = ba_peer_input(0,UINT64_MAX,0,UINT64_MAX,7);
+    ba_assert_hosted(ba_peer(absent_payload), 1,0);
+    const beluga_core_hosted_call_peer_facts_t peer_bases[] = {ba_peer_input(1,7,1,7,7),ba_peer_input(0,0,0,0,7),ba_peer_input(1,0,1,0,0)};
+    for (size_t i = 0; i < 3; ++i) {
+        for (uint32_t field = 0; field < 4; ++field) for (size_t b = 0; b < 2; ++b) {
+            beluga_core_hosted_call_peer_facts_t bad = peer_bases[i];
+            switch (field) {
+                case 0: bad.abi_version = malformed[b]; break;
+                case 1: bad.reserved = malformed[b]; break;
+                case 2: bad.audio_present = malformed[b]; break;
+                default: bad.challenge_present = malformed[b]; break;
+            }
+            ba_assert_hosted(ba_peer(bad), 0,0);
+        }
+        beluga_core_hosted_call_peer_facts_t bad = peer_bases[i];
+        bad.abi_version = 0; ba_assert_hosted(ba_peer(bad), 0,0);
+        bad = peer_bases[i]; bad.reserved = 1; ba_assert_hosted(ba_peer(bad), 0,0);
+    }
+    puts("BelugaCore C hosted call ABI PASS: exact layouts, strict watermark and generation identity, unchanged refusals");
+}
+
+static void smoke_batch_a_policies(void) {
+    ba_safe_output_smoke();
+    ba_system_audio_smoke();
+    ba_hosted_smoke();
+}
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -892,5 +1438,7 @@ int main(void) {
     reconnect_counters_smoke();
     pairing_commit_smoke();
     supported_player_arbitration_smoke();
+    availability_retry_smoke();
+    smoke_batch_a_policies();
     return 0;
 }
