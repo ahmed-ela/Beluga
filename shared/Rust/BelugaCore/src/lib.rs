@@ -11,6 +11,17 @@ pub mod invitation_acceptance;
 pub mod replay_policy;
 pub mod pairing_catalog_checkpoint;
 
+pub mod reconnect_counters;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_reconnect_counters_step(
+    abi_version: u32, state: reconnect_counters::RawState,
+    event: reconnect_counters::RawEvent,
+) -> reconnect_counters::RawResult {
+    reconnect_counters::step(abi_version, state, event)
+}
+
 // Eighth copied scalar contract: one catalog attempt's admission/revocation.
 // Native identity, lock, durable snapshot and successful effect custody remain native.
 #[no_mangle]

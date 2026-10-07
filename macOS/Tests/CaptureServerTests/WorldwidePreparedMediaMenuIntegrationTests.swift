@@ -357,6 +357,81 @@ final class WorldwidePreparedMediaMenuIntegrationTests: XCTestCase {
         XCTAssertEqual(inactive, .inactive(policy: .enabled))
     }
 
+    func testReconnectCounterWriteFailureBlocksEffectsAndRetryUsesDurablePredecessor() async throws {
+        let retry = PreparedMediaGate(), first = PreparedMediaAvailabilityProbe(),
+            second = PreparedMediaAvailabilityProbe(), service = PreparedMediaServiceProbe()
+        let h = try await harness(media: [service], clients: [first, second], retryGate: retry)
+        let before = try h.savedHost()
+        let beforeBytes = try XCTUnwrap(h.pair.dataStore.catalogBytes)
+        let beforeAttempts = h.pair.dataStore.catalogWriteAttempts
+        let sentinel = PreparedMediaStorageSentinel()
+        h.pair.dataStore.failNextCatalogWrite(writeThenThrow: false, error: sentinel)
+        let request = try h.nextReconnect()
+        first.emit(.signal(.reconnectRequest(request.request)))
+        try await waitUntil { h.presentations.latest?.phase == .unavailable }
+        XCTAssertEqual(h.pair.dataStore.catalogWriteAttempts, beforeAttempts + 1)
+        XCTAssertTrue(h.pair.dataStore.lastThrown === sentinel)
+        XCTAssertEqual(h.pair.dataStore.catalogBytes, beforeBytes)
+        XCTAssertEqual(try h.savedHost(), before)
+        XCTAssertEqual(h.media.attemptCount, 0, "A failed counter save must precede even factory admission")
+        XCTAssertEqual(service.startCount, 0)
+        XCTAssertEqual(service.stopCount, 0)
+        XCTAssertEqual(first.responses.count, 0)
+        XCTAssertNil(h.presentations.latest?.connectedMediaTarget)
+
+        // The stored predecessor did not burn this authenticated sequence. Its
+        // exact request can safely be admitted by the real availability retry.
+        retry.open()
+        try await waitUntil { second.isConnected }
+        second.emit(.ready(role: .host, exchangeID: h.exchangeA))
+        try await waitUntil { h.presentations.latest?.phase == .preparingSession }
+        second.emit(.signal(.reconnectRequest(request.request)))
+        _ = try await preparedTarget(h)
+        XCTAssertEqual(h.pair.dataStore.catalogWriteAttempts, beforeAttempts + 2)
+        XCTAssertEqual(try h.savedHost().highestAcceptedReconnectSequence, request.request.sequence)
+        XCTAssertNotEqual(h.pair.dataStore.catalogBytes, beforeBytes)
+        XCTAssertEqual(first.responses.count, 0)
+        XCTAssertEqual(second.responses.count, 1)
+        XCTAssertEqual(h.media.attemptCount, 1)
+        XCTAssertEqual(service.startCount, 1)
+        XCTAssertEqual(try request.complete(with: try XCTUnwrap(second.responses.first)),
+            try XCTUnwrap(h.media.credentials.first))
+    }
+
+    func testReconnectCounterWriteThenThrowRetainsActualDurableBurnWithoutEffects() async throws {
+        let retry = PreparedMediaGate(), client = PreparedMediaAvailabilityProbe(),
+            service = PreparedMediaServiceProbe()
+        let h = try await harness(media: [service], clients: [client], retryGate: retry)
+        let before = try h.savedHost()
+        let beforeBytes = try XCTUnwrap(h.pair.dataStore.catalogBytes)
+        let beforeAttempts = h.pair.dataStore.catalogWriteAttempts
+        let sentinel = PreparedMediaStorageSentinel()
+        h.pair.dataStore.failNextCatalogWrite(writeThenThrow: true, error: sentinel)
+        let request = try h.nextReconnect()
+        client.emit(.signal(.reconnectRequest(request.request)))
+        try await waitUntil { h.presentations.latest?.phase == .unavailable }
+        XCTAssertEqual(h.pair.dataStore.catalogWriteAttempts, beforeAttempts + 1)
+        XCTAssertTrue(h.pair.dataStore.lastThrown === sentinel)
+        XCTAssertNotEqual(h.pair.dataStore.catalogBytes, beforeBytes)
+        var durable = try h.savedHost()
+        XCTAssertEqual(durable.highestAcceptedReconnectSequence, request.request.sequence)
+        XCTAssertEqual(durable.nextOutboundReconnectSequence, before.nextOutboundReconnectSequence)
+        XCTAssertNotEqual(durable, before, "A backend write-then-throw is not a successful rollback")
+        let burned = durable
+        XCTAssertThrowsError(try durable.respond(to: request.request, using: h.pair.hostIdentity)) { error in
+            XCTAssertEqual(error as? RemoteSessionCoreError, .staleReconnectSequence)
+        }
+        XCTAssertEqual(durable, burned, "Cold record admission must honor the actual burned bytes")
+        XCTAssertEqual(h.media.attemptCount, 0)
+        XCTAssertEqual(service.startCount, 0)
+        XCTAssertEqual(service.stopCount, 0)
+        XCTAssertEqual(client.responses.count, 0)
+        XCTAssertNil(h.presentations.latest?.connectedMediaTarget)
+        XCTAssertEqual(h.pair.dataStore.catalogBytes, try XCTUnwrap(h.pair.dataStore.lastAttemptedCatalogBytes))
+        // Teardown, not this test, owns the paused availability retry. No second
+        // response may be invented from the stale in-memory success publication.
+    }
+
     // MARK: - Genuine pairing and real coordinator/menu composition
 
     private func harness(media services: [PreparedMediaServiceProbe],
@@ -486,6 +561,7 @@ private final class PreparedMediaHarness {
 
 private struct PreparedMediaPair {
     let store: WorldwidePairingStore
+    let dataStore: PreparedMediaMemoryStore
     let hostIdentity: RemoteDeviceIdentity
     let viewerIdentity: RemoteDeviceIdentity
     var viewerRecordData: Data
@@ -501,7 +577,8 @@ private struct PreparedMediaPair {
     }
 
     static func make() throws -> Self {
-        let store = WorldwidePairingStore(dataStore: PreparedMediaMemoryStore())
+        let dataStore = PreparedMediaMemoryStore()
+        let store = WorldwidePairingStore(dataStore: dataStore)
         let host = try store.loadOrCreateHostIdentity(displayName: "Private fixture Mac")
         let viewer = try RemoteDeviceIdentity.generate(role: .viewer, displayName: "Private fixture phone")
         let invitation = try RemoteInvitationCode.generate()
@@ -517,7 +594,7 @@ private struct PreparedMediaPair {
         let activation = try vr.acceptCompletion(completion, using: viewer)
         try hr.acceptActivationAcknowledgement(activation)
         try store.savePairedViewer(hr, for: host)
-        return .init(store: store, hostIdentity: host, viewerIdentity: viewer,
+        return .init(store: store, dataStore: dataStore, hostIdentity: host, viewerIdentity: viewer,
                      viewerRecordData: try JSONEncoder().encode(vr))
     }
 }
@@ -677,8 +754,33 @@ private final class PreparedMediaOwnerGate: @unchecked Sendable {
 private final class PreparedMediaMemoryStore: WorldwidePairingDataStore, @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String: Data] = [:]
+    private var failure: (writeThenThrow: Bool, error: PreparedMediaStorageSentinel)?
+    private var attempts = 0
+    private var attemptedBytes: Data?
+    private var thrown: PreparedMediaStorageSentinel?
+    var catalogWriteAttempts: Int { lock.withLock { attempts } }
+    var lastAttemptedCatalogBytes: Data? { lock.withLock { attemptedBytes } }
+    var lastThrown: PreparedMediaStorageSentinel? { lock.withLock { thrown } }
+    var catalogBytes: Data? { lock.withLock { storage[WorldwidePairedPhoneCatalogStore.catalogAccount] } }
+    func failNextCatalogWrite(writeThenThrow: Bool, error: PreparedMediaStorageSentinel) {
+        lock.withLock { failure = (writeThenThrow, error) }
+    }
     func data(for account: String) throws -> Data? { lock.withLock { storage[account] } }
-    func set(_ value: Data, for account: String) throws { lock.withLock { storage[account] = value } }
+    func set(_ value: Data, for account: String) throws {
+        try lock.withLock {
+            if account == WorldwidePairedPhoneCatalogStore.catalogAccount {
+                attempts += 1
+                attemptedBytes = value
+                if let rejected = failure {
+                    failure = nil
+                    if rejected.writeThenThrow { storage[account] = value }
+                    thrown = rejected.error
+                    throw rejected.error
+                }
+            }
+            storage[account] = value
+        }
+    }
     func removeData(for account: String) throws { _ = lock.withLock { storage.removeValue(forKey: account) } }
 }
 
@@ -694,3 +796,5 @@ private final class PreparedMediaLogProbe: Logger, @unchecked Sendable {
 private enum PreparedMediaFixtureError: Error {
     case unexpectedEffect, boundedObservationExpired, startFailed, responseFailed, transportFailed
 }
+
+private final class PreparedMediaStorageSentinel: Error, @unchecked Sendable {}

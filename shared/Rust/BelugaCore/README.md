@@ -4,7 +4,8 @@ This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
 the one-use offer/timeline reducer, the phone playback-operation reducer, and
 the invitation acceptance policy, the bounded signaling replay window, and
-catalog-checkpoint attempt admission/revocation**.
+catalog-checkpoint attempt admission/revocation, and durable reconnect counter
+proposals**.
 It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
@@ -98,6 +99,19 @@ sticky bridge fault without discarding known storage/bindings or granting writes
 These policies do not replace catalog capacity, cryptographic validation, process
 ownership, cross-process synchronization or asynchronous native generation fences.
 
+Reconnect counters use a stateless copied snapshot, not a second durable ledger.
+Distinct Rust domains keep outbound, accepted-peer and incoming-request counters
+separate. Outbound zero remains a numeric proposal so the original native
+constructor rejects sequence zero without committing; MAX exhausts unchanged.
+Inbound admission is strictly newer and includes MAX. Unknown domains leave the
+exact raw snapshot unchanged. There is no initial/reset function or fallback.
+Native active/identity guards and inbound signature authentication precede policy;
+exact copied-output validation precedes the original signing/key-agreement
+constructor. Only constructor success commits the relevant counter. Native callers
+still persist before sending; a proposal is not authentication, storage or network
+proof. Independent numerical/reference traces, genuine native cryptographic tests,
+compiled guard controls and cross-language layout/link proof are required.
+
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
 Each slice is a **static `BelugaCore.framework`**, with its module map under
@@ -137,5 +151,7 @@ six phone identity/clock ordering, proof-age, reservation and truthful-outcome d
 and nine invitation owner/order, optional-callback, pre-effect state, thrown-effect,
 completion, rearm and cancellation defects, plus eleven signaling-replay sequence,
 boundary, duplicate, history and malformed-state preservation defects, plus twelve
-catalog admission, revocation, exact native fact and malformed-domain defects. They use
+catalog admission, revocation, exact native fact and malformed-domain defects, plus
+twelve reconnect exhaustion, monotonicity, independent-counter and malformed-domain
+defects. They use
 temporary copies and never modify the production archive or source.

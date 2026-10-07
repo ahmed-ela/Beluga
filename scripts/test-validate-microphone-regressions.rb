@@ -90,6 +90,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
       write(File.join(@root, relative), "struct #{suite.split('.').last} {\n" +
         methods.map { |method| "  @Test func #{method}() {}\n" }.join + "}\n")
     end
+    @shared_reconnect_counter_methods = (Gate::SHARED_RECONNECT_COUNTER_PINNED +
+      [Gate::SHARED_RECONNECT_COUNTER_SUITE + '/additionalCounterFixture()']).sort
+    write(File.join(@root, Gate::SHARED_RECONNECT_COUNTER_FILE), "struct #{Gate::SHARED_RECONNECT_COUNTER_SUITE.split('.').last} {\n" +
+      @shared_reconnect_counter_methods.map { |id| "  @Test func #{id.split('/').last.delete_suffix('()')}() {}\n" }.join + "}\n")
     @handoff_methods = (Gate::SHARED_HANDOFF_CLASSES.map { |name| name + '/testFixture' } + Gate::SHARED_HANDOFF_PINNED).uniq.sort
     @rust_methods = Gate::RUST_PINNED.sort
     @core_methods = (Gate::BELUGA_CORE_PINNED + ['additional_core_behavior_fixture']).sort
@@ -202,8 +206,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def pairing_summary
-    counts = { 'passedTests' => 104, 'skippedTests' => 0, 'failedTests' => 0, 'expectedFailures' => 0 }
-    counts.merge('result' => 'Passed', 'totalTestCount' => 104, 'testFailures' => [],
+    counts = { 'passedTests' => 106, 'skippedTests' => 0, 'failedTests' => 0, 'expectedFailures' => 0 }
+    counts.merge('result' => 'Passed', 'totalTestCount' => 106, 'testFailures' => [],
                  'devicesAndConfigurations' => [counts.merge('device' => { 'deviceId' => SIMULATOR, 'platform' => 'iOS Simulator' })])
   end
 
@@ -387,8 +391,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def test_pairing_inventory_is_exact104_separate_from_original_simulator_skips
-    assert_equal [58, 8, 22, 16], Gate::PAIRING_BY_CLASS.values.map(&:length)
-    assert_equal 104, Gate::PAIRING_PINNED.length
+    assert_equal [60, 8, 22, 16], Gate::PAIRING_BY_CLASS.values.map(&:length)
+    assert_equal 106, Gate::PAIRING_PINNED.length
     assert_equal @pairing_methods, Gate.pairing_inventory(@root)
     assert_empty Gate::PAIRING_CLASSES & Gate::SIMULATOR_CLASSES
     assert_empty Gate::PAIRING_PINNED & Gate::SIMULATOR_SKIPS
@@ -559,7 +563,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
 
   def test_pairing_receipt_cannot_omit_rehash_or_weaken_inert_phases_and_artifacts
     names = Gate::PAIRING_PHASE_TIMEOUTS.keys
-    assert_equal 41, Gate::PHASES.length
+    assert_equal 42, Gate::PHASES.length
     assert_equal names, Gate::PHASES[Gate::PHASES.index('simulator-entitlements') + 1, 6]
     assert_equal 1200, Gate::PAIRING_OVERALL_SECONDS
     assert_equal 'passed', verify(receipt)['status']
@@ -707,7 +711,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'mac-producer-contract-tests' => producer_log,
       'product-identity' => "Beluga product identity check passed\n",
       'product-identity-mutations' => "opensteamer product identity regression tests passed\n",
-      'mac-discovery' => (@mac_methods + @shared_methods + @shared_replay_methods.values.flatten + @handoff_methods).join("\n") + "\n", 'mac-tests' => mac_log,
+      'mac-discovery' => (@mac_methods + @shared_methods + @shared_replay_methods.values.flatten + @shared_reconnect_counter_methods + @handoff_methods).join("\n") + "\n", 'mac-tests' => mac_log,
       'shared-signaling-tests' => shared_log,
       'shared-handoff-tests' => mac_log(@handoff_methods),
       'simulator-summary' => JSON.generate(summary), 'simulator-results' => JSON.generate(results),
@@ -728,6 +732,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
     Gate::SHARED_REPLAY_PHASES.each do |phase, suite|
       log_texts[phase] = replay_log(suite)
     end
+    log_texts[Gate::SHARED_RECONNECT_COUNTER_PHASE] = replay_log(Gate::SHARED_RECONNECT_COUNTER_SUITE, @shared_reconnect_counter_methods)
     invocation = { 'developer_directory' => @developer, 'scratch' => @scratch, 'swift_scratch' => File.join(@scratch, 'SwiftPM'), 'timeout_seconds' => 1800 }
     commands = Gate.commands(@root, @evidence, invocation, @tools, SIMULATOR, @mac_methods, @handoff_methods)
     phases = Gate::PHASES.map do |name|
@@ -757,7 +762,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'created_at' => Time.now.to_i, 'source' => Gate.source_identity(@root), 'tools' => @tools, 'simulator' => SIMULATOR,
       'invocation' => invocation, 'mac_format' => 'darwin-xctest-log', 'phases' => phases, 'artifacts' => artifacts, 'pairing_inert_root' => pairing_contract, 'pairing_processes' => processes,
       'coverage' => { 'mac' => @mac_methods, 'simulator' => @sim_methods, 'intentional_simulator_skips' => Gate::SIMULATOR_SKIPS, 'pairing' => @pairing_methods.dup,
-                      'rust' => @rust_methods, 'beluga_core' => @core_methods, 'shared_handoff' => @handoff_methods, 'shared_replay' => @shared_replay_methods.transform_values(&:dup), 'c' => @c_methods } }
+                      'rust' => @rust_methods, 'beluga_core' => @core_methods, 'shared_handoff' => @handoff_methods, 'shared_replay' => @shared_replay_methods.transform_values(&:dup), 'shared_reconnect_counters' => @shared_reconnect_counter_methods.dup, 'c' => @c_methods } }
   end
 
   def save_receipt(value)
@@ -1118,7 +1123,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
     assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 30, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 32, Gate::BELUGA_CORE_SOURCE_FILES.length
     %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs
        src/youtube_handoff_operation.rs tests/youtube_handoff_operation.rs].each do |path|
       assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path
@@ -1335,7 +1340,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
                unknown_operation_is_invalid_unchanged_without_retirement_or_success
                wire_authorization_and_exact_numeric_identity_guard_slots exported_offer_functions_match_safe_reducer]
-    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 139, Gate::BELUGA_CORE_PINNED.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(44).last(tests.length)
     tests.each do |id|
       omitted = @core_methods - [id]
@@ -1363,7 +1368,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                  offers-freshness-inclusive offers-deadline-inclusive offers-timeline-tolerance-widened
                  offers-host-position-tolerance-widened offers-clear-resets-counters offers-sent-sequence-reused
                  offers-unknown-operation-clears-state]
-    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 77, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.first(27).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name|
@@ -1427,7 +1432,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
                deterministic_independent_traces_compare_every_raw_state_event_and_boolean]
     assert_equal 32, tests.length
-    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 139, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(76).last(tests.length)
     tests.each do |id|
@@ -1456,7 +1461,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
       'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
     }
-    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 77, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(33).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1529,7 +1534,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       seeded_original_trace_with_rearm_cancellation_and_value_copies_matches
     ]
     assert_equal 22, tests.length
-    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 139, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(98).last(tests.length)
     tests.each do |id|
@@ -1561,7 +1566,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'invitation-native-prepared-owner-ignored' => 'stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch',
       'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed'
     }
-    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 77, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(42).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1646,12 +1651,12 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'replay-impossible-past-bits-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted'
     }
     assert_equal 21, tests.length
-    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 139, Gate::BELUGA_CORE_PINNED.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED[98, 21]
-    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 77, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[42, 11]
-    assert_equal 30, Gate::BELUGA_CORE_SOURCE_FILES.length
-    assert_equal 16, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal 32, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 18, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
     tests.each do |id|
       omitted = @core_methods - [id]
       rejects('missing critical Beluga core') do
@@ -1698,7 +1703,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
       'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection'
     ]
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[6], Gate::BELUGA_CORE_RUNTIME_MARKERS[14]]
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[6], Gate::BELUGA_CORE_RUNTIME_MARKERS[15]]
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", (marker + "\n") * 2)) }
@@ -1736,12 +1741,12 @@ class MicrophoneRegressionGateTests < Minitest::Test
       checkpoint_raw_value_copies_do_not_share_mutation
     ]
     assert_equal 8, tests.length
-    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 139, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED[119, 8]
-    assert_equal 30, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 32, Gate::BELUGA_CORE_SOURCE_FILES.length
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 41, Gate::PHASES.length
+    assert_equal 42, Gate::PHASES.length
     assert_equal @core_methods, Gate.beluga_core_inventory(@core_methods.map { |id| id + ': test' }.join("\n"))
     tests.each do |id|
       omitted = @core_methods - [id]
@@ -1788,8 +1793,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback',
       'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback'
     ]
-    assert_equal 16, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[7], Gate::BELUGA_CORE_RUNTIME_MARKERS[15]]
+    assert_equal 18, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[7], Gate::BELUGA_CORE_RUNTIME_MARKERS[16]]
     assert_nil Gate.validate_beluga_core_link(core_link_log)
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
@@ -1821,7 +1826,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'checkpoint-revoked-readback-denied' => 'checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot'
     }
     assert_equal 12, mutants.length
-    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 77, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[53, 12]
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1920,7 +1925,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       value = receipt
       omitted = @mac_methods - [id]
       discovery = File.join(@evidence, 'mac-discovery.log')
-      File.write(discovery, (omitted + @shared_methods + @shared_replay_methods.values.flatten + @handoff_methods).join("\n"))
+      File.write(discovery, (omitted + @shared_methods + @shared_replay_methods.values.flatten + @shared_reconnect_counter_methods + @handoff_methods).join("\n"))
       value['phases'].find { |phase| phase['name'] == 'mac-discovery' }['sha256'] = Gate.sha(discovery)
       result = File.join(@evidence, 'mac-tests.log')
       File.write(result, mac_log(omitted))
@@ -2009,7 +2014,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def test_shared_replay_phases_and_coverage_cannot_be_removed_or_rehashed
-    assert_equal 41, Gate::PHASES.length
+    assert_equal 42, Gate::PHASES.length
     assert_equal Gate::SHARED_REPLAY_PHASES.keys,
                  Gate::PHASES[Gate::PHASES.index('shared-signaling-tests') + 1, 3]
     assert_equal 27, Gate::SHARED_SIGNALING_PINNED.length
@@ -2065,6 +2070,301 @@ class MicrophoneRegressionGateTests < Minitest::Test
       value['phases'].find { |entry| entry['name'] == phase }['sha256'] = Gate.sha(path)
       rejects('malformed, failed, skipped') { verify(value) }
     end
+  end
+
+  def test_beluga_core_reconnect_counters_source_and_named_cases_are_mandatory
+    tests = %w[
+      reconnect_copied_layout_and_export_are_exact
+      reconnect_all_bounded_numeric_inputs_match_original
+      reconnect_outbound_zero_and_maximum_preserve_native_ordering
+      reconnect_inbound_strict_newer_includes_authenticated_maximum
+      reconnect_opposite_counters_never_change
+      reconnect_large_u64_values_never_round_through_float
+      reconnect_rejected_events_preserve_exact_snapshot
+      reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed
+      reconnect_outbound_unused_request_sequence_is_rejected
+      reconnect_candidate_is_committed_only_after_modeled_constructor_success
+      reconnect_bounded_effect_success_and_failure_traces_match_original
+      reconnect_raw_value_copies_remain_independent
+    ]
+    assert_equal 12, tests.length
+    assert_equal 139, Gate::BELUGA_CORE_PINNED.length
+    assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED[127, 12]
+    assert_equal 32, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
+    assert_equal 42, Gate::PHASES.length
+    assert_equal @core_methods, Gate.beluga_core_inventory(@core_methods.map { |id| id + ': test' }.join("\n"))
+    tests.each do |id|
+      omitted = @core_methods - [id]
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
+      renamed = @core_methods.map { |method| method == id ? id + '_unrelated' : method }
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(renamed.map { |method| method + ': test' }.join("\n")) }
+      rejects('duplicate Beluga core') { Gate.beluga_core_inventory((@core_methods + [id]).map { |method| method + ': test' }.join("\n")) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(omitted), @core_methods) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(@core_methods + [id]), @core_methods) }
+      ['FAILED', 'ignored'].each do |status|
+        rejects('failed or was ignored') { Gate.validate_rust(rust_log(@core_methods).sub("test #{id} ... ok", "test #{id} ... #{status}"), @core_methods) }
+      end
+      value = receipt
+      discovery = File.join(@evidence, 'beluga-core-discovery.log')
+      File.write(discovery, omitted.map { |method| method + ': test' }.join("\n"))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(discovery)
+      result = File.join(@evidence, 'beluga-core-tests.log')
+      File.write(result, rust_log(omitted))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(result)
+      value['coverage']['beluga_core'] = omitted
+      rejects('missing critical Beluga core') { verify(value) }
+    end
+    %w[src/reconnect_counters.rs tests/reconnect_counters.rs].each do |relative|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, relative
+      path = File.join(core_crate, relative)
+      original = File.binread(path)
+      begin
+        File.write(path, original + "\nchanged source without refreshed manifest\n")
+        rejects('checksum differs') { Gate.validate_beluga_core_artifacts(@root) }
+        File.unlink(path)
+        refresh_core_source_manifest
+        refresh_core_artifact_manifest
+        rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+      ensure
+        File.binwrite(path, original)
+        refresh_core_source_manifest
+        refresh_core_artifact_manifest
+      end
+    end
+  end
+
+  def test_beluga_core_reconnect_counters_link_contract_cannot_be_borrowed
+    markers = [
+      'BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
+      'BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal'
+    ]
+    assert_equal 18, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[8], Gate::BELUGA_CORE_RUNTIME_MARKERS[17]]
+    assert_nil Gate.validate_beluga_core_link(core_link_log)
+    markers.each do |marker|
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", (marker + "\n") * 2)) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker, marker + ' unverified')) }
+      value = receipt
+      path = File.join(@evidence, 'beluga-core-link.log')
+      File.write(path, core_link_log.sub(marker + "\n", ''))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-link' }['sha256'] = Gate.sha(path)
+      rejects('link oracle is incomplete') { verify(value) }
+    end
+    swapped = core_link_log.sub(markers[0], 'TEMP_RECONNECT_MARKER').sub(markers[1], markers[0]).sub('TEMP_RECONNECT_MARKER', markers[1])
+    rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(swapped) }
+  end
+
+  def test_beluga_core_reconnect_counters_each_compiled_assertion_mutant_is_mandatory
+    mutants = {
+      'reconnect-outbound-zero-refused' => 'reconnect_outbound_zero_and_maximum_preserve_native_ordering',
+      'reconnect-outbound-maximum-wraps' => 'reconnect_outbound_zero_and_maximum_preserve_native_ordering',
+      'reconnect-outbound-increment-removed' => 'reconnect_all_bounded_numeric_inputs_match_original',
+      'reconnect-equal-inbound-admitted' => 'reconnect_inbound_strict_newer_includes_authenticated_maximum',
+      'reconnect-inbound-highwater-removed' => 'reconnect_inbound_strict_newer_includes_authenticated_maximum',
+      'reconnect-outbound-resets-inbound' => 'reconnect_opposite_counters_never_change',
+      'reconnect-inbound-resets-outbound' => 'reconnect_opposite_counters_never_change',
+      'reconnect-unknown-abi-admitted' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
+      'reconnect-state-reserved-ignored' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
+      'reconnect-event-reserved-ignored' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
+      'reconnect-unknown-opcode-admitted' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
+      'reconnect-unused-outbound-sequence-admitted' => 'reconnect_outbound_unused_request_sequence_is_rejected'
+    }
+    assert_equal 12, mutants.length
+    assert_equal 77, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[65, 12]
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    mutants.each do |name, test|
+      assert_includes Gate::BELUGA_CORE_PINNED[127, 12], test
+      marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, '')) }
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, marker * 2)) }
+      segment = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
+      equality = 'assertion ' + 96.chr + 'left == right' + 96.chr + ' failed'
+      compiled = '    Finished ' + 96.chr + 'test' + 96.chr + " profile [unoptimized + debuginfo] target(s) in 0.01s\n"
+      [
+        segment.sub("test #{test} ... FAILED", "test unrelated_assertion ... FAILED"),
+        segment.sub("test #{test} ... FAILED", "test #{test} ... ignored"),
+        segment.sub("thread '#{test}'", "thread 'unrelated_assertion'"),
+        segment.sub('0 passed; 1 failed; 0 ignored', '0 passed; 1 failed; 1 ignored'),
+        segment.sub(equality, 'assertion failed: unrelated predicate'),
+        segment.sub(compiled, ''),
+        segment + "error: could not compile mutation fixture\n"
+      ].each do |changed|
+        rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(segment, changed)) }
+      end
+    end
+    rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(65))) }
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(65)))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
+
+  # Source/result fixtures only; the actual Swift Testing suite separately runs
+  # the default linked C producer and genuine signed reconnect constructors.
+  def test_shared_reconnect_counters_source_discovery_and_every_critical_case_are_exact
+    suite = Gate::SHARED_RECONNECT_COUNTER_SUITE
+    assert_equal 27, Gate::SHARED_RECONNECT_COUNTER_PINNED.length
+    assert_equal @shared_reconnect_counter_methods, Gate.shared_reconnect_counter_source_inventory(@root)
+    discovery = (@mac_methods + @shared_methods + @shared_replay_methods.values.flatten + @shared_reconnect_counter_methods).join("\n")
+    assert_equal @shared_reconnect_counter_methods, Gate.shared_reconnect_counter_inventory(@root, discovery)
+    @shared_reconnect_counter_methods.each do |id|
+      rejects('shared reconnect counter discovery differs') do
+        Gate.shared_reconnect_counter_inventory(@root, discovery.lines.reject { |line| line.strip == id }.join)
+      end
+      rejects('shared reconnect counter discovery differs') { Gate.shared_reconnect_counter_inventory(@root, discovery + "\n" + id) }
+    end
+    [suite + '/malformed', suite + '/unexpectedCounterMethod()', suite + '/wrongArgument(1)',
+     suite + '/method()/Unbound.swift:1:1'].each do |id|
+      rejects('shared reconnect counter discovery differs') { Gate.shared_reconnect_counter_inventory(@root, discovery + "\n" + id) }
+    end
+    path = File.join(@root, Gate::SHARED_RECONNECT_COUNTER_FILE)
+    original = File.binread(path)
+    first = Gate::SHARED_RECONNECT_COUNTER_PINNED.first.split('/').last.delete_suffix('()')
+    begin
+      File.write(path, original.sub("@Test func #{first}() {}", ''))
+      rejects('source inventory is incomplete') { Gate.shared_reconnect_counter_source_inventory(@root) }
+      File.write(path, original + "\n@Test func #{first}() {}\n")
+      rejects('source inventory is incomplete') { Gate.shared_reconnect_counter_source_inventory(@root) }
+      File.write(path, original.sub("@Test func #{first}() {}", "@Test\nfunc #{first}() {}"))
+      rejects('source inventory is incomplete') { Gate.shared_reconnect_counter_source_inventory(@root) }
+      File.write(path, original.sub("struct #{suite.split('.').last}", 'struct WrongCounterSuite'))
+      rejects('source inventory is incomplete') { Gate.shared_reconnect_counter_source_inventory(@root) }
+      File.write(path, original + "\n@Test func anotherFutureCounterFixture() {}\n")
+      rejects('shared reconnect counter discovery differs') { Gate.shared_reconnect_counter_inventory(@root, discovery) }
+      File.binwrite(path, original + "\xFF".b)
+      rejects('not valid UTF-8') { Gate.shared_reconnect_counter_source_inventory(@root) }
+    ensure
+      File.binwrite(path, original)
+    end
+    rejects('not valid UTF-8') { Gate.shared_reconnect_counter_inventory(@root, discovery.b + "\xFF".b) }
+  end
+
+  def test_shared_reconnect_counters_named_results_reject_missing_duplicate_skip_failure_and_wrong_suite
+    suite = Gate::SHARED_RECONNECT_COUNTER_SUITE
+    methods = @shared_reconnect_counter_methods
+    log = replay_log(suite, methods)
+    assert_equal methods, Gate.validate_shared_reconnect_counter(log, methods)
+    methods.each do |id|
+      name = id.split('/').last
+      start = "◇ Test #{name} started.\n"
+      pass = "✔ Test #{name} passed after 0.001 seconds.\n"
+      rejects('cases are missing') { Gate.validate_shared_reconnect_counter(log.sub(start, '').sub(pass, ''), methods) }
+      rejects('start is unexpected or duplicated') { Gate.validate_shared_reconnect_counter(log.sub(start, start * 2), methods) }
+      rejects('pass is unexpected, duplicated') { Gate.validate_shared_reconnect_counter(log.sub(pass, pass * 2), methods) }
+      rejects('matching start') { Gate.validate_shared_reconnect_counter(log.sub(start, pass + start), methods) }
+      rejects('malformed, failed, skipped') { Gate.validate_shared_reconnect_counter(log.sub(pass, pass.sub('✔', '✘')), methods) }
+      rejects('malformed, failed, skipped') { Gate.validate_shared_reconnect_counter(log.sub(pass, "↷ Test #{name} skipped.\n"), methods) }
+    end
+    wrong = log.sub("◇ Suite #{suite.split('.').last} started.", '◇ Suite OtherTests started.')
+    rejects('malformed, failed, skipped') { Gate.validate_shared_reconnect_counter(wrong, methods) }
+    rejects('malformed, failed, skipped') { Gate.validate_shared_reconnect_counter(log + "◇ Suite OtherTests started.\n", methods) }
+    rejects('not valid UTF-8') { Gate.validate_shared_reconnect_counter(log.b + "\xFF".b, methods) }
+    [[], methods + [methods.first], methods - [Gate::SHARED_RECONNECT_COUNTER_PINNED.first],
+     methods.map { |id| id.sub(suite, 'RemoteSessionCoreTests.OtherTests') }].each do |expected|
+      rejects('bounds or expected inventory') { Gate.validate_shared_reconnect_counter(log, expected) }
+    end
+  end
+
+  def test_shared_reconnect_counters_suite_boundaries_counts_order_and_concurrency_are_exact
+    methods = @shared_reconnect_counter_methods
+    name = Gate::SHARED_RECONNECT_COUNTER_SUITE.split('.').last
+    log = replay_log(Gate::SHARED_RECONNECT_COUNTER_SUITE, methods)
+    start = "◇ Suite #{name} started.\n"
+    pass = "✔ Suite #{name} passed after 0.003 seconds.\n"
+    footer = log.lines.last
+    [log.sub(start, ''), log.sub(start, start * 2), log.sub(pass, ''),
+     log.sub(pass, pass * 2), log.sub('◇ Test run started.', ''),
+     log + "◇ Test run started.\n", log.sub(footer, ''), log + footer,
+     footer + log.sub(footer, ''), log.sub("#{methods.length} tests in 1 suite", '0 tests in 1 suite'),
+     log.sub('tests in 1 suite', 'tests in 2 suite')].each do |bad|
+      rejects('suite/run footer') { Gate.validate_shared_reconnect_counter(bad, methods) }
+    end
+    first = methods.first.split('/').last
+    case_start = "◇ Test #{first} started.\n"
+    case_pass = "✔ Test #{first} passed after 0.001 seconds.\n"
+    rejects('outside the exact suite') { Gate.validate_shared_reconnect_counter(case_start + log.sub(case_start, ''), methods) }
+    rejects('outside the exact suite') { Gate.validate_shared_reconnect_counter(log.sub(case_pass, '') + case_pass, methods) }
+    rejects('bounds') { Gate.validate_shared_reconnect_counter('x' * (2 * 1024 * 1024 + 1), methods) }
+    rejects('line bound') { Gate.validate_shared_reconnect_counter(log + "\n" * 4097, methods) }
+    lines = log.lines
+    lines.delete(case_pass)
+    lines.insert(lines.index(case_start) + 1, case_pass)
+    assert_equal methods, Gate.validate_shared_reconnect_counter(lines.join, methods)
+  end
+
+  def test_shared_reconnect_counters_phase_and_coverage_cannot_be_removed_or_rehashed
+    phase = Gate::SHARED_RECONNECT_COUNTER_PHASE
+    suite = Gate::SHARED_RECONNECT_COUNTER_SUITE
+    assert_equal 'shared-reconnect-counter-tests', phase
+    assert_equal 42, Gate::PHASES.length
+    assert_equal phase, Gate::PHASES[Gate::PHASES.index('shared-replay-durable-tests') + 1]
+    assert_equal 'shared-handoff-tests', Gate::PHASES[Gate::PHASES.index(phase) + 1]
+    assert_equal [19, 3, 6], Gate::SHARED_REPLAY_PINNED.values.map(&:length)
+    assert_equal @shared_reconnect_counter_methods, Gate.validate_shared_reconnect_counter(replay_log(suite, @shared_reconnect_counter_methods), @shared_reconnect_counter_methods)
+    value = receipt
+    value['coverage'].delete('shared_reconnect_counters')
+    rejects('coverage has an unrecognized field set') { verify(value) }
+    value = receipt
+    value['coverage']['shared_reconnect_counters'] = @shared_replay_methods.values.flatten
+    rejects('shared reconnect counter coverage differs') { verify(value) }
+    value = receipt
+    value['phases'].reject! { |entry| entry['name'] == phase }
+    rejects('absent, duplicate') { verify(value) }
+    value = receipt
+    index = value['phases'].index { |entry| entry['name'] == phase }
+    value['phases'][index], value['phases'][index + 1] = value['phases'][index + 1], value['phases'][index]
+    rejects('absent, duplicate') { verify(value) }
+    %w[--skip-build --disable-xctest].each do |option|
+      value = receipt
+      value['phases'].find { |entry| entry['name'] == phase }['argv'].delete(option)
+      rejects('canonical offline invocation') { verify(value) }
+    end
+    value = receipt
+    argv = value['phases'].find { |entry| entry['name'] == phase }['argv']
+    argv[argv.index('--filter') + 1] = suite
+    rejects('canonical offline invocation') { verify(value) }
+    Gate::SHARED_RECONNECT_COUNTER_PINNED.each do |id|
+      value = receipt
+      path = File.join(@evidence, phase + '.log')
+      omitted = @shared_reconnect_counter_methods - [id]
+      File.write(path, replay_log(suite, @shared_reconnect_counter_methods).lines.reject { |line| line.include?('Test ' + id.split('/').last + ' ') }.join)
+      value['phases'].find { |entry| entry['name'] == phase }['sha256'] = Gate.sha(path)
+      rejects('cases are missing') { verify(value) }
+      value = receipt
+      discovery = File.join(@evidence, 'mac-discovery.log')
+      File.write(discovery, File.readlines(discovery).reject { |line| line.strip == id }.join)
+      value['phases'].find { |entry| entry['name'] == 'mac-discovery' }['sha256'] = Gate.sha(discovery)
+      path = File.join(@evidence, phase + '.log')
+      File.write(path, replay_log(suite, omitted))
+      value['phases'].find { |entry| entry['name'] == phase }['sha256'] = Gate.sha(path)
+      value['coverage']['shared_reconnect_counters'] = omitted
+      rejects('shared reconnect counter discovery differs') { verify(value) }
+    end
+  end
+
+  def test_shared_reconnect_counters_actual_suite_execution_cannot_be_borrowed
+    phase = Gate::SHARED_RECONNECT_COUNTER_PHASE
+    expected = @shared_reconnect_counter_methods
+    Gate::SHARED_REPLAY_PHASES.each do |_, foreign|
+      borrowed = replay_log(foreign, @shared_replay_methods.fetch(foreign))
+      rejects('malformed, failed, skipped') { Gate.validate_shared_reconnect_counter(borrowed, expected) }
+      value = receipt
+      path = File.join(@evidence, phase + '.log')
+      File.write(path, borrowed)
+      value['phases'].find { |entry| entry['name'] == phase }['sha256'] = Gate.sha(path)
+      rejects('malformed, failed, skipped') { verify(value) }
+    end
+    value = receipt
+    path = File.join(@evidence, phase + '.log')
+    File.write(path, "fixture executor exited successfully\n")
+    value['phases'].find { |entry| entry['name'] == phase }['sha256'] = Gate.sha(path)
+    rejects('suite/run footer') { verify(value) }
   end
 
   def test_beluga_core_compiled_mutation_assertions_reject_uncompiled_wrong_case_and_bad_footer
@@ -2168,7 +2468,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
     value = receipt
     without_offers = @handoff_methods - offers
     discovery = File.join(@evidence, 'mac-discovery.log')
-    File.write(discovery, (@mac_methods + @shared_methods + @shared_replay_methods.values.flatten + without_offers).join("\n"))
+    File.write(discovery, (@mac_methods + @shared_methods + @shared_replay_methods.values.flatten + @shared_reconnect_counter_methods + without_offers).join("\n"))
     value['phases'].find { |phase| phase['name'] == 'mac-discovery' }['sha256'] = Gate.sha(discovery)
     value['coverage']['shared_handoff'] = without_offers
     result = File.join(@evidence, 'shared-handoff-tests.log')

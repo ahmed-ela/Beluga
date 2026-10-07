@@ -246,6 +246,48 @@ mutants.concat([
   ["checkpoint-unbound-update-admitted", "src/pairing_catalog_checkpoint.rs", "pairing_catalog_checkpoint", "                    || matches!(self.binding, Binding::Empty)", "                    || (matches!(self.binding, Binding::Empty) && false)", "checkpoint_all_valid_states_and_boolean_facts_match_original"],
   ["checkpoint-revoked-readback-denied", "src/pairing_catalog_checkpoint.rs", "pairing_catalog_checkpoint", "if matches!(snapshot, SnapshotMatch::Different) {", "if matches!(snapshot, SnapshotMatch::Different) || matches!(self.retirement, Retirement::Revoked) {", "checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot"]
 ])
+mutants.concat([
+  ["reconnect-outbound-zero-refused", "src/reconnect_counters.rs", "reconnect_counters",
+   "if raw.abi_version != ABI_VERSION || raw.reserved != 0 { return None; }",
+   "if raw.abi_version != ABI_VERSION || raw.reserved != 0 || raw.next_outbound == 0 { return None; }",
+   "reconnect_outbound_zero_and_maximum_preserve_native_ordering"],
+  ["reconnect-outbound-maximum-wraps", "src/reconnect_counters.rs", "reconnect_counters",
+   "if self.outbound.0 == u64::MAX {\n                    return (self, Decision::SequenceExhausted);\n                }",
+   "if self.outbound.0 == u64::MAX {\n                    return (Self { outbound: OutboundSequence(0), ..self }, Decision::Proposed);\n                }",
+   "reconnect_outbound_zero_and_maximum_preserve_native_ordering"],
+  ["reconnect-outbound-increment-removed", "src/reconnect_counters.rs", "reconnect_counters",
+   "outbound: OutboundSequence(self.outbound.0 + 1),", "outbound: self.outbound,",
+   "reconnect_all_bounded_numeric_inputs_match_original"],
+  ["reconnect-equal-inbound-admitted", "src/reconnect_counters.rs", "reconnect_counters",
+   "if incoming.0 <= self.highest.0 {", "if incoming.0 < self.highest.0 {",
+   "reconnect_inbound_strict_newer_includes_authenticated_maximum"],
+  ["reconnect-inbound-highwater-removed", "src/reconnect_counters.rs", "reconnect_counters",
+   "highest: AcceptedPeerSequence(incoming.0),", "highest: self.highest,",
+   "reconnect_inbound_strict_newer_includes_authenticated_maximum"],
+  ["reconnect-outbound-resets-inbound", "src/reconnect_counters.rs", "reconnect_counters",
+   "highest: self.highest,", "highest: AcceptedPeerSequence(0),",
+   "reconnect_opposite_counters_never_change"],
+  ["reconnect-inbound-resets-outbound", "src/reconnect_counters.rs", "reconnect_counters",
+   "outbound: self.outbound,", "outbound: OutboundSequence(0),",
+   "reconnect_opposite_counters_never_change"],
+  ["reconnect-unknown-abi-admitted", "src/reconnect_counters.rs", "reconnect_counters",
+   "if abi_version != ABI_VERSION { return refused(); }",
+   "if abi_version == ABI_VERSION.wrapping_add(1024) { return refused(); }",
+   "reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed"],
+  ["reconnect-state-reserved-ignored", "src/reconnect_counters.rs", "reconnect_counters",
+   "if raw.abi_version != ABI_VERSION || raw.reserved != 0 { return None; }",
+   "if raw.abi_version != ABI_VERSION { return None; }",
+   "reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed"],
+  ["reconnect-event-reserved-ignored", "src/reconnect_counters.rs", "reconnect_counters",
+   "if raw.reserved != 0 { return None; }", "if raw.reserved != 0 && false { return None; }",
+   "reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed"],
+  ["reconnect-unknown-opcode-admitted", "src/reconnect_counters.rs", "reconnect_counters",
+   "_ => None,", "_ => Some(Self::ReserveOutbound),",
+   "reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed"],
+  ["reconnect-unused-outbound-sequence-admitted", "src/reconnect_counters.rs", "reconnect_counters",
+   "0 if raw.request_sequence == 0 => Some(Self::ReserveOutbound),", "0 => Some(Self::ReserveOutbound),",
+   "reconnect_outbound_unused_request_sequence_is_rejected"]
+])
 mutants.each do |name, path, suite, original, changed, test|
   production = File.binread(File.join(BelugaCoreArtifact::CRATE, path))
   raise "Mutation anchor not unique: #{name}" unless production.scan(original).size == 1

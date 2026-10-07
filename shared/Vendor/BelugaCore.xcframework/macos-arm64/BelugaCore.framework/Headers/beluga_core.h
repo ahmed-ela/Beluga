@@ -428,6 +428,42 @@ beluga_core_pairing_catalog_checkpoint_state_t beluga_core_pairing_catalog_check
 beluga_core_pairing_catalog_checkpoint_result_t beluga_core_pairing_catalog_checkpoint_step(
     uint32_t abi_version, beluga_core_pairing_catalog_checkpoint_state_t state,
     beluga_core_pairing_catalog_checkpoint_event_t event);
+
+/* Ninth stateless copied-value policy. Native active-pair/identity/request
+ * authentication and original constructors precede actual counter commitment.
+ * All UInt64 snapshot values are representable, including outbound zero. A
+ * Proposed result is not constructor, persistence, authorization or send proof.
+ * Invalid input is unchanged; both reserved inputs and unused outbound sequence
+ * must be zero. There is no reset, owned ledger, initial symbol or pointer. */
+enum {
+    BELUGA_RECONNECT_COUNTERS_RESERVE_OUTBOUND = 0,
+    BELUGA_RECONNECT_COUNTERS_ADMIT_INBOUND = 1,
+    BELUGA_RECONNECT_COUNTERS_PROPOSED = 0,
+    BELUGA_RECONNECT_COUNTERS_SEQUENCE_EXHAUSTED = 1,
+    BELUGA_RECONNECT_COUNTERS_STALE_SEQUENCE = 2,
+    BELUGA_RECONNECT_COUNTERS_INVALID_INPUT = 3
+};
+typedef struct {
+    uint32_t abi_version;
+    uint32_t reserved;
+    uint64_t next_outbound;
+    uint64_t highest_accepted;
+} beluga_core_reconnect_counters_state_t; /* size24 alignment8 */
+typedef struct {
+    uint32_t opcode;
+    uint32_t reserved;
+    uint64_t request_sequence; /* reserve=0; inbound accepts full UInt64 domain */
+} beluga_core_reconnect_counters_event_t; /* size16 alignment8 */
+typedef struct {
+    beluga_core_reconnect_counters_state_t candidate_state;
+    uint32_t decision;
+    uint32_t reserved; /* always zero */
+} beluga_core_reconnect_counters_result_t; /* size32 alignment8 */
+
+beluga_core_reconnect_counters_result_t beluga_core_reconnect_counters_step(
+    uint32_t abi_version, beluga_core_reconnect_counters_state_t state,
+    beluga_core_reconnect_counters_event_t event);
+
 #ifdef __cplusplus
 }
 #endif

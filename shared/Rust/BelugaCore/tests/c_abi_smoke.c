@@ -535,6 +535,79 @@ static void signaling_replay_smoke(void) {
     }
     puts("BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection");
 }
+_Static_assert(sizeof(beluga_core_reconnect_counters_state_t) == 24, "reconnect state size");
+_Static_assert(_Alignof(beluga_core_reconnect_counters_state_t) == 8, "reconnect state alignment");
+_Static_assert(offsetof(beluga_core_reconnect_counters_state_t, abi_version) == 0, "reconnect state ABI offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_state_t, reserved) == 4, "reconnect state reserved offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_state_t, next_outbound) == 8, "reconnect outbound offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_state_t, highest_accepted) == 16, "reconnect highwater offset");
+_Static_assert(sizeof(beluga_core_reconnect_counters_event_t) == 16, "reconnect event size");
+_Static_assert(_Alignof(beluga_core_reconnect_counters_event_t) == 8, "reconnect event alignment");
+_Static_assert(offsetof(beluga_core_reconnect_counters_event_t, opcode) == 0, "reconnect opcode offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_event_t, reserved) == 4, "reconnect event reserved offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_event_t, request_sequence) == 8, "reconnect request offset");
+_Static_assert(sizeof(beluga_core_reconnect_counters_result_t) == 32, "reconnect result size");
+_Static_assert(_Alignof(beluga_core_reconnect_counters_result_t) == 8, "reconnect result alignment");
+_Static_assert(offsetof(beluga_core_reconnect_counters_result_t, candidate_state) == 0, "reconnect candidate offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_result_t, decision) == 24, "reconnect decision offset");
+_Static_assert(offsetof(beluga_core_reconnect_counters_result_t, reserved) == 28, "reconnect result reserved offset");
+
+static void reconnect_counters_same(beluga_core_reconnect_counters_state_t a,
+                                    beluga_core_reconnect_counters_state_t b) {
+    assert(a.abi_version == b.abi_version && a.reserved == b.reserved &&
+           a.next_outbound == b.next_outbound && a.highest_accepted == b.highest_accepted);
+}
+
+static void reconnect_counters_smoke(void) {
+    const uint64_t values[] = {0, 1, 2, (UINT64_C(1) << 53) + 1, UINT64_MAX - 1, UINT64_MAX};
+    for (unsigned n = 0; n < sizeof(values) / sizeof(values[0]); ++n) {
+        for (unsigned h = 0; h < sizeof(values) / sizeof(values[0]); ++h) {
+            const beluga_core_reconnect_counters_state_t before = {1, 0, values[n], values[h]};
+            beluga_core_reconnect_counters_event_t event = {0, 0, 0};
+            beluga_core_reconnect_counters_result_t r = beluga_core_reconnect_counters_step(1, before, event);
+            assert(r.decision == (values[n] < UINT64_MAX ? 0U : 1U) && r.reserved == 0);
+            assert(r.candidate_state.abi_version == 1 && r.candidate_state.reserved == 0);
+            assert(r.candidate_state.next_outbound == (values[n] < UINT64_MAX ? values[n] + 1 : values[n]));
+            assert(r.candidate_state.highest_accepted == values[h]);
+            for (unsigned s = 0; s < sizeof(values) / sizeof(values[0]); ++s) {
+                event = (beluga_core_reconnect_counters_event_t){1, 0, values[s]};
+                r = beluga_core_reconnect_counters_step(1, before, event);
+                assert(r.decision == (values[s] > values[h] ? 0U : 2U) && r.reserved == 0);
+                assert(r.candidate_state.next_outbound == values[n]);
+                assert(r.candidate_state.highest_accepted == (values[s] > values[h] ? values[s] : values[h]));
+            }
+        }
+    }
+    const beluga_core_reconnect_counters_state_t before = {1, 0, 0, UINT64_MAX - 1};
+    beluga_core_reconnect_counters_event_t event = {0, 0, 0};
+    beluga_core_reconnect_counters_result_t r = beluga_core_reconnect_counters_step(1, before, event);
+    assert(r.decision == 0 && r.candidate_state.next_outbound == 1);
+    reconnect_counters_same(before, (beluga_core_reconnect_counters_state_t){1, 0, 0, UINT64_MAX - 1});
+    const uint32_t bad[] = {2, UINT32_MAX};
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        r = beluga_core_reconnect_counters_step(bad[i], before, event);
+        assert(r.decision == 3 && r.reserved == 0); reconnect_counters_same(r.candidate_state, before);
+        beluga_core_reconnect_counters_state_t malformed = before;
+        malformed.abi_version = bad[i];
+        r = beluga_core_reconnect_counters_step(1, malformed, event);
+        assert(r.decision == 3 && r.reserved == 0); reconnect_counters_same(r.candidate_state, malformed);
+        malformed = before; malformed.reserved = bad[i];
+        r = beluga_core_reconnect_counters_step(1, malformed, event);
+        assert(r.decision == 3 && r.reserved == 0); reconnect_counters_same(r.candidate_state, malformed);
+        event.reserved = bad[i];
+        r = beluga_core_reconnect_counters_step(1, before, event);
+        assert(r.decision == 3 && r.reserved == 0); reconnect_counters_same(r.candidate_state, before);
+        event = (beluga_core_reconnect_counters_event_t){bad[i], 0, 0};
+        r = beluga_core_reconnect_counters_step(1, before, event);
+        assert(r.decision == 3 && r.reserved == 0); reconnect_counters_same(r.candidate_state, before);
+        event = (beluga_core_reconnect_counters_event_t){0, 0, UINT64_MAX};
+        r = beluga_core_reconnect_counters_step(1, before, event);
+        assert(r.decision == 3 && r.reserved == 0); reconnect_counters_same(r.candidate_state, before);
+        event = (beluga_core_reconnect_counters_event_t){0, 0, 0};
+    }
+    puts("BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal");
+}
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -647,5 +720,6 @@ int main(void) {
     invitation_acceptance_smoke();
     signaling_replay_smoke();
     pairing_catalog_checkpoint_smoke();
+    reconnect_counters_smoke();
     return 0;
 }

@@ -40,6 +40,7 @@ module BelugaCoreArtifact
     tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs
     src/replay_policy.rs tests/replay_policy.rs
     src/pairing_catalog_checkpoint.rs tests/pairing_catalog_checkpoint.rs
+    src/reconnect_counters.rs tests/reconnect_counters.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
   ARTIFACT_FILES = (%w[

@@ -627,3 +627,79 @@ private func pairingCatalogCheckpointSmoke() {
     print("BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback")
 }
 pairingCatalogCheckpointSmoke()
+
+private func reconnectCountersSmoke() {
+    typealias State = beluga_core_reconnect_counters_state_t
+    typealias Event = beluga_core_reconnect_counters_event_t
+    typealias Output = beluga_core_reconnect_counters_result_t
+    precondition(MemoryLayout<State>.size == 24 && MemoryLayout<State>.alignment == 8)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<State>.offset(of: \.next_outbound) == 8)
+    precondition(MemoryLayout<State>.offset(of: \.highest_accepted) == 16)
+    precondition(MemoryLayout<Event>.size == 16 && MemoryLayout<Event>.alignment == 8)
+    precondition(MemoryLayout<Event>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.request_sequence) == 8)
+    precondition(MemoryLayout<Output>.size == 32 && MemoryLayout<Output>.alignment == 8)
+    precondition(MemoryLayout<Output>.offset(of: \.candidate_state) == 0)
+    precondition(MemoryLayout<Output>.offset(of: \.decision) == 24)
+    precondition(MemoryLayout<Output>.offset(of: \.reserved) == 28)
+    func same(_ a: State, _ b: State) {
+        precondition(a.abi_version == b.abi_version && a.reserved == b.reserved &&
+                     a.next_outbound == b.next_outbound && a.highest_accepted == b.highest_accepted)
+    }
+    let values: [UInt64] = [0, 1, 2, (UInt64(1) << 53) + 1, UInt64.max - 1, UInt64.max]
+    for next in values {
+        for highest in values {
+            var before = State(); before.abi_version = 1
+            before.next_outbound = next; before.highest_accepted = highest
+            var event = Event()
+            var output = beluga_core_reconnect_counters_step(1, before, event)
+            precondition(output.decision == (next < UInt64.max ? 0 : 1) && output.reserved == 0)
+            precondition(output.candidate_state.abi_version == 1 && output.candidate_state.reserved == 0)
+            precondition(output.candidate_state.next_outbound == (next < UInt64.max ? next + 1 : next))
+            precondition(output.candidate_state.highest_accepted == highest)
+            for sequence in values {
+                event = Event(); event.opcode = 1; event.request_sequence = sequence
+                output = beluga_core_reconnect_counters_step(1, before, event)
+                precondition(output.decision == (sequence > highest ? 0 : 2) && output.reserved == 0)
+                precondition(output.candidate_state.next_outbound == next)
+                precondition(output.candidate_state.highest_accepted == (sequence > highest ? sequence : highest))
+            }
+        }
+    }
+    var before = State(); before.abi_version = 1
+    before.next_outbound = 23; before.highest_accepted = 47
+    let reserve = Event()
+    let output = beluga_core_reconnect_counters_step(1, before, reserve)
+    precondition(output.decision == 0 && output.candidate_state.next_outbound == 24)
+    precondition(before.next_outbound == 23 && before.highest_accepted == 47)
+    for invalid: UInt32 in [0, 2, UInt32.max] {
+        var result = beluga_core_reconnect_counters_step(invalid, before, reserve)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.candidate_state, before)
+        var malformed = before; malformed.abi_version = invalid
+        result = beluga_core_reconnect_counters_step(1, malformed, reserve)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.candidate_state, malformed)
+    }
+    for invalid: UInt32 in [1, 2, UInt32.max] {
+        var malformed = before; malformed.reserved = invalid
+        var result = beluga_core_reconnect_counters_step(1, malformed, reserve)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.candidate_state, malformed)
+        var event = reserve; event.reserved = invalid
+        result = beluga_core_reconnect_counters_step(1, before, event)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.candidate_state, before)
+    }
+    for opcode: UInt32 in [2, UInt32.max] {
+        var event = reserve; event.opcode = opcode
+        let result = beluga_core_reconnect_counters_step(1, before, event)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.candidate_state, before)
+    }
+    for sequence: UInt64 in [1, (UInt64(1) << 53) + 1, UInt64.max] {
+        var event = reserve; event.request_sequence = sequence
+        let result = beluga_core_reconnect_counters_step(1, before, event)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.candidate_state, before)
+    }
+    print("BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal")
+}
+reconnectCountersSmoke()

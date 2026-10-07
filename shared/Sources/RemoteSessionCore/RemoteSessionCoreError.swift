@@ -26,6 +26,7 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
     case invalidReconnectMessage
     case unsupportedReconnectVersion
     case staleReconnectSequence
+    case invalidReconnectCounterBridge
     case invalidRendezvousCredential
 
     public var errorDescription: String? {
@@ -78,6 +79,8 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "This reconnect protocol version is not supported."
         case .staleReconnectSequence:
             "The reconnect request is stale or has already been used."
+        case .invalidReconnectCounterBridge:
+            "The reconnect counter proposal could not be verified."
         case .invalidRendezvousCredential:
             "The rendezvous credential is invalid."
         }

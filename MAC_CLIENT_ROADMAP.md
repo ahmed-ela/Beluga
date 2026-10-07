@@ -262,7 +262,7 @@ local checkpoint `7ff3c776e4b49c992f75dd0ef5f5a19a3466e420`.
 This is not hidden-unobserved-initializer, physical phone, live connection,
 media transfer or deployment proof. Changed catalog source cannot borrow that receipt.
 
-### Catalog checkpoint admission — focused source proof, full validation pending
+### Catalog checkpoint admission — preceding validated source checkpoint
 
 The eighth Rust policy now proposes one-Add/exact-Update admission and terminal
 revocation through an 8-byte state, 16-byte event and 12-byte result. Native code
@@ -284,9 +284,48 @@ catalog/host cases, including all 18 new checkpoint tests. A test-only typed
 catalog fixture preserves exact canonical storage encoding; production validation
 is unchanged. These focused receipts do not replace fresh compiled native
 assertion controls, signed Simulator coverage or the final full regression gate.
-Those checks and deployment remain pending. Pairing
+The final unchanged catalog source subsequently passed nine compiled native
+assertion controls and all 41 offline phases. Receipt
+`microphone-20261007-29130-1u93t2y/receipt.json` under the dedicated cache has SHA-256
+`08622fcd1de4fbd11e5886b40098b8fd9d189c98efba6622c0ff5efef657ee66`;
+mandatory verification and independent retained audits passed before local
+checkpoint `ee12ba8ff9462d95b2a33615376d9fc4b93daab8`.
+Deployment remains pending. Pairing
 catalog persistence, asynchronous generation ownership and the full product-core
 migration remain incomplete; no installed host or phone is changed here.
+
+### Durable reconnect counters — source integration and focused validation
+
+The ninth typed Rust policy proposes outbound increment/exhaustion and inbound
+strictly-newer high-water admission through copied 24/16/32-byte values. It has no
+stored ledger or initializer. Native record schema, activation/identity guards,
+request authentication, original constructors and durable-before-send ordering
+remain unchanged. Copied candidates are validated before construction and only
+the relevant counter commits after success; sequence-zero constructor failure
+still leaves the record unchanged. Twelve Rust tests include independent numeric
+expectations and 37,050 modeled success/failure traces; 27 new native tests use
+actual C exports and genuine synthetic signatures/key agreement. All 139 current
+product-core Rust cases passed. The official four-target XCFramework candidate
+passed C/Swift interface smokes and was promoted into source only, with its prior
+dependency preserved. Device/Simulator crosslinks are not physical execution.
+
+The native 27 cases plus all 9 original pairing cases pass. Eight deliberately
+compiled native counter/authentication-order breakages fail their intended ordinary
+assertions; both original production objects restore byte-identically and all 36
+cases pass again. Retained receipt `native-reconnect-counter-controls-20261007-68729-1wq29dp/receipt.json`
+has SHA-256 `66bb60892fec027fa338b5f494f30581d234bac921b4e9ae774c60295ea2d953`.
+The initial failed fixture run remains preserved: explicit UInt64 bounds and
+separate validation of randomized CryptoKit signatures correct the test assumptions,
+without changing product code or accepting mismatched signed transcripts.
+
+Four new genuine coordinator/storage fixtures cover no-write failure versus actual
+write-then-throw durable burn and cold retry. They are enrolled in the whole Mac 508
+and separate signed inert-root pairing 106 inventories. The 115 parser self-tests
+pass, including rejection of multiline declarations. Fresh complete 42-phase
+validation is still required for this changed source; the prior 41-phase receipt
+cannot be borrowed. Pairing commit/recovery, media arbitration and other product
+lifecycle policies remain to migrate. No host/phone installation, push or deployment
+is performed here.
 
 ## Earlier implementation ledger
 

@@ -163,15 +163,20 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
     internal mutating func beginReconnect(
         using identity: RemoteDeviceIdentity,
         ephemeralPrivateKeyRawRepresentation: Data,
-        nonce: Data
+        nonce: Data,
+        counterProducer: BelugaRustReconnectCounterProducer = .actual
     ) throws -> RemoteReconnectInitiator {
         guard pairingState == .active else {
             throw RemoteSessionCoreError.invalidPairingCommit
         }
         try validateLocalIdentity(identity, expectedRole: .viewer)
-        guard nextOutboundReconnectSequence < UInt64.max else {
-            throw RemoteSessionCoreError.sequenceExhausted
-        }
+        let proposal = try BelugaRustReconnectCounterBoundary.propose(
+            nextOutbound: nextOutboundReconnectSequence,
+            highestAccepted: highestAcceptedReconnectSequence,
+            opcode: 0,
+            requestSequence: 0,
+            producer: counterProducer
+        )
         let initiator = try RemoteReconnectInitiator(
             record: self,
             identity: identity,
@@ -179,7 +184,7 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
             ephemeralPrivateKeyRawRepresentation: ephemeralPrivateKeyRawRepresentation,
             nonce: nonce
         )
-        nextOutboundReconnectSequence += 1
+        nextOutboundReconnectSequence = proposal.next_outbound
         return initiator
     }
 
@@ -202,16 +207,21 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         to request: RemoteReconnectRequest,
         using identity: RemoteDeviceIdentity,
         ephemeralPrivateKeyRawRepresentation: Data,
-        nonce: Data
+        nonce: Data,
+        counterProducer: BelugaRustReconnectCounterProducer = .actual
     ) throws -> RemoteReconnectResponder {
         guard pairingState == .active else {
             throw RemoteSessionCoreError.invalidPairingCommit
         }
         try validateLocalIdentity(identity, expectedRole: .host)
         try validate(request: request)
-        guard request.sequence > highestAcceptedReconnectSequence else {
-            throw RemoteSessionCoreError.staleReconnectSequence
-        }
+        let proposal = try BelugaRustReconnectCounterBoundary.propose(
+            nextOutbound: nextOutboundReconnectSequence,
+            highestAccepted: highestAcceptedReconnectSequence,
+            opcode: 1,
+            requestSequence: request.sequence,
+            producer: counterProducer
+        )
         let responder = try RemoteReconnectResponder(
             record: self,
             identity: identity,
@@ -219,7 +229,7 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
             ephemeralPrivateKeyRawRepresentation: ephemeralPrivateKeyRawRepresentation,
             nonce: nonce
         )
-        highestAcceptedReconnectSequence = request.sequence
+        highestAcceptedReconnectSequence = proposal.highest_accepted
         return responder
     }
 

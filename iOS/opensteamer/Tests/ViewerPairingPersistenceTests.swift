@@ -1680,6 +1680,91 @@ final class ViewerPairingPersistenceTests: XCTestCase {
         XCTAssertEqual(coordinator.savedPairConnectionState, .idle)
     }
 
+    func testReconnectCounterSaveFailureBlocksRequestAndColdRetryUsesStoredPredecessor() async throws {
+        try await assertReconnectCounterSaveFailure(writeThenThrow: false)
+    }
+
+    func testReconnectCounterWriteThenThrowBurnsDurablyAndColdRetryNeverReusesIt() async throws {
+        try await assertReconnectCounterSaveFailure(writeThenThrow: true)
+    }
+
+    private func assertReconnectCounterSaveFailure(writeThenThrow: Bool) async throws {
+        let identity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let original = try makePairedMacRecord(localIdentity: identity)
+        let sentinel = ReconnectCounterStorageSentinel()
+        let store = try ReconnectCounterCountingViewerStore(identity: identity, record: original)
+        let beforeBytes = try XCTUnwrap(store.storedBytes)
+        store.arm(counter: original.nextOutboundReconnectSequence + 1,
+                  writeThenThrow: writeThenThrow, error: sentinel)
+        let state = ViewerPairingState(store: store)
+        let client = PairedAvailabilityTransportStub()
+        let coordinator = WorldwideViewerConnectionCoordinator(availabilityClientFactory: { _, _ in client })
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        let exchange = try RemoteAvailabilityExchangeID(wireValue: "AAAAAAAAAAAAAAAAAAAAAA")
+        let task = Task { @MainActor in
+            try await coordinator.preparePairedMediaSession(endpoint: endpoint, pairingState: state,
+                onAuthenticatedPairingCompleted: {})
+        }
+        addTeardownBlock { @MainActor in
+            coordinator.cancel(); task.cancel(); await client.close(); _ = await task.result
+        }
+        try await waitForConnect(client)
+        await client.yield(.ready(role: .viewer, exchangeID: exchange))
+        let result = await task.result
+        guard case .failure(let error) = result else {
+            return XCTFail("A rejected reconnect counter save cannot prepare media")
+        }
+        XCTAssertTrue((error as? ReconnectCounterStorageSentinel) === sentinel,
+            "The concrete storage error must survive every coordinator boundary")
+        XCTAssertEqual(store.saveAttemptCount, 2,
+            "Count both the original active save and the failed advancing save before throwing")
+        XCTAssertEqual(store.completedSaveCount, 1)
+        let attempted = try XCTUnwrap(store.attemptedRecords.last)
+        XCTAssertEqual(attempted.nextOutboundReconnectSequence, original.nextOutboundReconnectSequence + 1)
+        XCTAssertEqual(attempted.highestAcceptedReconnectSequence, original.highestAcceptedReconnectSequence)
+        let payloads = await client.sentPayloadsSnapshot()
+        XCTAssertEqual(payloads.count, 1, "Only the already-durable activation proof may be sent")
+        XCTAssertTrue(reconnectRequests(in: payloads).isEmpty)
+        XCTAssertFalse(coordinator.connectionTelemetrySnapshot.events.contains { $0.stage == .reconnectRequestSent })
+        XCTAssertFalse(coordinator.connectionTelemetrySnapshot.events.contains { $0.stage == .mediaSignalingPrepared })
+        XCTAssertEqual(state.pairedMac, original, "A throwing write cannot publish a successful save")
+        let durable = try XCTUnwrap(store.loadPairedMac(for: identity))
+        if writeThenThrow {
+            XCTAssertNotEqual(store.storedBytes, beforeBytes)
+            XCTAssertEqual(durable, attempted,
+                "Write-then-throw really burns durable authority; never invent a rollback")
+        } else {
+            XCTAssertEqual(store.storedBytes, beforeBytes)
+            XCTAssertEqual(durable, original)
+        }
+
+        // Reconstruct all viewer state from actual stored JSON bytes. The retry must
+        // use that durable predecessor, not the rejected local proposal or stale UI.
+        let coldState = ViewerPairingState(store: store)
+        let retryClient = PairedAvailabilityTransportStub(suspendReconnectSend: true)
+        let retryCoordinator = WorldwideViewerConnectionCoordinator(
+            availabilityClientFactory: { _, _ in retryClient })
+        let retryTask = Task { @MainActor in
+            try await retryCoordinator.preparePairedMediaSession(endpoint: endpoint,
+                pairingState: coldState, onAuthenticatedPairingCompleted: {})
+        }
+        addTeardownBlock { @MainActor in
+            retryCoordinator.cancel(); retryTask.cancel(); await retryClient.close(); _ = await retryTask.result
+        }
+        try await waitForConnect(retryClient)
+        await retryClient.yield(.ready(role: .viewer, exchangeID: exchange))
+        try await waitForSentPayloadCount(2, client: retryClient)
+        let retryPayloads = await retryClient.sentPayloadsSnapshot()
+        let request = try XCTUnwrap(reconnectRequest(in: retryPayloads))
+        XCTAssertEqual(request.sequence, durable.nextOutboundReconnectSequence)
+        XCTAssertEqual(try store.loadPairedMac(for: identity)?.nextOutboundReconnectSequence,
+            request.sequence + 1, "The retry counter must already be durable while send is suspended")
+        XCTAssertEqual(store.saveAttemptCount, 4)
+        XCTAssertEqual(store.completedSaveCount, 3)
+        XCTAssertFalse(retryCoordinator.connectionTelemetrySnapshot.events.contains { $0.stage == .mediaSignalingPrepared })
+        retryCoordinator.cancel(); retryTask.cancel(); await retryClient.close(); _ = await retryTask.result
+    }
+
     func testActiveViewerResendsActivationProofBeforeReconnectRequest() async throws {
         let identity = try RemoteDeviceIdentity.generate(role: .viewer)
         let activeRecord = try makePairedMacRecord(localIdentity: identity)
@@ -3007,6 +3092,54 @@ private func waitForSentPayloadCount(
         try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
     }
     throw PairingTestFailure.timeout
+}
+
+private final class ReconnectCounterStorageSentinel: Error, @unchecked Sendable {}
+
+/// Stores opaque deterministic JSON bytes and records every attempted write before
+/// the selected advancing counter write fails. No Keychain or network is used.
+private final class ReconnectCounterCountingViewerStore: ViewerPairingStoring {
+    let identity: RemoteDeviceIdentity
+    private(set) var storedBytes: Data?
+    private(set) var saveAttemptCount = 0
+    private(set) var completedSaveCount = 0
+    private(set) var attemptedRecords: [RemotePairedDeviceRecord] = []
+    private var failure: (counter: UInt64, writeThenThrow: Bool, error: ReconnectCounterStorageSentinel)?
+
+    init(identity: RemoteDeviceIdentity, record: RemotePairedDeviceRecord) throws {
+        self.identity = identity
+        storedBytes = try Self.encode(record)
+    }
+
+    func arm(counter: UInt64, writeThenThrow: Bool, error: ReconnectCounterStorageSentinel) {
+        failure = (counter, writeThenThrow, error)
+    }
+
+    func loadOrCreateViewerIdentity() throws -> RemoteDeviceIdentity { identity }
+
+    func loadPairedMac(for identity: RemoteDeviceIdentity) throws -> RemotePairedDeviceRecord? {
+        try storedBytes.map { try JSONDecoder().decode(RemotePairedDeviceRecord.self, from: $0) }
+    }
+
+    func savePairedMac(_ record: RemotePairedDeviceRecord, for identity: RemoteDeviceIdentity) throws {
+        saveAttemptCount += 1
+        attemptedRecords.append(record)
+        let encoded = try Self.encode(record)
+        if let rejected = failure, record.nextOutboundReconnectSequence == rejected.counter {
+            failure = nil
+            if rejected.writeThenThrow { storedBytes = encoded }
+            throw rejected.error
+        }
+        storedBytes = encoded
+        completedSaveCount += 1
+    }
+
+    func deletePairedMac() throws { storedBytes = nil }
+
+    private static func encode(_ record: RemotePairedDeviceRecord) throws -> Data {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(record)
+    }
 }
 
 private final class ViewerPairingStoreStub: ViewerPairingStoring {
