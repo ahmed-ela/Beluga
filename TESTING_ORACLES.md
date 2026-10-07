@@ -819,7 +819,7 @@ bridge and composed real-peer/audio-lease tests are separate mandatory execution
 evidence. Existing physical-only exclusions are unchanged, and no archive, reducer
 pass or Simulator test substitutes for physical playback and exact-source Mac Pause.
 
-#### Shared Rust offers and timeline admission — source integration in progress
+#### Shared Rust offers and timeline admission
 
 `MediaHandoffOffers` now delegates the production one-use offers/timeline reducer
 to the linked Rust core. `BelugaRustHandoffOffersTests` independently transcribes
@@ -837,7 +837,8 @@ violations including missing cleanup, malformed-wire sequence burns, invalid-sam
 receipt retirement, backwards retained positions, forged mints and cross-slot/
 counter changes. This decoder is not fallback policy or native Pause authorization.
 
-The core gate requires all 44 discovered Rust tests and 27 compiled mutants. The
+The offers checkpoint requires its 44 discovered Rust tests and 27 compiled mutants,
+preserved as exact prefixes when the next contract extends the inventory. The
 sixteen additional offer mutants must fail their intended assertions for replay,
 timeline/source boundaries, wrong comparison domain, retirement ordering, counter
 reset/wrap or unknown operation handling. All copied-layout offsets and actual
@@ -845,6 +846,34 @@ offers symbols are exercised by C and Swift against the produced Mac archive and
 cross-linked for device and both Simulator architectures. These source additions
 still require a fresh final-source canonical receipt; prior ledger proof or a
 candidate build does not establish the new adapter, physical transfer or deployment.
+
+#### Rust phone playback operation
+
+The linked phone-operation ABI adds request40/evidence32/state152/event80/result168
+copied layouts. Rust retains raw floating bits and typed identity domains; native
+Swift keeps exact operation/page/video/proof comparisons, the private proof UUID,
+request and provider admission, and platform effects. Copied-output tests reject
+forged mints, refreshed proofs, missing revocation, first-sample confirmation,
+hidden owner claims, replayed or expired completion and dishonest Mac outcomes.
+Original proof age and current playback freshness remain separate requirements.
+
+All 32 new Rust tests are discovered and pinned, with 19,200 reference-comparison
+steps and six additional compiled assertion mutants. All fifth-contract C/Swift
+field layouts and actual exported symbols must link against the produced archive
+for Mac, iOS device and both Simulator architectures. The signed Simulator gate
+adds all nine existing Coordinator and twenty independent native adapter methods:
+538 discovered cases, 516 required passes and the unchanged 22 physical exclusions.
+The new cases may not be skipped, manually judged or replaced with provider mocks
+as physical proof. A fresh final-source receipt is still required for this slice.
+
+The total core inventory is now 76 tests and 33 intended compiled Rust assertion
+failures. The focused signed 50-test proof retains all 17 original operation,
+20 new native boundary/parity, nine Coordinator and four WebView cases, with no
+skips. Separate compiled Swift mutants replace whole-proof equality with an
+operation-only comparison and bypass copied-result custody; each must fail its
+exact named XCTest assertion, not compilation or a crash. Baseline/restored
+controls must pass, and the exact production source must be restored before any
+other build. Their private proof does not replace the full canonical gate.
 
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,

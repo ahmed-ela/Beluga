@@ -217,6 +217,87 @@ beluga_core_handoff_offers_result_t beluga_core_handoff_offers_step(
     uint32_t abi_version, beluga_core_handoff_offers_state_t state,
     beluga_core_handoff_offers_event_t event);
 
+/* Additive copied ABI1 phone-operation policy.
+ * Floating fields are copied IEEE-754 Double bits, never integer clock units.
+ * Native operation/page/video/evidence/completion comparisons are distinct facts.
+ * This local policy does not consume a transport offer or authorize a native Pause.
+ * Whole evidence equality includes its private native UUID and Double == semantics.
+ */
+typedef struct {
+    uint64_t position;
+    uint64_t duration;
+    uint64_t rate;
+    uint64_t deadline;
+    uint64_t position_observed_at;
+} beluga_core_youtube_handoff_operation_request_t;
+
+typedef struct {
+    uint64_t token;
+    uint64_t position;
+    uint64_t rate;
+    uint64_t observed_at;
+} beluga_core_youtube_handoff_operation_evidence_t;
+
+typedef struct {
+    uint32_t abi;
+    uint32_t phase; /* preparing0 ready1 playRequired2 verifying3 confirmed4
+                    * awaitingMacPause5 localPlayback6 failed7 */
+    uint32_t failure; /* none0, original failure declaration order1..14 */
+    uint32_t mac_pause; /* notRequested0 pending1 paused2 notApplied3 unknown4 */
+    uint32_t flags; /* visible1 hasBeenVisible2 ready4 evidenceRevoked8 */
+    uint32_t presence; /* firstPlaying1 latestPlaying2 latestState4 evidence8 reply16 */
+    uint32_t sequence;
+    uint32_t reserved;
+    beluga_core_youtube_handoff_operation_request_t request;
+    uint64_t last_now;
+    uint64_t first_position;
+    uint64_t first_at;
+    uint64_t latest_playing_at;
+    int32_t latest_state;
+    uint32_t latest_state_reserved;
+    beluga_core_youtube_handoff_operation_evidence_t evidence;
+    uint64_t reply_deadline;
+} beluga_core_youtube_handoff_operation_state_t;
+
+typedef struct {
+    uint32_t opcode; /* visibility0 poll1 receive2 current3 begin4 completion5 fail6 */
+    uint32_t flags; /* visible1 operationEq2 pageEq4 videoEq8 proofEq16 completionEq32 */
+    uint32_t presence; /* sample state1 position2 duration4 rate8; partial is legal */
+    uint32_t sequence;
+    uint32_t kind; /* ready0 blocked1 sample2 error3 unsupportedRate4 */
+    int32_t sample_state;
+    uint32_t completion; /* unused0 macPaused1 notApplied2 outcomeUnknown3 */
+    uint32_t failure;
+    uint64_t now;
+    uint64_t proof_token;
+    uint64_t candidate_token; /* 0 is exhaustion only at an actually eligible mint */
+    uint64_t sample_position;
+    uint64_t sample_duration;
+    uint64_t sample_rate;
+} beluga_core_youtube_handoff_operation_event_t;
+
+typedef struct {
+    beluga_core_youtube_handoff_operation_state_t state;
+    uint32_t status; /* valid product step0, malformed ABI/state/event3 */
+    uint32_t event; /* none0 playRequired1 confirmed2 movedToPhone3 failed4 */
+    uint32_t accepted; /* exactly0/1; current and begin only */
+    uint32_t failure; /* nonzero only if event4; silent current failure remains0 */
+} beluga_core_youtube_handoff_operation_result_t;
+
+/* Initial now is copied unchanged, including -Infinity, NaN and signed zero.
+ * The request is independently constructed/validated by the native owner.
+ * Malformed step inputs return byte-identical input state, no event and false.
+ * Canonically absent option payloads are all zero. Optional observed times may
+ * be negative when the original arbitrary initial clock admits them.
+ * Candidate0 does not refuse unrelated/ignored/existing-proof branches; a truly
+ * eligible new proof fails invalidBridge after normal clock/sequence processing.
+ */
+beluga_core_youtube_handoff_operation_state_t beluga_core_youtube_handoff_operation_initial(
+    beluga_core_youtube_handoff_operation_request_t request, uint64_t now);
+beluga_core_youtube_handoff_operation_result_t beluga_core_youtube_handoff_operation_step(
+    uint32_t abi_version, beluga_core_youtube_handoff_operation_state_t state,
+    beluga_core_youtube_handoff_operation_event_t event);
+
 #ifdef __cplusplus
 }
 #endif

@@ -115,7 +115,7 @@ also passed; the independently verified receipt and local checkpoint `f302411`
 are retained in `/Volumes/t7/beluga-rust-handoff.9PynxC/RESULTS.md`. This is source
 evidence, not deployed or physical handoff evidence.
 
-### Shared Rust one-use offers and timelines — source integration in progress
+### Shared Rust one-use offers and timelines — predecessor checkpoint
 
 The old production Swift offers/timeline reducer is removed. The additive copied
 ABI now puts sequence floors, original deadlines, freshness, position/rate drift,
@@ -125,14 +125,44 @@ actual supplied receipt validation, original spelling and native value copies
 remain intact. Clear does not reset replay counters, tokens never recycle, and
 malformed copied effects close authority without manufacturing playback or Pause.
 
-Isolated Rust coverage passes 44 tests; all 27 behavioral mutants compile and fail
-their intended assertions. The source-bound candidate and production Swift bridge
-are not yet verified together. Thirty new Swift methods independently compare the
+The local `c81566c` checkpoint passed the complete 32-phase canonical offline gate:
+44 product-core Rust tests, 27 compiled behavioral mutants, 470 Mac tests,
+84 shared handoff tests, 27 shared signaling tests and 35 legacy audio Rust tests.
+The signed Simulator passed 487 tests with the unchanged 22 physical exclusions;
+native, sanitizer, signing and artifact checks passed. Thirty new Swift methods compare the
 original reducer over 14,425 bounded traces and 8,192 seeded events, cover numeric,
 Unicode, receipt-copy and exhaustion boundaries, and test legitimate and malformed
-copied-result patterns. These are required tests, not a claim they have executed.
-The full canonical gate remains mandatory on the final frozen source and promoted
-artifact before this slice can become a verified checkpoint.
+copied-result patterns. Two compiled native bridge mutants failed their intended
+assertions and exact source restoration passed. The independently audited receipt
+is retained in `/Volumes/t7/beluga-rust-offers-integration.8O1zib/RESULTS.md`.
+This predecessor evidence does not cover the subsequent phone-operation source;
+the complete gate remains mandatory on its final source and promoted artifact.
+
+### Rust phone playback operation — source implementation, not released
+
+The original phone-operation Swift reducer is replaced by the bounded Rust policy;
+request validation, strict provider codec, exact native UUID/proof equality and
+WKWebView/audio/session ownership remain native. A copied ABI preserves original
+Double bits, observed-clock ordering, irrevocable proof invalidation, one pending
+pause reservation, reply expiry and truthful known/unknown Mac outcomes. Native
+copied-result validation closes authority on malformed data without inventing Pause.
+
+Private preparation passed 32 Rust tests (19,200 independent-reference steps) and
+an actual linked C ABI probe. The unchanged nine Coordinator tests passed a fresh
+signed Simulator baseline before migration. Twenty new native tests retain a
+frozen original Swift reference, 1,944 bounded traces and 8,192 seeded events;
+the original 17 operation tests, four WK boundary tests and all nine Coordinator
+tests remain mandatory. The produced Mac/device/two-architecture Simulator core
+passed actual C/Swift link checks and independent artifact review. Its production
+adapter passed all 50 focused signed Simulator tests with zero skips/failures.
+Two compiled native identity/custody mutants failed their intended assertions;
+the restored controls passed and every source byte was restored. Evidence lives
+in `/Volumes/t7/beluga-rust-phone-operation.D09uv7/RESULTS.md`.
+
+The final-source 32-phase canonical gate is required before this checkpoint can
+be committed or released; the focused proof does not substitute it. This is not
+real YouTube, actual Mac Pause, physical-phone or deployment proof. The broader
+Rust rewrite remains incomplete; pairing/catalog/session policy is the next seam.
 
 ## Earlier implementation ledger
 

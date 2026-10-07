@@ -36,8 +36,8 @@ module BelugaCoreArtifact
     .gitignore Cargo.lock Cargo.toml README.md THIRD_PARTY_NOTICES.html
     include/beluga_core.h include/module.modulemap rust-toolchain.toml
     scripts/artifact_support.rb scripts/build-xcframework.rb scripts/mutation-tests.rb
-    scripts/verify-xcframework.rb src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs
-    tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs
+    scripts/verify-xcframework.rb src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs
+    tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
   ARTIFACT_FILES = (%w[

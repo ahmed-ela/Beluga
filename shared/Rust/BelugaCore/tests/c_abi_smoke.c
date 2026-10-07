@@ -170,6 +170,181 @@ static uint32_t expected_reason(uint32_t f) {
     return 0;
 }
 
+#include <BelugaCore/beluga_core.h>
+#include <assert.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+#define PHONE_TYPE(suffix) beluga_core_youtube_handoff_operation_##suffix##_t
+#define PHONE_LAYOUT(type, bytes) \
+    _Static_assert(sizeof(PHONE_TYPE(type)) == bytes, "phone " #type " size"); \
+    _Static_assert(_Alignof(PHONE_TYPE(type)) == 8, "phone " #type " alignment")
+#define PHONE_OFFSET(type, field, bytes) \
+    _Static_assert(offsetof(PHONE_TYPE(type), field) == bytes, "phone " #type " " #field " offset")
+PHONE_LAYOUT(request, 40);
+PHONE_OFFSET(request, position, 0); PHONE_OFFSET(request, duration, 8);
+PHONE_OFFSET(request, rate, 16); PHONE_OFFSET(request, deadline, 24);
+PHONE_OFFSET(request, position_observed_at, 32);
+PHONE_LAYOUT(evidence, 32);
+PHONE_OFFSET(evidence, token, 0); PHONE_OFFSET(evidence, position, 8);
+PHONE_OFFSET(evidence, rate, 16); PHONE_OFFSET(evidence, observed_at, 24);
+PHONE_LAYOUT(state, 152);
+PHONE_OFFSET(state, abi, 0); PHONE_OFFSET(state, phase, 4);
+PHONE_OFFSET(state, failure, 8); PHONE_OFFSET(state, mac_pause, 12);
+PHONE_OFFSET(state, flags, 16); PHONE_OFFSET(state, presence, 20);
+PHONE_OFFSET(state, sequence, 24); PHONE_OFFSET(state, reserved, 28);
+PHONE_OFFSET(state, request, 32); PHONE_OFFSET(state, last_now, 72);
+PHONE_OFFSET(state, first_position, 80); PHONE_OFFSET(state, first_at, 88);
+PHONE_OFFSET(state, latest_playing_at, 96); PHONE_OFFSET(state, latest_state, 104);
+PHONE_OFFSET(state, latest_state_reserved, 108); PHONE_OFFSET(state, evidence, 112);
+PHONE_OFFSET(state, reply_deadline, 144);
+PHONE_LAYOUT(event, 80);
+PHONE_OFFSET(event, opcode, 0); PHONE_OFFSET(event, flags, 4);
+PHONE_OFFSET(event, presence, 8); PHONE_OFFSET(event, sequence, 12);
+PHONE_OFFSET(event, kind, 16); PHONE_OFFSET(event, sample_state, 20);
+PHONE_OFFSET(event, completion, 24); PHONE_OFFSET(event, failure, 28);
+PHONE_OFFSET(event, now, 32); PHONE_OFFSET(event, proof_token, 40);
+PHONE_OFFSET(event, candidate_token, 48); PHONE_OFFSET(event, sample_position, 56);
+PHONE_OFFSET(event, sample_duration, 64); PHONE_OFFSET(event, sample_rate, 72);
+PHONE_LAYOUT(result, 168);
+PHONE_OFFSET(result, state, 0); PHONE_OFFSET(result, status, 152);
+PHONE_OFFSET(result, event, 156); PHONE_OFFSET(result, accepted, 160);
+PHONE_OFFSET(result, failure, 164);
+#undef PHONE_OFFSET
+#undef PHONE_LAYOUT
+
+static uint64_t phone_bits(double value) {
+    uint64_t bits; memcpy(&bits, &value, sizeof(bits)); return bits;
+}
+static PHONE_TYPE(request) phone_request(void) {
+    return (PHONE_TYPE(request)){phone_bits(20.0), phone_bits(200.0), phone_bits(1.0),
+        phone_bits(40.0), phone_bits(10.0)};
+}
+static PHONE_TYPE(event) phone_event(uint32_t opcode, double now) {
+    PHONE_TYPE(event) event = {0}; event.opcode = opcode; event.now = phone_bits(now); return event;
+}
+static PHONE_TYPE(event) phone_message(uint32_t sequence, uint32_t kind, double position, double now) {
+    PHONE_TYPE(event) event = phone_event(2, now);
+    event.flags = 14; event.sequence = sequence; event.kind = kind; event.candidate_token = 91;
+    if (kind == 2) {
+        event.presence = 15; event.sample_state = 1; event.sample_position = phone_bits(position);
+        event.sample_duration = phone_bits(200.0); event.sample_rate = phone_bits(1.0);
+    }
+    return event;
+}
+static PHONE_TYPE(result) phone_apply(PHONE_TYPE(state) *state, PHONE_TYPE(event) event) {
+    PHONE_TYPE(result) result = beluga_core_youtube_handoff_operation_step(1, *state, event);
+    assert(result.status == 0); *state = result.state; return result;
+}
+static PHONE_TYPE(state) phone_confirm(uint64_t token) {
+    PHONE_TYPE(state) state = beluga_core_youtube_handoff_operation_initial(phone_request(), phone_bits(10.0));
+    assert(state.abi == 1 && state.phase == 0 && state.flags == 0 && state.presence == 0);
+    PHONE_TYPE(event) event = phone_event(0, 10.0); event.flags = 1; phone_apply(&state, event);
+    phone_apply(&state, phone_message(1, 0, 20.0, 10.0));
+    phone_apply(&state, phone_message(2, 2, 20.0, 10.1));
+    event = phone_message(3, 2, 20.3, 10.4); event.candidate_token = token;
+    PHONE_TYPE(result) result = phone_apply(&state, event);
+    assert(result.event == 2 && result.accepted == 0 && result.failure == 0);
+    assert(state.phase == 4 && state.mac_pause == 0 && state.evidence.token == token);
+    assert(state.evidence.position == phone_bits(20.3) && state.evidence.observed_at == phone_bits(10.4));
+    return state;
+}
+static PHONE_TYPE(event) phone_proof(uint32_t opcode, double now, uint64_t token) {
+    PHONE_TYPE(event) event = phone_event(opcode, now); event.flags = 16; event.proof_token = token; return event;
+}
+static PHONE_TYPE(event) phone_completion(uint32_t outcome, double now) {
+    PHONE_TYPE(event) event = phone_event(5, now); event.flags = 32; event.completion = outcome; return event;
+}
+static PHONE_TYPE(state) phone_pending(void) {
+    PHONE_TYPE(state) state = phone_confirm(91);
+    PHONE_TYPE(result) result = phone_apply(&state, phone_proof(4, 10.5, 91));
+    assert(result.accepted == 1 && result.event == 0 && state.mac_pause == 1 && state.phase == 5);
+    assert(state.reply_deadline == phone_bits(13.5)); return state;
+}
+static void phone_unchanged(PHONE_TYPE(result) result, PHONE_TYPE(state) expected, uint32_t status) {
+    assert(result.status == status && result.event == 0 && result.accepted == 0 && result.failure == 0);
+    assert(memcmp(&result.state, &expected, sizeof(expected)) == 0);
+}
+static void phone_operation_smoke(void) {
+    const uint64_t infinity_bits = UINT64_C(0x7ff0000000000000);
+    const uint64_t negative_infinity_bits = UINT64_C(0xfff0000000000000);
+    const uint64_t nan_bits = UINT64_C(0x7ff8000000001234);
+    PHONE_TYPE(state) state = beluga_core_youtube_handoff_operation_initial(phone_request(), nan_bits);
+    assert(state.phase == 0 && state.last_now == nan_bits);
+    PHONE_TYPE(event) event = phone_message(1, 0, 0.0, 0.0); event.flags = 0; event.now = infinity_bits;
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, event), state, 0);
+    PHONE_TYPE(result) result = phone_apply(&state, phone_event(1, 10.0));
+    assert(result.event == 4 && result.failure == 9 && state.last_now == nan_bits);
+
+    state = phone_confirm(91); PHONE_TYPE(state) before = state;
+    event = phone_message(99, 3, 0.0, 0.0); event.flags = 10; event.now = infinity_bits;
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 0);
+    event = phone_message(1, 0, 0.0, 40.0); result = phone_apply(&state, event);
+    assert(result.event == 4 && result.failure == 2 && state.sequence == before.sequence);
+
+    state = phone_confirm(91);
+    result = phone_apply(&state, phone_proof(4, 10.5, 92));
+    assert(result.accepted == 0 && state.mac_pause == 0);
+    event = phone_event(4, 10.5); result = phone_apply(&state, event);
+    assert(result.accepted == 0 && state.evidence.token == 91);
+    state = phone_pending(); before = state;
+    event = phone_proof(4, 0.0, 91); event.now = nan_bits;
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 0);
+    event = phone_completion(1, 0.0); event.flags = 0; event.now = infinity_bits;
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 0);
+    phone_apply(&state, phone_message(4, 2, 21.3, 11.4));
+    result = phone_apply(&state, phone_proof(3, 11.4, 91));
+    assert(result.accepted == 0 && state.evidence.observed_at == phone_bits(10.4));
+    result = phone_apply(&state, phone_completion(1, 11.5));
+    assert(result.event == 3 && state.phase == 6 && state.mac_pause == 2 && state.evidence.token == 0);
+    event = phone_message(5, 2, 80.0, 60.0); event.sample_state = 2; event.sample_rate = phone_bits(2.0);
+    result = phone_apply(&state, event);
+    assert(result.event == 0 && state.phase == 6 && state.mac_pause == 2);
+    result = phone_apply(&state, phone_proof(3, 60.0, 91)); assert(result.accepted == 0);
+
+    state = phone_pending(); result = phone_apply(&state, phone_completion(1, 11.5));
+    assert(result.event == 4 && result.failure == 12 && state.mac_pause == 2 && state.evidence.token == 91);
+    assert(state.phase == 7 && (state.flags & 8) == 8);
+    state = phone_pending(); event = (PHONE_TYPE(event)){0}; event.opcode = 6; event.failure = 4;
+    result = phone_apply(&state, event);
+    assert(result.event == 4 && result.failure == 4 && state.mac_pause == 4 && state.evidence.token == 91);
+    before = state; phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, phone_completion(1, 10.6)), before, 0);
+
+    state = beluga_core_youtube_handoff_operation_initial(phone_request(), phone_bits(10.0));
+    event = phone_event(0, 10.0); event.flags = 1; phone_apply(&state, event);
+    event = phone_message(1, 0, 0.0, 10.0); event.candidate_token = 0; phone_apply(&state, event);
+    event = phone_message(2, 2, 20.0, 10.1); event.candidate_token = 0; phone_apply(&state, event);
+    assert(state.phase == 3 && state.evidence.token == 0);
+    event = phone_message(3, 2, 20.3, 10.4); event.candidate_token = 0; result = phone_apply(&state, event);
+    assert(result.event == 4 && result.failure == 8 && state.phase == 7);
+    assert(state.sequence == 3 && state.last_now == phone_bits(10.4) && state.evidence.token == 0);
+    state = phone_confirm(UINT64_MAX); event = phone_message(4, 2, 20.5, 10.6); event.candidate_token = 0;
+    phone_apply(&state, event); assert(state.evidence.token == UINT64_MAX && state.phase == 4);
+
+    before = state; event = phone_event(7, 10.6);
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 3);
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(2, state, phone_event(1, 10.6)), before, 3);
+    state.reserved = 1; before = state;
+    phone_unchanged(beluga_core_youtube_handoff_operation_step(1, state, phone_event(1, 10.6)), before, 3);
+
+    state = beluga_core_youtube_handoff_operation_initial(phone_request(), negative_infinity_bits);
+    event = phone_event(0, -20.0); event.flags = 1; phone_apply(&state, event);
+    phone_apply(&state, phone_message(1, 0, 0.0, -20.0));
+    phone_apply(&state, phone_message(2, 2, 20.0, -19.9));
+    result = phone_apply(&state, phone_message(3, 2, 20.3, -19.6)); assert(result.event == 2);
+    result = phone_apply(&state, phone_proof(4, -19.5, 91)); assert(result.accepted == 1);
+    assert(state.evidence.observed_at == phone_bits(-19.6) && state.reply_deadline == phone_bits(-16.5));
+    result = phone_apply(&state, phone_completion(1, -19.4)); assert(result.event == 3);
+    state = beluga_core_youtube_handoff_operation_initial(phone_request(), phone_bits(-0.0));
+    assert(state.last_now == UINT64_C(0x8000000000000000));
+    phone_apply(&state, phone_event(1, 0.0)); assert(state.last_now == 0);
+    phone_apply(&state, phone_event(1, -0.0)); assert(state.last_now == UINT64_C(0x8000000000000000));
+    puts("BelugaCore C phone operation ABI PASS: exact layouts, original ordering, immutable proof and honest pause outcomes");
+}
+#undef PHONE_TYPE
+
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -278,5 +453,6 @@ int main(void) {
     assert(offer_result.state.presence == 0 && offer_result.state.next_sent == UINT64_MAX);
     assert(offer_result.retired_sent == 100 && offer_result.retired_received == 100);
     puts("BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts");
+    phone_operation_smoke();
     return 0;
 }

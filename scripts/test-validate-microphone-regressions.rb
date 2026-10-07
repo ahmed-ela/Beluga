@@ -676,8 +676,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
     assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 22, Gate::BELUGA_CORE_SOURCE_FILES.length
-    %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs].each do |path|
+    assert_equal 24, Gate::BELUGA_CORE_SOURCE_FILES.length
+    %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs
+       src/youtube_handoff_operation.rs tests/youtube_handoff_operation.rs].each do |path|
       assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path
     end
     assert_nil Gate.validate_beluga_core_artifacts(@root)
@@ -892,8 +893,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
                nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
                unknown_operation_is_invalid_unchanged_without_retirement_or_success
                wire_authorization_and_exact_numeric_identity_guard_slots exported_offer_functions_match_safe_reducer]
-    assert_equal 44, Gate::BELUGA_CORE_PINNED.length
-    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    assert_equal 76, Gate::BELUGA_CORE_PINNED.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.first(44).last(tests.length)
     tests.each do |id|
       omitted = @core_methods - [id]
       rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
@@ -920,8 +921,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
                  offers-freshness-inclusive offers-deadline-inclusive offers-timeline-tolerance-widened
                  offers-host-position-tolerance-widened offers-clear-resets-counters offers-sent-sequence-reused
                  offers-unknown-operation-clears-state]
-    assert_equal 27, Gate::BELUGA_CORE_MUTANTS.length
-    assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.last(mutants.length)
+    assert_equal 33, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.first(27).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name|
       marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
@@ -948,6 +949,115 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('missing critical Beluga core') { verify(value) }
     rejects('result footer disagrees') do
       Gate.validate_rust(rust_log(@core_methods).sub("#{@core_methods.length} passed", '25 passed'), @core_methods)
+    end
+  end
+
+  def test_beluga_core_phone_operation_source_tests_link_smokes_and_mutants_are_mandatory
+    tests = %w[copied_abi_layout_is_exact_and_pointer_free ready_stationary_paused_and_wrong_position_do_not_confirm
+               slow_provider_requires_the_advancing_original_request_timeline
+               advancing_exact_visible_playback_confirms_once_without_refreshing_proof
+               blocked_provider_requests_play_but_never_claims_confirmation
+               hidden_once_visible_and_every_terminal_failure_cannot_revive
+               foreign_identity_returns_before_time_but_matching_replay_observes_time
+               wrong_video_burns_matching_sequence_before_terminal_failure
+               original_proof_age_never_renews_but_completion_uses_latest_sample
+               interruption_or_seek_cannot_revive_previously_confirmed_authority
+               clock_regression_and_nonfinite_clock_fail_without_rewriting_last_bits
+               only_reserved_correlated_completion_moves_and_cannot_be_replayed
+               committed_local_controls_past_deadline_never_reopen_authority
+               pending_interruption_becomes_unknown_and_late_success_cannot_revive
+               successful_native_pause_is_retained_even_when_phone_freshness_fails
+               reply_timeout_precedes_offer_timeout_and_never_renews_deadline
+               every_pending_failure_retains_proof_but_becomes_unknown_terminal
+               rejected_and_unknown_completion_results_retain_their_honest_status
+               whole_native_proof_equality_and_scalar_identity_are_separate_guards
+               initial_nonfinite_and_signed_zero_bits_are_stored_without_observation
+               negative_monotone_times_can_confirm_and_reserve_negative_reply_deadline
+               duration_tolerance_can_confirm_evidence_beyond_original_request_duration
+               sample_partial_presence_burns_sequence_but_never_processes_partial_sample
+               candidate_zero_is_ignored_before_the_genuine_new_proof_mint_point
+               eligible_zero_candidate_fails_invalid_bridge_after_clock_and_sequence_burn
+               maximum_candidate_is_valid_once_and_later_candidate_zero_cannot_remint
+               raw_state_value_copies_are_independent_and_native_fact_blocks_cross_proof
+               exact_advance_elapsed_and_original_proof_age_boundaries_match_double_semantics
+               is_current_silent_failure_does_not_fabricate_an_emitted_failure_event
+               malformed_abi_and_every_structural_state_field_fail_byte_identically
+               malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
+               deterministic_independent_traces_compare_every_raw_state_event_and_boolean]
+    assert_equal 32, tests.length
+    assert_equal 76, Gate::BELUGA_CORE_PINNED.length
+    assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    tests.each do |id|
+      omitted = @core_methods - [id]
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(omitted), @core_methods) }
+      rejects('ignored') { Gate.validate_rust(rust_log(@core_methods).sub("test #{id} ... ok", "test #{id} ... ignored"), @core_methods) }
+    end
+    %w[src/youtube_handoff_operation.rs tests/youtube_handoff_operation.rs].each do |relative|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, relative
+      path = File.join(core_crate, relative)
+      original = File.binread(path)
+      File.unlink(path)
+      refresh_core_source_manifest
+      refresh_core_artifact_manifest
+      rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+      File.binwrite(path, original)
+      refresh_core_source_manifest
+      refresh_core_artifact_manifest
+    end
+    mutants = {
+      'phone-foreign-clock-before-identity' => 'foreign_identity_returns_before_time_but_matching_replay_observes_time',
+      'phone-stale-sequence-before-clock' => 'foreign_identity_returns_before_time_but_matching_replay_observes_time',
+      'phone-repeated-begin-reservation' => 'only_reserved_correlated_completion_moves_and_cannot_be_replayed',
+      'phone-original-proof-age-refreshed' => 'original_proof_age_never_renews_but_completion_uses_latest_sample',
+      'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
+      'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
+    }
+    assert_equal 33, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.last(mutants.length)
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    mutants.each do |name, test|
+      assert_includes tests, test
+      marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, '')) }
+      rejects('mutation oracle is incomplete') do
+        Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, marker.sub('assertion-failed', 'compile-failed')))
+      end
+      segment = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
+      [segment.sub("test #{test} ... FAILED", "test unrelated_assertion ... FAILED"),
+       segment.sub("test #{test} ... FAILED", "test #{test} ... ignored"),
+       segment.sub('0 passed; 1 failed; 0 ignored', '0 passed; 1 failed; 1 ignored')].each do |changed|
+        rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(segment, changed)) }
+      end
+    end
+    rejects('mutation oracle is incomplete') do
+      Gate.validate_beluga_core_mutations(core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(27)))
+    end
+    [
+      'BelugaCore C phone operation ABI PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
+      'BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes'
+    ].each do |marker|
+      assert_includes Gate::BELUGA_CORE_RUNTIME_MARKERS, marker
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
+    end
+    value = receipt
+    without_phone = @core_methods - tests
+    path = File.join(@evidence, 'beluga-core-discovery.log')
+    File.write(path, without_phone.map { |method| method + ': test' }.join("\n"))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(path)
+    value['coverage']['beluga_core'] = without_phone
+    result = File.join(@evidence, 'beluga-core-tests.log')
+    File.write(result, rust_log(without_phone))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(result)
+    rejects('missing critical Beluga core') { verify(value) }
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(27)))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+    rejects('result footer disagrees') do
+      Gate.validate_rust(rust_log(@core_methods).sub("#{@core_methods.length} passed", '44 passed'), @core_methods)
     end
   end
 
@@ -980,7 +1090,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       original + "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n"
     ]
     mutations.each { |text| rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(text) } }
-    # The new offer mutations must carry compiled failure proof too, not only
+    # The offer and phone mutations must carry compiled failure proof too, not only
     # the original policy or transaction mutants at the beginning of the log.
     Gate::BELUGA_CORE_MUTANTS.drop(11).each do |name|
       single = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
@@ -1113,11 +1223,69 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def test_simulator_handoff_completion_cleanup_and_audio_leases_cannot_be_omitted_or_skipped
-    classes = %w[YouTubeHandoffOperationTests YouTubeHandoffWebViewTests]
+    classes = %w[YouTubeHandoffOperationTests YouTubeHandoffWebViewTests
+                 YouTubeHandoffCoordinatorTests BelugaRustYouTubeHandoffOperationTests]
     classes.each do |name|
       assert_includes Gate::SIMULATOR_CLASSES, name
       pins = Gate::SIMULATOR_PINNED.select { |id| id.start_with?(name + '/') }
       refute_empty pins
+    end
+    additions = {
+      'YouTubeHandoffCoordinatorTests' => %w[
+        testExactOfferDispatchesOnceAndFastCompletionKeepsLocalPlayer
+        testDismissRevokesImmediatelyButCannotUnmuteUntilExactStopAcknowledgement
+        testOwnerInvalidationBeforePlaybackClosesWithoutSendingPause
+        testPresentationSelectsTopmostOnceAndRejectsAmbiguityOrReplacement
+        testNativeWebKitStopAcknowledgesBeforeReleaseAndOnlyOnce
+        testUnpresentedOfferTimesOutWithoutHoldingAudioForever
+        testSwiftUIPresenterActuallyMountsOnePlayerAboveRootAndFullScreen
+        testAcquisitionRevocationCannotCreateAPlayerOrLeakSuppression
+        testStaleConnectionAndRegressingClockCannotAcquireAudio
+      ],
+      'BelugaRustYouTubeHandoffOperationTests' => %w[
+        testFrozenOriginalConfirmationAndAllCompletionOutcomesMatch
+        testNativeMessageDomainsAndSequenceObservationOrderingMatch
+        testWholeNativeProofEqualityRejectsEveryPublicFieldMutation
+        testSignedZeroProofAliasUsesSwiftEqualityAndRetainsOriginalBits
+        testArbitraryConstructorClockBitsPreserveOriginalObservationSemantics
+        testAdjacentThresholdsAndUnrenewedProofAgeMatchFrozenArithmetic
+        testCopiesBeforeMintProduceNonSubstitutablePrivateEvidenceUUIDs
+        testCopiesWithExistingProofRevokeIndependentlyWithoutReminting
+        testInterruptedOrStalePhonePlaybackPreservesTruthfulMacOutcome
+        testBooleanClockFailureIsSilentButRevokesAndRepeatBeginIsEarlyNoop
+        testZeroCandidateDoesNotChangeBranchesThatCannotMint
+        testMaximumTokenMintsOnceAndExistingProofPendingAndLocalBranchesRemainUsable
+        testZeroCandidateOnlyEligibleMintFailsClosedAfterClockAndSequenceBurn
+        testLocalPlaybackNeverReopensHandoffAuthorityAndRetainsPausedOutcome
+        testBoundedReachableTraceParityChecksEveryCopiedScalarAndPublicEffect
+        testSeededLongTraceParityUsesFrozenOriginalWithoutDelegatingPolicy
+        testCopiedBoundaryAcceptsLegitimateMintFailureClearAndSilentBooleanResults
+        testCopiedBoundaryRejectsForgedMintRetainedProofRewriteAndCleanup
+        testCopiedBoundaryRejectsMissingRevocationFictionalOutcomesAndReplay
+        testMalformedCopiedOutputFailsClosedWithHonestStatusAndSilentBoolFallback
+      ]
+    }
+    new_pins = additions.flat_map do |name, methods|
+      expected = methods.map { |method| name + '/' + method }.sort
+      assert_equal expected, Gate::SIMULATOR_PINNED.select { |id| id.start_with?(name + '/') }.sort
+      expected
+    end
+    assert_equal 29, new_pins.length
+    assert_equal 29, new_pins.uniq.length
+    assert_equal 76, Gate::SIMULATOR_PINNED.length
+    assert_equal 76, Gate::SIMULATOR_PINNED.uniq.length
+    assert_empty new_pins & Gate::SIMULATOR_SKIPS
+    path = File.join(@root, 'iOS/opensteamer/Tests/AudioTests.swift')
+    original = File.binread(path)
+    new_pins.each do |id|
+      declaration = "func #{id.split('/').last}() {}\n"
+      assert_equal 1, original.scan(Regexp.new(Regexp.escape(declaration))).length
+      begin
+        File.binwrite(path, original.sub(declaration, ''))
+        rejects('missing critical Simulator test') { Gate.simulator_inventory(@root) }
+      ensure
+        File.binwrite(path, original)
+      end
     end
     pins = Gate::SIMULATOR_PINNED.select do |id|
       classes.any? { |name| id.start_with?(name + '/') } || id.start_with?('WorldwideAudioLifecycleTests/testMediaHandoff') ||

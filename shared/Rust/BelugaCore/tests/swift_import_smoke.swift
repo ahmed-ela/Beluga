@@ -257,3 +257,162 @@ precondition(offerResult.status == 3 && offerResult.effects == 3 && offerResult.
 precondition(offerResult.state.presence == 0 && offerResult.state.next_sent == UInt64.max)
 precondition(offerResult.retired_sent == 100 && offerResult.retired_received == 100)
 print("BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts")
+
+
+private typealias PhoneRequest = beluga_core_youtube_handoff_operation_request_t
+private typealias PhoneEvidence = beluga_core_youtube_handoff_operation_evidence_t
+private typealias PhoneState = beluga_core_youtube_handoff_operation_state_t
+private typealias PhoneEvent = beluga_core_youtube_handoff_operation_event_t
+private typealias PhoneOutput = beluga_core_youtube_handoff_operation_result_t
+private func phoneLayout<T>(_ type: T.Type, _ size: Int, _ offsets: [(PartialKeyPath<T>, Int)]) {
+    precondition(MemoryLayout<T>.size == size && MemoryLayout<T>.alignment == 8)
+    for (field, offset) in offsets { precondition(MemoryLayout<T>.offset(of: field) == offset) }
+}
+phoneLayout(PhoneRequest.self, 40, [
+    (\.position, 0), (\.duration, 8), (\.rate, 16), (\.deadline, 24), (\.position_observed_at, 32)
+])
+phoneLayout(PhoneEvidence.self, 32, [(\.token, 0), (\.position, 8), (\.rate, 16), (\.observed_at, 24)])
+phoneLayout(PhoneState.self, 152, [
+    (\.abi, 0), (\.phase, 4), (\.failure, 8), (\.mac_pause, 12), (\.flags, 16),
+    (\.presence, 20), (\.sequence, 24), (\.reserved, 28), (\.request, 32),
+    (\.last_now, 72), (\.first_position, 80), (\.first_at, 88), (\.latest_playing_at, 96),
+    (\.latest_state, 104), (\.latest_state_reserved, 108), (\.evidence, 112), (\.reply_deadline, 144)
+])
+phoneLayout(PhoneEvent.self, 80, [
+    (\.opcode, 0), (\.flags, 4), (\.presence, 8), (\.sequence, 12), (\.kind, 16),
+    (\.sample_state, 20), (\.completion, 24), (\.failure, 28), (\.now, 32),
+    (\.proof_token, 40), (\.candidate_token, 48), (\.sample_position, 56),
+    (\.sample_duration, 64), (\.sample_rate, 72)
+])
+phoneLayout(PhoneOutput.self, 168, [(\.state, 0), (\.status, 152), (\.event, 156), (\.accepted, 160), (\.failure, 164)])
+private func phoneBits(_ value: Double) -> UInt64 { value.bitPattern }
+private func phoneRequest() -> PhoneRequest {
+    var request = PhoneRequest()
+    request.position = phoneBits(20); request.duration = phoneBits(200); request.rate = phoneBits(1)
+    request.deadline = phoneBits(40); request.position_observed_at = phoneBits(10); return request
+}
+private func phoneStateWords(_ state: PhoneState) -> [UInt64] {
+    [UInt64(state.abi), UInt64(state.phase), UInt64(state.failure), UInt64(state.mac_pause),
+     UInt64(state.flags), UInt64(state.presence), UInt64(state.sequence), UInt64(state.reserved),
+     state.request.position, state.request.duration, state.request.rate, state.request.deadline,
+     state.request.position_observed_at, state.last_now, state.first_position, state.first_at,
+     state.latest_playing_at, UInt64(UInt32(bitPattern: state.latest_state)), UInt64(state.latest_state_reserved),
+     state.evidence.token, state.evidence.position, state.evidence.rate, state.evidence.observed_at, state.reply_deadline]
+}
+private func phoneEvent(_ opcode: UInt32, _ now: Double) -> PhoneEvent {
+    var event = PhoneEvent(); event.opcode = opcode; event.now = phoneBits(now); return event
+}
+private func phoneMessage(_ sequence: UInt32, _ kind: UInt32, _ position: Double, _ now: Double) -> PhoneEvent {
+    var event = phoneEvent(2, now)
+    event.flags = 14; event.sequence = sequence; event.kind = kind; event.candidate_token = 91
+    if kind == 2 {
+        event.presence = 15; event.sample_state = 1; event.sample_position = phoneBits(position)
+        event.sample_duration = phoneBits(200); event.sample_rate = phoneBits(1)
+    }
+    return event
+}
+@discardableResult private func phoneApply(_ state: inout PhoneState, _ event: PhoneEvent) -> PhoneOutput {
+    let result = beluga_core_youtube_handoff_operation_step(1, state, event)
+    precondition(result.status == 0); state = result.state; return result
+}
+private func phoneProof(_ opcode: UInt32, _ now: Double, _ token: UInt64) -> PhoneEvent {
+    var event = phoneEvent(opcode, now); event.flags = 16; event.proof_token = token; return event
+}
+private func phoneCompletion(_ outcome: UInt32, _ now: Double) -> PhoneEvent {
+    var event = phoneEvent(5, now); event.flags = 32; event.completion = outcome; return event
+}
+private func phoneConfirm(_ token: UInt64) -> PhoneState {
+    var state = beluga_core_youtube_handoff_operation_initial(phoneRequest(), phoneBits(10))
+    precondition(state.abi == 1 && state.phase == 0 && state.flags == 0 && state.presence == 0)
+    var event = phoneEvent(0, 10); event.flags = 1; phoneApply(&state, event)
+    phoneApply(&state, phoneMessage(1, 0, 20, 10)); phoneApply(&state, phoneMessage(2, 2, 20, 10.1))
+    event = phoneMessage(3, 2, 20.3, 10.4); event.candidate_token = token
+    let result = phoneApply(&state, event)
+    precondition(result.event == 2 && result.accepted == 0 && result.failure == 0)
+    precondition(state.phase == 4 && state.mac_pause == 0 && state.evidence.token == token)
+    precondition(state.evidence.position == phoneBits(20.3) && state.evidence.observed_at == phoneBits(10.4))
+    return state
+}
+private func phonePending() -> PhoneState {
+    var state = phoneConfirm(91); let result = phoneApply(&state, phoneProof(4, 10.5, 91))
+    precondition(result.accepted == 1 && result.event == 0 && state.mac_pause == 1 && state.phase == 5)
+    precondition(state.reply_deadline == phoneBits(13.5)); return state
+}
+private func phoneUnchanged(_ result: PhoneOutput, _ before: PhoneState, _ status: UInt32) {
+    precondition(result.status == status && result.event == 0 && result.accepted == 0 && result.failure == 0)
+    precondition(phoneStateWords(result.state) == phoneStateWords(before))
+}
+private func phoneOperationSmoke() {
+    let infinityBits: UInt64 = 0x7ff0000000000000
+    let negativeInfinityBits: UInt64 = 0xfff0000000000000
+    let nanBits: UInt64 = 0x7ff8000000001234
+    var state = beluga_core_youtube_handoff_operation_initial(phoneRequest(), nanBits)
+    precondition(state.phase == 0 && state.last_now == nanBits)
+    var event = phoneMessage(1, 0, 0, 0); event.flags = 0; event.now = infinityBits
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, event), state, 0)
+    var result = phoneApply(&state, phoneEvent(1, 10))
+    precondition(result.event == 4 && result.failure == 9 && state.last_now == nanBits)
+
+    state = phoneConfirm(91); var before = state
+    event = phoneMessage(99, 3, 0, 0); event.flags = 10; event.now = infinityBits
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 0)
+    result = phoneApply(&state, phoneMessage(1, 0, 0, 40))
+    precondition(result.event == 4 && result.failure == 2 && state.sequence == before.sequence)
+
+    state = phoneConfirm(91); result = phoneApply(&state, phoneProof(4, 10.5, 92))
+    precondition(result.accepted == 0 && state.mac_pause == 0)
+    result = phoneApply(&state, phoneEvent(4, 10.5))
+    precondition(result.accepted == 0 && state.evidence.token == 91)
+    state = phonePending(); before = state
+    event = phoneProof(4, 0, 91); event.now = nanBits
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 0)
+    event = phoneCompletion(1, 0); event.flags = 0; event.now = infinityBits
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 0)
+    phoneApply(&state, phoneMessage(4, 2, 21.3, 11.4)); result = phoneApply(&state, phoneProof(3, 11.4, 91))
+    precondition(result.accepted == 0 && state.evidence.observed_at == phoneBits(10.4))
+    result = phoneApply(&state, phoneCompletion(1, 11.5))
+    precondition(result.event == 3 && state.phase == 6 && state.mac_pause == 2 && state.evidence.token == 0)
+    event = phoneMessage(5, 2, 80, 60); event.sample_state = 2; event.sample_rate = phoneBits(2)
+    result = phoneApply(&state, event); precondition(result.event == 0 && state.phase == 6 && state.mac_pause == 2)
+    result = phoneApply(&state, phoneProof(3, 60, 91)); precondition(result.accepted == 0)
+
+    state = phonePending(); result = phoneApply(&state, phoneCompletion(1, 11.5))
+    precondition(result.event == 4 && result.failure == 12 && state.mac_pause == 2 && state.evidence.token == 91)
+    precondition(state.phase == 7 && state.flags & 8 == 8)
+    state = phonePending(); event = PhoneEvent(); event.opcode = 6; event.failure = 4
+    result = phoneApply(&state, event)
+    precondition(result.event == 4 && result.failure == 4 && state.mac_pause == 4 && state.evidence.token == 91)
+    before = state
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, phoneCompletion(1, 10.6)), before, 0)
+
+    state = beluga_core_youtube_handoff_operation_initial(phoneRequest(), phoneBits(10))
+    event = phoneEvent(0, 10); event.flags = 1; phoneApply(&state, event)
+    event = phoneMessage(1, 0, 0, 10); event.candidate_token = 0; phoneApply(&state, event)
+    event = phoneMessage(2, 2, 20, 10.1); event.candidate_token = 0; phoneApply(&state, event)
+    precondition(state.phase == 3 && state.evidence.token == 0)
+    event = phoneMessage(3, 2, 20.3, 10.4); event.candidate_token = 0; result = phoneApply(&state, event)
+    precondition(result.event == 4 && result.failure == 8 && state.phase == 7)
+    precondition(state.sequence == 3 && state.last_now == phoneBits(10.4) && state.evidence.token == 0)
+    state = phoneConfirm(UInt64.max); event = phoneMessage(4, 2, 20.5, 10.6); event.candidate_token = 0
+    phoneApply(&state, event); precondition(state.evidence.token == UInt64.max && state.phase == 4)
+
+    before = state; event = phoneEvent(7, 10.6)
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, event), before, 3)
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(2, state, phoneEvent(1, 10.6)), before, 3)
+    state.reserved = 1; before = state
+    phoneUnchanged(beluga_core_youtube_handoff_operation_step(1, state, phoneEvent(1, 10.6)), before, 3)
+
+    state = beluga_core_youtube_handoff_operation_initial(phoneRequest(), negativeInfinityBits)
+    event = phoneEvent(0, -20); event.flags = 1; phoneApply(&state, event)
+    phoneApply(&state, phoneMessage(1, 0, 0, -20)); phoneApply(&state, phoneMessage(2, 2, 20, -19.9))
+    result = phoneApply(&state, phoneMessage(3, 2, 20.3, -19.6)); precondition(result.event == 2)
+    result = phoneApply(&state, phoneProof(4, -19.5, 91)); precondition(result.accepted == 1)
+    precondition(state.evidence.observed_at == phoneBits(-19.6) && state.reply_deadline == phoneBits(-16.5))
+    result = phoneApply(&state, phoneCompletion(1, -19.4)); precondition(result.event == 3)
+    state = beluga_core_youtube_handoff_operation_initial(phoneRequest(), phoneBits(-0.0))
+    precondition(state.last_now == 0x8000000000000000)
+    phoneApply(&state, phoneEvent(1, 0)); precondition(state.last_now == 0)
+    phoneApply(&state, phoneEvent(1, -0.0)); precondition(state.last_now == 0x8000000000000000)
+    print("BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes")
+}
+phoneOperationSmoke()

@@ -88,7 +88,31 @@ mutants = [
    'clear_preserves_counters_and_send_capacity_cannot_wrap'],
   ['offers-unknown-operation-clears-state', 'src/handoff_offers.rs', 'handoff_offers',
    '_ => return None,', '_ => Self::ClearTransient,',
-   'unknown_operation_is_invalid_unchanged_without_retirement_or_success']
+   'unknown_operation_is_invalid_unchanged_without_retirement_or_success'],
+  ['phone-foreign-clock-before-identity', 'src/youtube_handoff_operation.rs', 'youtube_handoff_operation',
+   "if !identity.operation || !identity.page { return None; }\n        if let Some(failure) = self.observe_time(now) { return self.fail(failure); }",
+   "if let Some(failure) = self.observe_time(now) { return self.fail(failure); }\n        if !identity.operation || !identity.page { return None; }",
+   'foreign_identity_returns_before_time_but_matching_replay_observes_time'],
+  ['phone-stale-sequence-before-clock', 'src/youtube_handoff_operation.rs', 'youtube_handoff_operation',
+   "if let Some(failure) = self.observe_time(now) { return self.fail(failure); }\n        if self.terminal() || sequence <= self.sequence { return None; }",
+   "if self.terminal() || sequence <= self.sequence { return None; }\n        if let Some(failure) = self.observe_time(now) { return self.fail(failure); }",
+   'foreign_identity_returns_before_time_but_matching_replay_observes_time'],
+  ['phone-repeated-begin-reservation', 'src/youtube_handoff_operation.rs', 'youtube_handoff_operation',
+   'if self.mac_pause != MacPause::NotRequested || !self.current(identity, now) { return ProductOutput::boolean(false); }',
+   'if !self.current(identity, now) { return ProductOutput::boolean(false); }',
+   'only_reserved_correlated_completion_moves_and_cannot_be_replayed'],
+  ['phone-original-proof-age-refreshed', 'src/youtube_handoff_operation.rs', 'youtube_handoff_operation',
+   '&& f(now) >= f(owned.observed_at) && f(now) - f(owned.observed_at) <= 0.75',
+   '&& f(now) >= f(last) && f(now) - f(last) <= 0.75',
+   'original_proof_age_never_renews_but_completion_uses_latest_sample'],
+  ['phone-paused-outcome-forgotten', 'src/youtube_handoff_operation.rs', 'youtube_handoff_operation',
+   "self.mac_pause = MacPause::Paused;\n                        if !(self.visible",
+   "self.mac_pause = MacPause::Pending;\n                        if !(self.visible",
+   'successful_native_pause_is_retained_even_when_phone_freshness_fails'],
+  ['phone-pending-failure-keeps-reservation', 'src/youtube_handoff_operation.rs', 'youtube_handoff_operation',
+   'if self.mac_pause == MacPause::Pending { self.mac_pause = MacPause::Unknown; }',
+   'if self.mac_pause == MacPause::Pending { self.mac_pause = MacPause::NotRequested; }',
+   'every_pending_failure_retains_proof_but_becomes_unknown_terminal']
 ]
 mutants.each do |name, path, suite, original, changed, test|
   production = File.binread(File.join(BelugaCoreArtifact::CRATE, path))

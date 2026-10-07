@@ -43,6 +43,8 @@
 		627187065AADC178DAECE8BE /* ScreenViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A452CD7D5104C509DB5D168E /* ScreenViewerView.swift */; };
 		6550CFB51C42A93D157E803F /* WebRTCTransport in Frameworks */ = {isa = PBXBuildFile; productRef = 525D57D5DCA36B6B514B1F0A /* WebRTCTransport */; };
 		6666A009F50A5720A1549D5C /* YouTubeHandoffOperationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36C822410B7B5FBE72F28C55 /* YouTubeHandoffOperationTests.swift */; };
+		A013562A4F6C421A88B10001 /* BelugaRustYouTubeHandoffOperationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A013562A4F6C421A88B10003 /* BelugaRustYouTubeHandoffOperationTests.swift */; };
+		A013562A4F6C421A88B10002 /* BelugaRustYouTubeHandoffOperationReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = A013562A4F6C421A88B10004 /* BelugaRustYouTubeHandoffOperationReference.swift */; };
 		683C25329BC8E20088E6116B /* RemoteTokenState.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC26144551DD1E27BA28F74 /* RemoteTokenState.swift */; };
 		688161A555027B4D83A84E0D /* ViewerPairingState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64465AAC8CF00A21486FD95A /* ViewerPairingState.swift */; };
 		6A058DDC1801641E4CC917E1 /* PhysicalScreenSequenceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD05EFF5B0B4B73AE0B392EC /* PhysicalScreenSequenceProtocol.swift */; };
@@ -168,6 +170,8 @@
 		2F3847AFDCAAE82502B598F0 /* ViewerPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerPairingStore.swift; sourceTree = "<group>"; };
 		3509D44693CBE35F3D3D8633 /* H264SampleBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = H264SampleBuilder.swift; sourceTree = "<group>"; };
 		36C822410B7B5FBE72F28C55 /* YouTubeHandoffOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YouTubeHandoffOperationTests.swift; sourceTree = "<group>"; };
+		A013562A4F6C421A88B10003 /* BelugaRustYouTubeHandoffOperationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BelugaRustYouTubeHandoffOperationTests.swift; sourceTree = "<group>"; };
+		A013562A4F6C421A88B10004 /* BelugaRustYouTubeHandoffOperationReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BelugaRustYouTubeHandoffOperationReference.swift; sourceTree = "<group>"; };
 		3C98B7E2E267B10F3812ED68 /* PhysicalScreenImageOracle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhysicalScreenImageOracle.swift; sourceTree = "<group>"; };
 		3E552F2D705E384A530F30AB /* MediaNotificationIntegrationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaNotificationIntegrationUITests.swift; sourceTree = "<group>"; };
 		3F4D135483CC5D23B56ADE12 /* StreamSessionViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamSessionViewModel.swift; sourceTree = "<group>"; };
@@ -534,6 +538,8 @@
 				D11FA42392B5E334511C469E /* WorldwideRemoteInputLifecycleTests.swift */,
 				C4C86AC06C89F7311C1B1F62 /* YouTubeHandoffCoordinatorTests.swift */,
 				36C822410B7B5FBE72F28C55 /* YouTubeHandoffOperationTests.swift */,
+				A013562A4F6C421A88B10003 /* BelugaRustYouTubeHandoffOperationTests.swift */,
+				A013562A4F6C421A88B10004 /* BelugaRustYouTubeHandoffOperationReference.swift */,
 				C50E9F93D7F4750A3195EDD9 /* YouTubeHandoffProviderProbeTests.swift */,
 				1775DA5E4B6B22C625896DF4 /* YouTubeHandoffWebViewTests.swift */,
 			);
@@ -800,6 +806,8 @@
 				D4EAE6BA0BBBC5807F6B32F6 /* WorldwideRemoteInputLifecycleTests.swift in Sources */,
 				EB2C1DA7121358BA2DF9C1DB /* YouTubeHandoffCoordinatorTests.swift in Sources */,
 				6666A009F50A5720A1549D5C /* YouTubeHandoffOperationTests.swift in Sources */,
+				A013562A4F6C421A88B10001 /* BelugaRustYouTubeHandoffOperationTests.swift in Sources */,
+				A013562A4F6C421A88B10002 /* BelugaRustYouTubeHandoffOperationReference.swift in Sources */,
 				8B83FE9A1E08595B2CE12105 /* YouTubeHandoffProviderProbeTests.swift in Sources */,
 				AE4CB988E20AA72BE7388477 /* YouTubeHandoffWebViewTests.swift in Sources */,
 			);

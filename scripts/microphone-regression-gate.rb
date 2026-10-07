@@ -25,8 +25,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -61,7 +61,8 @@ module MicrophoneRegressionGate
   }.freeze
   SIMULATOR_CLASSES = %w[WorldwideAudioLifecycleTests WebRTCAudioPlaybackSessionTests IOSAudioDiagnosticsJournalTests
                         ScreenVideoIdleTimerTests ScreenVideoIdleTimerViewTests
-                        YouTubeHandoffOperationTests YouTubeHandoffWebViewTests].freeze
+                        YouTubeHandoffOperationTests YouTubeHandoffWebViewTests
+                        YouTubeHandoffCoordinatorTests BelugaRustYouTubeHandoffOperationTests].freeze
   SIMULATOR_SKIPS = %w[
     WorldwideAudioLifecycleTests/testPhysicalDeviceCanConfigureLegacyBackgroundPlaybackSession
     WebRTCAudioPlaybackSessionTests/testPhysicalPolicyScenarioOriginalOrder
@@ -134,6 +135,35 @@ module MicrophoneRegressionGate
     WorldwideAudioLifecycleTests/testMediaHandoffMuteOwnerChangeStartsFreshLivenessWindow
     WorldwideAudioLifecycleTests/testMediaHandoffRoundTripBetweenSamplesResetsLivenessWindow
     WorldwideAudioLifecycleTests/testMediaHandoffStatsReadCannotCrossSuppressionChangesIncludingRoundTrip
+    YouTubeHandoffCoordinatorTests/testExactOfferDispatchesOnceAndFastCompletionKeepsLocalPlayer
+    YouTubeHandoffCoordinatorTests/testDismissRevokesImmediatelyButCannotUnmuteUntilExactStopAcknowledgement
+    YouTubeHandoffCoordinatorTests/testOwnerInvalidationBeforePlaybackClosesWithoutSendingPause
+    YouTubeHandoffCoordinatorTests/testPresentationSelectsTopmostOnceAndRejectsAmbiguityOrReplacement
+    YouTubeHandoffCoordinatorTests/testNativeWebKitStopAcknowledgesBeforeReleaseAndOnlyOnce
+    YouTubeHandoffCoordinatorTests/testUnpresentedOfferTimesOutWithoutHoldingAudioForever
+    YouTubeHandoffCoordinatorTests/testSwiftUIPresenterActuallyMountsOnePlayerAboveRootAndFullScreen
+    YouTubeHandoffCoordinatorTests/testAcquisitionRevocationCannotCreateAPlayerOrLeakSuppression
+    YouTubeHandoffCoordinatorTests/testStaleConnectionAndRegressingClockCannotAcquireAudio
+    BelugaRustYouTubeHandoffOperationTests/testFrozenOriginalConfirmationAndAllCompletionOutcomesMatch
+    BelugaRustYouTubeHandoffOperationTests/testNativeMessageDomainsAndSequenceObservationOrderingMatch
+    BelugaRustYouTubeHandoffOperationTests/testWholeNativeProofEqualityRejectsEveryPublicFieldMutation
+    BelugaRustYouTubeHandoffOperationTests/testSignedZeroProofAliasUsesSwiftEqualityAndRetainsOriginalBits
+    BelugaRustYouTubeHandoffOperationTests/testArbitraryConstructorClockBitsPreserveOriginalObservationSemantics
+    BelugaRustYouTubeHandoffOperationTests/testAdjacentThresholdsAndUnrenewedProofAgeMatchFrozenArithmetic
+    BelugaRustYouTubeHandoffOperationTests/testCopiesBeforeMintProduceNonSubstitutablePrivateEvidenceUUIDs
+    BelugaRustYouTubeHandoffOperationTests/testCopiesWithExistingProofRevokeIndependentlyWithoutReminting
+    BelugaRustYouTubeHandoffOperationTests/testInterruptedOrStalePhonePlaybackPreservesTruthfulMacOutcome
+    BelugaRustYouTubeHandoffOperationTests/testBooleanClockFailureIsSilentButRevokesAndRepeatBeginIsEarlyNoop
+    BelugaRustYouTubeHandoffOperationTests/testZeroCandidateDoesNotChangeBranchesThatCannotMint
+    BelugaRustYouTubeHandoffOperationTests/testMaximumTokenMintsOnceAndExistingProofPendingAndLocalBranchesRemainUsable
+    BelugaRustYouTubeHandoffOperationTests/testZeroCandidateOnlyEligibleMintFailsClosedAfterClockAndSequenceBurn
+    BelugaRustYouTubeHandoffOperationTests/testLocalPlaybackNeverReopensHandoffAuthorityAndRetainsPausedOutcome
+    BelugaRustYouTubeHandoffOperationTests/testBoundedReachableTraceParityChecksEveryCopiedScalarAndPublicEffect
+    BelugaRustYouTubeHandoffOperationTests/testSeededLongTraceParityUsesFrozenOriginalWithoutDelegatingPolicy
+    BelugaRustYouTubeHandoffOperationTests/testCopiedBoundaryAcceptsLegitimateMintFailureClearAndSilentBooleanResults
+    BelugaRustYouTubeHandoffOperationTests/testCopiedBoundaryRejectsForgedMintRetainedProofRewriteAndCleanup
+    BelugaRustYouTubeHandoffOperationTests/testCopiedBoundaryRejectsMissingRevocationFictionalOutcomesAndReplay
+    BelugaRustYouTubeHandoffOperationTests/testMalformedCopiedOutputFailsClosedWithHonestStatusAndSilentBoolFallback
   ].freeze
   MAC_CLASSES = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests
@@ -273,6 +303,38 @@ module MicrophoneRegressionGate
     unknown_operation_is_invalid_unchanged_without_retirement_or_success
     wire_authorization_and_exact_numeric_identity_guard_slots
     exported_offer_functions_match_safe_reducer
+    copied_abi_layout_is_exact_and_pointer_free
+    ready_stationary_paused_and_wrong_position_do_not_confirm
+    slow_provider_requires_the_advancing_original_request_timeline
+    advancing_exact_visible_playback_confirms_once_without_refreshing_proof
+    blocked_provider_requests_play_but_never_claims_confirmation
+    hidden_once_visible_and_every_terminal_failure_cannot_revive
+    foreign_identity_returns_before_time_but_matching_replay_observes_time
+    wrong_video_burns_matching_sequence_before_terminal_failure
+    original_proof_age_never_renews_but_completion_uses_latest_sample
+    interruption_or_seek_cannot_revive_previously_confirmed_authority
+    clock_regression_and_nonfinite_clock_fail_without_rewriting_last_bits
+    only_reserved_correlated_completion_moves_and_cannot_be_replayed
+    committed_local_controls_past_deadline_never_reopen_authority
+    pending_interruption_becomes_unknown_and_late_success_cannot_revive
+    successful_native_pause_is_retained_even_when_phone_freshness_fails
+    reply_timeout_precedes_offer_timeout_and_never_renews_deadline
+    every_pending_failure_retains_proof_but_becomes_unknown_terminal
+    rejected_and_unknown_completion_results_retain_their_honest_status
+    whole_native_proof_equality_and_scalar_identity_are_separate_guards
+    initial_nonfinite_and_signed_zero_bits_are_stored_without_observation
+    negative_monotone_times_can_confirm_and_reserve_negative_reply_deadline
+    duration_tolerance_can_confirm_evidence_beyond_original_request_duration
+    sample_partial_presence_burns_sequence_but_never_processes_partial_sample
+    candidate_zero_is_ignored_before_the_genuine_new_proof_mint_point
+    eligible_zero_candidate_fails_invalid_bridge_after_clock_and_sequence_burn
+    maximum_candidate_is_valid_once_and_later_candidate_zero_cannot_remint
+    raw_state_value_copies_are_independent_and_native_fact_blocks_cross_proof
+    exact_advance_elapsed_and_original_proof_age_boundaries_match_double_semantics
+    is_current_silent_failure_does_not_fabricate_an_emitted_failure_event
+    malformed_abi_and_every_structural_state_field_fail_byte_identically
+    malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
+    deterministic_independent_traces_compare_every_raw_state_event_and_boolean
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -301,7 +363,13 @@ module MicrophoneRegressionGate
     'offers-host-position-tolerance-widened' => 'actual_double_adjacent_boundaries_have_expected_decisions',
     'offers-clear-resets-counters' => 'clear_preserves_counters_and_send_capacity_cannot_wrap',
     'offers-sent-sequence-reused' => 'clear_preserves_counters_and_send_capacity_cannot_wrap',
-    'offers-unknown-operation-clears-state' => 'unknown_operation_is_invalid_unchanged_without_retirement_or_success'
+    'offers-unknown-operation-clears-state' => 'unknown_operation_is_invalid_unchanged_without_retirement_or_success',
+    'phone-foreign-clock-before-identity' => 'foreign_identity_returns_before_time_but_matching_replay_observes_time',
+    'phone-stale-sequence-before-clock' => 'foreign_identity_returns_before_time_but_matching_replay_observes_time',
+    'phone-repeated-begin-reservation' => 'only_reserved_correlated_completion_moves_and_cannot_be_replayed',
+    'phone-original-proof-age-refreshed' => 'original_proof_age_never_renews_but_completion_uses_latest_sample',
+    'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
+    'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -309,10 +377,12 @@ module MicrophoneRegressionGate
     'BelugaCore C lifecycle ABI PASS: reconnect ownership and invalid ABI',
     'BelugaCore C transaction ABI PASS: exact identity, cached reply, revocation and unknown outcome',
     'BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts',
+    'BelugaCore C phone operation ABI PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
-    'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts'
+    'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts',
+    'BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes'
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -341,6 +411,7 @@ module MicrophoneRegressionGate
     test_beluga_core_offers_source_tests_link_smokes_and_mutants_are_mandatory
     test_shared_handoff_offers_full_discovered_and_pinned_coverage_cannot_be_removed
     test_beluga_core_compiled_mutation_assertions_reject_uncompiled_wrong_case_and_bad_footer
+    test_beluga_core_phone_operation_source_tests_link_smokes_and_mutants_are_mandatory
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze

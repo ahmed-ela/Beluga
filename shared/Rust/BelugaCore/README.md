@@ -2,7 +2,7 @@
 
 This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
-the one-use offer/timeline reducer**. It is not the complete product-core
+the one-use offer/timeline reducer, and the phone playback-operation reducer**. It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
 
@@ -44,6 +44,18 @@ wire codecs, peer authorization/continuity, actual phone playback confirmation,
 exact-source Mac Pause and protected microphone/audio leases remain native.
 Offer acceptance and scalar effects are never proof of playback or Pause.
 
+The phone operation uses copied raw Double bits, distinct typed message/proof/
+completion identity domains, an optional nonzero proof token and bounded state.
+It preserves arbitrary initial clocks, foreign-before-time and stale-after-time
+ordering, unrenewed original proof age, reservation-before-send, reply expiry and
+known Mac outcomes even if continuing phone playback fails. Native Swift still
+constructs requests, decodes provider messages, retains the whole private-UUID
+proof, localizes status, and performs WKWebView/audio/peer effects. Copied results
+must pass native custody checks before a UUID, callback or pause admission exists.
+Independent reference traces, native equality/value copies, malformed projections,
+candidate exhaustion, actual C/Swift linkage and signed Simulator composition are
+required. Raw policy tests do not prove physical playback or acoustic output.
+
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
 Each slice is a **static `BelugaCore.framework`**, with its module map under
@@ -78,5 +90,6 @@ Source-only mutation tests must fail on behavioral assertions for the original
 visibility defect, ignored unknown bits, missing command admission, availability
 departure erasing an independent media owner, stale media-end ownership, transaction
 busy/exact identity/conflicting-reply guards, revocation, unknown timeout outcomes,
-and sixteen offer identity, retirement, replay, boundary, counter, and unknown-operation defects. They use
+sixteen offer identity, retirement, replay, boundary, counter, and unknown-operation defects,
+and six phone identity/clock ordering, proof-age, reservation and truthful-outcome defects. They use
 temporary copies and never modify the production archive or source.

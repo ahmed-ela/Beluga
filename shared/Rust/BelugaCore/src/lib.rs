@@ -6,6 +6,24 @@
 pub mod host_lifecycle;
 pub mod handoff_transactions;
 pub mod handoff_offers;
+pub mod youtube_handoff_operation;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_youtube_handoff_operation_initial(
+    request: youtube_handoff_operation::Request, now: u64,
+) -> youtube_handoff_operation::State {
+    youtube_handoff_operation::initial(request, now)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_youtube_handoff_operation_step(
+    abi_version: u32, state: youtube_handoff_operation::State,
+    event: youtube_handoff_operation::Event,
+) -> youtube_handoff_operation::Result {
+    youtube_handoff_operation::step(abi_version, state, event)
+}
 
 // Foreign symbol declarations stay outside the forbid(unsafe_code) pure reducer.
 // These wrappers only copy scalar values; there are no pointers or unsafe blocks.
