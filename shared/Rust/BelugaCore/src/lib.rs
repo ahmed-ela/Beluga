@@ -3,6 +3,7 @@
 //! This pure projection never dispatches a command, owns native resources, or
 //! authorizes a target identity. Native transaction fencing remains mandatory.
 
+pub mod output_dimensions;
 pub mod display_admission;
 pub mod host_lifecycle;
 pub mod handoff_transactions;
@@ -308,4 +309,10 @@ pub extern "C" fn beluga_core_source_dimensions(input: display_admission::RawSou
 #[must_use]
 pub extern "C" fn beluga_core_source_dimensions_stable(input: display_admission::RawStabilityFacts) -> display_admission::RawBooleanDecision {
     display_admission::dimensions_stable(input)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_output_dimensions(input: output_dimensions::RawOutputFacts) -> output_dimensions::RawOutputDecision {
+    output_dimensions::output_dimensions(input)
 }

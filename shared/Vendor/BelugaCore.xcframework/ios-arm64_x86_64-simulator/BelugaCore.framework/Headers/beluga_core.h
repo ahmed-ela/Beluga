@@ -651,6 +651,18 @@ beluga_core_source_dimension_kind_decision_t beluga_core_source_dimension_kind(b
 beluga_core_source_dimensions_decision_t beluga_core_source_dimensions(beluga_core_source_dimensions_facts_t);
 beluga_core_display_boolean_decision_t beluga_core_source_dimensions_stable(beluga_core_source_dimensions_stability_facts_t);
 
+/* Exact copied signed input; rounded f64 bits are projected without normalization. */
+typedef struct {
+    uint32_t abi_version, reserved;
+    int64_t source_width, source_height, maximum_width;
+} beluga_core_output_dimensions_facts_t;
+typedef struct {
+    uint32_t abi_version, status, decision, reserved;
+    int64_t width, height;
+    uint64_t rounded_height_bits;
+} beluga_core_output_dimensions_decision_t;
+beluga_core_output_dimensions_decision_t beluga_core_output_dimensions(beluga_core_output_dimensions_facts_t);
+
 #ifdef __cplusplus
 }
 #endif

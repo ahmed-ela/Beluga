@@ -48,6 +48,7 @@ module BelugaCoreArtifact
     src/system_audio_start.rs tests/system_audio_start.rs
     src/hosted_call_policy.rs tests/hosted_call_policy.rs
     src/display_admission.rs tests/display_admission.rs
+    src/output_dimensions.rs tests/output_dimensions.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
   ARTIFACT_FILES = (%w[

@@ -1939,6 +1939,225 @@ static void display_admission_smoke(void) {
     puts("BelugaCore C display admission ABI PASS: exact layouts, native branch order, signed endpoints and unchanged refusals");
 }
 
+
+/* Output dimensions: actual copied ABI only; uncompiled authored rows, no capture IO. */
+_Static_assert(sizeof(beluga_core_output_dimensions_facts_t) == 32, "output beluga_core_output_dimensions_facts_t size");
+_Static_assert(_Alignof(beluga_core_output_dimensions_facts_t) == 8, "output beluga_core_output_dimensions_facts_t alignment");
+_Static_assert(offsetof(beluga_core_output_dimensions_facts_t, abi_version) == 0, "output beluga_core_output_dimensions_facts_t.abi_version offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_facts_t, reserved) == 4, "output beluga_core_output_dimensions_facts_t.reserved offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_facts_t, source_width) == 8, "output beluga_core_output_dimensions_facts_t.source_width offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_facts_t, source_height) == 16, "output beluga_core_output_dimensions_facts_t.source_height offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_facts_t, maximum_width) == 24, "output beluga_core_output_dimensions_facts_t.maximum_width offset");
+_Static_assert(sizeof(beluga_core_output_dimensions_decision_t) == 40, "output beluga_core_output_dimensions_decision_t size");
+_Static_assert(_Alignof(beluga_core_output_dimensions_decision_t) == 8, "output beluga_core_output_dimensions_decision_t alignment");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, abi_version) == 0, "output beluga_core_output_dimensions_decision_t.abi_version offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, status) == 4, "output beluga_core_output_dimensions_decision_t.status offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, decision) == 8, "output beluga_core_output_dimensions_decision_t.decision offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, reserved) == 12, "output beluga_core_output_dimensions_decision_t.reserved offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, width) == 16, "output beluga_core_output_dimensions_decision_t.width offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, height) == 24, "output beluga_core_output_dimensions_decision_t.height offset");
+_Static_assert(offsetof(beluga_core_output_dimensions_decision_t, rounded_height_bits) == 32, "output beluga_core_output_dimensions_decision_t.rounded_height_bits offset");
+
+static void output_dimensions_expect(beluga_core_output_dimensions_facts_t input,
+                                     uint32_t status, uint32_t decision,
+                                     int64_t width, int64_t height, uint64_t rounded_bits) {
+    const beluga_core_output_dimensions_facts_t before = input;
+    const beluga_core_output_dimensions_decision_t actual = beluga_core_output_dimensions(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    assert(actual.abi_version == 1 && actual.status == status && actual.decision == decision);
+    assert(actual.reserved == 0 && actual.width == width && actual.height == height);
+    assert(actual.rounded_height_bits == rounded_bits);
+}
+static void output_dimensions_smoke(void) {
+    /* phone-retina */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(1206), INT64_C(2622), INT64_C(1920)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(1206), INT64_C(2622), UINT64_C(0x40a47c0000000000));
+    /* landscape */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(3840), INT64_C(2160), INT64_C(1920)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(1920), INT64_C(1080), UINT64_C(0x4090e00000000000));
+    /* odd-full-frame */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(1205), INT64_C(2621), INT64_C(1920)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(1204), INT64_C(2618), UINT64_C(0x40a4760000000000));
+    /* half-scale */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(603), INT64_C(1312), INT64_C(1920)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(602), INT64_C(1310), UINT64_C(0x4094780000000000));
+    /* odd-cap */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(7), INT64_C(11), INT64_C(5)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(4), INT64_C(6), UINT64_C(0x4018000000000000));
+    /* positive-half-up */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(4), INT64_C(7), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(4), UINT64_C(0x4010000000000000));
+    /* positive-half-chroma */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(4), INT64_C(5), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x4008000000000000));
+    /* nearest-upper */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(100), INT64_C(99), INT64_C(20)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(20), INT64_C(20), UINT64_C(0x4034000000000000));
+    /* nearest-lower */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(100), INT64_C(91), INT64_C(20)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(20), INT64_C(18), UINT64_C(0x4032000000000000));
+    /* nearest-chroma */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(100), INT64_C(96), INT64_C(20)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(20), INT64_C(18), UINT64_C(0x4033000000000000));
+    /* floor-zero */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(100), INT64_C(11), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x0000000000000000));
+    /* floor-one */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(100), INT64_C(26), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x3ff0000000000000));
+    /* cap-small */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(4), INT64_C(6), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x4008000000000000));
+    /* cap-exact */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(4), INT64_C(6), INT64_C(4)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(4), INT64_C(6), UINT64_C(0x4018000000000000));
+    /* cap-no-upscale */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(4), INT64_C(6), INT64_C(100)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(4), INT64_C(6), UINT64_C(0x4018000000000000));
+    /* width-chroma-before-scale */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(7), INT64_C(14), INT64_C(5)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(4), INT64_C(8), UINT64_C(0x4020000000000000));
+    /* source-chroma-before-scale */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(5), INT64_C(10), INT64_C(20)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(4), INT64_C(8), UINT64_C(0x4020000000000000));
+    /* third-width */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(3), INT64_C(9), INT64_C(3)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(6), UINT64_C(0x4018000000000000));
+    /* larger-half-up */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(400), INT64_C(699), INT64_C(200)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(200), INT64_C(350), UINT64_C(0x4075e00000000000));
+    /* larger-half-even-chroma */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(400), INT64_C(698), INT64_C(200)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(200), INT64_C(348), UINT64_C(0x4075d00000000000));
+    /* integer-ratio-is-not-policy */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(5), INT64_C(9), INT64_C(4)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(4), INT64_C(6), UINT64_C(0x401c000000000000));
+    /* wide-signed-min-height */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(9223372036854775807), INT64_C(2), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x0000000000000000));
+    /* wide-signed-no-arbitrary-cap */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(9223372036854775807), INT64_C(2), INT64_C(9223372036854775807)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(9223372036854775806), INT64_C(2), UINT64_C(0x4000000000000000));
+    /* source-width-high-u16 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(65538), INT64_C(6), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x0000000000000000));
+    /* source-width-high-u32 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(4294967298), INT64_C(6), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), UINT64_C(0x0000000000000000));
+    /* source-height-high-u32 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(4294967297), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(4294967296), UINT64_C(0x41f0000000100000));
+    /* cap-high-u16 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(8), INT64_C(16), INT64_C(65538)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(8), INT64_C(16), UINT64_C(0x4030000000000000));
+    /* cap-high-u32 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(8), INT64_C(16), INT64_C(4294967298)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(8), INT64_C(16), UINT64_C(0x4030000000000000));
+    /* height-2pow53-plus1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9007199254740993), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(9007199254740992), UINT64_C(0x4340000000000000));
+    /* height-2pow53-plus3 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9007199254740995), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(9007199254740996), UINT64_C(0x4340000000000002));
+    /* upper-minus1024 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9223372036854774783), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(9223372036854774784), UINT64_C(0x43dfffffffffffff));
+    /* upper-representable-adjacent */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9223372036854775295), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(9223372036854774784), UINT64_C(0x43dfffffffffffff));
+    /* upper-minus1023 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9223372036854774784), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(9223372036854774784), UINT64_C(0x43dfffffffffffff));
+    /* height-maximum-width-three */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(3), INT64_C(9223372036854775807), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(6148914691236516864), UINT64_C(0x43d5555555555555));
+    /* upper-distinct-refusal */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9223372036854775807), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(2), INT64_C(2), INT64_C(0), UINT64_C(0x43e0000000000000));
+    /* upper-midpoint-distinct-refusal */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(9223372036854775296), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(2), INT64_C(2), INT64_C(0), UINT64_C(0x43e0000000000000));
+    /* maximum-triple-distinct-refusal */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(9223372036854775807), INT64_C(9223372036854775807), INT64_C(9223372036854775807)},
+                             UINT32_C(1), UINT32_C(2), INT64_C(9223372036854775806), INT64_C(0), UINT64_C(0x43e0000000000000));
+    /* invalid-slot-0--9223372036854775808 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_MIN, INT64_C(2), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-1--9223372036854775808 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_MIN, INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-2--9223372036854775808 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_MIN},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-0--4294967296 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(-4294967296), INT64_C(2), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-1--4294967296 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(-4294967296), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-2--4294967296 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(-4294967296)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-0--1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(-1), INT64_C(2), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-1--1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(-1), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-2--1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(-1)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-0-0 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(2), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-1-0 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(0), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-2-0 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(0)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-0-1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(1), INT64_C(2), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-1-1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(1), INT64_C(2)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* invalid-slot-2-1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(1)},
+                             UINT32_C(1), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* unknown-abi-0 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(0), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* unknown-abi-2 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(2), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* unknown-abi-2147483649 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(2147483649), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* unknown-abi-4294967295 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(4294967295), UINT32_C(0), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* nonzero-reserved-1 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* nonzero-reserved-2 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(2), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* nonzero-reserved-2147483648 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(2147483648), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* nonzero-reserved-4294967295 */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(4294967295), INT64_C(2), INT64_C(2), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* unknown-envelope-before-invalid-dimensions */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(0), UINT32_C(0), INT64_MIN, INT64_C(9223372036854775807), INT64_C(-1)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    /* reserved-before-former-trap */
+    output_dimensions_expect((beluga_core_output_dimensions_facts_t){UINT32_C(1), UINT32_C(1), INT64_C(2), INT64_C(9223372036854775807), INT64_C(2)},
+                             UINT32_C(0), UINT32_C(0), INT64_C(0), INT64_C(0), UINT64_C(0x0000000000000000));
+    puts("BelugaCore C output dimensions ABI PASS: two layouts, twelve offsets, signed projection and distinct conversion refusal");
+}
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -2057,5 +2276,6 @@ int main(void) {
     availability_retry_smoke();
     smoke_batch_a_policies();
     display_admission_smoke();
+    output_dimensions_smoke();
     return 0;
 }

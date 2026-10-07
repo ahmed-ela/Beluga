@@ -181,24 +181,43 @@ public enum ScreenVideoOutputPolicy {
         source: ScreenVideoPixelDimensions,
         maximumWidth: Int
     ) throws -> ScreenVideoPixelDimensions {
-        guard source.width >= 2, source.height >= 2, maximumWidth >= 2 else {
-            throw ScreenVideoOutputPolicyError.invalidDimensions
-        }
+        try outputDimensions(source: source, maximumWidth: maximumWidth, producer: .actual)
+    }
 
-        let cappedWidth = min(source.width, maximumWidth)
-        let width = cappedWidth - cappedWidth % 2
-        let scaledHeight = Int(
-            (Double(source.height) * Double(width) / Double(source.width)).rounded()
-        )
-        let height = max(2, scaledHeight - scaledHeight % 2)
-        return ScreenVideoPixelDimensions(width: width, height: height)
+    static func outputDimensions(
+        source: ScreenVideoPixelDimensions,
+        maximumWidth: Int,
+        producer: BelugaRustOutputDimensionsProducer
+    ) throws -> ScreenVideoPixelDimensions {
+        var input = BelugaRustOutputDimensionsBoundary.Input()
+        input.abi_version = 1
+        input.source_width = Int64(source.width)
+        input.source_height = Int64(source.height)
+        input.maximum_width = Int64(maximumWidth)
+        let output = producer.output(input)
+        guard BelugaRustOutputDimensionsBoundary.accepts(input, output) else {
+            throw ScreenVideoOutputDimensionsBridgeError.invalidBridge
+        }
+        switch output.decision {
+        case 0: throw ScreenVideoOutputPolicyError.invalidDimensions
+        case 1:
+            return ScreenVideoPixelDimensions(width: Int(output.width), height: Int(output.height))
+        case 2: throw ScreenVideoOutputPolicyError.unrepresentableScaledHeight
+        default: throw ScreenVideoOutputDimensionsBridgeError.invalidBridge
+        }
     }
 }
 
 public enum ScreenVideoOutputPolicyError: LocalizedError, Equatable {
     case invalidDimensions
+    case unrepresentableScaledHeight
 
     public var errorDescription: String? {
-        "Screen video source and maximum dimensions must be at least two pixels"
+        switch self {
+        case .invalidDimensions:
+            "Screen video source and maximum dimensions must be at least two pixels"
+        case .unrepresentableScaledHeight:
+            "Screen video scaled height cannot be represented as an integer"
+        }
     }
 }

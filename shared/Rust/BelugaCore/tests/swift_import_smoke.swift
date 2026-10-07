@@ -2135,3 +2135,229 @@ func displayAdmissionSmoke() {
     print("BelugaCore Swift display admission import/link PASS: exact layouts, native branch order, signed endpoints and unchanged refusals")
 }
 displayAdmissionSmoke()
+
+// Output dimensions: actual imported copied ABI only, no native capture effects.
+func outputDimensionsSmoke() {
+    typealias OutputFacts = beluga_core_output_dimensions_facts_t
+    typealias OutputDecision = beluga_core_output_dimensions_decision_t
+    precondition(MemoryLayout<OutputFacts>.size == 32 && MemoryLayout<OutputFacts>.stride == 32 && MemoryLayout<OutputFacts>.alignment == 8)
+    precondition(MemoryLayout<OutputFacts>.offset(of: \OutputFacts.abi_version) == 0)
+    precondition(MemoryLayout<OutputFacts>.offset(of: \OutputFacts.reserved) == 4)
+    precondition(MemoryLayout<OutputFacts>.offset(of: \OutputFacts.source_width) == 8)
+    precondition(MemoryLayout<OutputFacts>.offset(of: \OutputFacts.source_height) == 16)
+    precondition(MemoryLayout<OutputFacts>.offset(of: \OutputFacts.maximum_width) == 24)
+    precondition(MemoryLayout<OutputDecision>.size == 40 && MemoryLayout<OutputDecision>.stride == 40 && MemoryLayout<OutputDecision>.alignment == 8)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.abi_version) == 0)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.status) == 4)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.decision) == 8)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.reserved) == 12)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.width) == 16)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.height) == 24)
+    precondition(MemoryLayout<OutputDecision>.offset(of: \OutputDecision.rounded_height_bits) == 32)
+    func copiedWords(_ input: OutputFacts) -> [UInt64] {
+        [UInt64(input.abi_version), UInt64(input.reserved),
+         UInt64(bitPattern: input.source_width), UInt64(bitPattern: input.source_height),
+         UInt64(bitPattern: input.maximum_width)]
+    }
+    func expect(_ version: UInt32, _ reserved: UInt32, _ sourceWidth: Int64,
+                _ sourceHeight: Int64, _ maximumWidth: Int64, _ status: UInt32,
+                _ decision: UInt32, _ width: Int64, _ height: Int64, _ roundedBits: UInt64) {
+        var input = OutputFacts()
+        input.abi_version = version; input.reserved = reserved
+        input.source_width = sourceWidth; input.source_height = sourceHeight; input.maximum_width = maximumWidth
+        let before = copiedWords(input)
+        let actual = beluga_core_output_dimensions(input)
+        precondition(copiedWords(input) == before)
+        precondition(actual.abi_version == 1 && actual.status == status && actual.decision == decision)
+        precondition(actual.reserved == 0 && actual.width == width && actual.height == height)
+        precondition(actual.rounded_height_bits == roundedBits)
+    }
+    // phone-retina
+    expect(1, 0, 1206, 2622, 1920,
+           1, 1, 1206, 2622, 0x40a47c0000000000)
+    // landscape
+    expect(1, 0, 3840, 2160, 1920,
+           1, 1, 1920, 1080, 0x4090e00000000000)
+    // odd-full-frame
+    expect(1, 0, 1205, 2621, 1920,
+           1, 1, 1204, 2618, 0x40a4760000000000)
+    // half-scale
+    expect(1, 0, 603, 1312, 1920,
+           1, 1, 602, 1310, 0x4094780000000000)
+    // odd-cap
+    expect(1, 0, 7, 11, 5,
+           1, 1, 4, 6, 0x4018000000000000)
+    // positive-half-up
+    expect(1, 0, 4, 7, 2,
+           1, 1, 2, 4, 0x4010000000000000)
+    // positive-half-chroma
+    expect(1, 0, 4, 5, 2,
+           1, 1, 2, 2, 0x4008000000000000)
+    // nearest-upper
+    expect(1, 0, 100, 99, 20,
+           1, 1, 20, 20, 0x4034000000000000)
+    // nearest-lower
+    expect(1, 0, 100, 91, 20,
+           1, 1, 20, 18, 0x4032000000000000)
+    // nearest-chroma
+    expect(1, 0, 100, 96, 20,
+           1, 1, 20, 18, 0x4033000000000000)
+    // floor-zero
+    expect(1, 0, 100, 11, 2,
+           1, 1, 2, 2, 0x0000000000000000)
+    // floor-one
+    expect(1, 0, 100, 26, 2,
+           1, 1, 2, 2, 0x3ff0000000000000)
+    // cap-small
+    expect(1, 0, 4, 6, 2,
+           1, 1, 2, 2, 0x4008000000000000)
+    // cap-exact
+    expect(1, 0, 4, 6, 4,
+           1, 1, 4, 6, 0x4018000000000000)
+    // cap-no-upscale
+    expect(1, 0, 4, 6, 100,
+           1, 1, 4, 6, 0x4018000000000000)
+    // width-chroma-before-scale
+    expect(1, 0, 7, 14, 5,
+           1, 1, 4, 8, 0x4020000000000000)
+    // source-chroma-before-scale
+    expect(1, 0, 5, 10, 20,
+           1, 1, 4, 8, 0x4020000000000000)
+    // third-width
+    expect(1, 0, 3, 9, 3,
+           1, 1, 2, 6, 0x4018000000000000)
+    // larger-half-up
+    expect(1, 0, 400, 699, 200,
+           1, 1, 200, 350, 0x4075e00000000000)
+    // larger-half-even-chroma
+    expect(1, 0, 400, 698, 200,
+           1, 1, 200, 348, 0x4075d00000000000)
+    // integer-ratio-is-not-policy
+    expect(1, 0, 5, 9, 4,
+           1, 1, 4, 6, 0x401c000000000000)
+    // wide-signed-min-height
+    expect(1, 0, 9223372036854775807, 2, 2,
+           1, 1, 2, 2, 0x0000000000000000)
+    // wide-signed-no-arbitrary-cap
+    expect(1, 0, 9223372036854775807, 2, 9223372036854775807,
+           1, 1, 9223372036854775806, 2, 0x4000000000000000)
+    // source-width-high-u16
+    expect(1, 0, 65538, 6, 2,
+           1, 1, 2, 2, 0x0000000000000000)
+    // source-width-high-u32
+    expect(1, 0, 4294967298, 6, 2,
+           1, 1, 2, 2, 0x0000000000000000)
+    // source-height-high-u32
+    expect(1, 0, 2, 4294967297, 2,
+           1, 1, 2, 4294967296, 0x41f0000000100000)
+    // cap-high-u16
+    expect(1, 0, 8, 16, 65538,
+           1, 1, 8, 16, 0x4030000000000000)
+    // cap-high-u32
+    expect(1, 0, 8, 16, 4294967298,
+           1, 1, 8, 16, 0x4030000000000000)
+    // height-2pow53-plus1
+    expect(1, 0, 2, 9007199254740993, 2,
+           1, 1, 2, 9007199254740992, 0x4340000000000000)
+    // height-2pow53-plus3
+    expect(1, 0, 2, 9007199254740995, 2,
+           1, 1, 2, 9007199254740996, 0x4340000000000002)
+    // upper-minus1024
+    expect(1, 0, 2, 9223372036854774783, 2,
+           1, 1, 2, 9223372036854774784, 0x43dfffffffffffff)
+    // upper-representable-adjacent
+    expect(1, 0, 2, 9223372036854775295, 2,
+           1, 1, 2, 9223372036854774784, 0x43dfffffffffffff)
+    // upper-minus1023
+    expect(1, 0, 2, 9223372036854774784, 2,
+           1, 1, 2, 9223372036854774784, 0x43dfffffffffffff)
+    // height-maximum-width-three
+    expect(1, 0, 3, 9223372036854775807, 2,
+           1, 1, 2, 6148914691236516864, 0x43d5555555555555)
+    // upper-distinct-refusal
+    expect(1, 0, 2, 9223372036854775807, 2,
+           1, 2, 2, 0, 0x43e0000000000000)
+    // upper-midpoint-distinct-refusal
+    expect(1, 0, 2, 9223372036854775296, 2,
+           1, 2, 2, 0, 0x43e0000000000000)
+    // maximum-triple-distinct-refusal
+    expect(1, 0, 9223372036854775807, 9223372036854775807, 9223372036854775807,
+           1, 2, 9223372036854775806, 0, 0x43e0000000000000)
+    // invalid-slot-0--9223372036854775808
+    expect(1, 0, Int64.min, 2, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-1--9223372036854775808
+    expect(1, 0, 2, Int64.min, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-2--9223372036854775808
+    expect(1, 0, 2, 2, Int64.min,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-0--4294967296
+    expect(1, 0, -4294967296, 2, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-1--4294967296
+    expect(1, 0, 2, -4294967296, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-2--4294967296
+    expect(1, 0, 2, 2, -4294967296,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-0--1
+    expect(1, 0, -1, 2, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-1--1
+    expect(1, 0, 2, -1, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-2--1
+    expect(1, 0, 2, 2, -1,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-0-0
+    expect(1, 0, 0, 2, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-1-0
+    expect(1, 0, 2, 0, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-2-0
+    expect(1, 0, 2, 2, 0,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-0-1
+    expect(1, 0, 1, 2, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-1-1
+    expect(1, 0, 2, 1, 2,
+           1, 0, 0, 0, 0x0000000000000000)
+    // invalid-slot-2-1
+    expect(1, 0, 2, 2, 1,
+           1, 0, 0, 0, 0x0000000000000000)
+    // unknown-abi-0
+    expect(0, 0, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // unknown-abi-2
+    expect(2, 0, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // unknown-abi-2147483649
+    expect(2147483649, 0, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // unknown-abi-4294967295
+    expect(4294967295, 0, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // nonzero-reserved-1
+    expect(1, 1, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // nonzero-reserved-2
+    expect(1, 2, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // nonzero-reserved-2147483648
+    expect(1, 2147483648, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // nonzero-reserved-4294967295
+    expect(1, 4294967295, 2, 2, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    // unknown-envelope-before-invalid-dimensions
+    expect(0, 0, Int64.min, 9223372036854775807, -1,
+           0, 0, 0, 0, 0x0000000000000000)
+    // reserved-before-former-trap
+    expect(1, 1, 2, 9223372036854775807, 2,
+           0, 0, 0, 0, 0x0000000000000000)
+    print("BelugaCore Swift output dimensions import/link PASS: two layouts, twelve offsets, signed projection and distinct conversion refusal")
+}
+outputDimensionsSmoke()

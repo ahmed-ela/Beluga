@@ -40,6 +40,8 @@ module MicrophoneRegressionGate
     tests/hosted_call_policy.rs
     src/display_admission.rs
     tests/display_admission.rs
+    src/output_dimensions.rs
+    tests/output_dimensions.rs
   ].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
   BELUGA_CORE_SLICES = {
@@ -467,7 +469,7 @@ module MicrophoneRegressionGate
   }.transform_values(&:freeze).freeze
 
   DISPLAY_ADMISSION_NATIVE_SOURCE_SHA256 = {
-    'macOS/Sources/CaptureCore/ScreenVideoOutputPolicy.swift' => '17c11d412f57cd970f1c70d64032c6110616cfdce42e64ecfae6338cdd9e2fec',
+    'macOS/Sources/CaptureCore/ScreenVideoOutputPolicy.swift' => '7dcdfa94e616edb69edebe7109ae008e5cf0b208c79878d489a57c050e4a8d36',
     'macOS/Tests/CaptureCoreTests/ScreenVideoOutputPolicyTests.swift' => 'dceb67808a0fc74debacf39f6a760881b95662b860a4e4182c3a4c0e4ca67de0',
     'macOS/Sources/CaptureCore/ScreenVideoCaptureSource.swift' => 'e84af22636a4b0539204186fa32045681af5452111bb96ee0ad147c441f3d1f9',
     'Package.swift' => '6d32098ab961d108934de18a28fff83fd85bfe45c8967f36fb0041fe44ca454a',
@@ -521,6 +523,37 @@ module MicrophoneRegressionGate
     ],
   }.transform_values(&:freeze).freeze
 
+  OUTPUT_DIMENSIONS_SOURCE_SHA256 = {
+    'shared/Rust/BelugaCore/src/output_dimensions.rs' => '7acbb390a74b9324a9ceddd49c258b74027f46c08ccac12425ca7c3a409ddfb2',
+    'shared/Rust/BelugaCore/tests/output_dimensions.rs' => '2f72bcc2762c75f1e2100168a6a7fb4f876ab8de4f5c11b53b93789e59b740b7',
+    'shared/Rust/BelugaCore/src/lib.rs' => 'a0a366e51685685ee505744d36ed2d2984f12df0d90d35c53db633177c03743a',
+    'shared/Rust/BelugaCore/include/beluga_core.h' => '3b2df61c4e6acdcd515c24eaeef37c6b3057d33efc0fba447d2c490d32865d18',
+    'macOS/Sources/CaptureCore/ScreenVideoOutputPolicy.swift' => '7dcdfa94e616edb69edebe7109ae008e5cf0b208c79878d489a57c050e4a8d36',
+    'macOS/Sources/CaptureCore/BelugaRustOutputDimensions.swift' => '411410bdd9624df3aec1357a622146ecdf03d524b3564598e51409f409aab129',
+    'macOS/Tests/CaptureCoreTests/ScreenVideoOutputDimensionsOriginalReference.swift' => 'd770ac0d4e0688009d15f593d84cc3e412372e222ae69b7ca3e6d98acabfd79d',
+    'macOS/Tests/CaptureCoreTests/ScreenVideoOutputDimensionsRustTests.swift' => '5117e0e2dc2ffff362e964703a633fe43b7a55c71fed46c246d5ba0b3bce8623',
+  }.freeze
+  OUTPUT_DIMENSIONS_NATIVE_FILES = {
+    'CaptureCoreTests.ScreenVideoOutputDimensionsRustTests' => 'macOS/Tests/CaptureCoreTests/ScreenVideoOutputDimensionsRustTests.swift',
+  }.freeze
+  OUTPUT_DIMENSIONS_NATIVE_PINNED = {
+    'CaptureCoreTests.ScreenVideoOutputDimensionsRustTests' => %w[
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testActualCOutputHasTwoExactLayoutsAndAllTwelveOffsets
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testActualCAndTypedOutputMatchIndependentLiteralModesAndFrozenOriginal
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testRepresentableSignedMatrixMatchesFrozenOriginalWithoutNewCaps
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testEachInvalidSignedSlotKeepsOriginalErrorAndCanonicalNoArithmeticPayload
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testNearestPositiveTiesAndMinimumHeightRemainOriginal
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testOriginalFloatingPrecisionLossAndRepresentableUpperNeighborRemainExact
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testFormerTwoToSixtyThreeConversionTrapIsDistinctTypedErrorNotDimensions
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testMaximumSignedHeightCanRemainRepresentableAfterWidthCapping
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testTypedFacadeRecordsFullSignedInputWordsOnlyAfterActualC
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testMalformedRawInputEnvelopeIsRefusedWithoutLegitimateOutcome
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testEveryCopiedResultFieldCorruptionThrowsBridgeErrorAfterActualC
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testInvalidAndOutOfRangeResultsCannotForgeDimensionsOrOtherErrors
+      CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testRoundedPositiveZeroCannotBeSilentlyNormalizedToNegativeZero
+    ],
+  }.transform_values(&:freeze).freeze
+
   MAC_CLASSES = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests
     CaptureCoreTests.CoreAudioProcessTapStartupDiagnosticsTests
@@ -562,6 +595,7 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests
     CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests
     CaptureCoreTests.ScreenVideoOutputPolicyTests
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests
   ].freeze
   MAC_PINNED = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests/testEveryFreshAggregateStartsWithoutWaitingForTappedPlayback
@@ -785,6 +819,19 @@ module MicrophoneRegressionGate
     CaptureCoreTests.ScreenVideoOutputPolicyTests/testLandscapeFramebufferScalesWithinWidthCap
     CaptureCoreTests.ScreenVideoOutputPolicyTests/testOddDimensionsRoundDownForVideoChromaPlanes
     CaptureCoreTests.ScreenVideoOutputPolicyTests/testInvalidDimensionsFailClosed
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testActualCOutputHasTwoExactLayoutsAndAllTwelveOffsets
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testActualCAndTypedOutputMatchIndependentLiteralModesAndFrozenOriginal
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testRepresentableSignedMatrixMatchesFrozenOriginalWithoutNewCaps
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testEachInvalidSignedSlotKeepsOriginalErrorAndCanonicalNoArithmeticPayload
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testNearestPositiveTiesAndMinimumHeightRemainOriginal
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testOriginalFloatingPrecisionLossAndRepresentableUpperNeighborRemainExact
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testFormerTwoToSixtyThreeConversionTrapIsDistinctTypedErrorNotDimensions
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testMaximumSignedHeightCanRemainRepresentableAfterWidthCapping
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testTypedFacadeRecordsFullSignedInputWordsOnlyAfterActualC
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testMalformedRawInputEnvelopeIsRefusedWithoutLegitimateOutcome
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testEveryCopiedResultFieldCorruptionThrowsBridgeErrorAfterActualC
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testInvalidAndOutOfRangeResultsCannotForgeDimensionsOrOtherErrors
+    CaptureCoreTests.ScreenVideoOutputDimensionsRustTests/testRoundedPositiveZeroCannotBeSilentlyNormalizedToNegativeZero
   ].freeze
   RUST_PINNED = %w[
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
@@ -1043,6 +1090,23 @@ module MicrophoneRegressionGate
     source_stability_unknown_abi_and_reserved_are_independent_invalid_inputs
     display_admission_all_copied_inputs_remain_exact_including_nan_payload_bits
     source_kind_and_dimensions_high_bit_identity_aliases_remain_ordinary
+    output_abi_has_exact_two_layouts_and_twelve_offsets
+    output_literal_supported_modes_preserve_cap_round_even_and_height_floor
+    output_each_original_signed_guard_refuses_before_arithmetic
+    output_width_cap_is_a_minimum_without_upscaling
+    output_even_width_is_chosen_before_scaling
+    output_positive_half_ties_round_away_before_even_height
+    output_non_ties_keep_nearest_not_floor_or_ceil
+    output_height_chroma_adjustment_rounds_down_after_nearest
+    output_height_floor_keeps_two_when_scaled_rounds_to_zero_or_one
+    output_float_multiply_then_divide_is_not_integer_ratio
+    output_full_signed_projection_does_not_narrow_source_or_cap
+    output_original_f64_precision_loss_is_not_replaced_by_exact_rational_or_height_cap
+    output_two_to_sixty_three_is_distinct_refusal_not_saturation_or_dimensions
+    output_adjacent_representable_upper_value_still_returns_dimensions
+    output_maximum_height_can_remain_representable_after_width_capping
+    output_malformed_envelope_is_not_a_legitimate_dimension_error
+    output_copies_have_no_state_or_mutating_input_ownership
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -1267,6 +1331,25 @@ module MicrophoneRegressionGate
     'display-stability-unrequested-dimension-sanity-introduced' => 'source_stability_requires_both_dimensions_exactly_equal_without_sanity_limits',
     'display-source-kind-vendor-truncated-to-u16' => 'source_kind_and_dimensions_high_bit_identity_aliases_remain_ordinary',
     'display-source-kind-product-truncated-to-u16' => 'source_kind_and_dimensions_high_bit_identity_aliases_remain_ordinary',
+    'output-source-width-minimum-weakened' => 'output_each_original_signed_guard_refuses_before_arithmetic',
+    'output-source-height-minimum-weakened' => 'output_each_original_signed_guard_refuses_before_arithmetic',
+    'output-maximum-width-minimum-weakened' => 'output_each_original_signed_guard_refuses_before_arithmetic',
+    'output-width-cap-discarded' => 'output_width_cap_is_a_minimum_without_upscaling',
+    'output-width-upscaled-to-cap' => 'output_width_cap_is_a_minimum_without_upscaling',
+    'output-even-width-adjustment-removed' => 'output_even_width_is_chosen_before_scaling',
+    'output-nearest-rounding-truncated' => 'output_positive_half_ties_round_away_before_even_height',
+    'output-nearest-rounding-to-even' => 'output_positive_half_ties_round_away_before_even_height',
+    'output-nearest-rounding-ceiling' => 'output_non_ties_keep_nearest_not_floor_or_ceil',
+    'output-float-math-replaced-by-integer-ratio' => 'output_float_multiply_then_divide_is_not_integer_ratio',
+    'output-height-chroma-adjustment-removed' => 'output_height_chroma_adjustment_rounds_down_after_nearest',
+    'output-two-pixel-height-floor-removed' => 'output_height_floor_keeps_two_when_scaled_rounds_to_zero_or_one',
+    'output-source-width-narrowed-to-u16' => 'output_full_signed_projection_does_not_narrow_source_or_cap',
+    'output-height-narrowed-to-u32' => 'output_full_signed_projection_does_not_narrow_source_or_cap',
+    'output-maximum-width-narrowed-to-u16' => 'output_full_signed_projection_does_not_narrow_source_or_cap',
+    'output-upper-exclusive-conversion-boundary-weakened' => 'output_two_to_sixty_three_is_distinct_refusal_not_saturation_or_dimensions',
+    'output-malformed-envelope-classified-as-legitimate' => 'output_malformed_envelope_is_not_a_legitimate_dimension_error',
+    'output-unknown-version-admitted' => 'output_malformed_envelope_is_not_a_legitimate_dimension_error',
+    'output-nonzero-reserved-admitted' => 'output_malformed_envelope_is_not_a_legitimate_dimension_error',
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -1302,11 +1385,14 @@ module MicrophoneRegressionGate
     'BelugaCore Swift hosted call import/link PASS: exact layouts, strict watermark and generation identity, unchanged refusals',
     'BelugaCore C display admission ABI PASS: exact layouts, native branch order, signed endpoints and unchanged refusals',
     'BelugaCore Swift display admission import/link PASS: exact layouts, native branch order, signed endpoints and unchanged refusals',
+    'BelugaCore C output dimensions ABI PASS: two layouts, twelve offsets, signed projection and distinct conversion refusal',
+    'BelugaCore Swift output dimensions import/link PASS: two layouts, twelve offsets, signed projection and distinct conversion refusal',
   ].freeze
-  # Preserve the old 30-marker enrollment prefix while matching actual C-then-Swift stdout.
+  # Preserve both old 30/32-marker enrollment prefixes; actual stdout is C then Swift.
   BELUGA_CORE_RUNTIME_MARKER_ORDER = (BELUGA_CORE_RUNTIME_MARKERS.first(15) +
-    [BELUGA_CORE_RUNTIME_MARKERS.fetch(30)] + BELUGA_CORE_RUNTIME_MARKERS[15, 15] +
-    [BELUGA_CORE_RUNTIME_MARKERS.fetch(31)]).freeze
+    [BELUGA_CORE_RUNTIME_MARKERS.fetch(30), BELUGA_CORE_RUNTIME_MARKERS.fetch(32)] +
+    BELUGA_CORE_RUNTIME_MARKERS[15, 15] +
+    [BELUGA_CORE_RUNTIME_MARKERS.fetch(31), BELUGA_CORE_RUNTIME_MARKERS.fetch(33)]).freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
     test_beluga_core_phases_and_exact_crate_commands_are_mandatory
@@ -1400,6 +1486,13 @@ module MicrophoneRegressionGate
     test_display_admission_native_body_companions_refuse_tamper_missing_and_links
     test_display_admission_native_declaration_drift_and_borrowed_coverage_are_rejected
     test_display_admission_enrollment_preserves_complete_previous_inventory
+    test_output_dimensions_sources_and_each_actual_rust_case_are_mandatory
+    test_output_dimensions_every_runtime_marker_and_exact_stage_order_are_mandatory
+    test_output_dimensions_compiled_controls_refuse_wrong_cases_compiler_panics_and_footers
+    test_output_dimensions_actual_native_discovery_and_each_result_are_mandatory
+    test_output_dimensions_full_receiving_bodies_refuse_tamper_missing_links_nodes_and_rehash
+    test_output_dimensions_declaration_drift_and_borrowed_native_coverage_are_refused
+    test_output_dimensions_enrollment_preserves_complete_display_predecessor
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -1871,6 +1964,45 @@ module MicrophoneRegressionGate
                ids.uniq.length == ids.length && ids.sort == SUPPORTED_PLAYER_PINNED.fetch(suite).sort,
                'supported player native source inventory is incomplete, malformed or duplicated: ' + suite)
       [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.validate_output_dimensions_sources(root)
+    OUTPUT_DIMENSIONS_SOURCE_SHA256.each do |relative, expected|
+      path = File.join(root, relative)
+      require!(File.exist?(path), 'output dimensions source companion is missing: ' + relative)
+      stat = regular!(path)
+      require!(File.realpath(path) == path && stat.size <= 2 * 1024 * 1024 && sha(path) == expected,
+               'output dimensions reviewed source/reference body changed: ' + relative)
+      utf8_text(File.binread(path), 'output dimensions source companion')
+    end
+    nil
+  end
+
+  def self.output_dimensions_native_source_inventory(root)
+    validate_output_dimensions_sources(root)
+    OUTPUT_DIMENSIONS_NATIVE_FILES.map do |suite, relative|
+      source = utf8_text(File.binread(File.join(root, relative)), 'output dimensions native test source')
+      name = suite.split('.').last
+      methods = source.scan(/^[ \t]*func (test\w+)[ \t]*\(/).flatten
+      ids = methods.map { |method| suite + '/' + method }
+      require!(source.scan(/^[ \t]*final class #{Regexp.escape(name)}[ \t]*:[ \t]*XCTestCase[ \t]*\{/).length == 1 &&
+               ids.uniq.length == ids.length && ids.sort == OUTPUT_DIMENSIONS_NATIVE_PINNED.fetch(suite).sort,
+               'output dimensions native source inventory is incomplete, malformed or duplicated: ' + suite)
+      [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.output_dimensions_native_inventory(root, text)
+    source = output_dimensions_native_source_inventory(root)
+    lines = utf8_text(text, 'output dimensions native discovery').lines.map(&:strip)
+    source.map do |suite, expected|
+      methods = lines.select { |line| line.start_with?(suite + '/') }
+      require!(methods.uniq.length == methods.length &&
+               methods.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/test\w+\z/) } &&
+               methods.sort == expected,
+               'output dimensions native discovery differs from exact source inventory: ' + suite)
+      [suite, methods.sort]
     end.to_h
   end
 
@@ -3395,6 +3527,7 @@ module MicrophoneRegressionGate
       MicrophoneRegressionGate.supported_player_inventory(@root, mac_discovery)
       MicrophoneRegressionGate.batch_a_native_inventory(@root, mac_discovery)
       MicrophoneRegressionGate.display_admission_native_inventory(@root, mac_discovery)
+      MicrophoneRegressionGate.output_dimensions_native_inventory(@root, mac_discovery)
       shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
       replay_methods = MicrophoneRegressionGate.shared_replay_inventory(@root, mac_discovery)
       reconnect_methods = MicrophoneRegressionGate.shared_reconnect_counter_inventory(@root, mac_discovery)
@@ -3561,6 +3694,7 @@ module MicrophoneRegressionGate
     supported_player_inventory(root, read_phase.call('mac-discovery'))
     batch_a_native_inventory(root, read_phase.call('mac-discovery'))
     display_admission_native_inventory(root, read_phase.call('mac-discovery'))
+    output_dimensions_native_inventory(root, read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     replay = shared_replay_inventory(root, read_phase.call('mac-discovery'))
     reconnect = shared_reconnect_counter_inventory(root, read_phase.call('mac-discovery'))
