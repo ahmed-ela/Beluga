@@ -3,7 +3,8 @@
 This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
 the one-use offer/timeline reducer, the phone playback-operation reducer, and
-the invitation acceptance policy, and the bounded signaling replay window**.
+the invitation acceptance policy, the bounded signaling replay window, and
+catalog-checkpoint attempt admission/revocation**.
 It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
@@ -84,6 +85,19 @@ there is no successful native fallback. Migration verification must include actu
 C/Swift links, independent original-reference traces, authentication ordering and
 durable-client reset/retirement tests, not only raw reducer tests.
 
+The catalog-checkpoint policy preserves one Add, exact bound Update, synchronous
+terminal revocation, and full-snapshot Readback even after revocation/owner loss.
+Rust returns only a copied candidate; a native lock retains UUIDs, storage calls,
+snapshot and binding. The adapter validates the candidate before the store effect,
+then commits it only after a successful return. Native storage errors propagate
+unchanged and leave the cursor's last known successful checkpoint retryable.
+A backend write-then-throw is not rollback proof; fresh Readback rejects durable
+divergence. Revoked writes skip the owner callback, whereas a second Add calls it
+before refusal, preserving original ordering. Invalid copied outputs cause a
+sticky bridge fault without discarding known storage/bindings or granting writes.
+These policies do not replace catalog capacity, cryptographic validation, process
+ownership, cross-process synchronization or asynchronous native generation fences.
+
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
 Each slice is a **static `BelugaCore.framework`**, with its module map under
@@ -122,5 +136,6 @@ sixteen offer identity, retirement, replay, boundary, counter, and unknown-opera
 six phone identity/clock ordering, proof-age, reservation and truthful-outcome defects,
 and nine invitation owner/order, optional-callback, pre-effect state, thrown-effect,
 completion, rearm and cancellation defects, plus eleven signaling-replay sequence,
-boundary, duplicate, history and malformed-state preservation defects. They use
+boundary, duplicate, history and malformed-state preservation defects, plus twelve
+catalog admission, revocation, exact native fact and malformed-domain defects. They use
 temporary copies and never modify the production archive or source.

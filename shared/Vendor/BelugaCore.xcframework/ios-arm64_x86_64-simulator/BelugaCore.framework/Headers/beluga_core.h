@@ -402,6 +402,32 @@ typedef struct {
 beluga_core_signaling_replay_state_t beluga_core_signaling_replay_initial(void);
 beluga_core_signaling_replay_result_t beluga_core_signaling_replay_step(
     uint32_t abi_version, beluga_core_signaling_replay_state_t state, uint64_t sequence);
+
+/* Eighth copied scalar contract: an existing native catalog checkpoint attempt.
+ * The candidate is not persisted state, an owner handle or storage-success proof.
+ * Native calls commit it only after the original synchronous store returns.
+ * Revoke retains binding; Readback requires the entire fresh snapshot, not owner.
+ * Every refusal, unknown ABI/opcode/flag or nonboolean fact preserves input state.
+ * No UUID, key, pointer, callback, counter or allocation crosses this boundary. */
+typedef struct {
+    uint32_t abi_version;
+    uint32_t flags; /* bound=1, revoked=2; all four combinations legal */
+} beluga_core_pairing_catalog_checkpoint_state_t; /* size8 alignment4 */
+typedef struct {
+    uint32_t opcode; /* add=0, update=1, revoke=2, readback=3 */
+    uint32_t owner_valid; /* exact native process owner, boolean */
+    uint32_t binding_matches; /* all three native UUIDs match, boolean */
+    uint32_t snapshot_matches; /* full fresh durable snapshot matches, boolean */
+} beluga_core_pairing_catalog_checkpoint_event_t; /* size16 alignment4 */
+typedef struct {
+    beluga_core_pairing_catalog_checkpoint_state_t candidate_state;
+    uint32_t decision; /* allowed=0, stale attempt=1, invalid input=3 */
+} beluga_core_pairing_catalog_checkpoint_result_t; /* size12 alignment4 */
+
+beluga_core_pairing_catalog_checkpoint_state_t beluga_core_pairing_catalog_checkpoint_initial(void);
+beluga_core_pairing_catalog_checkpoint_result_t beluga_core_pairing_catalog_checkpoint_step(
+    uint32_t abi_version, beluga_core_pairing_catalog_checkpoint_state_t state,
+    beluga_core_pairing_catalog_checkpoint_event_t event);
 #ifdef __cplusplus
 }
 #endif

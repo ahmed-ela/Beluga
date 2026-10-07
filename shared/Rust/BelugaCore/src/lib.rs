@@ -9,6 +9,24 @@ pub mod handoff_offers;
 pub mod youtube_handoff_operation;
 pub mod invitation_acceptance;
 pub mod replay_policy;
+pub mod pairing_catalog_checkpoint;
+
+// Eighth copied scalar contract: one catalog attempt's admission/revocation.
+// Native identity, lock, durable snapshot and successful effect custody remain native.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_pairing_catalog_checkpoint_initial() -> pairing_catalog_checkpoint::RawState {
+    pairing_catalog_checkpoint::initial()
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_pairing_catalog_checkpoint_step(
+    abi_version: u32, state: pairing_catalog_checkpoint::RawState,
+    event: pairing_catalog_checkpoint::RawEvent,
+) -> pairing_catalog_checkpoint::RawResult {
+    pairing_catalog_checkpoint::step(abi_version, state, event)
+}
 
 // Seventh scalar contract: bounded replay-window value policy only.
 // Native cipher authentication, admitted peer/exchange ownership and resets

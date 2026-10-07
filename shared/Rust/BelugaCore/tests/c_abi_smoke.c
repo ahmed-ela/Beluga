@@ -4,6 +4,61 @@
 #include <stdio.h>
 #include <string.h>
 
+_Static_assert(sizeof(beluga_core_pairing_catalog_checkpoint_state_t) == 8, "checkpoint state size");
+_Static_assert(_Alignof(beluga_core_pairing_catalog_checkpoint_state_t) == 4, "checkpoint state alignment");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_state_t, abi_version) == 0, "checkpoint ABI offset");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_state_t, flags) == 4, "checkpoint flags offset");
+_Static_assert(sizeof(beluga_core_pairing_catalog_checkpoint_event_t) == 16, "checkpoint event size");
+_Static_assert(_Alignof(beluga_core_pairing_catalog_checkpoint_event_t) == 4, "checkpoint event alignment");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_event_t, opcode) == 0, "checkpoint opcode offset");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_event_t, owner_valid) == 4, "checkpoint owner offset");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_event_t, binding_matches) == 8, "checkpoint binding offset");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_event_t, snapshot_matches) == 12, "checkpoint snapshot offset");
+_Static_assert(sizeof(beluga_core_pairing_catalog_checkpoint_result_t) == 12, "checkpoint result size");
+_Static_assert(_Alignof(beluga_core_pairing_catalog_checkpoint_result_t) == 4, "checkpoint result alignment");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_result_t, candidate_state) == 0, "checkpoint candidate offset");
+_Static_assert(offsetof(beluga_core_pairing_catalog_checkpoint_result_t, decision) == 8, "checkpoint decision offset");
+
+static void pairing_catalog_checkpoint_smoke(void) {
+    beluga_core_pairing_catalog_checkpoint_state_t state = beluga_core_pairing_catalog_checkpoint_initial();
+    assert(state.abi_version == 1 && state.flags == 0);
+    beluga_core_pairing_catalog_checkpoint_event_t event = {0, 1, 0, 0};
+    beluga_core_pairing_catalog_checkpoint_result_t result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 0 && result.candidate_state.flags == 1 && state.flags == 0);
+    state = result.candidate_state;
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 1 && memcmp(&state, &result.candidate_state, sizeof(state)) == 0);
+    event = (beluga_core_pairing_catalog_checkpoint_event_t){1, 1, 0, 0};
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 1 && result.candidate_state.flags == 1);
+    event.binding_matches = 1;
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 0 && result.candidate_state.flags == 1);
+    event = (beluga_core_pairing_catalog_checkpoint_event_t){2, 0, 0, 0};
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 0 && result.candidate_state.flags == 3);
+    state = result.candidate_state;
+    event = (beluga_core_pairing_catalog_checkpoint_event_t){0, 1, 0, 0};
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 1 && result.candidate_state.flags == 3);
+    event = (beluga_core_pairing_catalog_checkpoint_event_t){3, 0, 0, 1};
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 0 && result.candidate_state.flags == 3);
+    event.snapshot_matches = 0;
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 1 && result.candidate_state.flags == 3);
+    event.opcode = UINT32_MAX;
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 3 && memcmp(&state, &result.candidate_state, sizeof(state)) == 0);
+    event.opcode = 2;
+    result = beluga_core_pairing_catalog_checkpoint_step(2, state, event);
+    assert(result.decision == 3 && memcmp(&state, &result.candidate_state, sizeof(state)) == 0);
+    state.flags = UINT32_MAX;
+    result = beluga_core_pairing_catalog_checkpoint_step(1, state, event);
+    assert(result.decision == 3 && memcmp(&state, &result.candidate_state, sizeof(state)) == 0);
+    puts("BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback");
+}
+
 _Static_assert(sizeof(beluga_core_handoff_menu_policy_t) == 16, "ABI size");
 _Static_assert(_Alignof(beluga_core_handoff_menu_policy_t) == 4, "ABI alignment");
 _Static_assert(offsetof(beluga_core_handoff_menu_policy_t, abi_version) == 0, "ABI version offset");
@@ -591,5 +646,6 @@ int main(void) {
     phone_operation_smoke();
     invitation_acceptance_smoke();
     signaling_replay_smoke();
+    pairing_catalog_checkpoint_smoke();
     return 0;
 }

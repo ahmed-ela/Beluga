@@ -1118,7 +1118,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
     assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 28, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 30, Gate::BELUGA_CORE_SOURCE_FILES.length
     %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs
        src/youtube_handoff_operation.rs tests/youtube_handoff_operation.rs].each do |path|
       assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path
@@ -1335,7 +1335,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
                unknown_operation_is_invalid_unchanged_without_retirement_or_success
                wire_authorization_and_exact_numeric_identity_guard_slots exported_offer_functions_match_safe_reducer]
-    assert_equal 119, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(44).last(tests.length)
     tests.each do |id|
       omitted = @core_methods - [id]
@@ -1363,7 +1363,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                  offers-freshness-inclusive offers-deadline-inclusive offers-timeline-tolerance-widened
                  offers-host-position-tolerance-widened offers-clear-resets-counters offers-sent-sequence-reused
                  offers-unknown-operation-clears-state]
-    assert_equal 53, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.first(27).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name|
@@ -1427,7 +1427,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
                deterministic_independent_traces_compare_every_raw_state_event_and_boolean]
     assert_equal 32, tests.length
-    assert_equal 119, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(76).last(tests.length)
     tests.each do |id|
@@ -1456,7 +1456,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
       'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
     }
-    assert_equal 53, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(33).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1529,7 +1529,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       seeded_original_trace_with_rearm_cancellation_and_value_copies_matches
     ]
     assert_equal 22, tests.length
-    assert_equal 119, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(98).last(tests.length)
     tests.each do |id|
@@ -1561,7 +1561,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'invitation-native-prepared-owner-ignored' => 'stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch',
       'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed'
     }
-    assert_equal 53, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(42).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1646,12 +1646,12 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'replay-impossible-past-bits-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted'
     }
     assert_equal 21, tests.length
-    assert_equal 119, Gate::BELUGA_CORE_PINNED.length
-    assert_equal tests, Gate::BELUGA_CORE_PINNED.drop(98)
-    assert_equal 53, Gate::BELUGA_CORE_MUTANTS.length
-    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.drop(42)
-    assert_equal 28, Gate::BELUGA_CORE_SOURCE_FILES.length
-    assert_equal 14, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED[98, 21]
+    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[42, 11]
+    assert_equal 30, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 16, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
     tests.each do |id|
       omitted = @core_methods - [id]
       rejects('missing critical Beluga core') do
@@ -1698,7 +1698,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
       'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection'
     ]
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[6], Gate::BELUGA_CORE_RUNTIME_MARKERS[13]]
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[6], Gate::BELUGA_CORE_RUNTIME_MARKERS[14]]
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", (marker + "\n") * 2)) }
@@ -1721,6 +1721,213 @@ class MicrophoneRegressionGateTests < Minitest::Test
     File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(42)))
     value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
     rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
+  # Parser fixtures only: these methods do not execute Rust or native catalog effects.
+  def test_beluga_core_catalog_checkpoint_source_and_named_cases_are_mandatory
+    tests = %w[
+      checkpoint_initial_and_copied_layout_are_exact
+      checkpoint_all_valid_states_and_boolean_facts_match_original
+      checkpoint_bounded_committed_and_failed_effect_traces_match_original
+      checkpoint_revocation_is_terminal_without_erasing_binding
+      checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot
+      checkpoint_rejected_input_preserves_exact_state
+      checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed
+      checkpoint_raw_value_copies_do_not_share_mutation
+    ]
+    assert_equal 8, tests.length
+    assert_equal 127, Gate::BELUGA_CORE_PINNED.length
+    assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED[119, 8]
+    assert_equal 30, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
+    assert_equal 41, Gate::PHASES.length
+    assert_equal @core_methods, Gate.beluga_core_inventory(@core_methods.map { |id| id + ': test' }.join("\n"))
+    tests.each do |id|
+      omitted = @core_methods - [id]
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
+      renamed = @core_methods.map { |method| method == id ? id + '_unrelated' : method }
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(renamed.map { |method| method + ': test' }.join("\n")) }
+      rejects('duplicate Beluga core') { Gate.beluga_core_inventory((@core_methods + [id]).map { |method| method + ': test' }.join("\n")) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(omitted), @core_methods) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(@core_methods + [id]), @core_methods) }
+      ['FAILED', 'ignored'].each do |status|
+        rejects('failed or was ignored') { Gate.validate_rust(rust_log(@core_methods).sub("test #{id} ... ok", "test #{id} ... #{status}"), @core_methods) }
+      end
+      value = receipt
+      discovery = File.join(@evidence, 'beluga-core-discovery.log')
+      File.write(discovery, omitted.map { |method| method + ': test' }.join("\n"))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(discovery)
+      result = File.join(@evidence, 'beluga-core-tests.log')
+      File.write(result, rust_log(omitted))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(result)
+      value['coverage']['beluga_core'] = omitted
+      rejects('missing critical Beluga core') { verify(value) }
+    end
+    %w[src/pairing_catalog_checkpoint.rs tests/pairing_catalog_checkpoint.rs].each do |relative|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, relative
+      path = File.join(core_crate, relative)
+      original = File.binread(path)
+      begin
+        File.write(path, original + "\nchanged source without refreshed manifest\n")
+        rejects('checksum differs') { Gate.validate_beluga_core_artifacts(@root) }
+        File.unlink(path)
+        refresh_core_source_manifest
+        refresh_core_artifact_manifest
+        rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+      ensure
+        File.binwrite(path, original)
+        refresh_core_source_manifest
+        refresh_core_artifact_manifest
+      end
+    end
+  end
+
+  def test_beluga_core_catalog_checkpoint_link_contract_cannot_be_borrowed
+    markers = [
+      'BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback',
+      'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback'
+    ]
+    assert_equal 16, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[7], Gate::BELUGA_CORE_RUNTIME_MARKERS[15]]
+    assert_nil Gate.validate_beluga_core_link(core_link_log)
+    markers.each do |marker|
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", (marker + "\n") * 2)) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker, marker + ' unverified')) }
+      value = receipt
+      path = File.join(@evidence, 'beluga-core-link.log')
+      File.write(path, core_link_log.sub(marker + "\n", ''))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-link' }['sha256'] = Gate.sha(path)
+      rejects('link oracle is incomplete') { verify(value) }
+    end
+    swapped = core_link_log.sub(markers[0], 'TEMP_CHECKPOINT_MARKER').sub(markers[1], markers[0]).sub('TEMP_CHECKPOINT_MARKER', markers[1])
+    rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(swapped) }
+  end
+
+  def test_beluga_core_catalog_checkpoint_each_compiled_assertion_mutant_is_mandatory
+    mutants = {
+      'checkpoint-revoked-add-admitted' => 'checkpoint_revocation_is_terminal_without_erasing_binding',
+      'checkpoint-add-owner-bypassed' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+      'checkpoint-update-owner-bypassed' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+      'checkpoint-second-add-admitted' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+      'checkpoint-update-tuple-bypassed' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+      'checkpoint-readback-snapshot-bypassed' => 'checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot',
+      'checkpoint-revoke-erases-binding' => 'checkpoint_revocation_is_terminal_without_erasing_binding',
+      'checkpoint-unknown-opcode-admitted' => 'checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed',
+      'checkpoint-unknown-flags-admitted' => 'checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed',
+      'checkpoint-unknown-abi-admitted' => 'checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed',
+      'checkpoint-unbound-update-admitted' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+      'checkpoint-revoked-readback-denied' => 'checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot'
+    }
+    assert_equal 12, mutants.length
+    assert_equal 65, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[53, 12]
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    mutants.each do |name, test|
+      assert_includes Gate::BELUGA_CORE_PINNED[119, 8], test
+      marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, '')) }
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, marker * 2)) }
+      segment = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
+      equality = 'assertion ' + 96.chr + 'left == right' + 96.chr + ' failed'
+      compiled = '    Finished ' + 96.chr + 'test' + 96.chr + " profile [unoptimized + debuginfo] target(s) in 0.01s\n"
+      [
+        segment.sub("test #{test} ... FAILED", "test unrelated_assertion ... FAILED"),
+        segment.sub("test #{test} ... FAILED", "test #{test} ... ignored"),
+        segment.sub("thread '#{test}'", "thread 'unrelated_assertion'"),
+        segment.sub('0 passed; 1 failed; 0 ignored', '0 passed; 1 failed; 1 ignored'),
+        segment.sub(equality, 'assertion failed: unrelated predicate'),
+        segment.sub(compiled, ''),
+        segment + "error: could not compile mutation fixture\n"
+      ].each do |changed|
+        rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(segment, changed)) }
+      end
+    end
+    rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(53))) }
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(53)))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
+  def catalog_checkpoint_native_pins
+    klass = 'CaptureServerTests.BelugaRustPairingCatalogCheckpointTests'
+    %w[
+      testRevokedCheckpointNeverCallsOwnerOrCatalog
+      testInvalidProcessOwnerRefusesAllCatalogAccess
+      testCheckpointAddsExactlyOnceEvenForDifferentValidPhone
+      testDeviceUUIDMismatchRefusesAllCatalogAccess
+      testPairUUIDMismatchRefusesAllCatalogAccess
+      testCommitUUIDMismatchRefusesAllCatalogAccess
+      testThrowingAddAndUpdatePreserveActualCheckpointState
+      testRevocationRetainsExactPairForInterruptedReadback
+      testEqualRevisionDifferentSnapshotCannotPassReadback
+      testMalformedAllowedCandidateCannotAuthorizeNativeWrite
+      testReadbackAfterRevokeAndOwnerLossStillReturnsExactPair
+      testReadbackLoadErrorPrecedesSnapshotPolicyOrBridgeFault
+      testWriteThenThrowDoesNotInventRollbackOrBindingSuccess
+      testNativeAliasesShareRevocationWithoutAffectingAnotherAttempt
+      testCatalogGenerationRevisionRecordAndLegacyReceiptAllFenceReadback
+      testMalformedRevokeIsStickyWithoutErasingKnownSnapshotOrBinding
+      testMalformedInitialCannotInvokeOwnerOrStore
+      testActualCopiedBoundaryAndLayoutsPreserveAllValidCases
+    ].map { |name| klass + '/' + name }
+  end
+
+  def test_native_catalog_checkpoint_class_and_every_critical_case_are_mandatory
+    klass = 'CaptureServerTests.BelugaRustPairingCatalogCheckpointTests'
+    pins = catalog_checkpoint_native_pins
+    assert_equal 18, pins.length
+    assert_includes Gate::MAC_CLASSES, klass
+    assert_equal pins, Gate::MAC_PINNED.select { |id| id.start_with?(klass + '/') }
+    assert_equal @mac_methods, Gate.mac_inventory(@mac_methods.join("\n"))
+    rejects('missing Mac test class') { Gate.mac_inventory(@mac_methods.reject { |id| id.start_with?(klass + '/') }.join("\n")) }
+    pins.each do |id|
+      rejects('missing critical Mac test') { Gate.mac_inventory((@mac_methods - [id]).join("\n")) }
+      rejects('duplicate Mac discovery') { Gate.mac_inventory((@mac_methods + [id]).join("\n")) }
+    end
+    assert_includes @mac_methods, klass + '/testFixture'
+    value = receipt
+    argv = Gate.commands(@root, @evidence, value['invocation'], @tools, SIMULATOR, @mac_methods, @handoff_methods).fetch('mac-tests')
+    filter = Regexp.new(argv.fetch(argv.index('--filter') + 1))
+    pins.each { |id| assert_match filter, id }
+    refute_match filter, klass + '/testUnreviewedMissingDiscovery'
+    refute_match filter, 'CaptureServerTests.OtherClass/' + pins.first.split('/').last
+  end
+
+  def test_native_catalog_checkpoint_results_and_rehashed_coverage_cannot_be_borrowed
+    klass = 'CaptureServerTests.BelugaRustPairingCatalogCheckpointTests'
+    pins = catalog_checkpoint_native_pins
+    discovered = @mac_methods.select { |id| id.start_with?(klass + '/') }
+    # Future discovered methods in the enrolled class must execute, not only pins.
+    assert_includes discovered, klass + '/testFixture'
+    assert_equal @mac_methods, Gate.validate_mac_log(mac_log, @mac_methods)
+    discovered.each do |id|
+      rejects('missing Mac result') { Gate.validate_mac_log(mac_log(@mac_methods - [id]), @mac_methods) }
+      rejects('duplicate') { Gate.validate_mac_log(mac_log(@mac_methods + [id]), @mac_methods) }
+      ruby_class, method = id.split('/')
+      passed = "Test Case '-[#{ruby_class} #{method}]' passed (0.001 seconds)."
+      ['failed', 'skipped'].each do |status|
+        rejects('failed, skipped') { Gate.validate_mac_log(mac_log.sub(passed, passed.sub('passed', status)), @mac_methods) }
+      end
+    end
+    rejects('footer has missing') do
+      Gate.validate_mac_log(mac_log.sub("Executed #{@mac_methods.length} tests", "Executed #{@mac_methods.length - 1} tests"), @mac_methods)
+    end
+    pins.each do |id|
+      value = receipt
+      omitted = @mac_methods - [id]
+      discovery = File.join(@evidence, 'mac-discovery.log')
+      File.write(discovery, (omitted + @shared_methods + @shared_replay_methods.values.flatten + @handoff_methods).join("\n"))
+      value['phases'].find { |phase| phase['name'] == 'mac-discovery' }['sha256'] = Gate.sha(discovery)
+      result = File.join(@evidence, 'mac-tests.log')
+      File.write(result, mac_log(omitted))
+      value['phases'].find { |phase| phase['name'] == 'mac-tests' }['sha256'] = Gate.sha(result)
+      value['coverage']['mac'] = omitted
+      rejects('missing critical Mac test') { verify(value) }
+    end
   end
 
   def test_shared_replay_source_discovery_and_every_critical_case_are_exact

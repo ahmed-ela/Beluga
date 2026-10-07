@@ -205,7 +205,7 @@ remain incomplete. Native provider readback, playback confirmation, persistence,
 cryptography, microphone/audio ownership and release effects retain their
 independent gates; the full Rust rewrite remains active.
 
-### Signaling replay policy — source implementation, full proof pending
+### Signaling replay policy — local source checkpoint verified
 
 The production replay window now uses the bounded Rust policy through a copied
 24-byte state/32-byte result ABI. Rust owns the optional highest sequence, the
@@ -252,11 +252,41 @@ byte-for-byte. Retained native receipt:
 `/Volumes/t7/beluga-replay-integration-draft.bI4qL7/native-controls/native-replay-controls-20261007-85316-y09pw9/receipt.json`,
 SHA-256 `b497bd7c921aedd0f2338eb6de73074bd4a1a7d0820319f64bf6af80d93f2ab8`.
 The reviewed helper enforces original object timestamps; copied-file timestamps
-are not independent original-stat evidence. The full source-bound 41-phase gate
-and 119/53 Rust execution remain pending. No hidden-unobserved-initializer,
-physical phone, live connection, media transfer or deployment proof is claimed.
-Commit/release completion must wait for fresh proof on the final replay source
-and exact promoted artifact; predecessor receipts cannot substitute it.
+are not independent original-stat evidence. The final replay source subsequently
+passed all 41 offline phases, 119 Rust cases and 53 compiled intended mutations.
+Receipt `microphone-20261007-92351-12cvl2j/receipt.json` under the dedicated cache's
+validation-runs has SHA-256
+`796b2bbfc1a381a5a061d7b475e2d36fed1e6cee20d21e72e74e3bdf23b99989`.
+Mandatory verification and two independent retained audits passed before the
+local checkpoint `7ff3c776e4b49c992f75dd0ef5f5a19a3466e420`.
+This is not hidden-unobserved-initializer, physical phone, live connection,
+media transfer or deployment proof. Changed catalog source cannot borrow that receipt.
+
+### Catalog checkpoint admission — focused source proof, full validation pending
+
+The eighth Rust policy now proposes one-Add/exact-Update admission and terminal
+revocation through an 8-byte state, 16-byte event and 12-byte result. Native code
+retains the actual reference class, NSLock, three complete UUIDs, owner callback,
+full snapshot and concrete catalog store. Revoked writes do not call the owner;
+bound Add still does before refusal. Readback loads fresh storage first and may
+recover the exact pair after revocation or owner loss.
+
+Copied candidates are validated before effects and installed only after a store
+call successfully returns. A thrown storage error is propagated unchanged and
+does not precommit binding/state; write-then-throw divergence is not rollback.
+A malformed bridge leaves a sticky write denial without erasing known bindings.
+
+Actual Rust execution passed 127 nonignored tests, including all eight new
+independent-reference cases. The four-target static artifact passed actual Mac
+C/Swift probes and device/Simulator cross-links, independent retained audit, and
+source-only promotion. Focused native execution passed 113 concrete in-memory
+catalog/host cases, including all 18 new checkpoint tests. A test-only typed
+catalog fixture preserves exact canonical storage encoding; production validation
+is unchanged. These focused receipts do not replace fresh compiled native
+assertion controls, signed Simulator coverage or the final full regression gate.
+Those checks and deployment remain pending. Pairing
+catalog persistence, asynchronous generation ownership and the full product-core
+migration remain incomplete; no installed host or phone is changed here.
 
 ## Earlier implementation ledger
 

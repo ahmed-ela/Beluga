@@ -26,8 +26,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs src/pairing_catalog_checkpoint.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/pairing_catalog_checkpoint.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -320,6 +320,7 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwidePreparedMediaMenuIntegrationTests
     CaptureServerTests.WorldwideHostLifecycleTests
     CaptureServerTests.WorldwidePairingCatalogBootstrapTests
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests
     CaptureServerTests.BelugaPhoneCatalogMenuTests
     CaptureServerTests.WorldwidePairingStoreTests
     CaptureServerTests.WorldwideHostProcessLockTests
@@ -409,6 +410,24 @@ module MicrophoneRegressionGate
     CaptureServerTests.BelugaUpdateInstalledArtifactTests/testCatalogVersionMustBePresentExactIntegerNotInferredFromOwnershipOrHighBuild
     CaptureServerTests.BelugaUpdateInstalledArtifactTests/testCatalogMarkerIsCoveredByFullTreeAndTamperingCannotVerifyCandidate
     CaptureServerTests.BelugaUpdateSparkleSessionTests/testSignedHighBuildSingleViewerCandidateIsRejectedBeforeBindingOrInstall
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testRevokedCheckpointNeverCallsOwnerOrCatalog
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testInvalidProcessOwnerRefusesAllCatalogAccess
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testCheckpointAddsExactlyOnceEvenForDifferentValidPhone
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testDeviceUUIDMismatchRefusesAllCatalogAccess
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testPairUUIDMismatchRefusesAllCatalogAccess
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testCommitUUIDMismatchRefusesAllCatalogAccess
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testThrowingAddAndUpdatePreserveActualCheckpointState
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testRevocationRetainsExactPairForInterruptedReadback
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testEqualRevisionDifferentSnapshotCannotPassReadback
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testMalformedAllowedCandidateCannotAuthorizeNativeWrite
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testReadbackAfterRevokeAndOwnerLossStillReturnsExactPair
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testReadbackLoadErrorPrecedesSnapshotPolicyOrBridgeFault
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testWriteThenThrowDoesNotInventRollbackOrBindingSuccess
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testNativeAliasesShareRevocationWithoutAffectingAnotherAttempt
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testCatalogGenerationRevisionRecordAndLegacyReceiptAllFenceReadback
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testMalformedRevokeIsStickyWithoutErasingKnownSnapshotOrBinding
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testMalformedInitialCannotInvokeOwnerOrStore
+    CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testActualCopiedBoundaryAndLayoutsPreserveAllValidCases
   ].freeze
   RUST_PINNED = %w[
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
@@ -535,6 +554,14 @@ module MicrophoneRegressionGate
     unknown_disposition_and_reserved_output_are_never_committed
     initial_output_must_not_invent_populated_or_stale_owner_history
     scalar_call_order_model_opens_first_but_burns_before_post_decode_semantic_validation
+    checkpoint_initial_and_copied_layout_are_exact
+    checkpoint_all_valid_states_and_boolean_facts_match_original
+    checkpoint_bounded_committed_and_failed_effect_traces_match_original
+    checkpoint_revocation_is_terminal_without_erasing_binding
+    checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot
+    checkpoint_rejected_input_preserves_exact_state
+    checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed
+    checkpoint_raw_value_copies_do_not_share_mutation
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -589,7 +616,19 @@ module MicrophoneRegressionGate
     'replay-unknown-abi-resets-state' => 'unknown_abi_rejects_without_canonicalizing_or_resetting',
     'replay-malformed-state-resets-history' => 'malformed_raw_state_is_unchanged_and_never_accepted',
     'replay-populated-bit-zero-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted',
-    'replay-impossible-past-bits-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted'
+    'replay-impossible-past-bits-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted',
+    'checkpoint-revoked-add-admitted' => 'checkpoint_revocation_is_terminal_without_erasing_binding',
+    'checkpoint-add-owner-bypassed' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+    'checkpoint-update-owner-bypassed' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+    'checkpoint-second-add-admitted' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+    'checkpoint-update-tuple-bypassed' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+    'checkpoint-readback-snapshot-bypassed' => 'checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot',
+    'checkpoint-revoke-erases-binding' => 'checkpoint_revocation_is_terminal_without_erasing_binding',
+    'checkpoint-unknown-opcode-admitted' => 'checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed',
+    'checkpoint-unknown-flags-admitted' => 'checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed',
+    'checkpoint-unknown-abi-admitted' => 'checkpoint_unknown_abi_opcode_flags_and_booleans_fail_closed',
+    'checkpoint-unbound-update-admitted' => 'checkpoint_all_valid_states_and_boolean_facts_match_original',
+    'checkpoint-revoked-readback-denied' => 'checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot'
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -600,13 +639,15 @@ module MicrophoneRegressionGate
     'BelugaCore C phone operation ABI PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
     'BelugaCore C invitation acceptance ABI PASS: exact layouts, original guard order and one-use callback outcomes',
     'BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
+    'BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
     'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts',
     'BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
     'BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes',
-    'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection'
+    'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
+    'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback'
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -654,6 +695,11 @@ module MicrophoneRegressionGate
     test_pairing_executor_interruption_still_reaps_and_proves_group_absent
     test_pairing_executor_eperm_never_becomes_a_successful_absence_proof
     test_pairing_stale_object_and_forged_process_records_refuse_before_launch
+    test_beluga_core_catalog_checkpoint_source_and_named_cases_are_mandatory
+    test_beluga_core_catalog_checkpoint_link_contract_cannot_be_borrowed
+    test_native_catalog_checkpoint_class_and_every_critical_case_are_mandatory
+    test_native_catalog_checkpoint_results_and_rehashed_coverage_cannot_be_borrowed
+    test_beluga_core_catalog_checkpoint_each_compiled_assertion_mutant_is_mandatory
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze

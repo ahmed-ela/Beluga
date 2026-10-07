@@ -573,3 +573,57 @@ private func signalingReplaySmoke() {
     print("BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection")
 }
 signalingReplaySmoke()
+
+private func pairingCatalogCheckpointSmoke() {
+    typealias State = beluga_core_pairing_catalog_checkpoint_state_t
+    typealias Event = beluga_core_pairing_catalog_checkpoint_event_t
+    typealias Output = beluga_core_pairing_catalog_checkpoint_result_t
+    precondition(MemoryLayout<State>.size == 8 && MemoryLayout<State>.alignment == 4)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.flags) == 4)
+    precondition(MemoryLayout<Event>.size == 16 && MemoryLayout<Event>.alignment == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<Event>.offset(of: \.owner_valid) == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.binding_matches) == 8)
+    precondition(MemoryLayout<Event>.offset(of: \.snapshot_matches) == 12)
+    precondition(MemoryLayout<Output>.size == 12 && MemoryLayout<Output>.alignment == 4)
+    precondition(MemoryLayout<Output>.offset(of: \.candidate_state) == 0)
+    precondition(MemoryLayout<Output>.offset(of: \.decision) == 8)
+    var state = beluga_core_pairing_catalog_checkpoint_initial()
+    precondition(state.abi_version == 1 && state.flags == 0)
+    var event = Event(); event.owner_valid = 1
+    var output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 0 && output.candidate_state.flags == 1 && state.flags == 0)
+    state = output.candidate_state
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 1 && output.candidate_state.flags == 1)
+    event.opcode = 1; event.binding_matches = 1
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 0 && output.candidate_state.flags == 1)
+    event.binding_matches = 0
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 1 && output.candidate_state.flags == 1)
+    event = Event(); event.opcode = 2
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 0 && output.candidate_state.flags == 3)
+    state = output.candidate_state
+    event = Event(); event.owner_valid = 1
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 1 && output.candidate_state.flags == 3)
+    event = Event(); event.opcode = 3; event.snapshot_matches = 1
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 0 && output.candidate_state.flags == 3)
+    event.snapshot_matches = 0
+    output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+    precondition(output.decision == 1 && output.candidate_state.flags == 3)
+    for invalid: UInt32 in [2, UInt32.max] {
+        event.opcode = 2
+        output = beluga_core_pairing_catalog_checkpoint_step(invalid, state, event)
+        precondition(output.decision == 3 && output.candidate_state.abi_version == 1 && output.candidate_state.flags == 3)
+        event.opcode = UInt32.max
+        output = beluga_core_pairing_catalog_checkpoint_step(1, state, event)
+        precondition(output.decision == 3 && output.candidate_state.flags == 3)
+    }
+    print("BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback")
+}
+pairingCatalogCheckpointSmoke()
