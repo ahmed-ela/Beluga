@@ -110,6 +110,113 @@ beluga_core_handoff_transactions_result_t beluga_core_handoff_transactions_step(
     uint32_t abi_version, beluga_core_handoff_transactions_state_t state,
     beluga_core_handoff_transactions_event_t event);
 
+/* All floating values below are copied IEEE-754 Double bits, never integer clocks.
+ * Native facts preserve original String/UUID equality. Primary matching is separate
+ * from commit header matching. Receipt token is 0 unless the ENTIRE supplied native
+ * receipt equals the current receipt; prepareCommit uses that supplied envelope.
+ * No accepted offer, scalar output or effect proves playback or authorizes Pause. */
+enum {
+    BELUGA_CORE_OFFERS_RETIRE_SENT = 1, BELUGA_CORE_OFFERS_RETIRE_RECEIVED = 2,
+    BELUGA_CORE_OFFERS_MINT_SENT = 4, BELUGA_CORE_OFFERS_MINT_RECEIVED = 8,
+    BELUGA_CORE_OFFERS_AUTH_EQUAL = 1, BELUGA_CORE_OFFERS_ID_EQUAL = 2,
+    BELUGA_CORE_OFFERS_CONTEXT_EQUAL = 4, BELUGA_CORE_OFFERS_VIDEO_EQUAL = 8,
+    BELUGA_CORE_OFFERS_KNOWN_NATIVE_MATCHES = 15,
+    BELUGA_CORE_OFFERS_KNOWN_PRIMARY_FLAGS = 511
+};
+
+typedef struct {
+    uint64_t flags; /* original update.isValid, item, YouTube source/artwork, playing,
+                    * canPause, canSeek, position, duration: bits0..8 respectively */
+    uint64_t native_matches; /* primary versus owned/incoming offer: context4 | video8 */
+    uint64_t revision;
+    uint64_t position;
+    uint64_t duration;
+    uint64_t rate;
+} beluga_core_handoff_offers_primary_t;
+
+typedef struct {
+    uint32_t text_valid; /* exact native context byte/control-scalar and video-ID rules */
+    uint32_t reserved;
+    uint64_t sequence;
+    uint64_t revision;
+    uint64_t position;
+    uint64_t duration;
+    uint64_t rate;
+    uint64_t lifetime;
+} beluga_core_handoff_offers_envelope_t;
+
+typedef struct {
+    uint32_t present;
+    uint32_t video_equal;
+    uint64_t position;
+    uint64_t duration;
+    uint64_t rate;
+    uint64_t observed_at;
+    uint64_t deadline;
+} beluga_core_handoff_offers_source_t;
+
+typedef struct {
+    uint64_t token;
+    uint64_t sequence;
+    uint64_t revision;
+    uint64_t position;
+    uint64_t duration;
+    uint64_t rate;
+    uint64_t lifetime;
+    uint64_t origin;
+    uint64_t deadline;
+    uint64_t last_observation;
+    uint64_t last_position;
+} beluga_core_handoff_offers_timeline_t;
+
+typedef struct {
+    uint32_t abi;
+    uint32_t presence; /* sent1, received2, sentStateAt4, receivedStateAt8 */
+    uint32_t terminal;
+    uint32_t reserved;
+    uint64_t next_sent;
+    uint64_t highest_received;
+    uint64_t sent_at;
+    uint64_t received_at;
+    beluga_core_handoff_offers_timeline_t sent;
+    beluga_core_handoff_offers_timeline_t received;
+} beluga_core_handoff_offers_state_t;
+
+typedef struct {
+    uint32_t opcode; /* recordSent0, recordReceived1, prepareSent2, sentFailed3,
+                     * consumeSent4, receive5, consumeReceived6, prepareCommit7,
+                     * discardReceived8, clearTransient9; reset uses initial() */
+    uint32_t reserved;
+    uint64_t token;
+    uint64_t native_matches; /* header/request native comparisons, distinct from primary */
+    uint64_t now;
+    uint64_t phone_position;
+    uint64_t phone_observed_at;
+    beluga_core_handoff_offers_primary_t primary;
+    beluga_core_handoff_offers_envelope_t envelope;
+    beluga_core_handoff_offers_source_t source;
+} beluga_core_handoff_offers_event_t;
+
+typedef struct {
+    beluga_core_handoff_offers_state_t state;
+    uint32_t status; /* valid step0 (may decline while burning/retiring), invalid3 */
+    uint32_t decision; /* none0, sentReady1, receivedReady2, receivedConsumed3,
+                       * sentConsumed4, commitReady5 */
+    uint32_t effects; /* retireSent1, retireReceived2, mintSent4, mintReceived8 */
+    uint32_t reserved;
+    uint64_t retired_sent;
+    uint64_t retired_received;
+    uint64_t minted_token;
+    uint64_t sequence;
+    uint64_t lifetime;
+    uint64_t deadline;
+} beluga_core_handoff_offers_result_t;
+
+beluga_core_handoff_offers_state_t beluga_core_handoff_offers_initial(void);
+beluga_core_handoff_offers_result_t beluga_core_handoff_offers_step(
+    uint32_t abi_version, beluga_core_handoff_offers_state_t state,
+    beluga_core_handoff_offers_event_t event);
+
 #ifdef __cplusplus
 }
 #endif

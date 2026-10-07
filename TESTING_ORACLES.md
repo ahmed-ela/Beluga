@@ -819,6 +819,33 @@ bridge and composed real-peer/audio-lease tests are separate mandatory execution
 evidence. Existing physical-only exclusions are unchanged, and no archive, reducer
 pass or Simulator test substitutes for physical playback and exact-source Mac Pause.
 
+#### Shared Rust offers and timeline admission — source integration in progress
+
+`MediaHandoffOffers` now delegates the production one-use offers/timeline reducer
+to the linked Rust core. `BelugaRustHandoffOffersTests` independently transcribes
+the original reducer, compares all 14,425 traces over a 24-event alphabet through
+length three, and runs 8,192 seeded churn events. Native receipt UUIDs are retained
+independently, not normalized into interchangeable authority. Keep the original
+protocol, transaction, real-peer and signed Simulator composition tests mandatory.
+
+Thirty new bridge methods cover exclusive snapshot/deadline boundaries, inclusive
+phone sample age, separate host/phone drift bounds, signed zero, rounded large
+clocks, original revision floors, declined operations that still burn/retire,
+actual supplied Unicode/NaN validity, original spelling, value copies and counter/
+token exhaustion. Copied-result tests admit legitimate patterns and reject custody
+violations including missing cleanup, malformed-wire sequence burns, invalid-sample
+receipt retirement, backwards retained positions, forged mints and cross-slot/
+counter changes. This decoder is not fallback policy or native Pause authorization.
+
+The core gate requires all 44 discovered Rust tests and 27 compiled mutants. The
+sixteen additional offer mutants must fail their intended assertions for replay,
+timeline/source boundaries, wrong comparison domain, retirement ordering, counter
+reset/wrap or unknown operation handling. All copied-layout offsets and actual
+offers symbols are exercised by C and Swift against the produced Mac archive and
+cross-linked for device and both Simulator architectures. These source additions
+still require a fresh final-source canonical receipt; prior ledger proof or a
+candidate build does not establish the new adapter, physical transfer or deployment.
+
 Run the signed Simulator `YouTubeHandoffOperationTests` and
 `YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
 main-frame message bridge and teardown with inert local provider HTML, not a real

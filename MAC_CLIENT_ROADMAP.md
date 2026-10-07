@@ -101,11 +101,38 @@ assertions. The release gate now also requires the discovered shared handoff tes
 production bridge differential/Unicode/value-copy/custody tests, real ordered-channel
 peer cases and signed Simulator operation/WK/audio-lease tests without new skips.
 
-This migrates the bounded ledger, not the full handoff stage: native offer authority,
-deadline policy, phone player operations and provider readback still need their
-separate Rust migration and native proof. The existing immediate microphone-stop,
+This checkpoint migrates the bounded ledger, not the full handoff stage: offer
+authority and deadline policy are the next slice below; phone player operations
+and provider readback still need separate migration and native proof. The existing immediate microphone-stop,
 privacy, exact-source Pause and release gates remain mandatory. This source change
 does not install a new Mac or TestFlight build or prove physical transfer.
+
+The ledger's fresh canonical offline gate passed all 32 phases, with 470 Mac,
+54 shared handoff, 27 shared signaling, 25 product-core Rust and 35 existing audio
+Rust tests. The signed development Simulator passed 487 tests with the same 22
+physical-only exclusions. Native driver, sanitizer, signing and artifact checks
+also passed; the independently verified receipt and local checkpoint `f302411`
+are retained in `/Volumes/t7/beluga-rust-handoff.9PynxC/RESULTS.md`. This is source
+evidence, not deployed or physical handoff evidence.
+
+### Shared Rust one-use offers and timelines — source integration in progress
+
+The old production Swift offers/timeline reducer is removed. The additive copied
+ABI now puts sequence floors, original deadlines, freshness, position/rate drift,
+independent sent/received slots and pre-validation retirement in Rust. The native
+adapter retains only the two original payloads and exact UUID/String primitives;
+actual supplied receipt validation, original spelling and native value copies
+remain intact. Clear does not reset replay counters, tokens never recycle, and
+malformed copied effects close authority without manufacturing playback or Pause.
+
+Isolated Rust coverage passes 44 tests; all 27 behavioral mutants compile and fail
+their intended assertions. The source-bound candidate and production Swift bridge
+are not yet verified together. Thirty new Swift methods independently compare the
+original reducer over 14,425 bounded traces and 8,192 seeded events, cover numeric,
+Unicode, receipt-copy and exhaustion boundaries, and test legitimate and malformed
+copied-result patterns. These are required tests, not a claim they have executed.
+The full canonical gate remains mandatory on the final frozen source and promoted
+artifact before this slice can become a verified checkpoint.
 
 ## Earlier implementation ledger
 

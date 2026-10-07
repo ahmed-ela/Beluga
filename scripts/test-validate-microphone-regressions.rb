@@ -155,7 +155,23 @@ class MicrophoneRegressionGateTests < Minitest::Test
   end
 
   def core_link_log
-    "BELUGA_CORE_LINK_SMOKE_PASS\n" + Gate::BELUGA_CORE_TARGETS.drop(1).map { |target| "BELUGA_CORE_CROSS_LINK_PASS target=#{target}\n" }.join
+    Gate::BELUGA_CORE_RUNTIME_MARKERS.join("\n") + "\nBELUGA_CORE_LINK_SMOKE_PASS\n" +
+      Gate::BELUGA_CORE_TARGETS.drop(1).map { |target| "BELUGA_CORE_CROSS_LINK_PASS target=#{target}\n" }.join
+  end
+
+  def core_mutations_log(names = Gate::BELUGA_CORE_MUTANTS)
+    names.map do |name|
+      test = Gate::BELUGA_CORE_MUTANT_TESTS.fetch(name)
+      # Inert text fixtures replay the actual production validator. No Rust
+      # compiler or mutant is run by this self-test process.
+      "\nrunning 1 test\ntest #{test} ... FAILED\n\nfailures:\n" +
+        "thread '#{test}' (123) panicked at tests/fixture.rs:1:1:\n" +
+        "assertion `left == right` failed: reviewed behavioral fixture\n  left: 0\n right: 1\n" +
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n" +
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n" +
+        "error: test failed, to rerun pass `--test fixture`\n" +
+        "Behavioral mutation rejected: #{name}\nBELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+    end.join + "BELUGA_CORE_MUTATIONS_PASS cases=#{names.length}\n"
   end
 
   def refresh_core_source_manifest(publish: true)
@@ -275,8 +291,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'beluga-core-discovery' => @core_methods.map { |method| method + ': test' }.join("\n") + "\n",
       'beluga-core-tests' => rust_log(@core_methods),
       'beluga-core-link' => core_link_log,
-      'beluga-core-mutations' => Gate::BELUGA_CORE_MUTANTS.map { |name| "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n" }.join +
-                               "BELUGA_CORE_MUTATIONS_PASS cases=#{Gate::BELUGA_CORE_MUTANTS.length}\n",
+      'beluga-core-mutations' => core_mutations_log,
       'rust-tests' => rust_log, 'driver-tests' => c_log, 'driver-sanitizers' => c_log * 2,
       'driver-load' => "VERIFIED_BUILT_DRIVER_BUNDLE_LOAD\nPASS: loaded production driver idle-registration pressure and exact PCM\nPASS: loaded driver pristine and retired idle contract mutations\n",
       'driver-malformed-bundles' => "ALL_DRIVER_BUNDLE_VERIFIER_MUTATIONS_REJECTED\n",
@@ -661,8 +676,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
     assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 20, Gate::BELUGA_CORE_SOURCE_FILES.length
-    %w[src/handoff_transactions.rs tests/handoff_transactions.rs].each { |path| assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path }
+    assert_equal 22, Gate::BELUGA_CORE_SOURCE_FILES.length
+    %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs].each do |path|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path
+    end
     assert_nil Gate.validate_beluga_core_artifacts(@root)
     Gate::BELUGA_CORE_SLICES.keys.each do |slice|
       path = File.join(core_artifact, slice, 'BelugaCore.framework/BelugaCore')
@@ -841,27 +858,207 @@ class MicrophoneRegressionGateTests < Minitest::Test
                host_revocation_occurs_on_finish_replacement_and_clear viewer_completion_and_expiry_require_exact_identity
                clear_and_expiry_report_unknown_once_without_pause_effect invalid_transaction_inputs_fail_closed
                transaction_scalar_exports_and_layout_match_core deterministic_transaction_churn_matches_reference]
-    assert_equal 25, Gate::BELUGA_CORE_PINNED.length
-    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.first(25).last(tests.length)
     tests.each do |id|
       rejects('missing critical Beluga core') { Gate.beluga_core_inventory((@core_methods - [id]).map { |method| method + ': test' }.join("\n")) }
     end
     mutants = %w[transaction-busy-admission-removed transaction-receipt-match-removed transaction-envelope-match-removed
                  transaction-conflicting-reply-accepted transaction-revocation-removed transaction-timeout-reports-success]
-    assert_equal 11, Gate::BELUGA_CORE_MUTANTS.length
-    assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.last(mutants.length)
+    assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.first(11).last(mutants.length)
     markers = Gate::BELUGA_CORE_MUTANTS.map { |name| "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n" }
-    footer = "BELUGA_CORE_MUTATIONS_PASS cases=11\n"
-    assert_nil Gate.validate_beluga_core_mutations(markers.join + footer)
+    text = core_mutations_log
+    assert_nil Gate.validate_beluga_core_mutations(text)
     markers.each do |marker|
-      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(markers.join.sub(marker, '') + footer) }
-      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(markers.join.sub(marker, marker.sub('assertion-failed', 'compile-failed')) + footer) }
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(text.sub(marker, '')) }
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(text.sub(marker, marker.sub('assertion-failed', 'compile-failed'))) }
     end
     value = receipt
     path = File.join(@evidence, 'beluga-core-mutations.log')
-    File.write(path, markers.first(5).join + "BELUGA_CORE_MUTATIONS_PASS cases=5\n")
+    File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(5)))
     value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
     rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
+  def test_beluga_core_offers_source_tests_link_smokes_and_mutants_are_mandatory
+    tests = %w[independent_slots_preserve_other_owner rejected_new_sequence_burns_and_retires_before_late_validation
+               matching_consumption_cannot_revive_after_late_failure wrong_identity_and_invalid_phone_observation_do_not_consume
+               exact_freshness_sample_deadline_and_uncertainty_boundaries clear_preserves_counters_and_send_capacity_cannot_wrap
+               source_description_numeric_crosscheck_matches_reference raw_float_bits_preserve_signed_zero_and_extreme_derived_deadline
+               bounded_deterministic_original_reference_trace_matches_all_projections
+               malformed_abi_state_and_unknown_flags_fail_closed_without_native_authority
+               commit_header_and_current_primary_identity_are_independent received_primary_matches_the_incoming_not_the_retired_receipt
+               actual_double_adjacent_boundaries_have_expected_decisions maximum_received_sequence_does_not_wrap_or_disable_independent_send
+               tentative_scalar_layout_sizes_alignments_and_offsets_are_explicit
+               nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
+               unknown_operation_is_invalid_unchanged_without_retirement_or_success
+               wire_authorization_and_exact_numeric_identity_guard_slots exported_offer_functions_match_safe_reducer]
+    assert_equal 44, Gate::BELUGA_CORE_PINNED.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    tests.each do |id|
+      omitted = @core_methods - [id]
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(omitted), @core_methods) }
+      rejects('ignored') { Gate.validate_rust(rust_log(@core_methods).sub("test #{id} ... ok", "test #{id} ... ignored"), @core_methods) }
+    end
+    %w[src/handoff_offers.rs tests/handoff_offers.rs].each do |relative|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, relative
+      path = File.join(core_crate, relative)
+      original = File.binread(path)
+      File.unlink(path)
+      # Even a rehashed, mutually matching pair of manifests cannot delete a
+      # required reducer or its independent source tests.
+      refresh_core_source_manifest
+      refresh_core_artifact_manifest
+      rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+      File.binwrite(path, original)
+      refresh_core_source_manifest
+      refresh_core_artifact_manifest
+    end
+    mutants = %w[offers-source-identity-bypassed offers-commit-identity-bypassed offers-receive-auth-bypassed
+                 offers-receive-sequence-burn-removed offers-receive-old-retirement-removed offers-receive-sequence-replay-admitted
+                 offers-sent-consuming-retirement-removed offers-received-consuming-retirement-removed offers-phone-sample-age-widened
+                 offers-freshness-inclusive offers-deadline-inclusive offers-timeline-tolerance-widened
+                 offers-host-position-tolerance-widened offers-clear-resets-counters offers-sent-sequence-reused
+                 offers-unknown-operation-clears-state]
+    assert_equal 27, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.last(mutants.length)
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    mutants.each do |name|
+      marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, '')) }
+      assert_includes tests, Gate::BELUGA_CORE_MUTANT_TESTS.fetch(name)
+    end
+    rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(11))) }
+    [
+      'BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts',
+      'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts'
+    ].each do |marker|
+      assert_includes Gate::BELUGA_CORE_RUNTIME_MARKERS, marker
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
+    end
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-discovery.log')
+    without_offers = @core_methods - tests
+    File.write(path, without_offers.map { |method| method + ': test' }.join("\n"))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(path)
+    value['coverage']['beluga_core'] = without_offers
+    result = File.join(@evidence, 'beluga-core-tests.log')
+    File.write(result, rust_log(without_offers))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(result)
+    rejects('missing critical Beluga core') { verify(value) }
+    rejects('result footer disagrees') do
+      Gate.validate_rust(rust_log(@core_methods).sub("#{@core_methods.length} passed", '25 passed'), @core_methods)
+    end
+  end
+
+  def test_beluga_core_compiled_mutation_assertions_reject_uncompiled_wrong_case_and_bad_footer
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    original = core_mutations_log
+    first_test = Gate::BELUGA_CORE_MUTANT_TESTS.values.first
+    mutations = [
+      original.sub(/^\s*Finished `test` profile .*\n/, ''),
+      original.sub('Finished `test` profile', 'Checking `test` profile'),
+      original.sub('running 1 test', 'running 0 tests'),
+      original.sub("test #{first_test} ... FAILED", "test unrelated_assertion ... FAILED"),
+      original.sub("test #{first_test} ... FAILED", "test #{first_test} ... ignored"),
+      original.sub("thread '#{first_test}'", "thread 'unrelated_assertion'"),
+      original.sub(/^thread '[^\n]+\n/, ''),
+      original.sub(/^assertion [^\n]+\n/, ''),
+      original.sub('assertion `left == right` failed', 'assertion `left != right` failed'),
+      original.sub('0 passed; 1 failed; 0 ignored', '1 passed; 0 failed; 0 ignored'),
+      original.sub('0 passed; 1 failed; 0 ignored', '0 passed; 2 failed; 0 ignored'),
+      original.sub('0 passed; 1 failed; 0 ignored', '0 passed; 1 failed; 1 ignored'),
+      original.sub('0 measured;', '1 measured;'),
+      original.sub('test result: FAILED.', 'test result: ok.'),
+      original.sub(/^test result:[^\n]+\n/, ''),
+      original.sub("test #{first_test} ... FAILED\n", "test #{first_test} ... FAILED\n" * 2),
+      original.sub("    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n",
+                   "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s\n" * 2),
+      original.sub('Behavioral mutation rejected:', "error[E0308]: deliberately uncompiled\nBehavioral mutation rejected:"),
+      original.sub('Behavioral mutation rejected:', "could not compile beluga-core\nBehavioral mutation rejected:"),
+      original + "test #{first_test} ... FAILED\n",
+      original + "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s\n"
+    ]
+    mutations.each { |text| rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(text) } }
+    # The new offer mutations must carry compiled failure proof too, not only
+    # the original policy or transaction mutants at the beginning of the log.
+    Gate::BELUGA_CORE_MUTANTS.drop(11).each do |name|
+      single = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
+      without_compile = single.sub(/^\s*Finished `test` profile .*\n/, '')
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(original.sub(single, without_compile)) }
+    end
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, mutations.first)
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
+  def test_shared_handoff_offers_full_discovered_and_pinned_coverage_cannot_be_removed
+    klass = 'WebRTCTransportTests.BelugaRustHandoffOffersTests'
+    names = %w[testAllBoundedSmallEventTracesMatchOriginalReference
+               testSeededLongChurnKeepsBothSlotsAndReceiptIdentityInParity
+               testSnapshotAgeBoundariesAndFiniteNegativeClockMatchOriginalReference
+               testTimelineClockPositionAndStrictDeadlineBoundariesMatchReference
+               testTimelineDriftScalesWithRateAndKeepsInclusiveBoundary
+               testHostPhoneDriftUsesItsDistinctInclusiveBound
+               testPlaybackSamplePreflightPreservesReceiptUntilConsumption
+               testOriginalRevisionFloorDoesNotBecomeLatestRevisionHighWater
+               testHigherRejectedSequenceBurnsFloorAndRetiresPreviousReceipt
+               testMatchingConsumptionBurnsBeforeLateValidation
+               testMismatchAndCounterfeitInputsPreserveExactPendingAuthority
+               testFailedPreparationDoesNotBurnButFailedSendDoesBurnSequence
+               testNativeSourceKeepsFractionalOriginalDeadlineAndBounds
+               testSentAndReceivedSlotsRemainIndependentAcrossSingleSlotFailures
+               testClearRetainsCountersButNewNegotiationResetsThem
+               testCanonicalNativeEqualityPreservesOriginalBytesAndValueCopies
+               testCanonicalAliasCannotBypassUTF8BoundOrBurnSequenceOnPreparationFailure
+               testCommitHeaderAndCurrentPrimaryIdentityAreIndependent
+               testReceivePrimaryIsBoundToIncomingEnvelopeNotRetiredReceipt
+               testNonfiniteReceiveClockDoesNotMoveEarlyGuardsAheadOfSequenceBurn
+               testSignedZeroStorageAndRoundedLargeClockDeadlineMatchOriginalReference
+               testNativeSourceSnapshotAgeAndScaledDriftKeepOriginalBounds
+               testActualSuppliedCommitUnicodeAndNaNPreservePreconsumeValidityOrdering
+               testSeededSendCounterExhaustionRefusesMaxAndClearCannotResetIt
+               testSeededReceiverMaxBurnAndIndependentSenderRemainInOriginalParity
+               testTokenMaxIssuesOnceAndExhaustionCannotReuseOrResetMintCapacity
+               testTokenExhaustionStillExpiresSentAndRetiresReplacedReceived
+               testZeroCounterSeedIsTerminalButZeroTokenOnlyRefusesNewMint
+               testCopiedOfferBoundaryAcceptsAllLegitimateCustodyTransitions
+               testCopiedOfferBoundaryRejectsForgedMintConsumptionRetirementAndCounterReset]
+    pins = names.map { |name| klass + '/' + name }
+    assert_equal 30, pins.length
+    assert_includes Gate::SHARED_HANDOFF_CLASSES, klass
+    assert_equal pins, Gate::SHARED_HANDOFF_PINNED.select { |id| id.start_with?(klass + '/') }
+    assert_equal @handoff_methods, Gate.shared_handoff_inventory(@handoff_methods.join("\n"))
+    pins.each do |id|
+      rejects('missing critical shared handoff test') { Gate.shared_handoff_inventory((@handoff_methods - [id]).join("\n")) }
+    end
+    offers = @handoff_methods.select { |id| id.start_with?(klass + '/') }
+    # Discovered methods outside the fixed critical inventory must execute too;
+    # pinning the class is not a license to filter away future non-pinned cases.
+    assert_includes offers, klass + '/testFixture'
+    offers.each do |id|
+      rejects('missing Mac result') { Gate.validate_mac_log(mac_log(@handoff_methods - [id]), @handoff_methods) }
+      ruby_class, method = id.split('/')
+      passed = "Test Case '-[#{ruby_class} #{method}]' passed (0.001 seconds)."
+      rejects('failed, skipped') do
+        Gate.validate_mac_log(mac_log(@handoff_methods).sub(passed, passed.sub('passed', 'skipped')), @handoff_methods)
+      end
+    end
+    rejects('footer has missing') do
+      Gate.validate_mac_log(mac_log(@handoff_methods).sub("Executed #{@handoff_methods.length} tests", 'Executed 54 tests'), @handoff_methods)
+    end
+    value = receipt
+    without_offers = @handoff_methods - offers
+    discovery = File.join(@evidence, 'mac-discovery.log')
+    File.write(discovery, (@mac_methods + @shared_methods + without_offers).join("\n"))
+    value['phases'].find { |phase| phase['name'] == 'mac-discovery' }['sha256'] = Gate.sha(discovery)
+    value['coverage']['shared_handoff'] = without_offers
+    result = File.join(@evidence, 'shared-handoff-tests.log')
+    File.write(result, mac_log(without_offers))
+    value['phases'].find { |phase| phase['name'] == 'shared-handoff-tests' }['sha256'] = Gate.sha(result)
+    rejects('missing shared handoff class') { verify(value) }
   end
 
   def test_handoff_menu_and_rust_policy_classes_and_critical_cases_are_mandatory

@@ -5,6 +5,23 @@
 
 pub mod host_lifecycle;
 pub mod handoff_transactions;
+pub mod handoff_offers;
+
+// Foreign symbol declarations stay outside the forbid(unsafe_code) pure reducer.
+// These wrappers only copy scalar values; there are no pointers or unsafe blocks.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_handoff_offers_initial() -> handoff_offers::State {
+    handoff_offers::initial()
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_handoff_offers_step(
+    abi_version: u32, state: handoff_offers::State, event: handoff_offers::Event,
+) -> handoff_offers::Result {
+    handoff_offers::step(abi_version, state, event)
+}
 
 /// Current scalar-only C ABI. Future snapshots must not reinterpret version 1.
 pub const ABI_VERSION: u32 = 1;

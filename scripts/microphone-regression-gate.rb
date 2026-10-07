@@ -25,8 +25,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -254,12 +254,66 @@ module MicrophoneRegressionGate
     invalid_transaction_inputs_fail_closed
     transaction_scalar_exports_and_layout_match_core
     deterministic_transaction_churn_matches_reference
+    independent_slots_preserve_other_owner
+    rejected_new_sequence_burns_and_retires_before_late_validation
+    matching_consumption_cannot_revive_after_late_failure
+    wrong_identity_and_invalid_phone_observation_do_not_consume
+    exact_freshness_sample_deadline_and_uncertainty_boundaries
+    clear_preserves_counters_and_send_capacity_cannot_wrap
+    source_description_numeric_crosscheck_matches_reference
+    raw_float_bits_preserve_signed_zero_and_extreme_derived_deadline
+    bounded_deterministic_original_reference_trace_matches_all_projections
+    malformed_abi_state_and_unknown_flags_fail_closed_without_native_authority
+    commit_header_and_current_primary_identity_are_independent
+    received_primary_matches_the_incoming_not_the_retired_receipt
+    actual_double_adjacent_boundaries_have_expected_decisions
+    maximum_received_sequence_does_not_wrap_or_disable_independent_send
+    tentative_scalar_layout_sizes_alignments_and_offsets_are_explicit
+    nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
+    unknown_operation_is_invalid_unchanged_without_retirement_or_success
+    wire_authorization_and_exact_numeric_identity_guard_slots
+    exported_offer_functions_match_safe_reducer
   ].freeze
-  BELUGA_CORE_MUTANTS = %w[visibility-coupled-to-target unknown-flags-ignored command-admission-removed
-                          availability-departure-clears-media stale-media-end-clears-owner
-                          transaction-busy-admission-removed transaction-receipt-match-removed
-                          transaction-envelope-match-removed transaction-conflicting-reply-accepted
-                          transaction-revocation-removed transaction-timeout-reports-success].freeze
+  BELUGA_CORE_MUTANT_TESTS = {
+    'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
+    'unknown-flags-ignored' => 'every_unknown_bit_fails_closed',
+    'command-admission-removed' => 'each_original_enabled_guard_is_required',
+    'availability-departure-clears-media' => 'availability_reconnect_does_not_replace_or_clear_old_media_owner',
+    'stale-media-end-clears-owner' => 'stale_media_end_preserves_current_media_owner',
+    'transaction-busy-admission-removed' => 'host_busy_rejects_replacement_without_revocation',
+    'transaction-receipt-match-removed' => 'host_completion_requires_exact_receipt_and_envelope',
+    'transaction-envelope-match-removed' => 'host_completion_requires_exact_receipt_and_envelope',
+    'transaction-conflicting-reply-accepted' => 'cached_reply_is_idempotent_and_conflicting_reply_rejected',
+    'transaction-revocation-removed' => 'host_revocation_occurs_on_finish_replacement_and_clear',
+    'transaction-timeout-reports-success' => 'clear_and_expiry_report_unknown_once_without_pause_effect',
+    'offers-source-identity-bypassed' => 'commit_header_and_current_primary_identity_are_independent',
+    'offers-commit-identity-bypassed' => 'commit_header_and_current_primary_identity_are_independent',
+    'offers-receive-auth-bypassed' => 'wire_authorization_and_exact_numeric_identity_guard_slots',
+    'offers-receive-sequence-burn-removed' => 'rejected_new_sequence_burns_and_retires_before_late_validation',
+    'offers-receive-old-retirement-removed' => 'rejected_new_sequence_burns_and_retires_before_late_validation',
+    'offers-receive-sequence-replay-admitted' => 'rejected_new_sequence_burns_and_retires_before_late_validation',
+    'offers-sent-consuming-retirement-removed' => 'matching_consumption_cannot_revive_after_late_failure',
+    'offers-received-consuming-retirement-removed' => 'matching_consumption_cannot_revive_after_late_failure',
+    'offers-phone-sample-age-widened' => 'wrong_identity_and_invalid_phone_observation_do_not_consume',
+    'offers-freshness-inclusive' => 'actual_double_adjacent_boundaries_have_expected_decisions',
+    'offers-deadline-inclusive' => 'actual_double_adjacent_boundaries_have_expected_decisions',
+    'offers-timeline-tolerance-widened' => 'exact_freshness_sample_deadline_and_uncertainty_boundaries',
+    'offers-host-position-tolerance-widened' => 'actual_double_adjacent_boundaries_have_expected_decisions',
+    'offers-clear-resets-counters' => 'clear_preserves_counters_and_send_capacity_cannot_wrap',
+    'offers-sent-sequence-reused' => 'clear_preserves_counters_and_send_capacity_cannot_wrap',
+    'offers-unknown-operation-clears-state' => 'unknown_operation_is_invalid_unchanged_without_retirement_or_success'
+  }.freeze
+  BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
+  BELUGA_CORE_RUNTIME_MARKERS = [
+    'BelugaCore C ABI PASS: 4096 flags and unknown ABI',
+    'BelugaCore C lifecycle ABI PASS: reconnect ownership and invalid ABI',
+    'BelugaCore C transaction ABI PASS: exact identity, cached reply, revocation and unknown outcome',
+    'BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts',
+    'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
+    'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
+    'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
+    'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts'
+  ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
     test_beluga_core_phases_and_exact_crate_commands_are_mandatory
@@ -284,6 +338,9 @@ module MicrophoneRegressionGate
     test_beluga_core_transaction_tests_and_each_negative_mutant_are_mandatory
     test_beluga_core_framework_layout_rejects_flat_header_collision_and_wrong_bundle_metadata
     test_beluga_core_static_framework_executable_refuses_dynamic_or_malformed_fat_payload
+    test_beluga_core_offers_source_tests_link_smokes_and_mutants_are_mandatory
+    test_shared_handoff_offers_full_discovered_and_pinned_coverage_cannot_be_removed
+    test_beluga_core_compiled_mutation_assertions_reject_uncompiled_wrong_case_and_bad_footer
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -319,7 +376,8 @@ module MicrophoneRegressionGate
   SHARED_HANDOFF_CLASSES = %w[WebRTCTransportTests.MediaHandoffProtocolTests
                             WebRTCTransportTests.MediaHandoffTransactionTests
                             WebRTCTransportTests.RemoteMediaControlsProtocolTests
-                            WebRTCTransportTests.BelugaRustHandoffTransactionTests].freeze
+                            WebRTCTransportTests.BelugaRustHandoffTransactionTests
+                            WebRTCTransportTests.BelugaRustHandoffOffersTests].freeze
   SHARED_HANDOFF_PINNED = %w[
     WebRTCTransportTests.MediaHandoffProtocolTests/testDefaultOffAndExactAdditiveSDPEcho
     WebRTCTransportTests.MediaHandoffProtocolTests/testReceiptIsExactOneUseAndDuplicateCannotRenewDeadline
@@ -350,6 +408,36 @@ module MicrophoneRegressionGate
     WebRTCTransportTests.BelugaRustHandoffTransactionTests/testValueCopiesKeepIndependentSlotsButShareNativeRevocation
     WebRTCTransportTests.BelugaRustHandoffTransactionTests/testCopiedScalarBoundaryRejectsMissingRetirementEffectsAndReplay
     WebRTCTransportTests.BelugaRustHandoffTransactionTests/testCopiedScalarBoundaryAcceptsLegitimateCustodyTransitions
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testAllBoundedSmallEventTracesMatchOriginalReference
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testSeededLongChurnKeepsBothSlotsAndReceiptIdentityInParity
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testSnapshotAgeBoundariesAndFiniteNegativeClockMatchOriginalReference
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testTimelineClockPositionAndStrictDeadlineBoundariesMatchReference
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testTimelineDriftScalesWithRateAndKeepsInclusiveBoundary
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testHostPhoneDriftUsesItsDistinctInclusiveBound
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testPlaybackSamplePreflightPreservesReceiptUntilConsumption
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testOriginalRevisionFloorDoesNotBecomeLatestRevisionHighWater
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testHigherRejectedSequenceBurnsFloorAndRetiresPreviousReceipt
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testMatchingConsumptionBurnsBeforeLateValidation
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testMismatchAndCounterfeitInputsPreserveExactPendingAuthority
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testFailedPreparationDoesNotBurnButFailedSendDoesBurnSequence
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testNativeSourceKeepsFractionalOriginalDeadlineAndBounds
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testSentAndReceivedSlotsRemainIndependentAcrossSingleSlotFailures
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testClearRetainsCountersButNewNegotiationResetsThem
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testCanonicalNativeEqualityPreservesOriginalBytesAndValueCopies
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testCanonicalAliasCannotBypassUTF8BoundOrBurnSequenceOnPreparationFailure
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testCommitHeaderAndCurrentPrimaryIdentityAreIndependent
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testReceivePrimaryIsBoundToIncomingEnvelopeNotRetiredReceipt
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testNonfiniteReceiveClockDoesNotMoveEarlyGuardsAheadOfSequenceBurn
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testSignedZeroStorageAndRoundedLargeClockDeadlineMatchOriginalReference
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testNativeSourceSnapshotAgeAndScaledDriftKeepOriginalBounds
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testActualSuppliedCommitUnicodeAndNaNPreservePreconsumeValidityOrdering
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testSeededSendCounterExhaustionRefusesMaxAndClearCannotResetIt
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testSeededReceiverMaxBurnAndIndependentSenderRemainInOriginalParity
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testTokenMaxIssuesOnceAndExhaustionCannotReuseOrResetMintCapacity
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testTokenExhaustionStillExpiresSentAndRetiresReplacedReceived
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testZeroCounterSeedIsTerminalButZeroTokenOnlyRefusesNewMint
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryAcceptsAllLegitimateCustodyTransitions
+    WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryRejectsForgedMintConsumptionRetirementAndCounterReset
   ].freeze
   PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests shared-handoff-tests simulator-tests simulator-summary simulator-results simulator-signature
               simulator-entitlements rust-discovery rust-tests beluga-core-discovery beluga-core-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
@@ -1060,8 +1148,11 @@ module MicrophoneRegressionGate
 
   def self.validate_beluga_core_link(text)
     lines = utf8_text(text, 'Beluga core link result').lines.map(&:chomp)
-    markers = ['BELUGA_CORE_LINK_SMOKE_PASS'] + BELUGA_CORE_TARGETS.drop(1).map { |target| 'BELUGA_CORE_CROSS_LINK_PASS target=' + target }
-    observed = lines.select { |line| line.start_with?('BELUGA_CORE_LINK_SMOKE_PASS', 'BELUGA_CORE_CROSS_LINK_PASS') }
+    markers = BELUGA_CORE_RUNTIME_MARKERS + ['BELUGA_CORE_LINK_SMOKE_PASS'] +
+              BELUGA_CORE_TARGETS.drop(1).map { |target| 'BELUGA_CORE_CROSS_LINK_PASS target=' + target }
+    observed = lines.select do |line|
+      line.start_with?('BelugaCore C ', 'BelugaCore Swift ', 'BELUGA_CORE_LINK_SMOKE_PASS', 'BELUGA_CORE_CROSS_LINK_PASS')
+    end
     require!(observed == markers,
              'Beluga core actual archive C and Swift link oracle is incomplete')
   end
@@ -1075,6 +1166,35 @@ module MicrophoneRegressionGate
              lines.select { |line| line.start_with?('BELUGA_CORE_MUTATIONS_PASS') } == [footer] &&
              expected.all? { |line| lines.index(line) < lines.index(footer) },
              'Beluga core assertion-failing mutation oracle is incomplete, duplicate or out of order')
+    # Each marker must close a fresh compiled, exact single-case assertion
+    # failure. A compile error, unrelated failing test or summary alone cannot
+    # substitute for the producer's source-bound exit-101 behavioral oracle.
+    offset = 0
+    BELUGA_CORE_MUTANT_TESTS.each do |name, test|
+      marker = 'BELUGA_CORE_MUTANT_REJECTED ' + name + ' assertion-failed'
+      finish = lines.index(marker)
+      segment = lines[offset...finish]
+      compiled = segment.select { |line| line.match?(/\A\s*Finished\b/) }
+      cases = segment.select { |line| line.match?(/\Atest \S+ \.\.\. /) }
+      panics = segment.select { |line| line.start_with?("thread '") && line.include?(' panicked at ') }
+      assertions = segment.select { |line| line.start_with?('assertion ') }
+      results = segment.select { |line| line.start_with?('test result:') }
+      errors = segment.select { |line| line.start_with?('error') }
+      require!(compiled.length == 1 && compiled.first.match?(/\A\s*Finished `test` profile \[[^\r\n]+\] target\(s\) in [^\r\n]+\z/) &&
+               segment.select { |line| line.start_with?('running ') } == ['running 1 test'] &&
+               cases == ['test ' + test + ' ... FAILED'] &&
+               panics.length == 1 && panics.first.match?(/\Athread '#{Regexp.escape(test)}'(?: \(\d+\))? panicked at [^\r\n]+\z/) &&
+               assertions.length == 1 && assertions.first.match?(/\Aassertion `left == right` failed(?:: [^\r\n]*)?\z/) &&
+               results.length == 1 && results.first.match?(/\Atest result: FAILED\. 0 passed; 1 failed; 0 ignored; 0 measured; \d+ filtered out; finished in [^\r\n]+\z/) &&
+               errors.length == 1 && errors.first.match?(/\Aerror: test failed, to rerun pass `--test [a-z_]+`\z/) &&
+               segment.none? { |line| line.include?('could not compile') },
+               'Beluga core assertion-failing mutation oracle is incomplete: missing compiled intended assertion for ' + name)
+      offset = finish + 1
+    end
+    require!(lines[offset..-1].none? do |line|
+      line.match?(/\A\s*Finished\b/) || line.start_with?('running ', 'test ', "thread '", 'assertion ', 'error') ||
+        line.include?('could not compile')
+    end, 'Beluga core assertion-failing mutation oracle is incomplete: unframed trailing result')
   end
 
   class Executor

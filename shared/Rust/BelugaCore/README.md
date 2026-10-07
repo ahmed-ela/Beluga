@@ -1,7 +1,8 @@
 # Beluga product core: incremental migration
 
-This dependency-free Rust crate currently owns **media-handoff menu admission and
-the worldwide host lifecycle state machine, and the handoff transaction ledger**. It is not the complete product-core
+This dependency-free Rust crate currently owns **media-handoff menu admission,
+the worldwide host lifecycle state machine, the handoff transaction ledger, and
+the one-use offer/timeline reducer**. It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
 
@@ -23,6 +24,25 @@ Swift supplies nonzero identity tokens using exact UUID and envelope equality,
 including canonical String equality and nonreflexive NaN comparisons. Rust owns
 busy admission, exact completion matching, cached reply idempotence, revocation,
 and timeout/clear unknown outcomes. Effects never authorize native media pause.
+
+The offers reducer retains independent sent/received owners, their observation
+times, sequence counters, and the complete timeline numeric admission rules.
+Its copied ABI carries IEEE-754 Double bits so native floating semantics are
+preserved: exclusive two-second freshness/deadlines, inclusive phone sample age,
+exact numeric identities, monotonic observations, and original uncertainty math.
+A new authorized receive burns its sequence and retires the old receipt before
+late validation; matching consumption retires its owner before late validation.
+Declined operations may therefore change state. Clear removes transient owners
+and observations without resetting counters; reset explicitly calls initial().
+
+Native projection retains only the bounded original payloads and exact
+String/UUID/receipt primitives. Commit-header identity and current-primary
+identity are separate typed facts. A supplied receipt maps to its token only
+after full native equality, and prepareCommit uses that supplied envelope's
+actual text validation. Native update validity and context/video text rules,
+wire codecs, peer authorization/continuity, actual phone playback confirmation,
+exact-source Mac Pause and protected microphone/audio leases remain native.
+Offer acceptance and scalar effects are never proof of playback or Pause.
 
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
@@ -57,5 +77,6 @@ These programs never open apps, access phones, or change routes.
 Source-only mutation tests must fail on behavioral assertions for the original
 visibility defect, ignored unknown bits, missing command admission, availability
 departure erasing an independent media owner, stale media-end ownership, transaction
-busy/exact identity/conflicting-reply guards, revocation, and unknown timeout outcomes. They use
+busy/exact identity/conflicting-reply guards, revocation, unknown timeout outcomes,
+and sixteen offer identity, retirement, replay, boundary, counter, and unknown-operation defects. They use
 temporary copies and never modify the production archive or source.
