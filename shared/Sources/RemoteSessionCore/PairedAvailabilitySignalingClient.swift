@@ -237,6 +237,7 @@ public actor PairedAvailabilitySignalingClient {
     private let applicationProbeAckTimeoutNanoseconds: UInt64
     private let applicationProbeAckSleep: LivenessSleep
     private let applicationProbeNonceGenerator: ProbeNonceGenerator
+    private let replayObserver: BelugaRustSignalingReplayObservation.Observer?
 
     private var state = State.idle
     private var finishIsInProgress = false
@@ -252,7 +253,7 @@ public actor PairedAvailabilitySignalingClient {
     private var exchangeID: RemoteAvailabilityExchangeID?
     private var cipher: RemoteAvailabilityCipher?
     private var nextSequence: UInt64 = 0
-    private var replayGuard = SignalingReplayGuard()
+    private var replayGuard: SignalingReplayGuard
 
     public init(
         endpoint: URL,
@@ -274,6 +275,8 @@ public actor PairedAvailabilitySignalingClient {
         applicationProbeAckTimeoutNanoseconds = Limits.applicationProbeAckTimeoutNanoseconds
         applicationProbeAckSleep = Self.defaultLivenessSleep
         applicationProbeNonceGenerator = Self.defaultApplicationProbeNonce
+        replayObserver = nil
+        replayGuard = SignalingReplayGuard()
     }
 
     internal init(
@@ -294,7 +297,8 @@ public actor PairedAvailabilitySignalingClient {
         applicationProbeAckSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
             .defaultLivenessSleep,
         applicationProbeNonceGenerator: @escaping ProbeNonceGenerator =
-            PairedAvailabilitySignalingClient.defaultApplicationProbeNonce
+            PairedAvailabilitySignalingClient.defaultApplicationProbeNonce,
+        replayObserver: BelugaRustSignalingReplayObservation.Observer? = nil
     ) throws {
         guard locator.localRole == role else {
             throw RemoteSessionCoreError.invalidRendezvousCredential
@@ -316,6 +320,8 @@ public actor PairedAvailabilitySignalingClient {
         self.applicationProbeAckTimeoutNanoseconds = applicationProbeAckTimeoutNanoseconds
         self.applicationProbeAckSleep = applicationProbeAckSleep
         self.applicationProbeNonceGenerator = applicationProbeNonceGenerator
+        self.replayObserver = replayObserver
+        replayGuard = SignalingReplayGuard(producer: .actual, observer: replayObserver)
     }
 
     /// Connects exactly once and starts the bounded availability event stream.
@@ -642,7 +648,7 @@ public actor PairedAvailabilitySignalingClient {
                 role: role
             )
             nextSequence = 0
-            replayGuard = SignalingReplayGuard()
+            replayGuard = freshReplayGuard()
             return .ready(role: role, exchangeID: newExchange)
 
         case "availability-signal":
@@ -684,7 +690,7 @@ public actor PairedAvailabilitySignalingClient {
             exchangeID = nil
             cipher = nil
             nextSequence = 0
-            replayGuard = SignalingReplayGuard()
+            replayGuard = freshReplayGuard()
             return .peerLeft(role: wire.role, exchangeID: currentExchange)
 
         case "availability-probe-ack":
@@ -714,6 +720,10 @@ public actor PairedAvailabilitySignalingClient {
             // In particular, legacy `waiting`, `ready`, and `signal` fail closed here.
             throw RendezvousSignalingError.invalidServerMessage
         }
+    }
+
+    private func freshReplayGuard() -> SignalingReplayGuard {
+        SignalingReplayGuard(producer: .actual, observer: replayObserver)
     }
 
     private func finish(throwing error: (any Error)?) async {

@@ -26,8 +26,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -514,6 +514,27 @@ module MicrophoneRegressionGate
     exact_raw_layout_is_copy_only_and_has_no_native_pointer
     all_reachable_original_states_and_events_match_independent_flat_reference
     seeded_original_trace_with_rearm_cancellation_and_value_copies_matches
+    zero_is_valid_then_duplicate_is_unchanged
+    first_maximum_sequence_is_valid_without_allocation
+    age_63_is_admitted_and_age_64_rejects_without_change
+    advance_63_retains_only_in_window_history
+    advance_64_does_not_shift_by_64_and_retires_history
+    advance_above_window_remains_one_bit
+    maximum_adjacent_arithmetic_never_wraps
+    reordered_packets_accumulate_without_erasing_seen_bits
+    value_copies_are_independent_and_reset_is_a_fresh_value
+    bounded_event_traces_match_frozen_original_at_every_step
+    all_boundary_sequence_pairs_match_reference
+    malformed_raw_state_is_unchanged_and_never_accepted
+    unknown_abi_rejects_without_canonicalizing_or_resetting
+    copied_scalar_layout_is_24_and_32_bytes
+    canonical_looking_accepted_duplicate_is_rejected_by_boundary
+    canonical_looking_history_clearing_accepted_output_is_rejected
+    output_for_different_input_cannot_authorize_current_packet
+    rejected_outputs_cannot_mutate_history_or_change_error_class
+    unknown_disposition_and_reserved_output_are_never_committed
+    initial_output_must_not_invent_populated_or_stale_owner_history
+    scalar_call_order_model_opens_first_but_burns_before_post_decode_semantic_validation
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -557,7 +578,18 @@ module MicrophoneRegressionGate
     'invitation-arm-keeps-consumed' => 'arm_replaces_optional_callback_and_resets_consumed',
     'invitation-foreign-cancellation-clears-owner' => 'cancellation_is_exact_and_rearm_cannot_be_cancelled_by_foreign_owner',
     'invitation-native-prepared-owner-ignored' => 'stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch',
-    'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed'
+    'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed',
+    'replay-zero-clamped' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-maximum-clamped' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-age63-refused' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-advance63-clears-history' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-duplicate-bit-ignored' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-short-advance-clears-history' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-reorder-clears-history' => 'bounded_event_traces_match_frozen_original_at_every_step',
+    'replay-unknown-abi-resets-state' => 'unknown_abi_rejects_without_canonicalizing_or_resetting',
+    'replay-malformed-state-resets-history' => 'malformed_raw_state_is_unchanged_and_never_accepted',
+    'replay-populated-bit-zero-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted',
+    'replay-impossible-past-bits-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted'
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -567,12 +599,14 @@ module MicrophoneRegressionGate
     'BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts',
     'BelugaCore C phone operation ABI PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
     'BelugaCore C invitation acceptance ABI PASS: exact layouts, original guard order and one-use callback outcomes',
+    'BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
     'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts',
     'BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
-    'BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes'
+    'BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes',
+    'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection'
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -603,6 +637,12 @@ module MicrophoneRegressionGate
     test_beluga_core_compiled_mutation_assertions_reject_uncompiled_wrong_case_and_bad_footer
     test_beluga_core_phone_operation_source_tests_link_smokes_and_mutants_are_mandatory
     test_beluga_core_invitation_source_tests_link_smokes_and_mutants_are_mandatory
+    test_beluga_core_replay_source_tests_link_smokes_and_mutants_are_mandatory
+    test_shared_replay_source_discovery_and_every_critical_case_are_exact
+    test_shared_replay_named_results_reject_missing_duplicate_skip_failure_and_wrong_suite
+    test_shared_replay_suite_boundaries_counts_order_and_concurrency_are_exact
+    test_shared_replay_phases_and_coverage_cannot_be_removed_or_rehashed
+    test_shared_replay_observer_execution_cannot_be_borrowed_from_other_suites
     test_pairing_inventory_is_exact104_separate_from_original_simulator_skips
     test_pairing_zero_skip_named_results_cannot_omit_duplicate_or_fail_cases
     test_pairing_compiler_requires_fresh_inert_driver_source_filelist_map_and_object
@@ -646,6 +686,54 @@ module MicrophoneRegressionGate
     availabilityPublicCloseJoinsDistinctLateSuccessReclose
     pairingPublicCloseJoinsDistinctLateSuccessReclose
   ].map { |name| SHARED_SIGNALING_SUITE + '/' + name + '()' }.freeze
+  # Three independent Swift Testing suites: source, discovery and each real run
+  # are bound separately. The original signaling phase and its pins stay exact.
+  SHARED_REPLAY_PHASES = {
+    'shared-replay-native-tests' => 'RemoteSessionCoreTests.BelugaRustSignalingReplayTests',
+    'shared-replay-authentication-tests' => 'RemoteSessionCoreTests.RemoteSignalingReplayAuthenticationTests',
+    'shared-replay-durable-tests' => 'RemoteSessionCoreTests.DurableSignalingReplayObservationTests'
+  }.freeze
+  SHARED_REPLAY_FILES = {
+    'RemoteSessionCoreTests.BelugaRustSignalingReplayTests' => 'shared/Tests/RemoteSessionCoreTests/BelugaRustSignalingReplayTests.swift',
+    'RemoteSessionCoreTests.RemoteSignalingReplayAuthenticationTests' => 'shared/Tests/RemoteSessionCoreTests/RemoteSignalingReplayAuthenticationTests.swift',
+    'RemoteSessionCoreTests.DurableSignalingReplayObservationTests' => 'shared/Tests/RemoteSessionCoreTests/DurableSignalingReplayObservationTests.swift'
+  }.freeze
+  SHARED_REPLAY_PINNED = {
+    'RemoteSessionCoreTests.BelugaRustSignalingReplayTests' => %w[
+      actualCopiedABILayoutAndInitialAreExact
+      actualNativeGuardMatchesIndependentOriginalBoundedTraces
+      zeroMaximumAnd63Versus64BoundariesUseActualExports
+      duplicateAndOutsideRejectionsPreserveEveryStoredFieldWithoutFaulting
+      sendableCopiesHaveIndependentStoredWindowsAndFaultLifetimes
+      malformedInitialCannotCallStepOrManufactureEmptyRecovery
+      unknownDecisionAndReservedOutputCannotCommit
+      canonicalLookingAcceptedDuplicateIsRejectedByActualAdapter
+      shortAdvanceCannotErasePreviouslyAcceptedHistory
+      validOutputForAnotherSequenceCannotCommit
+      validOutputForAnotherHistoryCannotCommit
+      unexpectedInitialOrPopulatedPresenceCannotCommit
+      wrongABIMissingCurrentBitOrNegativeHistoryCannotCommit
+      rejectionCannotMutateAnyStoredHistoryField
+      falseDuplicateForUnseenSequenceCannotPreserveThenRejectAsReplay
+      falseOutsideForInWindowUnseenSequenceCannotCommit
+      contradictoryHighestOrReorderedExtraBitCannotCommit
+      stickyBridgeFaultStopsAllProducerCallsWithoutRetryOrReset
+      observerReportsOnlyActualStoredStateAfterCommitOrRefusal
+    ].map { |name| 'RemoteSessionCoreTests.BelugaRustSignalingReplayTests/' + name + '()' }.freeze,
+    'RemoteSessionCoreTests.RemoteSignalingReplayAuthenticationTests' => %w[
+      receiverAuthenticationFailureDoesNotConsumeSequenceOrAdvanceHistory
+      authenticatedUndecodablePlaintextDoesNotConsumeSequence
+      authenticatedHeaderTamperCannotConsumeMaximumDirectReceiverSequence
+    ].map { |name| 'RemoteSessionCoreTests.RemoteSignalingReplayAuthenticationTests/' + name + '()' }.freeze,
+    'RemoteSessionCoreTests.DurableSignalingReplayObservationTests' => %w[
+      pairingSemanticFailureFollowsActualStoredReplayCommit
+      availabilitySemanticFailureFollowsActualStoredReplayCommit
+      validatedPairingDepartureResetsOnceAndAllowsFreshZero
+      availabilityExactDepartureAndRepeatedReadyPreserveOriginalResetOrder
+      wrongRolePairingDepartureCannotResetStoredReplayOwner
+      foreignAvailabilityDepartureOrReadyCannotResetStoredReplayOwner
+    ].map { |name| 'RemoteSessionCoreTests.DurableSignalingReplayObservationTests/' + name + '()' }.freeze
+  }.freeze
   SHARED_HANDOFF_CLASSES = %w[WebRTCTransportTests.MediaHandoffProtocolTests
                             WebRTCTransportTests.MediaHandoffTransactionTests
                             WebRTCTransportTests.RemoteMediaControlsProtocolTests
@@ -712,7 +800,7 @@ module MicrophoneRegressionGate
     WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryAcceptsAllLegitimateCustodyTransitions
     WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryRejectsForgedMintConsumptionRetirementAndCounterReset
   ].freeze
-  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests shared-handoff-tests simulator-tests simulator-summary simulator-results simulator-signature
+  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests shared-replay-native-tests shared-replay-authentication-tests shared-replay-durable-tests shared-handoff-tests simulator-tests simulator-summary simulator-results simulator-signature
               simulator-entitlements pairing-inert-build pairing-tests pairing-summary pairing-results pairing-signature pairing-entitlements rust-discovery rust-tests beluga-core-discovery beluga-core-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
               driver-build-2 driver-verifier driver-load driver-malformed-bundles].freeze
   PROTECTED_ROOTS = ['/Applications', '/Library', '/System', '/Users/ahmed/Library/Application Support/opensteamer'].freeze
@@ -910,6 +998,36 @@ module MicrophoneRegressionGate
     methods.sort
   end
 
+  def self.shared_replay_source_inventory(root)
+    SHARED_REPLAY_FILES.to_h do |suite, relative|
+      path = File.join(root, relative)
+      regular!(path)
+      source = utf8_text(File.binread(path), 'shared replay source')
+      name = suite.split('.').last
+      methods = source.scan(/^\s*@Test(?:\(.*\))?\s+func (\w+)\s*\(/).flatten
+      ids = methods.map { |method| suite + '/' + method + '()' }
+      require!(source.scan(/^\s*struct #{Regexp.escape(name)}\s*\{/).length == 1 &&
+               (1..128).cover?(ids.length) && ids.uniq.length == ids.length &&
+               source.scan(/^\s*@Test\b/).length == ids.length &&
+               (SHARED_REPLAY_PINNED.fetch(suite) - ids).empty?,
+               'shared replay source inventory is incomplete, malformed or duplicated: ' + suite)
+      [suite, ids.sort]
+    end
+  end
+
+  def self.shared_replay_inventory(root, text)
+    source = shared_replay_source_inventory(root)
+    lines = utf8_text(text, 'shared replay discovery').lines.map(&:strip)
+    source.to_h do |suite, expected|
+      methods = lines.select { |line| line.start_with?(suite + '/') }
+      require!(methods.uniq.length == methods.length &&
+               methods.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/\w+\(\)\z/) } &&
+               methods.sort == expected,
+               'shared replay discovery differs from exact source inventory: ' + suite)
+      [suite, methods.sort]
+    end
+  end
+
   def self.shared_handoff_inventory(text)
     methods = utf8_text(text, 'shared handoff discovery').lines.map(&:strip).select do |line|
       SHARED_HANDOFF_CLASSES.any? { |name| line.start_with?(name + '/') }
@@ -968,6 +1086,56 @@ module MicrophoneRegressionGate
     require!(starts.keys.sort == expected.sort && passes.keys.sort == expected.sort &&
              (starts.values + passes.values).all? { |index| index > suite_starts.first && index < suite_passes.first },
              'shared signaling cases are missing or outside the exact suite')
+    expected.sort
+  end
+
+  def self.validate_shared_replay(text, expected, suite)
+    require!(SHARED_REPLAY_FILES.key?(suite), 'shared replay result names an unreviewed suite')
+    name = suite.split('.').last
+    text = utf8_text(text, 'shared replay result')
+    require!(text.bytesize <= 2 * 1024 * 1024 && (1..128).cover?(expected.length) &&
+             expected.uniq.length == expected.length &&
+             (SHARED_REPLAY_PINNED.fetch(suite) - expected).empty? &&
+             expected.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/\w+\(\)\z/) },
+             'shared replay result bounds or expected inventory are invalid')
+    lines = text.lines.map(&:chomp)
+    require!(lines.length <= 4096, 'shared replay result exceeds line bound')
+    run_starts = []
+    suite_starts = []
+    suite_passes = []
+    footers = []
+    starts = {}
+    passes = {}
+    lines.each_with_index do |line, index|
+      if line == '◇ Test run started.'
+        run_starts << index
+      elsif line == "◇ Suite #{name} started."
+        suite_starts << index
+      elsif line.match?(/\A✔ Suite #{Regexp.escape(name)} passed after \d+(?:\.\d+)? seconds\.\z/)
+        suite_passes << index
+      elsif (match = /\A✔ Test run with (\d+) tests in (\d+) suite passed after \d+(?:\.\d+)? seconds\.\z/.match(line))
+        footers << [index, match[1].to_i, match[2].to_i]
+      elsif (match = /\A◇ Test (\w+\(\)) started\.\z/.match(line))
+        id = suite + '/' + match[1]
+        require!(expected.include?(id) && !starts.key?(id), 'shared replay start is unexpected or duplicated')
+        starts[id] = index
+      elsif (match = /\A✔ Test (\w+\(\)) passed after \d+(?:\.\d+)? seconds\.\z/.match(line))
+        id = suite + '/' + match[1]
+        require!(expected.include?(id) && starts.key?(id) && starts[id] < index && !passes.key?(id),
+                 'shared replay pass is unexpected, duplicated or lacks a matching start')
+        passes[id] = index
+      else
+        require!(!line.match?(/\A(?:\S+\s+)?(?:Test|Suite)\b/),
+                 'shared replay result is malformed, failed, skipped or belongs to another suite')
+      end
+    end
+    require!(run_starts.length == 1 && suite_starts.length == 1 && suite_passes.length == 1 && footers.length == 1 &&
+             run_starts.first < suite_starts.first && suite_starts.first < suite_passes.first &&
+             suite_passes.first < footers.first[0] && footers.first.drop(1) == [expected.length, 1],
+             'shared replay suite/run footer is missing, duplicated, out of order or disagrees')
+    require!(starts.keys.sort == expected.sort && passes.keys.sort == expected.sort &&
+             (starts.values + passes.values).all? { |index| index > suite_starts.first && index < suite_passes.first },
+             'shared replay cases are missing or outside the exact suite')
     expected.sort
   end
 
@@ -1352,7 +1520,9 @@ module MicrophoneRegressionGate
       'driver-verifier' => [File.join(driver, 'scripts/verify-driver-bundle.sh'), bundles[0]],
       'driver-load' => [File.join(driver, 'scripts/test-built-driver-bundle.sh'), bundles[0]],
       'driver-malformed-bundles' => [File.join(driver, 'scripts/test-driver-bundle-verifier.sh'), bundles[0]]
-    }.merge(pairing_commands(root, directory, invocation, simulator))
+    }.merge(SHARED_REPLAY_PHASES.to_h do |phase, suite|
+      [phase, swift_base + ['--skip-build', '--disable-xctest', '--filter', '^' + Regexp.escape(suite) + '/']]
+    end).merge(pairing_commands(root, directory, invocation, simulator))
   end
 
   def self.gate_inventory(root)
@@ -2099,6 +2269,7 @@ module MicrophoneRegressionGate
       mac_discovery = phase('mac-discovery', swift_base + ['--list-tests'])
       mac_methods = MicrophoneRegressionGate.mac_inventory(mac_discovery)
       shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
+      replay_methods = MicrophoneRegressionGate.shared_replay_inventory(@root, mac_discovery)
       handoff_methods = MicrophoneRegressionGate.shared_handoff_inventory(mac_discovery)
       filter = '^(?:' + mac_methods.map { |id| Regexp.escape(id) }.join('|') + ')$'
       mac_xml = File.join(@evidence, 'mac-results.xml')
@@ -2111,6 +2282,10 @@ module MicrophoneRegressionGate
       end
       shared_log = phase('shared-signaling-tests', swift_base + ['--skip-build', '--disable-xctest', '--filter', SHARED_SIGNALING_FILTER])
       MicrophoneRegressionGate.validate_shared_signaling(shared_log, shared_methods)
+      SHARED_REPLAY_PHASES.each do |name, suite|
+        log = phase(name, swift_base + ['--skip-build', '--disable-xctest', '--filter', '^' + Regexp.escape(suite) + '/'])
+        MicrophoneRegressionGate.validate_shared_replay(log, replay_methods.fetch(suite), suite)
+      end
       handoff_filter = '^(?:' + handoff_methods.map { |id| Regexp.escape(id) }.join('|') + ')$'
       handoff_log = phase('shared-handoff-tests', swift_base + ['--skip-build', '--filter', handoff_filter])
       MicrophoneRegressionGate.validate_mac_log(handoff_log, handoff_methods)
@@ -2176,7 +2351,7 @@ module MicrophoneRegressionGate
                   'invocation' => { 'developer_directory' => developer, 'scratch' => scratch, 'swift_scratch' => @swift_scratch, 'timeout_seconds' => @options.fetch(:timeout) },
                   'mac_format' => mac_format, 'phases' => @phases, 'artifacts' => artifacts, 'pairing_inert_root' => @pairing_contract, 'pairing_processes' => @pairing_processes,
                   'coverage' => { 'mac' => mac_methods, 'simulator' => sim_methods, 'intentional_simulator_skips' => SIMULATOR_SKIPS, 'pairing' => @pairing_methods,
-                                  'rust' => rust_methods, 'beluga_core' => core_methods, 'shared_handoff' => handoff_methods, 'c' => c_methods } }
+                                  'rust' => rust_methods, 'beluga_core' => core_methods, 'shared_handoff' => handoff_methods, 'shared_replay' => replay_methods, 'c' => c_methods } }
       path = File.join(@evidence, 'receipt.json')
       File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.pretty_generate(receipt) + "\n"); file.flush; file.fsync }
       digest = MicrophoneRegressionGate.sha(path)
@@ -2248,12 +2423,14 @@ module MicrophoneRegressionGate
     end
     check_artifacts.call
     coverage = receipt['coverage']
-    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff c], 'coverage')
+    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff shared_replay c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
+    replay = shared_replay_inventory(root, read_phase.call('mac-discovery'))
     handoff = shared_handoff_inventory(read_phase.call('mac-discovery'))
     require!(coverage['mac'] == mac, 'Mac coverage differs from discovery')
     require!(coverage['shared_handoff'] == handoff, 'shared handoff coverage differs from discovery')
+    require!(coverage['shared_replay'] == replay, 'shared replay coverage differs from exact source discovery')
     expected_commands = commands(root, directory, receipt['invocation'], tools, receipt['simulator'], mac, handoff)
     phases.each { |entry| require!(entry['argv'] == expected_commands.fetch(entry['name']), 'phase command does not match canonical offline invocation: ' + entry['name']) }
     validate_pairing_processes(receipt['pairing_processes'], expected_commands, (receipt['created_at'] + 1) * 1_000_000_000, receipt['invocation'].fetch('timeout_seconds'))
@@ -2265,6 +2442,9 @@ module MicrophoneRegressionGate
       validate_mac_log(read_phase.call('mac-tests'), mac)
     end
     validate_shared_signaling(read_phase.call('shared-signaling-tests'), shared)
+    SHARED_REPLAY_PHASES.each do |name, suite|
+      validate_shared_replay(read_phase.call(name), replay.fetch(suite), suite)
+    end
     validate_mac_log(read_phase.call('shared-handoff-tests'), handoff)
     sim = simulator_inventory(root)
     require!(coverage['simulator'] == sim && coverage['intentional_simulator_skips'] == SIMULATOR_SKIPS, 'Simulator coverage or skip contract changed')

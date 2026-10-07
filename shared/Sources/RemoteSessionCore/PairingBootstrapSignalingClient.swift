@@ -150,6 +150,7 @@ public actor PairingBootstrapSignalingClient {
     private let credential: RemoteRendezvousCredential
     private let transport: any RendezvousSocketTransport
     private let cipher: PairingBootstrapCipher
+    private let replayObserver: BelugaRustSignalingReplayObservation.Observer?
 
     private var state = State.idle
     private var finishIsInProgress = false
@@ -159,7 +160,7 @@ public actor PairingBootstrapSignalingClient {
     private var continuation: EventStream.Continuation?
     private var receiveTask: Task<Void, Never>?
     private var nextSequence: UInt64 = 0
-    private var replayGuard = SignalingReplayGuard()
+    private var replayGuard: SignalingReplayGuard
 
     public init(
         endpoint: URL,
@@ -172,13 +173,16 @@ public actor PairingBootstrapSignalingClient {
         cipher = PairingBootstrapCipher(credential: credential, role: role)
         rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
         transport = URLSessionRendezvousSocketTransport()
+        replayObserver = nil
+        replayGuard = SignalingReplayGuard()
     }
 
     internal init(
         endpoint: URL,
         invitation: RemoteInvitationCode,
         role: RemotePeerRole,
-        transport: any RendezvousSocketTransport
+        transport: any RendezvousSocketTransport,
+        replayObserver: BelugaRustSignalingReplayObservation.Observer? = nil
     ) throws {
         let credential = RemoteRendezvousCredential(invitation: invitation)
         self.role = role
@@ -186,6 +190,8 @@ public actor PairingBootstrapSignalingClient {
         cipher = PairingBootstrapCipher(credential: credential, role: role)
         rendezvousURL = try Self.makeRendezvousURL(endpoint: endpoint)
         self.transport = transport
+        self.replayObserver = replayObserver
+        replayGuard = SignalingReplayGuard(producer: .actual, observer: replayObserver)
     }
 
     /// Connects exactly once and starts the bounded pairing-bootstrap event stream.
@@ -352,7 +358,7 @@ public actor PairingBootstrapSignalingClient {
             // Pairing transport sequences are scoped to one admitted peer, so both directions
             // must restart before the departure is observable by the handshake state machine.
             nextSequence = 0
-            replayGuard = SignalingReplayGuard()
+            replayGuard = freshReplayGuard()
             return .peerLeft(wire.role)
         case "error":
             try Self.requireExactKeys(dictionary, ["type", "error"])
@@ -361,6 +367,10 @@ public actor PairingBootstrapSignalingClient {
         default:
             throw RendezvousSignalingError.invalidServerMessage
         }
+    }
+
+    private func freshReplayGuard() -> SignalingReplayGuard {
+        SignalingReplayGuard(producer: .actual, observer: replayObserver)
     }
 
     private func finish(throwing error: (any Error)?) async {

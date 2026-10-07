@@ -508,3 +508,68 @@ private func invitationAcceptanceSmoke() {
     print("BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes")
 }
 invitationAcceptanceSmoke()
+// Additive seventh smoke; prior six contracts and their markers remain unchanged.
+private func signalingReplaySmoke() {
+    typealias ReplayState = beluga_core_signaling_replay_state_t
+    typealias ReplayResult = beluga_core_signaling_replay_result_t
+    precondition(MemoryLayout<ReplayState>.size == 24 && MemoryLayout<ReplayState>.alignment == 8)
+    precondition(MemoryLayout<ReplayState>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<ReplayState>.offset(of: \.has_highest) == 4)
+    precondition(MemoryLayout<ReplayState>.offset(of: \.highest) == 8)
+    precondition(MemoryLayout<ReplayState>.offset(of: \.bitmap) == 16)
+    precondition(MemoryLayout<ReplayResult>.size == 32 && MemoryLayout<ReplayResult>.alignment == 8)
+    precondition(MemoryLayout<ReplayResult>.offset(of: \.state) == 0)
+    precondition(MemoryLayout<ReplayResult>.offset(of: \.decision) == 24)
+    precondition(MemoryLayout<ReplayResult>.offset(of: \.reserved) == 28)
+    func same(_ left: ReplayState, _ right: ReplayState) {
+        precondition(left.abi_version == right.abi_version && left.has_highest == right.has_highest &&
+                     left.highest == right.highest && left.bitmap == right.bitmap)
+    }
+    let empty = beluga_core_signaling_replay_initial()
+    precondition(empty.abi_version == 1 && empty.has_highest == 0 && empty.highest == 0 && empty.bitmap == 0)
+    var result = beluga_core_signaling_replay_step(1, empty, 0)
+    precondition(result.decision == 0 && result.reserved == 0 && result.state.abi_version == 1 &&
+                 result.state.has_highest == 1 && result.state.highest == 0 && result.state.bitmap == 1)
+    let zero = result.state
+    result = beluga_core_signaling_replay_step(1, zero, 0)
+    precondition(result.decision == 1 && result.reserved == 0); same(result.state, zero)
+    result = beluga_core_signaling_replay_step(1, zero, 63)
+    precondition(result.decision == 0 && result.state.highest == 63 &&
+                 result.state.bitmap == (UInt64(1) << 63) | 1)
+    result = beluga_core_signaling_replay_step(1, zero, 64)
+    precondition(result.decision == 0 && result.state.highest == 64 && result.state.bitmap == 1)
+    let sixtyFour = result.state
+    result = beluga_core_signaling_replay_step(1, sixtyFour, 1)
+    precondition(result.decision == 0 && result.state.highest == 64 &&
+                 result.state.bitmap == (UInt64(1) << 63) | 1)
+    let reordered = result.state
+    result = beluga_core_signaling_replay_step(1, reordered, 0)
+    precondition(result.decision == 2 && result.reserved == 0); same(result.state, reordered)
+    result = beluga_core_signaling_replay_step(1, reordered, 2)
+    precondition(result.decision == 0 && result.state.bitmap == (UInt64(1) << 63) | (UInt64(1) << 62) | 1)
+    precondition(sixtyFour.bitmap == 1 && reordered.bitmap == (UInt64(1) << 63) | 1)
+    result = beluga_core_signaling_replay_step(1, empty, UInt64.max)
+    precondition(result.decision == 0 && result.state.highest == UInt64.max && result.state.bitmap == 1)
+    let maximum = result.state
+    result = beluga_core_signaling_replay_step(1, maximum, UInt64.max - 63)
+    precondition(result.decision == 0 && result.state.bitmap == (UInt64(1) << 63) | 1)
+    result = beluga_core_signaling_replay_step(1, maximum, UInt64.max - 64)
+    precondition(result.decision == 2 && result.reserved == 0); same(result.state, maximum)
+    result = beluga_core_signaling_replay_step(1, maximum, UInt64.max)
+    precondition(result.decision == 1 && result.reserved == 0); same(result.state, maximum)
+    result = beluga_core_signaling_replay_step(2, maximum, UInt64.max)
+    precondition(result.decision == 3 && result.reserved == 0); same(result.state, maximum)
+    let malformed: [(UInt32, UInt32, UInt64, UInt64)] = [
+        (0, 0, 0, 0), (1, 2, 0, 0), (1, 0, 1, 0), (1, 0, 0, 1),
+        (1, 1, 10, 0), (1, 1, 10, 2), (1, 1, 0, 3)
+    ]
+    for (abi, present, highest, bitmap) in malformed {
+        var before = ReplayState()
+        before.abi_version = abi; before.has_highest = present
+        before.highest = highest; before.bitmap = bitmap
+        result = beluga_core_signaling_replay_step(1, before, 7)
+        precondition(result.decision == 3 && result.reserved == 0); same(result.state, before)
+    }
+    print("BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection")
+}
+signalingReplaySmoke()

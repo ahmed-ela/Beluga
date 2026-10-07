@@ -176,11 +176,16 @@ Rust rewrite remains incomplete; pairing/catalog/session policy is the next seam
 
 ### Latest local policy checkpoint and menu regression coverage — 2026-10-07
 
-Local checkpoint `38948b256aa352236877560b3d741de023c5afac` includes Rust invitation
-acceptance ownership and the copied-output native custody boundary. Its complete
-38-phase source-bound gate and retained evidence passed independent audits. It
-was committed locally, not pushed or deployed; later menu changes cannot borrow
-that checkpoint's release receipt.
+Local invitation-acceptance checkpoint `38948b256aa352236877560b3d741de023c5afac`
+is predecessor evidence. The subsequent prepared-media menu repair is preserved in
+local checkpoint `40a4c8bfb62d4d78ca28af8e18d38b8b2c54e1a4`. Its own complete
+38-phase canonical offline gate passed on source
+`27fc9e0d663440dc8e1caf138352f829644cc9f52d44c3abd94e650031801c63`;
+the receipt was independently verified and audited. Retained receipt:
+`/Volumes/t7/beluga-mac-client-microphone-gate.kKuACR/validation-runs/microphone-20261007-49631-1vzwmqd/receipt.json`,
+SHA-256 `257d06dd677f6b89775965d01747618704e6667fa286095799fda5e36933f275`.
+This records a local source checkpoint, not a new release or deployed behavior.
+Subsequent replay source cannot borrow this menu receipt.
 
 Prepared-media repair adds 17 tests through the actual coordinator and menu with
 genuine cryptographic pairing/reconnect records. Together with the existing menu
@@ -190,14 +195,68 @@ completion, replay/forged requests, uncertain native stop, shutdown and exact
 microphone snapshot forwarding. Both stop and completion-query barriers are held
 to observe revocation before either cleanup path returns. Compiled negative
 controls restore the old phase rule, reuse a service nonce, and delay both cleanup
-revocations; each must fail ordinary assertions for its intended defect. The new
+revocations; each failed ordinary assertions for its intended defect. The new
 class and all 17 methods are mandatory release-gate pins, not optional fixtures.
 
-The restored source still requires its own full 38-phase canonical receipt before
-the menu repair is checkpointed or released. This is offline source/adapter proof,
-not a live reproduction on the user's Mac, a phone handoff or deployment. The full
-Rust rewrite remains active; signaling replay and the remaining policy seams are
-not completed by the invitation or menu work.
+This is offline source/adapter evidence, not a live reproduction on the user's
+Mac, a physical phone handoff or deployment. Selective bounded reducer slices
+are implemented, but the broad handoff and pairing/catalog/session stages above
+remain incomplete. Native provider readback, playback confirmation, persistence,
+cryptography, microphone/audio ownership and release effects retain their
+independent gates; the full Rust rewrite remains active.
+
+### Signaling replay policy — source implementation, full proof pending
+
+The production replay window now uses the bounded Rust policy through a copied
+24-byte state/32-byte result ABI. Rust owns the optional highest sequence, the
+64-packet reordering bitmap and accepted/duplicate/outside-window decisions.
+Zero is a valid first sequence; the direct reducer's UInt64 maximum and ages
+63/64 are boundary cases, not a change to existing outbound or wire limits.
+Native Swift validates exact input/output correlation, stores only a valid
+copied successor, and preserves value-independent copies. A malformed initial
+value is retained verbatim with sticky closure; malformed steps retain the exact
+previous state. Neither silently retries from or resets to an empty window.
+
+Authentication, key/credential ownership and decoding remain native. The actual
+receiver opens/authenticates and decodes before replay admission: AEAD failure
+or undecodable plaintext does not burn a sequence. The pairing/availability
+clients still commit replay admission before their later native payload semantic
+validation; a decoded but semantically rejected payload can therefore burn its
+sequence, preserving the original ordering. Observer fixtures read the actual
+stored state after commit or refusal; they do not grant reset authority or prove
+signed reconnect acceptance.
+
+Reset ownership is unchanged and native: pairing resets after a validated
+opposite-role departure; availability resets for a valid local-role Ready
+(including repeated same-exchange Ready), and for an opposite-role departure
+bound to the current exchange. Wrong-role inputs and departures for a foreign
+exchange must not reset the stored window. Other receivers gain no new reset
+path. There is no Rust
+credential, Keychain, wire-format, persistence or native runtime-effect migration.
+
+The focused native inventory preserves 56 cases: the unchanged Crypto9 and
+Rendezvous19 suites plus 28 new Swift Testing methods (native bridge19, genuine
+AEAD/decode3, durable parser/reset/order6). The updated full gate separately
+enrolls those three new suites with exact source/discovery/result identities.
+It also requires all 119 product-core Rust cases, 53 compiled Rust behavioral
+mutants (the prior42 plus new11), exact source/artifact manifests, and the seventh
+actual C/Swift replay link contract. These are required inventories, not a claim
+that the current 119/53 or full 41-phase gate has passed.
+
+The candidate's build/link and retained artifact audit passed separately. A
+fresh focused native invocation passed all 56 named cases before and after
+restoration; eleven compiled controls failed their intended ordinary assertions
+for copied-output custody, sticky closure, actual stored commit/observation order
+and exact native reset scopes. All three restored body objects match the baseline
+byte-for-byte. Retained native receipt:
+`/Volumes/t7/beluga-replay-integration-draft.bI4qL7/native-controls/native-replay-controls-20261007-85316-y09pw9/receipt.json`,
+SHA-256 `b497bd7c921aedd0f2338eb6de73074bd4a1a7d0820319f64bf6af80d93f2ab8`.
+The reviewed helper enforces original object timestamps; copied-file timestamps
+are not independent original-stat evidence. The full source-bound 41-phase gate
+and 119/53 Rust execution remain pending. No hidden-unobserved-initializer,
+physical phone, live connection, media transfer or deployment proof is claimed.
+Commit/release completion must wait for fresh proof on the final replay source
+and exact promoted artifact; predecessor receipts cannot substitute it.
 
 ## Earlier implementation ledger
 

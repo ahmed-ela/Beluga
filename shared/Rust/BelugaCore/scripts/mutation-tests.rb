@@ -141,6 +141,97 @@ mutants = [
    "changed(success, event.prepared_kind == CallbackKind::Completion as u32)", "changed(state, event.prepared_kind == CallbackKind::Completion as u32)",
    "successful_completion_clears_owner_callbacks_and_consumed"]
 ]
+# Existing producer/gate exact ordinary assertion requirements remain unchanged.
+mutants.concat([
+  [
+    "replay-zero-clamped",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "Self::Empty => (Self::Populated {\n                highest: input,",
+    "Self::Empty => (Self::Populated {\n                highest: Sequence(input.0.max(1)),",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-maximum-clamped",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "Self::Empty => (Self::Populated {\n                highest: input,",
+    "Self::Empty => (Self::Populated {\n                highest: Sequence(input.0.min(u64::MAX - 1)),",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-age63-refused",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "if age >= WINDOW_SIZE {",
+    "if age >= WINDOW_SIZE - 1 {",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-advance63-clears-history",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "if distance >= WINDOW_SIZE {",
+    "if distance >= WINDOW_SIZE - 1 {",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-duplicate-bit-ignored",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "if received.0.get() & mask != 0 {",
+    "if received.0.get() & mask != 0 && false {",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-short-advance-clears-history",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "(received.0.get() << distance) | 1",
+    "{ let _ = received; 1 }",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-reorder-clears-history",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "received.0.get() | mask",
+    "mask | 1",
+    "bounded_event_traces_match_frozen_original_at_every_step"
+  ],
+  [
+    "replay-unknown-abi-resets-state",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "if abi_version != ABI_VERSION {\n        return RawResult { state: before, decision: Decision::InvalidInput as u32, reserved: 0 };\n    }",
+    "if abi_version != ABI_VERSION {\n        return RawResult { state: initial(), decision: Decision::InvalidInput as u32, reserved: 0 };\n    }",
+    "unknown_abi_rejects_without_canonicalizing_or_resetting"
+  ],
+  [
+    "replay-malformed-state-resets-history",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "let Some(state) = ReplayState::from_raw(before) else {\n        return RawResult { state: before, decision: Decision::InvalidInput as u32, reserved: 0 };\n    };",
+    "let Some(state) = ReplayState::from_raw(before) else {\n        return RawResult { state: initial(), decision: Decision::InvalidInput as u32, reserved: 0 };\n    };",
+    "malformed_raw_state_is_unchanged_and_never_accepted"
+  ],
+  [
+    "replay-populated-bit-zero-ignored",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "1 if raw.bitmap & 1 == 1 => {",
+    "1 if raw.bitmap != 0 => {",
+    "malformed_raw_state_is_unchanged_and_never_accepted"
+  ],
+  [
+    "replay-impossible-past-bits-ignored",
+    "src/replay_policy.rs",
+    "replay_policy",
+    "if raw.bitmap & !representable != 0 {",
+    "if raw.bitmap & !representable != 0 && false {",
+    "malformed_raw_state_is_unchanged_and_never_accepted"
+  ]
+])
 mutants.each do |name, path, suite, original, changed, test|
   production = File.binread(File.join(BelugaCoreArtifact::CRATE, path))
   raise "Mutation anchor not unique: #{name}" unless production.scan(original).size == 1

@@ -3,7 +3,8 @@
 This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
 the one-use offer/timeline reducer, the phone playback-operation reducer, and
-the invitation acceptance policy**. It is not the complete product-core
+the invitation acceptance policy, and the bounded signaling replay window**.
+It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
 
@@ -71,6 +72,18 @@ callbacks, consume admission early, fabricate completion or prevent local cleanu
 Independent original-reference traces and copied-output corruption tests complement
 the Rust tests; none substitutes for real network pairing or physical-device proof.
 
+The signaling replay policy uses a pointer-free, copied state with an explicit
+empty/populated distinction and a 64-packet bitmap. Sequence zero and UInt64.max
+remain valid; age and advance boundaries preserve the original limited-reordering
+rules. Duplicate, outside-window, malformed-state and unknown-ABI refusals leave
+the supplied state unchanged. Native code retains AEAD and JSON decoding before
+admission, semantic validation after admission, and ownership of approved reset
+sites. This reducer neither authenticates a peer nor authorizes a reset. The
+adapter must validate every copied result and fail closed on a broken bridge;
+there is no successful native fallback. Migration verification must include actual
+C/Swift links, independent original-reference traces, authentication ordering and
+durable-client reset/retirement tests, not only raw reducer tests.
+
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
 Each slice is a **static `BelugaCore.framework`**, with its module map under
@@ -108,5 +121,6 @@ busy/exact identity/conflicting-reply guards, revocation, unknown timeout outcom
 sixteen offer identity, retirement, replay, boundary, counter, and unknown-operation defects,
 six phone identity/clock ordering, proof-age, reservation and truthful-outcome defects,
 and nine invitation owner/order, optional-callback, pre-effect state, thrown-effect,
-completion, rearm and cancellation defects. They use
+completion, rearm and cancellation defects, plus eleven signaling-replay sequence,
+boundary, duplicate, history and malformed-state preservation defects. They use
 temporary copies and never modify the production archive or source.

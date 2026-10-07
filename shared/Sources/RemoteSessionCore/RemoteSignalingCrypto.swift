@@ -440,44 +440,6 @@ public struct RemoteSignalingCipher: Sendable {
     }
 }
 
-/// A bounded sliding replay window that permits limited network reordering without storing IDs.
-public struct SignalingReplayGuard: Sendable {
-    public static let windowSize: UInt64 = 64
-
-    private var highestSequence: UInt64?
-    private var receivedBitmap: UInt64 = 0
-
-    public init() {}
-
-    /// Accepts limited reordering while rejecting duplicates and packets older than the window.
-    public mutating func accept(sequence: UInt64) throws {
-        guard let highestSequence else {
-            self.highestSequence = sequence
-            receivedBitmap = 1
-            return
-        }
-
-        if sequence > highestSequence {
-            let advance = sequence - highestSequence
-            receivedBitmap = advance >= Self.windowSize
-                ? 1
-                : (receivedBitmap << advance) | 1
-            self.highestSequence = sequence
-            return
-        }
-
-        let age = highestSequence - sequence
-        guard age < Self.windowSize else {
-            throw RemoteSessionCoreError.sequenceOutsideReplayWindow
-        }
-        let mask = UInt64(1) << age
-        guard receivedBitmap & mask == 0 else {
-            throw RemoteSessionCoreError.replayedSequence
-        }
-        receivedBitmap |= mask
-    }
-}
-
 /// Owns sequence allocation so concurrent sends cannot reuse a nonce/key/sequence tuple.
 public actor RemoteSignalingSender {
     private let cipher: RemoteSignalingCipher

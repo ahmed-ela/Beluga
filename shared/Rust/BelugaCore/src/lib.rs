@@ -8,6 +8,24 @@ pub mod handoff_transactions;
 pub mod handoff_offers;
 pub mod youtube_handoff_operation;
 pub mod invitation_acceptance;
+pub mod replay_policy;
+
+// Seventh scalar contract: bounded replay-window value policy only.
+// Native cipher authentication, admitted peer/exchange ownership and resets
+// remain outside this copied-value ABI. No pointer or unsafe block crosses it.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_signaling_replay_initial() -> replay_policy::RawState {
+    replay_policy::initial()
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_signaling_replay_step(
+    abi_version: u32, state: replay_policy::RawState, sequence: u64,
+) -> replay_policy::RawResult {
+    replay_policy::step(abi_version, state, sequence)
+}
 
 #[no_mangle]
 #[must_use]

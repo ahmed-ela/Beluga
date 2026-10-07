@@ -371,6 +371,37 @@ beluga_core_invitation_acceptance_result_t beluga_core_invitation_acceptance_ste
     beluga_core_invitation_acceptance_event_t event
 );
 
+/* Seventh copied scalar contract: bounded replay-window value policy only.
+ * AEAD/JSON decoding, admitted peer/exchange ownership, resets and errors stay
+ * native. All UInt64 sequences, including zero and UINT64_MAX, are legal.
+ * Empty is canonical has_highest0/highest0/bitmap0; highest0/bitmap1 is populated.
+ * Populated requires bit0 and no bit for a negative sequence when highest<63.
+ * Malformed ABI/state and replay refusals preserve every input state field.
+ * There is no opcode, reset effect, pointer, token, callback or secret.
+ */
+#define BELUGA_SIGNALING_REPLAY_ABI_VERSION UINT32_C(1)
+#define BELUGA_SIGNALING_REPLAY_WINDOW_SIZE UINT64_C(64)
+enum beluga_signaling_replay_decision {
+    BELUGA_SIGNALING_REPLAY_ACCEPTED = 0,
+    BELUGA_SIGNALING_REPLAY_DUPLICATE = 1,
+    BELUGA_SIGNALING_REPLAY_OUTSIDE_WINDOW = 2,
+    BELUGA_SIGNALING_REPLAY_INVALID_INPUT = 3
+};
+typedef struct {
+    uint32_t abi_version;
+    uint32_t has_highest;
+    uint64_t highest;
+    uint64_t bitmap;
+} beluga_core_signaling_replay_state_t; /* size24 alignment8 */
+typedef struct {
+    beluga_core_signaling_replay_state_t state;
+    uint32_t decision;
+    uint32_t reserved; /* always zero */
+} beluga_core_signaling_replay_result_t; /* size32 alignment8 */
+
+beluga_core_signaling_replay_state_t beluga_core_signaling_replay_initial(void);
+beluga_core_signaling_replay_result_t beluga_core_signaling_replay_step(
+    uint32_t abi_version, beluga_core_signaling_replay_state_t state, uint64_t sequence);
 #ifdef __cplusplus
 }
 #endif

@@ -421,6 +421,65 @@ static void invitation_acceptance_smoke(void) {
     puts("BelugaCore C invitation acceptance ABI PASS: exact layouts, original guard order and one-use callback outcomes");
 }
 
+_Static_assert(sizeof(beluga_core_signaling_replay_state_t) == 24, "replay state size");
+_Static_assert(_Alignof(beluga_core_signaling_replay_state_t) == 8, "replay state alignment");
+_Static_assert(offsetof(beluga_core_signaling_replay_state_t, abi_version) == 0, "replay ABI offset");
+_Static_assert(offsetof(beluga_core_signaling_replay_state_t, has_highest) == 4, "replay presence offset");
+_Static_assert(offsetof(beluga_core_signaling_replay_state_t, highest) == 8, "replay highest offset");
+_Static_assert(offsetof(beluga_core_signaling_replay_state_t, bitmap) == 16, "replay bitmap offset");
+_Static_assert(sizeof(beluga_core_signaling_replay_result_t) == 32, "replay result size");
+_Static_assert(_Alignof(beluga_core_signaling_replay_result_t) == 8, "replay result alignment");
+_Static_assert(offsetof(beluga_core_signaling_replay_result_t, state) == 0, "replay state result offset");
+_Static_assert(offsetof(beluga_core_signaling_replay_result_t, decision) == 24, "replay decision offset");
+_Static_assert(offsetof(beluga_core_signaling_replay_result_t, reserved) == 28, "replay reserved offset");
+
+static void replay_same(beluga_core_signaling_replay_state_t left,
+                        beluga_core_signaling_replay_state_t right) {
+    assert(memcmp(&left, &right, sizeof(left)) == 0);
+}
+static void signaling_replay_smoke(void) {
+    const beluga_core_signaling_replay_state_t empty = beluga_core_signaling_replay_initial();
+    assert(empty.abi_version == 1 && empty.has_highest == 0 && empty.highest == 0 && empty.bitmap == 0);
+    beluga_core_signaling_replay_result_t r = beluga_core_signaling_replay_step(1, empty, 0);
+    assert(r.decision == 0 && r.reserved == 0 && r.state.abi_version == 1 &&
+           r.state.has_highest == 1 && r.state.highest == 0 && r.state.bitmap == 1);
+    const beluga_core_signaling_replay_state_t zero = r.state;
+    r = beluga_core_signaling_replay_step(1, zero, 0);
+    assert(r.decision == 1 && r.reserved == 0); replay_same(r.state, zero);
+    r = beluga_core_signaling_replay_step(1, zero, 63);
+    assert(r.decision == 0 && r.state.highest == 63 && r.state.bitmap == ((UINT64_C(1) << 63) | 1));
+    r = beluga_core_signaling_replay_step(1, zero, 64);
+    assert(r.decision == 0 && r.state.highest == 64 && r.state.bitmap == 1);
+    const beluga_core_signaling_replay_state_t sixty_four = r.state;
+    r = beluga_core_signaling_replay_step(1, sixty_four, 1);
+    assert(r.decision == 0 && r.state.highest == 64 && r.state.bitmap == ((UINT64_C(1) << 63) | 1));
+    const beluga_core_signaling_replay_state_t reordered = r.state;
+    r = beluga_core_signaling_replay_step(1, reordered, 0);
+    assert(r.decision == 2 && r.reserved == 0); replay_same(r.state, reordered);
+    r = beluga_core_signaling_replay_step(1, reordered, 2);
+    assert(r.decision == 0 && r.state.bitmap == ((UINT64_C(1) << 63) | (UINT64_C(1) << 62) | 1));
+    assert(sixty_four.bitmap == 1 && reordered.bitmap == ((UINT64_C(1) << 63) | 1));
+    r = beluga_core_signaling_replay_step(1, empty, UINT64_MAX);
+    assert(r.decision == 0 && r.state.highest == UINT64_MAX && r.state.bitmap == 1);
+    const beluga_core_signaling_replay_state_t maximum = r.state;
+    r = beluga_core_signaling_replay_step(1, maximum, UINT64_MAX - 63);
+    assert(r.decision == 0 && r.state.bitmap == ((UINT64_C(1) << 63) | 1));
+    r = beluga_core_signaling_replay_step(1, maximum, UINT64_MAX - 64);
+    assert(r.decision == 2 && r.reserved == 0); replay_same(r.state, maximum);
+    r = beluga_core_signaling_replay_step(1, maximum, UINT64_MAX);
+    assert(r.decision == 1 && r.reserved == 0); replay_same(r.state, maximum);
+    r = beluga_core_signaling_replay_step(2, maximum, UINT64_MAX);
+    assert(r.decision == 3 && r.reserved == 0); replay_same(r.state, maximum);
+    const beluga_core_signaling_replay_state_t bad[] = {
+        {0, 0, 0, 0}, {1, 2, 0, 0}, {1, 0, 1, 0}, {1, 0, 0, 1},
+        {1, 1, 10, 0}, {1, 1, 10, 2}, {1, 1, 0, 3}
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        r = beluga_core_signaling_replay_step(1, bad[i], 7);
+        assert(r.decision == 3 && r.reserved == 0); replay_same(r.state, bad[i]);
+    }
+    puts("BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection");
+}
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -531,5 +590,6 @@ int main(void) {
     puts("BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts");
     phone_operation_smoke();
     invitation_acceptance_smoke();
+    signaling_replay_smoke();
     return 0;
 }

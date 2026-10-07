@@ -14,6 +14,7 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
     case replayedSequence
     case sequenceOutsideReplayWindow
     case sequenceExhausted
+    case invalidSignalingReplayBridge
     case invalidDeviceIdentity
     case invalidPairingMessage
     case unsupportedPairingVersion
@@ -53,6 +54,8 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "The signaling envelope is too old."
         case .sequenceExhausted:
             "The signaling sequence is exhausted."
+        case .invalidSignalingReplayBridge:
+            "The signaling replay guard could not be verified."
         case .invalidDeviceIdentity:
             "The device identity is invalid."
         case .invalidPairingMessage:

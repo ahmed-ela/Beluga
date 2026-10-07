@@ -113,6 +113,9 @@ let package = Package(
         ),
         .target(
             name: "RemoteSessionCore",
+            dependencies: [
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS]))
+            ],
             path: "shared/Sources/RemoteSessionCore"
         ),
         .target(
@@ -259,7 +262,10 @@ let package = Package(
         ),
         .testTarget(
             name: "RemoteSessionCoreTests",
-            dependencies: ["RemoteSessionCore"],
+            dependencies: [
+                "RemoteSessionCore",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS]))
+            ],
             path: "shared/Tests/RemoteSessionCoreTests"
         ),
         .testTarget(
