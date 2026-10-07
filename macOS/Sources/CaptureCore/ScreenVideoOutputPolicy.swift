@@ -69,19 +69,30 @@ struct ScreenVideoDisplaySnapshot: Equatable, Sendable {
 enum ScreenVideoDisplayRequirementPolicy {
     static func isSatisfied(
         _ requirement: ScreenVideoDisplayRequirement,
-        by snapshot: ScreenVideoDisplaySnapshot
-    ) -> Bool {
-        guard snapshot.isOnline,
-            snapshot.isActive,
-            snapshot.vendorID == requirement.vendorID,
-            snapshot.productID == requirement.productID,
-            snapshot.serialNumber == requirement.serialNumber
-        else {
-            return false
+        by snapshot: ScreenVideoDisplaySnapshot,
+        producer: BelugaRustDisplayAdmissionProducer = .actual
+    ) throws -> Bool {
+        var input = BelugaRustDisplayAdmissionBoundary.RequirementInput()
+        input.abi_version = 1
+        input.required_vendor_id = requirement.vendorID
+        input.required_product_id = requirement.productID
+        input.required_serial_number = requirement.serialNumber
+        input.requires_sole_main_display = requirement.requiresSoleMainDisplay ? 1 : 0
+        input.display_id = snapshot.displayID
+        input.observed_vendor_id = snapshot.vendorID
+        input.observed_product_id = snapshot.productID
+        input.observed_serial_number = snapshot.serialNumber
+        input.is_online = snapshot.isOnline ? 1 : 0
+        input.is_active = snapshot.isActive ? 1 : 0
+        input.main_display_id = snapshot.mainDisplayID
+        input.online_display_count = UInt64(snapshot.onlineDisplayIDs.count)
+        input.sole_online_display_id = snapshot.onlineDisplayIDs.count == 1
+            ? snapshot.onlineDisplayIDs[0] : 0
+        let output = producer.requirement(input)
+        guard BelugaRustDisplayAdmissionBoundary.acceptsRequirement(input, output) else {
+            throw ScreenVideoDisplayAdmissionBridgeError.invalidBridge
         }
-        guard requirement.requiresSoleMainDisplay else { return true }
-        return snapshot.mainDisplayID == snapshot.displayID
-            && snapshot.onlineDisplayIDs == [snapshot.displayID]
+        return output.value == 1
     }
 }
 
@@ -91,25 +102,28 @@ enum ScreenVideoSourceDimensionKind: Equatable, Sendable {
     case framebufferPixels
 }
 
-/// Restricts framebuffer-pixel capture to OpenSteamer-owned virtual displays.
+/// Scalar decisions are copied into Rust; providers, native readback and stream effects stay native.
 enum ScreenVideoSourceDimensionPolicy {
-    private static let openSteamerVendorID: UInt32 = 0x6F73
-    private static let openSteamerProductIDs: Set<UInt32> = [0x1717, 0x1718]
-
-    static func dimensionKind(vendorID: UInt32, productID: UInt32) -> ScreenVideoSourceDimensionKind
-    {
-        guard vendorID == openSteamerVendorID,
-            openSteamerProductIDs.contains(productID)
-        else {
-            return .logical
+    static func dimensionKind(
+        vendorID: UInt32, productID: UInt32,
+        producer: BelugaRustDisplayAdmissionProducer = .actual
+    ) throws -> ScreenVideoSourceDimensionKind {
+        var input = BelugaRustDisplayAdmissionBoundary.KindInput()
+        input.abi_version = 1
+        input.vendor_id = vendorID
+        input.product_id = productID
+        let output = producer.kind(input)
+        guard BelugaRustDisplayAdmissionBoundary.acceptsKind(input, output) else {
+            // Never fallback to logical: the production caller early-returns for that result.
+            throw ScreenVideoDisplayAdmissionBridgeError.invalidBridge
         }
-        return .framebufferPixels
+        switch output.kind {
+        case 0: return .logical
+        case 1: return .framebufferPixels
+        default: throw ScreenVideoDisplayAdmissionBridgeError.invalidBridge
+        }
     }
 
-    /// Resolves the requested source framebuffer. Ordinary displays preserve the established
-    /// logical-size behavior. OpenSteamer-owned displays use Core Graphics' current framebuffer
-    /// pixels after proving that ScreenCaptureKit still identifies the same logical display; the
-    /// service separately proves the first delivered surface before publishing this format.
     static func sourceDimensions(
         vendorID: UInt32,
         productID: UInt32,
@@ -118,42 +132,46 @@ enum ScreenVideoSourceDimensionPolicy {
         filterContentHeight: Double,
         pointPixelScale: Double,
         coreGraphicsLogicalDimensions: ScreenVideoPixelDimensions,
-        coreGraphicsPixelDimensions: ScreenVideoPixelDimensions
-    ) -> ScreenVideoPixelDimensions? {
-        guard dimensionKind(vendorID: vendorID, productID: productID) == .framebufferPixels else {
-            return logicalDimensions
+        coreGraphicsPixelDimensions: ScreenVideoPixelDimensions,
+        producer: BelugaRustDisplayAdmissionProducer = .actual
+    ) throws -> ScreenVideoPixelDimensions? {
+        var input = BelugaRustDisplayAdmissionBoundary.SourceInput()
+        input.abi_version = 1
+        input.vendor_id = vendorID
+        input.product_id = productID
+        input.logical_width = Int64(logicalDimensions.width)
+        input.logical_height = Int64(logicalDimensions.height)
+        input.core_graphics_logical_width = Int64(coreGraphicsLogicalDimensions.width)
+        input.core_graphics_logical_height = Int64(coreGraphicsLogicalDimensions.height)
+        input.core_graphics_pixel_width = Int64(coreGraphicsPixelDimensions.width)
+        input.core_graphics_pixel_height = Int64(coreGraphicsPixelDimensions.height)
+        input.filter_content_width = filterContentWidth
+        input.filter_content_height = filterContentHeight
+        input.point_pixel_scale = pointPixelScale
+        let output = producer.source(input)
+        guard BelugaRustDisplayAdmissionBoundary.acceptsSource(input, output) else {
+            throw ScreenVideoDisplayAdmissionBridgeError.invalidBridge
         }
-
-        guard logicalDimensions.width >= 2,
-              logicalDimensions.height >= 2,
-              logicalDimensions.width <= 32_768,
-              logicalDimensions.height <= 32_768,
-              filterContentWidth.isFinite,
-              filterContentHeight.isFinite,
-              pointPixelScale.isFinite,
-              (1 ... 4).contains(pointPixelScale),
-              coreGraphicsLogicalDimensions.width >= 2,
-              coreGraphicsLogicalDimensions.height >= 2,
-              coreGraphicsPixelDimensions.width >= 2,
-              coreGraphicsPixelDimensions.height >= 2,
-              coreGraphicsPixelDimensions.width <= 32_768,
-              coreGraphicsPixelDimensions.height <= 32_768,
-              logicalDimensions == coreGraphicsLogicalDimensions,
-              abs(filterContentWidth - Double(logicalDimensions.width)) <= 0.5,
-              abs(filterContentHeight - Double(logicalDimensions.height)) <= 0.5 else {
-            return nil
-        }
-
-        return coreGraphicsPixelDimensions
+        guard output.has_dimensions == 1 else { return nil }
+        return ScreenVideoPixelDimensions(width: Int(output.width), height: Int(output.height))
     }
 
-    /// A Show transaction may publish its encoder format only if the framebuffer stayed fixed
-    /// throughout native SCStream startup.
     static func isStableAcrossStart(
         before: ScreenVideoPixelDimensions,
-        after: ScreenVideoPixelDimensions
-    ) -> Bool {
-        before == after
+        after: ScreenVideoPixelDimensions,
+        producer: BelugaRustDisplayAdmissionProducer = .actual
+    ) throws -> Bool {
+        var input = BelugaRustDisplayAdmissionBoundary.StabilityInput()
+        input.abi_version = 1
+        input.before_width = Int64(before.width)
+        input.before_height = Int64(before.height)
+        input.after_width = Int64(after.width)
+        input.after_height = Int64(after.height)
+        let output = producer.stability(input)
+        guard BelugaRustDisplayAdmissionBoundary.acceptsStability(input, output) else {
+            throw ScreenVideoDisplayAdmissionBridgeError.invalidBridge
+        }
+        return output.value == 1
     }
 }
 

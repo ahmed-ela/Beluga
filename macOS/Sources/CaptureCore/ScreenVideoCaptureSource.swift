@@ -402,7 +402,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
                     for: postStartDisplay,
                     filter: postStartFilter
                 )
-                guard ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
+                guard try ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
                     before: sourceFormat.dimensions,
                     after: postStartSourceFormat.dimensions
                 ), sourceFormat.expectedScaleFactor == postStartSourceFormat.expectedScaleFactor,
@@ -772,7 +772,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
             mainDisplayID: CGMainDisplayID(),
             onlineDisplayIDs: onlineDisplayIDs
         )
-        guard ScreenVideoDisplayRequirementPolicy.isSatisfied(
+        guard try ScreenVideoDisplayRequirementPolicy.isSatisfied(
             displayRequirement,
             by: snapshot
         ) else {
@@ -788,7 +788,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
     ) async throws -> ScreenVideoActiveSourceFormat {
         let vendorID = CGDisplayVendorNumber(display.displayID)
         let productID = CGDisplayModelNumber(display.displayID)
-        guard ScreenVideoSourceDimensionPolicy.dimensionKind(
+        guard try ScreenVideoSourceDimensionPolicy.dimensionKind(
             vendorID: vendorID,
             productID: productID
         ) == .framebufferPixels else {
@@ -808,7 +808,7 @@ public final class ScreenVideoCaptureSource: @unchecked Sendable {
               mode.pixelDimensions.height >= 2 else {
             throw ScreenVideoCaptureError.displayModeUnavailable(display.displayID)
         }
-        let sourceDimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
+        let sourceDimensions = try ScreenVideoSourceDimensionPolicy.sourceDimensions(
             vendorID: vendorID,
             productID: productID,
             logicalDimensions: ScreenVideoPixelDimensions(

@@ -108,7 +108,10 @@ let package = Package(
         ),
         .target(
             name: "CaptureCore",
-            dependencies: ["WAV", "Utilities", "Streaming"],
+            dependencies: [
+                "WAV", "Utilities", "Streaming",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS]))
+            ],
             path: "macOS/Sources/CaptureCore"
         ),
         .target(
@@ -232,7 +235,10 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureCoreTests",
-            dependencies: ["CaptureCore", "Streaming"],
+            dependencies: [
+                "CaptureCore", "Streaming",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS]))
+            ],
             path: "macOS/Tests/CaptureCoreTests"
         ),
         .testTarget(

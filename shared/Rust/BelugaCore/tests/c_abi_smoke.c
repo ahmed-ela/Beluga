@@ -1323,6 +1323,622 @@ static void smoke_batch_a_policies(void) {
     ba_hosted_smoke();
 }
 
+
+/* Display admission smoke: copied values only; no native display IO. */
+_Static_assert(sizeof(beluga_core_display_requirement_facts_t) == 64, "display RequirementInput size");
+_Static_assert(_Alignof(beluga_core_display_requirement_facts_t) == 8, "display RequirementInput alignment");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, abi_version) == 0, "display RequirementInput.abi_version offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, reserved) == 4, "display RequirementInput.reserved offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, required_vendor_id) == 8, "display RequirementInput.required_vendor_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, required_product_id) == 12, "display RequirementInput.required_product_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, required_serial_number) == 16, "display RequirementInput.required_serial_number offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, requires_sole_main_display) == 20, "display RequirementInput.requires_sole_main_display offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, display_id) == 24, "display RequirementInput.display_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, observed_vendor_id) == 28, "display RequirementInput.observed_vendor_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, observed_product_id) == 32, "display RequirementInput.observed_product_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, observed_serial_number) == 36, "display RequirementInput.observed_serial_number offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, is_online) == 40, "display RequirementInput.is_online offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, is_active) == 44, "display RequirementInput.is_active offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, main_display_id) == 48, "display RequirementInput.main_display_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, sole_online_display_id) == 52, "display RequirementInput.sole_online_display_id offset");
+_Static_assert(offsetof(beluga_core_display_requirement_facts_t, online_display_count) == 56, "display RequirementInput.online_display_count offset");
+_Static_assert(sizeof(beluga_core_display_boolean_decision_t) == 16, "display BooleanOutput size");
+_Static_assert(_Alignof(beluga_core_display_boolean_decision_t) == 4, "display BooleanOutput alignment");
+_Static_assert(offsetof(beluga_core_display_boolean_decision_t, abi_version) == 0, "display BooleanOutput.abi_version offset");
+_Static_assert(offsetof(beluga_core_display_boolean_decision_t, status) == 4, "display BooleanOutput.status offset");
+_Static_assert(offsetof(beluga_core_display_boolean_decision_t, value) == 8, "display BooleanOutput.value offset");
+_Static_assert(offsetof(beluga_core_display_boolean_decision_t, reserved) == 12, "display BooleanOutput.reserved offset");
+_Static_assert(sizeof(beluga_core_source_dimension_kind_facts_t) == 16, "display KindInput size");
+_Static_assert(_Alignof(beluga_core_source_dimension_kind_facts_t) == 4, "display KindInput alignment");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_facts_t, abi_version) == 0, "display KindInput.abi_version offset");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_facts_t, reserved) == 4, "display KindInput.reserved offset");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_facts_t, vendor_id) == 8, "display KindInput.vendor_id offset");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_facts_t, product_id) == 12, "display KindInput.product_id offset");
+_Static_assert(sizeof(beluga_core_source_dimension_kind_decision_t) == 16, "display KindOutput size");
+_Static_assert(_Alignof(beluga_core_source_dimension_kind_decision_t) == 4, "display KindOutput alignment");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_decision_t, abi_version) == 0, "display KindOutput.abi_version offset");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_decision_t, status) == 4, "display KindOutput.status offset");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_decision_t, kind) == 8, "display KindOutput.kind offset");
+_Static_assert(offsetof(beluga_core_source_dimension_kind_decision_t, reserved) == 12, "display KindOutput.reserved offset");
+_Static_assert(sizeof(beluga_core_source_dimensions_facts_t) == 88, "display SourceInput size");
+_Static_assert(_Alignof(beluga_core_source_dimensions_facts_t) == 8, "display SourceInput alignment");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, abi_version) == 0, "display SourceInput.abi_version offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, reserved) == 4, "display SourceInput.reserved offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, vendor_id) == 8, "display SourceInput.vendor_id offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, product_id) == 12, "display SourceInput.product_id offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, logical_width) == 16, "display SourceInput.logical_width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, logical_height) == 24, "display SourceInput.logical_height offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, core_graphics_logical_width) == 32, "display SourceInput.core_graphics_logical_width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, core_graphics_logical_height) == 40, "display SourceInput.core_graphics_logical_height offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, core_graphics_pixel_width) == 48, "display SourceInput.core_graphics_pixel_width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, core_graphics_pixel_height) == 56, "display SourceInput.core_graphics_pixel_height offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, filter_content_width) == 64, "display SourceInput.filter_content_width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, filter_content_height) == 72, "display SourceInput.filter_content_height offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_facts_t, point_pixel_scale) == 80, "display SourceInput.point_pixel_scale offset");
+_Static_assert(sizeof(beluga_core_source_dimensions_decision_t) == 32, "display SourceOutput size");
+_Static_assert(_Alignof(beluga_core_source_dimensions_decision_t) == 8, "display SourceOutput alignment");
+_Static_assert(offsetof(beluga_core_source_dimensions_decision_t, abi_version) == 0, "display SourceOutput.abi_version offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_decision_t, status) == 4, "display SourceOutput.status offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_decision_t, kind) == 8, "display SourceOutput.kind offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_decision_t, has_dimensions) == 12, "display SourceOutput.has_dimensions offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_decision_t, width) == 16, "display SourceOutput.width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_decision_t, height) == 24, "display SourceOutput.height offset");
+_Static_assert(sizeof(beluga_core_source_dimensions_stability_facts_t) == 40, "display StabilityInput size");
+_Static_assert(_Alignof(beluga_core_source_dimensions_stability_facts_t) == 8, "display StabilityInput alignment");
+_Static_assert(offsetof(beluga_core_source_dimensions_stability_facts_t, abi_version) == 0, "display StabilityInput.abi_version offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_stability_facts_t, reserved) == 4, "display StabilityInput.reserved offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_stability_facts_t, before_width) == 8, "display StabilityInput.before_width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_stability_facts_t, before_height) == 16, "display StabilityInput.before_height offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_stability_facts_t, after_width) == 24, "display StabilityInput.after_width offset");
+_Static_assert(offsetof(beluga_core_source_dimensions_stability_facts_t, after_height) == 32, "display StabilityInput.after_height offset");
+
+static double display_f64_bits(uint64_t bits) {
+    double value; memcpy(&value, &bits, sizeof(value)); return value;
+}
+static beluga_core_display_requirement_facts_t display_requirement_input(void) {
+    return (beluga_core_display_requirement_facts_t){
+        .abi_version=1, .reserved=0, .required_vendor_id=0x6f73, .required_product_id=0x1717,
+        .required_serial_number=7, .requires_sole_main_display=1, .display_id=42,
+        .observed_vendor_id=0x6f73, .observed_product_id=0x1717, .observed_serial_number=7,
+        .is_online=1, .is_active=1, .main_display_id=42, .sole_online_display_id=42,
+        .online_display_count=1
+    };
+}
+static beluga_core_source_dimensions_facts_t display_source_input(void) {
+    return (beluga_core_source_dimensions_facts_t){
+        .abi_version=1, .reserved=0, .vendor_id=0x6f73, .product_id=0x1717,
+        .logical_width=390, .logical_height=844, .core_graphics_logical_width=390,
+        .core_graphics_logical_height=844, .core_graphics_pixel_width=1170,
+        .core_graphics_pixel_height=2532, .filter_content_width=390.0,
+        .filter_content_height=844.0, .point_pixel_scale=3.0
+    };
+}
+static void display_expect_requirement(beluga_core_display_requirement_facts_t input,
+                                       uint32_t status, uint32_t value) {
+    const beluga_core_display_requirement_facts_t before = input;
+    const beluga_core_display_boolean_decision_t output = beluga_core_display_requirement_admission(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    assert(output.abi_version == 1 && output.status == status && output.value == value && output.reserved == 0);
+}
+static void display_expect_kind(beluga_core_source_dimension_kind_facts_t input,
+                               uint32_t status, uint32_t kind) {
+    const beluga_core_source_dimension_kind_facts_t before = input;
+    const beluga_core_source_dimension_kind_decision_t output = beluga_core_source_dimension_kind(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    assert(output.abi_version == 1 && output.status == status && output.kind == kind && output.reserved == 0);
+}
+static void display_expect_source(beluga_core_source_dimensions_facts_t input,
+                                 uint32_t status, uint32_t kind, uint32_t present,
+                                 int64_t width, int64_t height) {
+    const beluga_core_source_dimensions_facts_t before = input;
+    const beluga_core_source_dimensions_decision_t output = beluga_core_source_dimensions(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    assert(output.abi_version == 1 && output.status == status && output.kind == kind &&
+           output.has_dimensions == present && output.width == width && output.height == height);
+}
+static void display_expect_stable(beluga_core_source_dimensions_stability_facts_t input,
+                                 uint32_t status, uint32_t value) {
+    const beluga_core_source_dimensions_stability_facts_t before = input;
+    const beluga_core_display_boolean_decision_t output = beluga_core_source_dimensions_stable(input);
+    assert(memcmp(&input, &before, sizeof(input)) == 0);
+    assert(output.abi_version == 1 && output.status == status && output.value == value && output.reserved == 0);
+}
+static void display_admission_smoke(void) {
+    /* exact sole main identity */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+
+      display_expect_requirement(input, 1, 1); }
+    /* required_vendor_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.required_vendor_id = 0x00016f73;
+      display_expect_requirement(input, 1, 0); }
+    /* observed_vendor_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.observed_vendor_id = 0x00016f73;
+      display_expect_requirement(input, 1, 0); }
+    /* required_product_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.required_product_id = 0x00011717;
+      display_expect_requirement(input, 1, 0); }
+    /* observed_product_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.observed_product_id = 0x00011717;
+      display_expect_requirement(input, 1, 0); }
+    /* required_serial_number independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.required_serial_number = 0x00010007;
+      display_expect_requirement(input, 1, 0); }
+    /* observed_serial_number independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.observed_serial_number = 0x00010007;
+      display_expect_requirement(input, 1, 0); }
+    /* is_online independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.is_online = 0;
+      display_expect_requirement(input, 1, 0); }
+    /* is_active independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.is_active = 0;
+      display_expect_requirement(input, 1, 0); }
+    /* main_display_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.main_display_id = 0x0001002a;
+      display_expect_requirement(input, 1, 0); }
+    /* sole_online_display_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.sole_online_display_id = 0x0001002a;
+      display_expect_requirement(input, 1, 0); }
+    /* display_id independent mismatch */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.display_id = 0x0001002a;
+      display_expect_requirement(input, 1, 0); }
+    /* exact topology count 0 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.online_display_count = 0;
+      display_expect_requirement(input, 1, 0); }
+    /* exact topology count 2 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.online_display_count = 2;
+      display_expect_requirement(input, 1, 0); }
+    /* exact topology count UINT64_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.online_display_count = UINT64_MAX;
+      display_expect_requirement(input, 1, 0); }
+    /* exact topology count 0x0000000100000001 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.online_display_count = 0x0000000100000001;
+      display_expect_requirement(input, 1, 0); }
+    /* optional ignores absent and arbitrary topology */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = 0;       input.main_display_id = 0;       input.sole_online_display_id = UINT32_MAX;       input.online_display_count = UINT64_MAX;
+      display_expect_requirement(input, 1, 1); }
+    /* full high-bit identity remains valid */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.required_vendor_id = 0x00016f73;       input.observed_vendor_id = 0x00016f73;       input.required_product_id = 0x00011717;       input.observed_product_id = 0x00011717;       input.required_serial_number = 0x00010007;       input.observed_serial_number = 0x00010007;       input.display_id = 0x0001002a;       input.main_display_id = 0x0001002a;       input.sole_online_display_id = 0x0001002a;
+      display_expect_requirement(input, 1, 1); }
+    /* exact unrestricted identity 0 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.required_vendor_id = 0;       input.observed_vendor_id = 0;       input.required_product_id = 0;       input.observed_product_id = 0;       input.required_serial_number = 0;       input.observed_serial_number = 0;       input.display_id = 0;       input.main_display_id = 0;       input.sole_online_display_id = 0;
+      display_expect_requirement(input, 1, 1); }
+    /* exact unrestricted identity UINT32_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.required_vendor_id = UINT32_MAX;       input.observed_vendor_id = UINT32_MAX;       input.required_product_id = UINT32_MAX;       input.observed_product_id = UINT32_MAX;       input.required_serial_number = UINT32_MAX;       input.observed_serial_number = UINT32_MAX;       input.display_id = UINT32_MAX;       input.main_display_id = UINT32_MAX;       input.sole_online_display_id = UINT32_MAX;
+      display_expect_requirement(input, 1, 1); }
+    /* closed requires_sole_main_display=2 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = 2;
+      display_expect_requirement(input, 0, 0); }
+    /* closed requires_sole_main_display=UINT32_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = UINT32_MAX;
+      display_expect_requirement(input, 0, 0); }
+    /* closed is_online=2 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = 0;       input.is_online = 2;
+      display_expect_requirement(input, 0, 0); }
+    /* closed is_online=UINT32_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = 0;       input.is_online = UINT32_MAX;
+      display_expect_requirement(input, 0, 0); }
+    /* closed is_active=2 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = 0;       input.is_active = 2;
+      display_expect_requirement(input, 0, 0); }
+    /* closed is_active=UINT32_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.requires_sole_main_display = 0;       input.is_active = UINT32_MAX;
+      display_expect_requirement(input, 0, 0); }
+    /* literal vendor=0x6f73 product=0x1717 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x6f73;       input.product_id = 0x1717;
+      display_expect_kind(input, 1, 1); }
+    /* literal vendor=0x6f73 product=0x1718 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x6f73;       input.product_id = 0x1718;
+      display_expect_kind(input, 1, 1); }
+    /* literal vendor=0 product=0x1717 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0;       input.product_id = 0x1717;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=0x6f73 product=0x1719 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x6f73;       input.product_id = 0x1719;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=0x00016f73 product=0x1717 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x00016f73;       input.product_id = 0x1717;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=0x00016f73 product=0x1718 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x00016f73;       input.product_id = 0x1718;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=0x6f73 product=0x00011717 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x6f73;       input.product_id = 0x00011717;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=0x6f73 product=0x00011718 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x6f73;       input.product_id = 0x00011718;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=0x00016f73 product=0x00011717 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = 0x00016f73;       input.product_id = 0x00011717;
+      display_expect_kind(input, 1, 0); }
+    /* literal vendor=UINT32_MAX product=UINT32_MAX */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.vendor_id = UINT32_MAX;       input.product_id = UINT32_MAX;
+      display_expect_kind(input, 1, 0); }
+    /* ordinary signed endpoints INT64_MIN/INT64_MAX */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary signed endpoints INT64_MAX/INT64_MIN */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0;       input.logical_width = INT64_MAX;       input.logical_height = INT64_MIN;
+      display_expect_source(input, 1, 0, 1, INT64_MAX, INT64_MIN); }
+    /* ordinary signed endpoints -1/0 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0;       input.logical_width = -1;       input.logical_height = 0;
+      display_expect_source(input, 1, 0, 1, -1, 0); }
+    /* ordinary signed endpoints 0/1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0;       input.logical_width = 0;       input.logical_height = 1;
+      display_expect_source(input, 1, 0, 1, 0, 1); }
+    /* ordinary signed endpoints 32769/-32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0;       input.logical_width = 32769;       input.logical_height = -32769;
+      display_expect_source(input, 1, 0, 1, 32769, -32769); }
+    /* ordinary alias/source early return 0/0x1717 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0;       input.product_id = 0x1717;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return 0x6f73/0x1719 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0x6f73;       input.product_id = 0x1719;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return 0x00016f73/0x1717 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0x00016f73;       input.product_id = 0x1717;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return 0x00016f73/0x1718 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0x00016f73;       input.product_id = 0x1718;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return 0x6f73/0x00011717 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0x6f73;       input.product_id = 0x00011717;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return 0x6f73/0x00011718 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0x6f73;       input.product_id = 0x00011718;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return 0x00016f73/0x00011717 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = 0x00016f73;       input.product_id = 0x00011717;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* ordinary alias/source early return UINT32_MAX/UINT32_MAX */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.vendor_id = UINT32_MAX;       input.product_id = UINT32_MAX;       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;
+      display_expect_source(input, 1, 0, 1, INT64_MIN, INT64_MAX); }
+    /* owned exact current framebuffer */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* second owned product exact current framebuffer */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.product_id = 0x1718;
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned minimum inclusive */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 2;       input.logical_height = 2;       input.core_graphics_logical_width = 2;       input.core_graphics_logical_height = 2;       input.core_graphics_pixel_width = 2;       input.core_graphics_pixel_height = 2;       input.filter_content_width = 2.0;       input.filter_content_height = 2.0;       input.point_pixel_scale = 1.0;
+      display_expect_source(input, 1, 1, 1, 2, 2); }
+    /* owned maximum inclusive */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 32768;       input.logical_height = 32768;       input.core_graphics_logical_width = 32768;       input.core_graphics_logical_height = 32768;       input.core_graphics_pixel_width = 32768;       input.core_graphics_pixel_height = 32768;       input.filter_content_width = 32768.0;       input.filter_content_height = 32768.0;       input.point_pixel_scale = 4.0;
+      display_expect_source(input, 1, 1, 1, 32768, 32768); }
+    /* owned odd framebuffer has no chroma/output rounding */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 2;       input.logical_height = 2;       input.core_graphics_logical_width = 2;       input.core_graphics_logical_height = 2;       input.core_graphics_pixel_width = 3;       input.core_graphics_pixel_height = 5;       input.filter_content_width = 2.0;       input.filter_content_height = 2.0;       input.point_pixel_scale = 4.0;
+      display_expect_source(input, 1, 1, 1, 3, 5); }
+    /* owned refuses logical_width=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 1;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses logical_width=32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 32769;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses logical_height=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_height = 1;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses logical_height=32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_height = 32769;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_logical_width=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = 1;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_logical_width=32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_width = 32769;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_logical_height=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_height = 1;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_logical_height=32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_logical_height = 32769;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_pixel_width=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_pixel_width = 1;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_pixel_width=32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_pixel_width = 32769;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_pixel_height=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_pixel_height = 1;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses core_graphics_pixel_height=32769 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.core_graphics_pixel_height = 32769;
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite filter_content_width 0x7ff80000000000a5 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite filter_content_width 0x7ff0000000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0x7ff0000000000000));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite filter_content_width 0xfff0000000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0xfff0000000000000));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite filter_content_height 0x7ff80000000000a5 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0x7ff80000000000a5));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite filter_content_height 0x7ff0000000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite filter_content_height 0xfff0000000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0xfff0000000000000));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite point_pixel_scale 0x7ff80000000000a5 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = display_f64_bits(UINT64_C(0x7ff80000000000a5));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite point_pixel_scale 0x7ff0000000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = display_f64_bits(UINT64_C(0x7ff0000000000000));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned refuses nonfinite point_pixel_scale 0xfff0000000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = display_f64_bits(UINT64_C(0xfff0000000000000));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned scale literal {"bits":"0x3fefffffffffffff"} */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = display_f64_bits(UINT64_C(0x3fefffffffffffff));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned scale literal "1.0" */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = 1.0;
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned scale literal "4.0" */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = 4.0;
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned scale literal {"bits":"0x4010000000000001"} */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.point_pixel_scale = display_f64_bits(UINT64_C(0x4010000000000001));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned half-pixel literal filter_content_width 0x4078580000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0x4078580000000000));
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned half-pixel literal filter_content_width 0x407857ffffffffff */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0x407857ffffffffff));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned half-pixel literal filter_content_width 0x4078680000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0x4078680000000000));
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned half-pixel literal filter_content_width 0x4078680000000001 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_width = display_f64_bits(UINT64_C(0x4078680000000001));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned half-pixel literal filter_content_height 0x408a5c0000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0x408a5c0000000000));
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned half-pixel literal filter_content_height 0x408a5bffffffffff */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0x408a5bffffffffff));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* owned half-pixel literal filter_content_height 0x408a640000000000 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0x408a640000000000));
+      display_expect_source(input, 1, 1, 1, 1170, 2532); }
+    /* owned half-pixel literal filter_content_height 0x408a640000000001 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.filter_content_height = display_f64_bits(UINT64_C(0x408a640000000001));
+      display_expect_source(input, 1, 1, 0, 0, 0); }
+    /* signed exact stability */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.before_width = INT64_MIN;       input.before_height = INT64_MAX;       input.after_width = INT64_MIN;       input.after_height = INT64_MAX;
+      display_expect_stable(input, 1, 1); }
+    /* signed exact stability */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.before_width = INT64_MIN;       input.before_height = INT64_MAX;       input.after_width = INT64_MIN;       input.after_height = 0;
+      display_expect_stable(input, 1, 0); }
+    /* signed exact stability */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.before_width = INT64_MIN;       input.before_height = INT64_MAX;       input.after_width = 0;       input.after_height = INT64_MAX;
+      display_expect_stable(input, 1, 0); }
+    /* signed exact stability */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.before_width = 0;       input.before_height = 0;       input.after_width = 0;       input.after_height = 0;
+      display_expect_stable(input, 1, 1); }
+    /* signed exact stability */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.before_width = -1;       input.before_height = 1;       input.after_width = -1;       input.after_height = 1;
+      display_expect_stable(input, 1, 1); }
+    /* signed exact stability */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.before_width = 32769;       input.before_height = -32769;       input.after_width = 32769;       input.after_height = -32769;
+      display_expect_stable(input, 1, 1); }
+    /* independent envelope abi_version=0 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.abi_version = 0;
+      display_expect_requirement(input, 0, 0); }
+    /* independent envelope abi_version=2 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.abi_version = 2;
+      display_expect_requirement(input, 0, 0); }
+    /* independent envelope abi_version=UINT32_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.abi_version = UINT32_MAX;
+      display_expect_requirement(input, 0, 0); }
+    /* independent envelope reserved=1 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.reserved = 1;
+      display_expect_requirement(input, 0, 0); }
+    /* independent envelope reserved=2 */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.reserved = 2;
+      display_expect_requirement(input, 0, 0); }
+    /* independent envelope reserved=UINT32_MAX */
+    { beluga_core_display_requirement_facts_t input = display_requirement_input();
+      input.reserved = UINT32_MAX;
+      display_expect_requirement(input, 0, 0); }
+    /* independent envelope abi_version=0 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.abi_version = 0;
+      display_expect_kind(input, 0, 0); }
+    /* independent envelope abi_version=2 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.abi_version = 2;
+      display_expect_kind(input, 0, 0); }
+    /* independent envelope abi_version=UINT32_MAX */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.abi_version = UINT32_MAX;
+      display_expect_kind(input, 0, 0); }
+    /* independent envelope reserved=1 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.reserved = 1;
+      display_expect_kind(input, 0, 0); }
+    /* independent envelope reserved=2 */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.reserved = 2;
+      display_expect_kind(input, 0, 0); }
+    /* independent envelope reserved=UINT32_MAX */
+    { beluga_core_source_dimension_kind_facts_t input = {1, 0, 0x6f73, 0x1717};
+      input.reserved = UINT32_MAX;
+      display_expect_kind(input, 0, 0); }
+    /* independent envelope abi_version=0 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.abi_version = 0;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* independent envelope abi_version=2 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.abi_version = 2;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* independent envelope abi_version=UINT32_MAX */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.abi_version = UINT32_MAX;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* independent envelope reserved=1 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.reserved = 1;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* independent envelope reserved=2 */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.reserved = 2;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* independent envelope reserved=UINT32_MAX */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.reserved = UINT32_MAX;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* independent envelope abi_version=0 */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.abi_version = 0;
+      display_expect_stable(input, 0, 0); }
+    /* independent envelope abi_version=2 */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.abi_version = 2;
+      display_expect_stable(input, 0, 0); }
+    /* independent envelope abi_version=UINT32_MAX */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.abi_version = UINT32_MAX;
+      display_expect_stable(input, 0, 0); }
+    /* independent envelope reserved=1 */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.reserved = 1;
+      display_expect_stable(input, 0, 0); }
+    /* independent envelope reserved=2 */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.reserved = 2;
+      display_expect_stable(input, 0, 0); }
+    /* independent envelope reserved=UINT32_MAX */
+    { beluga_core_source_dimensions_stability_facts_t input = {1, 0, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX};
+      input.reserved = UINT32_MAX;
+      display_expect_stable(input, 0, 0); }
+    /* envelope precedes ordinary branch abi_version */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.vendor_id = 0;       input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;       input.abi_version = 0;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* envelope precedes ordinary branch reserved */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.vendor_id = 0;       input.core_graphics_logical_width = INT64_MIN;       input.core_graphics_logical_height = INT64_MAX;       input.core_graphics_pixel_width = INT64_MIN;       input.core_graphics_pixel_height = INT64_MAX;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0x7ff0000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));       input.logical_width = INT64_MIN;       input.logical_height = INT64_MAX;       input.reserved = 1;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* envelope precedes legitimate owned absence abi_version */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 1;       input.abi_version = 0;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* envelope precedes legitimate owned absence reserved */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.logical_width = 1;       input.reserved = 1;
+      display_expect_source(input, 0, 0, 0, 0, 0); }
+    /* ordinary ignores three distinct NaN payloads */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.vendor_id = 0;       input.logical_width = INT64_MAX;       input.logical_height = INT64_MIN;       input.filter_content_width = display_f64_bits(UINT64_C(0x7ff80000000000a5));       input.filter_content_height = display_f64_bits(UINT64_C(0xfff800000000005a));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x7ff8000000000001));
+      display_expect_source(input, 1, 0, 1, INT64_MAX, INT64_MIN); }
+    /* ordinary ignores positive and negative signed zero */
+    { beluga_core_source_dimensions_facts_t input = display_source_input();
+      input.vendor_id = 0;       input.logical_width = -1;       input.logical_height = 1;       input.filter_content_width = display_f64_bits(UINT64_C(0x8000000000000000));       input.filter_content_height = display_f64_bits(UINT64_C(0x0000000000000000));       input.point_pixel_scale = display_f64_bits(UINT64_C(0x8000000000000000));
+      display_expect_source(input, 1, 0, 1, -1, 1); }
+    puts("BelugaCore C display admission ABI PASS: exact layouts, native branch order, signed endpoints and unchanged refusals");
+}
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -1440,5 +2056,6 @@ int main(void) {
     supported_player_arbitration_smoke();
     availability_retry_smoke();
     smoke_batch_a_policies();
+    display_admission_smoke();
     return 0;
 }

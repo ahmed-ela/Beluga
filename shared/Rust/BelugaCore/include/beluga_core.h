@@ -613,6 +613,44 @@ beluga_core_hosted_call_decision_t beluga_core_hosted_call_observation(beluga_co
 beluga_core_hosted_call_decision_t beluga_core_hosted_call_evidence(beluga_core_hosted_call_evidence_facts_t);
 beluga_core_hosted_call_decision_t beluga_core_hosted_call_peer_generation(beluga_core_hosted_call_peer_facts_t);
 
+/* Copied inputs only. No pointers, ownership, allocation, display IO or wire changes. */
+typedef struct {
+    uint32_t abi_version, reserved;
+    uint32_t required_vendor_id, required_product_id, required_serial_number;
+    uint32_t requires_sole_main_display, display_id;
+    uint32_t observed_vendor_id, observed_product_id, observed_serial_number;
+    uint32_t is_online, is_active, main_display_id, sole_online_display_id;
+    uint64_t online_display_count;
+} beluga_core_display_requirement_facts_t;
+typedef struct {
+    uint32_t abi_version, status, value, reserved;
+} beluga_core_display_boolean_decision_t;
+typedef struct {
+    uint32_t abi_version, reserved, vendor_id, product_id;
+} beluga_core_source_dimension_kind_facts_t;
+typedef struct {
+    uint32_t abi_version, status, kind, reserved;
+} beluga_core_source_dimension_kind_decision_t;
+typedef struct {
+    uint32_t abi_version, reserved, vendor_id, product_id;
+    int64_t logical_width, logical_height;
+    int64_t core_graphics_logical_width, core_graphics_logical_height;
+    int64_t core_graphics_pixel_width, core_graphics_pixel_height;
+    double filter_content_width, filter_content_height, point_pixel_scale;
+} beluga_core_source_dimensions_facts_t;
+typedef struct {
+    uint32_t abi_version, status, kind, has_dimensions;
+    int64_t width, height;
+} beluga_core_source_dimensions_decision_t;
+typedef struct {
+    uint32_t abi_version, reserved;
+    int64_t before_width, before_height, after_width, after_height;
+} beluga_core_source_dimensions_stability_facts_t;
+beluga_core_display_boolean_decision_t beluga_core_display_requirement_admission(beluga_core_display_requirement_facts_t);
+beluga_core_source_dimension_kind_decision_t beluga_core_source_dimension_kind(beluga_core_source_dimension_kind_facts_t);
+beluga_core_source_dimensions_decision_t beluga_core_source_dimensions(beluga_core_source_dimensions_facts_t);
+beluga_core_display_boolean_decision_t beluga_core_source_dimensions_stable(beluga_core_source_dimensions_stability_facts_t);
+
 #ifdef __cplusplus
 }
 #endif

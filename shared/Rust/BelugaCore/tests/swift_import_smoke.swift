@@ -1375,3 +1375,763 @@ func batchAPolicySmoke() {
     print("BelugaCore Swift hosted call import/link PASS: exact layouts, strict watermark and generation identity, unchanged refusals")
 }
 batchAPolicySmoke()
+
+// Display admission smoke: copied ABI values, no native display effects.
+func displayAdmissionSmoke() {
+    typealias DisplayRequirement = beluga_core_display_requirement_facts_t
+    precondition(MemoryLayout<DisplayRequirement>.size == 64 && MemoryLayout<DisplayRequirement>.alignment == 8 && MemoryLayout<DisplayRequirement>.stride == 64)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.abi_version) == 0)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.reserved) == 4)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.required_vendor_id) == 8)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.required_product_id) == 12)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.required_serial_number) == 16)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.requires_sole_main_display) == 20)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.display_id) == 24)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.observed_vendor_id) == 28)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.observed_product_id) == 32)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.observed_serial_number) == 36)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.is_online) == 40)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.is_active) == 44)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.main_display_id) == 48)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.sole_online_display_id) == 52)
+    precondition(MemoryLayout<DisplayRequirement>.offset(of: \DisplayRequirement.online_display_count) == 56)
+    typealias DisplayBoolean = beluga_core_display_boolean_decision_t
+    precondition(MemoryLayout<DisplayBoolean>.size == 16 && MemoryLayout<DisplayBoolean>.alignment == 4 && MemoryLayout<DisplayBoolean>.stride == 16)
+    precondition(MemoryLayout<DisplayBoolean>.offset(of: \DisplayBoolean.abi_version) == 0)
+    precondition(MemoryLayout<DisplayBoolean>.offset(of: \DisplayBoolean.status) == 4)
+    precondition(MemoryLayout<DisplayBoolean>.offset(of: \DisplayBoolean.value) == 8)
+    precondition(MemoryLayout<DisplayBoolean>.offset(of: \DisplayBoolean.reserved) == 12)
+    typealias DisplayKind = beluga_core_source_dimension_kind_facts_t
+    precondition(MemoryLayout<DisplayKind>.size == 16 && MemoryLayout<DisplayKind>.alignment == 4 && MemoryLayout<DisplayKind>.stride == 16)
+    precondition(MemoryLayout<DisplayKind>.offset(of: \DisplayKind.abi_version) == 0)
+    precondition(MemoryLayout<DisplayKind>.offset(of: \DisplayKind.reserved) == 4)
+    precondition(MemoryLayout<DisplayKind>.offset(of: \DisplayKind.vendor_id) == 8)
+    precondition(MemoryLayout<DisplayKind>.offset(of: \DisplayKind.product_id) == 12)
+    typealias DisplayKindOutput = beluga_core_source_dimension_kind_decision_t
+    precondition(MemoryLayout<DisplayKindOutput>.size == 16 && MemoryLayout<DisplayKindOutput>.alignment == 4 && MemoryLayout<DisplayKindOutput>.stride == 16)
+    precondition(MemoryLayout<DisplayKindOutput>.offset(of: \DisplayKindOutput.abi_version) == 0)
+    precondition(MemoryLayout<DisplayKindOutput>.offset(of: \DisplayKindOutput.status) == 4)
+    precondition(MemoryLayout<DisplayKindOutput>.offset(of: \DisplayKindOutput.kind) == 8)
+    precondition(MemoryLayout<DisplayKindOutput>.offset(of: \DisplayKindOutput.reserved) == 12)
+    typealias DisplaySource = beluga_core_source_dimensions_facts_t
+    precondition(MemoryLayout<DisplaySource>.size == 88 && MemoryLayout<DisplaySource>.alignment == 8 && MemoryLayout<DisplaySource>.stride == 88)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.abi_version) == 0)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.reserved) == 4)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.vendor_id) == 8)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.product_id) == 12)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.logical_width) == 16)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.logical_height) == 24)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.core_graphics_logical_width) == 32)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.core_graphics_logical_height) == 40)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.core_graphics_pixel_width) == 48)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.core_graphics_pixel_height) == 56)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.filter_content_width) == 64)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.filter_content_height) == 72)
+    precondition(MemoryLayout<DisplaySource>.offset(of: \DisplaySource.point_pixel_scale) == 80)
+    typealias DisplaySourceOutput = beluga_core_source_dimensions_decision_t
+    precondition(MemoryLayout<DisplaySourceOutput>.size == 32 && MemoryLayout<DisplaySourceOutput>.alignment == 8 && MemoryLayout<DisplaySourceOutput>.stride == 32)
+    precondition(MemoryLayout<DisplaySourceOutput>.offset(of: \DisplaySourceOutput.abi_version) == 0)
+    precondition(MemoryLayout<DisplaySourceOutput>.offset(of: \DisplaySourceOutput.status) == 4)
+    precondition(MemoryLayout<DisplaySourceOutput>.offset(of: \DisplaySourceOutput.kind) == 8)
+    precondition(MemoryLayout<DisplaySourceOutput>.offset(of: \DisplaySourceOutput.has_dimensions) == 12)
+    precondition(MemoryLayout<DisplaySourceOutput>.offset(of: \DisplaySourceOutput.width) == 16)
+    precondition(MemoryLayout<DisplaySourceOutput>.offset(of: \DisplaySourceOutput.height) == 24)
+    typealias DisplayStability = beluga_core_source_dimensions_stability_facts_t
+    precondition(MemoryLayout<DisplayStability>.size == 40 && MemoryLayout<DisplayStability>.alignment == 8 && MemoryLayout<DisplayStability>.stride == 40)
+    precondition(MemoryLayout<DisplayStability>.offset(of: \DisplayStability.abi_version) == 0)
+    precondition(MemoryLayout<DisplayStability>.offset(of: \DisplayStability.reserved) == 4)
+    precondition(MemoryLayout<DisplayStability>.offset(of: \DisplayStability.before_width) == 8)
+    precondition(MemoryLayout<DisplayStability>.offset(of: \DisplayStability.before_height) == 16)
+    precondition(MemoryLayout<DisplayStability>.offset(of: \DisplayStability.after_width) == 24)
+    precondition(MemoryLayout<DisplayStability>.offset(of: \DisplayStability.after_height) == 32)
+    func requirementInput() -> DisplayRequirement {
+        var x = DisplayRequirement()
+        x.abi_version = 1
+        x.reserved = 0
+        x.required_vendor_id = 0x6f73
+        x.required_product_id = 0x1717
+        x.required_serial_number = 7
+        x.requires_sole_main_display = 1
+        x.display_id = 42
+        x.observed_vendor_id = 0x6f73
+        x.observed_product_id = 0x1717
+        x.observed_serial_number = 7
+        x.is_online = 1
+        x.is_active = 1
+        x.main_display_id = 42
+        x.sole_online_display_id = 42
+        x.online_display_count = 1
+        return x
+    }
+    func sourceInput() -> DisplaySource {
+        var x = DisplaySource()
+        x.abi_version = 1
+        x.reserved = 0
+        x.vendor_id = 0x6f73
+        x.product_id = 0x1717
+        x.logical_width = 390
+        x.logical_height = 844
+        x.core_graphics_logical_width = 390
+        x.core_graphics_logical_height = 844
+        x.core_graphics_pixel_width = 1170
+        x.core_graphics_pixel_height = 2532
+        x.filter_content_width = 390.0
+        x.filter_content_height = 844.0
+        x.point_pixel_scale = 3.0
+        return x
+    }
+    func requirementWords(_ x: DisplayRequirement) -> [UInt64] {
+        [UInt64(x.abi_version), UInt64(x.reserved), UInt64(x.required_vendor_id), UInt64(x.required_product_id), UInt64(x.required_serial_number), UInt64(x.requires_sole_main_display), UInt64(x.display_id), UInt64(x.observed_vendor_id), UInt64(x.observed_product_id), UInt64(x.observed_serial_number), UInt64(x.is_online), UInt64(x.is_active), UInt64(x.main_display_id), UInt64(x.sole_online_display_id), UInt64(x.online_display_count)]
+    }
+    func kindWords(_ x: DisplayKind) -> [UInt64] {
+        [UInt64(x.abi_version), UInt64(x.reserved), UInt64(x.vendor_id), UInt64(x.product_id)]
+    }
+    func sourceWords(_ x: DisplaySource) -> [UInt64] {
+        [UInt64(x.abi_version), UInt64(x.reserved), UInt64(x.vendor_id), UInt64(x.product_id), UInt64(bitPattern: x.logical_width), UInt64(bitPattern: x.logical_height), UInt64(bitPattern: x.core_graphics_logical_width), UInt64(bitPattern: x.core_graphics_logical_height), UInt64(bitPattern: x.core_graphics_pixel_width), UInt64(bitPattern: x.core_graphics_pixel_height), x.filter_content_width.bitPattern, x.filter_content_height.bitPattern, x.point_pixel_scale.bitPattern]
+    }
+    func stabilityWords(_ x: DisplayStability) -> [UInt64] {
+        [UInt64(x.abi_version), UInt64(x.reserved), UInt64(bitPattern: x.before_width), UInt64(bitPattern: x.before_height), UInt64(bitPattern: x.after_width), UInt64(bitPattern: x.after_height)]
+    }
+    func expectRequirement(_ input: DisplayRequirement, _ status: UInt32, _ value: UInt32) {
+        let before = requirementWords(input)
+        let output = beluga_core_display_requirement_admission(input)
+        precondition(requirementWords(input) == before)
+        precondition(output.abi_version == 1 && output.status == status && output.value == value && output.reserved == 0)
+    }
+    func expectKind(_ input: DisplayKind, _ status: UInt32, _ kind: UInt32) {
+        let before = kindWords(input)
+        let output = beluga_core_source_dimension_kind(input)
+        precondition(kindWords(input) == before)
+        precondition(output.abi_version == 1 && output.status == status && output.kind == kind && output.reserved == 0)
+    }
+    func expectSource(_ input: DisplaySource, _ status: UInt32, _ kind: UInt32, _ present: UInt32, _ width: Int64, _ height: Int64) {
+        let before = sourceWords(input)
+        let output = beluga_core_source_dimensions(input)
+        precondition(sourceWords(input) == before)
+        precondition(output.abi_version == 1 && output.status == status && output.kind == kind &&
+                     output.has_dimensions == present && output.width == width && output.height == height)
+    }
+    func expectStable(_ input: DisplayStability, _ status: UInt32, _ value: UInt32) {
+        let before = stabilityWords(input)
+        let output = beluga_core_source_dimensions_stable(input)
+        precondition(stabilityWords(input) == before)
+        precondition(output.abi_version == 1 && output.status == status && output.value == value && output.reserved == 0)
+    }
+    // exact sole main identity
+    do { var input = requirementInput()
+
+        expectRequirement(input, 1, 1)
+    }
+    // required_vendor_id independent mismatch
+    do { var input = requirementInput()
+        input.required_vendor_id = 0x00016f73
+        expectRequirement(input, 1, 0)
+    }
+    // observed_vendor_id independent mismatch
+    do { var input = requirementInput()
+        input.observed_vendor_id = 0x00016f73
+        expectRequirement(input, 1, 0)
+    }
+    // required_product_id independent mismatch
+    do { var input = requirementInput()
+        input.required_product_id = 0x00011717
+        expectRequirement(input, 1, 0)
+    }
+    // observed_product_id independent mismatch
+    do { var input = requirementInput()
+        input.observed_product_id = 0x00011717
+        expectRequirement(input, 1, 0)
+    }
+    // required_serial_number independent mismatch
+    do { var input = requirementInput()
+        input.required_serial_number = 0x00010007
+        expectRequirement(input, 1, 0)
+    }
+    // observed_serial_number independent mismatch
+    do { var input = requirementInput()
+        input.observed_serial_number = 0x00010007
+        expectRequirement(input, 1, 0)
+    }
+    // is_online independent mismatch
+    do { var input = requirementInput()
+        input.is_online = 0
+        expectRequirement(input, 1, 0)
+    }
+    // is_active independent mismatch
+    do { var input = requirementInput()
+        input.is_active = 0
+        expectRequirement(input, 1, 0)
+    }
+    // main_display_id independent mismatch
+    do { var input = requirementInput()
+        input.main_display_id = 0x0001002a
+        expectRequirement(input, 1, 0)
+    }
+    // sole_online_display_id independent mismatch
+    do { var input = requirementInput()
+        input.sole_online_display_id = 0x0001002a
+        expectRequirement(input, 1, 0)
+    }
+    // display_id independent mismatch
+    do { var input = requirementInput()
+        input.display_id = 0x0001002a
+        expectRequirement(input, 1, 0)
+    }
+    // exact topology count 0
+    do { var input = requirementInput()
+        input.online_display_count = 0
+        expectRequirement(input, 1, 0)
+    }
+    // exact topology count 2
+    do { var input = requirementInput()
+        input.online_display_count = 2
+        expectRequirement(input, 1, 0)
+    }
+    // exact topology count UINT64_MAX
+    do { var input = requirementInput()
+        input.online_display_count = UInt64.max
+        expectRequirement(input, 1, 0)
+    }
+    // exact topology count 0x0000000100000001
+    do { var input = requirementInput()
+        input.online_display_count = 0x0000000100000001
+        expectRequirement(input, 1, 0)
+    }
+    // optional ignores absent and arbitrary topology
+    do { var input = requirementInput()
+        input.requires_sole_main_display = 0;         input.main_display_id = 0;         input.sole_online_display_id = UInt32.max;         input.online_display_count = UInt64.max
+        expectRequirement(input, 1, 1)
+    }
+    // full high-bit identity remains valid
+    do { var input = requirementInput()
+        input.required_vendor_id = 0x00016f73;         input.observed_vendor_id = 0x00016f73;         input.required_product_id = 0x00011717;         input.observed_product_id = 0x00011717;         input.required_serial_number = 0x00010007;         input.observed_serial_number = 0x00010007;         input.display_id = 0x0001002a;         input.main_display_id = 0x0001002a;         input.sole_online_display_id = 0x0001002a
+        expectRequirement(input, 1, 1)
+    }
+    // exact unrestricted identity 0
+    do { var input = requirementInput()
+        input.required_vendor_id = 0;         input.observed_vendor_id = 0;         input.required_product_id = 0;         input.observed_product_id = 0;         input.required_serial_number = 0;         input.observed_serial_number = 0;         input.display_id = 0;         input.main_display_id = 0;         input.sole_online_display_id = 0
+        expectRequirement(input, 1, 1)
+    }
+    // exact unrestricted identity UINT32_MAX
+    do { var input = requirementInput()
+        input.required_vendor_id = UInt32.max;         input.observed_vendor_id = UInt32.max;         input.required_product_id = UInt32.max;         input.observed_product_id = UInt32.max;         input.required_serial_number = UInt32.max;         input.observed_serial_number = UInt32.max;         input.display_id = UInt32.max;         input.main_display_id = UInt32.max;         input.sole_online_display_id = UInt32.max
+        expectRequirement(input, 1, 1)
+    }
+    // closed requires_sole_main_display=2
+    do { var input = requirementInput()
+        input.requires_sole_main_display = 2
+        expectRequirement(input, 0, 0)
+    }
+    // closed requires_sole_main_display=UINT32_MAX
+    do { var input = requirementInput()
+        input.requires_sole_main_display = UInt32.max
+        expectRequirement(input, 0, 0)
+    }
+    // closed is_online=2
+    do { var input = requirementInput()
+        input.requires_sole_main_display = 0;         input.is_online = 2
+        expectRequirement(input, 0, 0)
+    }
+    // closed is_online=UINT32_MAX
+    do { var input = requirementInput()
+        input.requires_sole_main_display = 0;         input.is_online = UInt32.max
+        expectRequirement(input, 0, 0)
+    }
+    // closed is_active=2
+    do { var input = requirementInput()
+        input.requires_sole_main_display = 0;         input.is_active = 2
+        expectRequirement(input, 0, 0)
+    }
+    // closed is_active=UINT32_MAX
+    do { var input = requirementInput()
+        input.requires_sole_main_display = 0;         input.is_active = UInt32.max
+        expectRequirement(input, 0, 0)
+    }
+    // literal vendor=0x6f73 product=0x1717
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x6f73;         input.product_id = 0x1717
+        expectKind(input, 1, 1)
+    }
+    // literal vendor=0x6f73 product=0x1718
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x6f73;         input.product_id = 0x1718
+        expectKind(input, 1, 1)
+    }
+    // literal vendor=0 product=0x1717
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0;         input.product_id = 0x1717
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=0x6f73 product=0x1719
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x6f73;         input.product_id = 0x1719
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=0x00016f73 product=0x1717
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x00016f73;         input.product_id = 0x1717
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=0x00016f73 product=0x1718
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x00016f73;         input.product_id = 0x1718
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=0x6f73 product=0x00011717
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x6f73;         input.product_id = 0x00011717
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=0x6f73 product=0x00011718
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x6f73;         input.product_id = 0x00011718
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=0x00016f73 product=0x00011717
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = 0x00016f73;         input.product_id = 0x00011717
+        expectKind(input, 1, 0)
+    }
+    // literal vendor=UINT32_MAX product=UINT32_MAX
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.vendor_id = UInt32.max;         input.product_id = UInt32.max
+        expectKind(input, 1, 0)
+    }
+    // ordinary signed endpoints INT64_MIN/INT64_MAX
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary signed endpoints INT64_MAX/INT64_MIN
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0;         input.logical_width = Int64.max;         input.logical_height = Int64.min
+        expectSource(input, 1, 0, 1, Int64.max, Int64.min)
+    }
+    // ordinary signed endpoints -1/0
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0;         input.logical_width = -1;         input.logical_height = 0
+        expectSource(input, 1, 0, 1, -1, 0)
+    }
+    // ordinary signed endpoints 0/1
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0;         input.logical_width = 0;         input.logical_height = 1
+        expectSource(input, 1, 0, 1, 0, 1)
+    }
+    // ordinary signed endpoints 32769/-32769
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0;         input.logical_width = 32769;         input.logical_height = -32769
+        expectSource(input, 1, 0, 1, 32769, -32769)
+    }
+    // ordinary alias/source early return 0/0x1717
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0;         input.product_id = 0x1717;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return 0x6f73/0x1719
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0x6f73;         input.product_id = 0x1719;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return 0x00016f73/0x1717
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0x00016f73;         input.product_id = 0x1717;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return 0x00016f73/0x1718
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0x00016f73;         input.product_id = 0x1718;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return 0x6f73/0x00011717
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0x6f73;         input.product_id = 0x00011717;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return 0x6f73/0x00011718
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0x6f73;         input.product_id = 0x00011718;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return 0x00016f73/0x00011717
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = 0x00016f73;         input.product_id = 0x00011717;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // ordinary alias/source early return UINT32_MAX/UINT32_MAX
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.vendor_id = UInt32.max;         input.product_id = UInt32.max;         input.logical_width = Int64.min;         input.logical_height = Int64.max
+        expectSource(input, 1, 0, 1, Int64.min, Int64.max)
+    }
+    // owned exact current framebuffer
+    do { var input = sourceInput()
+
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // second owned product exact current framebuffer
+    do { var input = sourceInput()
+        input.product_id = 0x1718
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned minimum inclusive
+    do { var input = sourceInput()
+        input.logical_width = 2;         input.logical_height = 2;         input.core_graphics_logical_width = 2;         input.core_graphics_logical_height = 2;         input.core_graphics_pixel_width = 2;         input.core_graphics_pixel_height = 2;         input.filter_content_width = 2.0;         input.filter_content_height = 2.0;         input.point_pixel_scale = 1.0
+        expectSource(input, 1, 1, 1, 2, 2)
+    }
+    // owned maximum inclusive
+    do { var input = sourceInput()
+        input.logical_width = 32768;         input.logical_height = 32768;         input.core_graphics_logical_width = 32768;         input.core_graphics_logical_height = 32768;         input.core_graphics_pixel_width = 32768;         input.core_graphics_pixel_height = 32768;         input.filter_content_width = 32768.0;         input.filter_content_height = 32768.0;         input.point_pixel_scale = 4.0
+        expectSource(input, 1, 1, 1, 32768, 32768)
+    }
+    // owned odd framebuffer has no chroma/output rounding
+    do { var input = sourceInput()
+        input.logical_width = 2;         input.logical_height = 2;         input.core_graphics_logical_width = 2;         input.core_graphics_logical_height = 2;         input.core_graphics_pixel_width = 3;         input.core_graphics_pixel_height = 5;         input.filter_content_width = 2.0;         input.filter_content_height = 2.0;         input.point_pixel_scale = 4.0
+        expectSource(input, 1, 1, 1, 3, 5)
+    }
+    // owned refuses logical_width=1
+    do { var input = sourceInput()
+        input.logical_width = 1
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses logical_width=32769
+    do { var input = sourceInput()
+        input.logical_width = 32769
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses logical_height=1
+    do { var input = sourceInput()
+        input.logical_height = 1
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses logical_height=32769
+    do { var input = sourceInput()
+        input.logical_height = 32769
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_logical_width=1
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = 1
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_logical_width=32769
+    do { var input = sourceInput()
+        input.core_graphics_logical_width = 32769
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_logical_height=1
+    do { var input = sourceInput()
+        input.core_graphics_logical_height = 1
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_logical_height=32769
+    do { var input = sourceInput()
+        input.core_graphics_logical_height = 32769
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_pixel_width=1
+    do { var input = sourceInput()
+        input.core_graphics_pixel_width = 1
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_pixel_width=32769
+    do { var input = sourceInput()
+        input.core_graphics_pixel_width = 32769
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_pixel_height=1
+    do { var input = sourceInput()
+        input.core_graphics_pixel_height = 1
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses core_graphics_pixel_height=32769
+    do { var input = sourceInput()
+        input.core_graphics_pixel_height = 32769
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite filter_content_width 0x7ff80000000000a5
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite filter_content_width 0x7ff0000000000000
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0x7ff0000000000000)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite filter_content_width 0xfff0000000000000
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0xfff0000000000000)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite filter_content_height 0x7ff80000000000a5
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0x7ff80000000000a5)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite filter_content_height 0x7ff0000000000000
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0x7ff0000000000000)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite filter_content_height 0xfff0000000000000
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0xfff0000000000000)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite point_pixel_scale 0x7ff80000000000a5
+    do { var input = sourceInput()
+        input.point_pixel_scale = Double(bitPattern: 0x7ff80000000000a5)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite point_pixel_scale 0x7ff0000000000000
+    do { var input = sourceInput()
+        input.point_pixel_scale = Double(bitPattern: 0x7ff0000000000000)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned refuses nonfinite point_pixel_scale 0xfff0000000000000
+    do { var input = sourceInput()
+        input.point_pixel_scale = Double(bitPattern: 0xfff0000000000000)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned scale literal {"bits":"0x3fefffffffffffff"}
+    do { var input = sourceInput()
+        input.point_pixel_scale = Double(bitPattern: 0x3fefffffffffffff)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned scale literal "1.0"
+    do { var input = sourceInput()
+        input.point_pixel_scale = 1.0
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned scale literal "4.0"
+    do { var input = sourceInput()
+        input.point_pixel_scale = 4.0
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned scale literal {"bits":"0x4010000000000001"}
+    do { var input = sourceInput()
+        input.point_pixel_scale = Double(bitPattern: 0x4010000000000001)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned half-pixel literal filter_content_width 0x4078580000000000
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0x4078580000000000)
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned half-pixel literal filter_content_width 0x407857ffffffffff
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0x407857ffffffffff)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned half-pixel literal filter_content_width 0x4078680000000000
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0x4078680000000000)
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned half-pixel literal filter_content_width 0x4078680000000001
+    do { var input = sourceInput()
+        input.filter_content_width = Double(bitPattern: 0x4078680000000001)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned half-pixel literal filter_content_height 0x408a5c0000000000
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0x408a5c0000000000)
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned half-pixel literal filter_content_height 0x408a5bffffffffff
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0x408a5bffffffffff)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // owned half-pixel literal filter_content_height 0x408a640000000000
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0x408a640000000000)
+        expectSource(input, 1, 1, 1, 1170, 2532)
+    }
+    // owned half-pixel literal filter_content_height 0x408a640000000001
+    do { var input = sourceInput()
+        input.filter_content_height = Double(bitPattern: 0x408a640000000001)
+        expectSource(input, 1, 1, 0, 0, 0)
+    }
+    // signed exact stability
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.before_width = Int64.min;         input.before_height = Int64.max;         input.after_width = Int64.min;         input.after_height = Int64.max
+        expectStable(input, 1, 1)
+    }
+    // signed exact stability
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.before_width = Int64.min;         input.before_height = Int64.max;         input.after_width = Int64.min;         input.after_height = 0
+        expectStable(input, 1, 0)
+    }
+    // signed exact stability
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.before_width = Int64.min;         input.before_height = Int64.max;         input.after_width = 0;         input.after_height = Int64.max
+        expectStable(input, 1, 0)
+    }
+    // signed exact stability
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.before_width = 0;         input.before_height = 0;         input.after_width = 0;         input.after_height = 0
+        expectStable(input, 1, 1)
+    }
+    // signed exact stability
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.before_width = -1;         input.before_height = 1;         input.after_width = -1;         input.after_height = 1
+        expectStable(input, 1, 1)
+    }
+    // signed exact stability
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.before_width = 32769;         input.before_height = -32769;         input.after_width = 32769;         input.after_height = -32769
+        expectStable(input, 1, 1)
+    }
+    // independent envelope abi_version=0
+    do { var input = requirementInput()
+        input.abi_version = 0
+        expectRequirement(input, 0, 0)
+    }
+    // independent envelope abi_version=2
+    do { var input = requirementInput()
+        input.abi_version = 2
+        expectRequirement(input, 0, 0)
+    }
+    // independent envelope abi_version=UINT32_MAX
+    do { var input = requirementInput()
+        input.abi_version = UInt32.max
+        expectRequirement(input, 0, 0)
+    }
+    // independent envelope reserved=1
+    do { var input = requirementInput()
+        input.reserved = 1
+        expectRequirement(input, 0, 0)
+    }
+    // independent envelope reserved=2
+    do { var input = requirementInput()
+        input.reserved = 2
+        expectRequirement(input, 0, 0)
+    }
+    // independent envelope reserved=UINT32_MAX
+    do { var input = requirementInput()
+        input.reserved = UInt32.max
+        expectRequirement(input, 0, 0)
+    }
+    // independent envelope abi_version=0
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.abi_version = 0
+        expectKind(input, 0, 0)
+    }
+    // independent envelope abi_version=2
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.abi_version = 2
+        expectKind(input, 0, 0)
+    }
+    // independent envelope abi_version=UINT32_MAX
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.abi_version = UInt32.max
+        expectKind(input, 0, 0)
+    }
+    // independent envelope reserved=1
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.reserved = 1
+        expectKind(input, 0, 0)
+    }
+    // independent envelope reserved=2
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.reserved = 2
+        expectKind(input, 0, 0)
+    }
+    // independent envelope reserved=UINT32_MAX
+    do { var input = DisplayKind(); input.abi_version = 1; input.vendor_id = 0x6f73; input.product_id = 0x1717
+        input.reserved = UInt32.max
+        expectKind(input, 0, 0)
+    }
+    // independent envelope abi_version=0
+    do { var input = sourceInput()
+        input.abi_version = 0
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // independent envelope abi_version=2
+    do { var input = sourceInput()
+        input.abi_version = 2
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // independent envelope abi_version=UINT32_MAX
+    do { var input = sourceInput()
+        input.abi_version = UInt32.max
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // independent envelope reserved=1
+    do { var input = sourceInput()
+        input.reserved = 1
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // independent envelope reserved=2
+    do { var input = sourceInput()
+        input.reserved = 2
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // independent envelope reserved=UINT32_MAX
+    do { var input = sourceInput()
+        input.reserved = UInt32.max
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // independent envelope abi_version=0
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.abi_version = 0
+        expectStable(input, 0, 0)
+    }
+    // independent envelope abi_version=2
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.abi_version = 2
+        expectStable(input, 0, 0)
+    }
+    // independent envelope abi_version=UINT32_MAX
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.abi_version = UInt32.max
+        expectStable(input, 0, 0)
+    }
+    // independent envelope reserved=1
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.reserved = 1
+        expectStable(input, 0, 0)
+    }
+    // independent envelope reserved=2
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.reserved = 2
+        expectStable(input, 0, 0)
+    }
+    // independent envelope reserved=UINT32_MAX
+    do { var input = DisplayStability(); input.abi_version = 1; input.before_width = Int64.min; input.before_height = Int64.max; input.after_width = Int64.min; input.after_height = Int64.max
+        input.reserved = UInt32.max
+        expectStable(input, 0, 0)
+    }
+    // envelope precedes ordinary branch abi_version
+    do { var input = sourceInput()
+        input.vendor_id = 0;         input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.logical_width = Int64.min;         input.logical_height = Int64.max;         input.abi_version = 0
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // envelope precedes ordinary branch reserved
+    do { var input = sourceInput()
+        input.vendor_id = 0;         input.core_graphics_logical_width = Int64.min;         input.core_graphics_logical_height = Int64.max;         input.core_graphics_pixel_width = Int64.min;         input.core_graphics_pixel_height = Int64.max;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0x7ff0000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000);         input.logical_width = Int64.min;         input.logical_height = Int64.max;         input.reserved = 1
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // envelope precedes legitimate owned absence abi_version
+    do { var input = sourceInput()
+        input.logical_width = 1;         input.abi_version = 0
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // envelope precedes legitimate owned absence reserved
+    do { var input = sourceInput()
+        input.logical_width = 1;         input.reserved = 1
+        expectSource(input, 0, 0, 0, 0, 0)
+    }
+    // ordinary ignores three distinct NaN payloads
+    do { var input = sourceInput()
+        input.vendor_id = 0;         input.logical_width = Int64.max;         input.logical_height = Int64.min;         input.filter_content_width = Double(bitPattern: 0x7ff80000000000a5);         input.filter_content_height = Double(bitPattern: 0xfff800000000005a);         input.point_pixel_scale = Double(bitPattern: 0x7ff8000000000001)
+        expectSource(input, 1, 0, 1, Int64.max, Int64.min)
+    }
+    // ordinary ignores positive and negative signed zero
+    do { var input = sourceInput()
+        input.vendor_id = 0;         input.logical_width = -1;         input.logical_height = 1;         input.filter_content_width = Double(bitPattern: 0x8000000000000000);         input.filter_content_height = Double(bitPattern: 0x0000000000000000);         input.point_pixel_scale = Double(bitPattern: 0x8000000000000000)
+        expectSource(input, 1, 0, 1, -1, 1)
+    }
+    print("BelugaCore Swift display admission import/link PASS: exact layouts, native branch order, signed endpoints and unchanged refusals")
+}
+displayAdmissionSmoke()

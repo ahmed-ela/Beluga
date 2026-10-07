@@ -38,6 +38,8 @@ module MicrophoneRegressionGate
     tests/system_audio_start.rs
     src/hosted_call_policy.rs
     tests/hosted_call_policy.rs
+    src/display_admission.rs
+    tests/display_admission.rs
   ].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
   BELUGA_CORE_SLICES = {
@@ -464,6 +466,61 @@ module MicrophoneRegressionGate
     ],
   }.transform_values(&:freeze).freeze
 
+  DISPLAY_ADMISSION_NATIVE_SOURCE_SHA256 = {
+    'macOS/Sources/CaptureCore/ScreenVideoOutputPolicy.swift' => '17c11d412f57cd970f1c70d64032c6110616cfdce42e64ecfae6338cdd9e2fec',
+    'macOS/Tests/CaptureCoreTests/ScreenVideoOutputPolicyTests.swift' => 'dceb67808a0fc74debacf39f6a760881b95662b860a4e4182c3a4c0e4ca67de0',
+    'macOS/Sources/CaptureCore/ScreenVideoCaptureSource.swift' => 'e84af22636a4b0539204186fa32045681af5452111bb96ee0ad147c441f3d1f9',
+    'Package.swift' => '6d32098ab961d108934de18a28fff83fd85bfe45c8967f36fb0041fe44ca454a',
+    'macOS/Sources/CaptureCore/BelugaRustDisplayAdmission.swift' => '24c40ee446d23e723e64f1e5242b923870ac1701e213b435a702ec344db33072',
+    'macOS/Tests/CaptureCoreTests/ScreenVideoDisplayAdmissionOriginalReference.swift' => 'f55cad3d3145d80532b97f4fb95cfa6006e7233437391ac33bcbe81aa4f2155f',
+    'macOS/Tests/CaptureCoreTests/ScreenVideoDisplayAdmissionRustTests.swift' => '9c9a77f12defb9a54d3ec61a674fc8405e92779787915dabf033dc08f4184605',
+  }.freeze
+  DISPLAY_ADMISSION_NATIVE_FILES = {
+    'CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests' => 'macOS/Tests/CaptureCoreTests/ScreenVideoDisplayAdmissionRustTests.swift',
+    'CaptureCoreTests.ScreenVideoOutputPolicyTests' => 'macOS/Tests/CaptureCoreTests/ScreenVideoOutputPolicyTests.swift',
+  }.freeze
+  DISPLAY_ADMISSION_NATIVE_PINNED = {
+    'CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests' => %w[
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testCopiedABIHasSevenExactLayoutsAndAllFiftyTwoOffsets
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testDisplayRequirementActualCMatchesFrozenIdentityAndExactTopology
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testRawTopologyPreservesU64CountAndIgnoresAbsentSingletonOnlyWhenOptional
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testDimensionKindActualCMatchesFrozenIdentityWithoutIDNormalization
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testOrdinarySourceActualCPreservesSignedEndpointsAndIrrelevantNaNs
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testOwnedSourceActualCMatchesFrozenAdjacentFloatAndIntegerBoundaries
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testLegitimateOwnedAbsenceIsNilWhileMalformedBridgeThrows
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testStabilityActualCMatchesFrozenSignedDomainAndSingleAxisDrift
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testAllFourRawExportsHaveIndependentCanonicalEnvelopeRefusals
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testRequirementCopiedCResultCorruptionThrowsRatherThanFalseOrTrueFallback
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testKindCopiedCResultCorruptionThrowsBeforeAnyLogicalEarlyReturn
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testSourceCopiedCResultCorruptionThrowsRatherThanNilOrLogicalFallback
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testStabilityCopiedCResultCorruptionThrowsRatherThanFalseFallback
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testActualCInputsStayBitExactIncludingAbsentMetadataNaNAndSignedZero
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testTypedFacadePreservesHighBitIdentityTopologyKindAndOrdinarySourceAliases
+      CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testTypedFacadeProjectsEveryRawInputBitAfterCallingActualC
+    ],
+    'CaptureCoreTests.ScreenVideoOutputPolicyTests' => %w[
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testCaptureStartupRejectsFramebufferResolutionDrift
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRequirementAcceptsExactSoleMainIdentity
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRequirementRejectsRecycledIDIdentity
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRequirementRejectsTopologyDrift
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOrdinaryDisplayKeepsScreenCaptureKitLogicalDimensions
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOpenSteamerPhoneDisplayUsesFramebufferPixels
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOpenSteamerCombinedDisplayUsesFramebufferPixels
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testMatchingProductFromAnotherVendorKeepsLogicalDimensions
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testUnknownOpenSteamerProductKeepsLogicalDimensions
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayResolvesEverySupportedSelectedFramebuffer
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOrdinaryDisplayIgnoresFilterPixelScale
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRejectsInvalidFilterGeometry
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRejectsFramebufferOverflow
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayUsesCurrentCoreGraphicsFramebufferDespiteStaleFilterScale
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayAcceptsOnlyReconciledFilterAndCoreGraphicsFramebuffer
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testPhoneRetinaModeUsesFullFramebufferPixels
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testLandscapeFramebufferScalesWithinWidthCap
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testOddDimensionsRoundDownForVideoChromaPlanes
+      CaptureCoreTests.ScreenVideoOutputPolicyTests/testInvalidDimensionsFailClosed
+    ],
+  }.transform_values(&:freeze).freeze
+
   MAC_CLASSES = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests
     CaptureCoreTests.CoreAudioProcessTapStartupDiagnosticsTests
@@ -503,6 +560,8 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideMacHostedCallObservationPolicyTests
     CaptureServerTests.WorldwideScreenServiceBatchAFaultTests
     CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests
+    CaptureCoreTests.ScreenVideoOutputPolicyTests
   ].freeze
   MAC_PINNED = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests/testEveryFreshAggregateStartsWithoutWaitingForTappedPlayback
@@ -691,6 +750,41 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests/testStartupJoinsExactInitialObserverBeforeTransportStaging
     CaptureServerTests.WorldwideScreenServiceBatchASuccessorTests/testSuccessResetTypedCatchPreservesForeignHistoryAfterActualInputCallbacksJoin
     CaptureServerTests.WorldwideAvailabilityRetryCoordinatorTests/testDuplicateReadyRefusesBeforeResetAndRetriesOnlyAfterExactClose
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testCopiedABIHasSevenExactLayoutsAndAllFiftyTwoOffsets
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testDisplayRequirementActualCMatchesFrozenIdentityAndExactTopology
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testRawTopologyPreservesU64CountAndIgnoresAbsentSingletonOnlyWhenOptional
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testDimensionKindActualCMatchesFrozenIdentityWithoutIDNormalization
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testOrdinarySourceActualCPreservesSignedEndpointsAndIrrelevantNaNs
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testOwnedSourceActualCMatchesFrozenAdjacentFloatAndIntegerBoundaries
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testLegitimateOwnedAbsenceIsNilWhileMalformedBridgeThrows
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testStabilityActualCMatchesFrozenSignedDomainAndSingleAxisDrift
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testAllFourRawExportsHaveIndependentCanonicalEnvelopeRefusals
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testRequirementCopiedCResultCorruptionThrowsRatherThanFalseOrTrueFallback
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testKindCopiedCResultCorruptionThrowsBeforeAnyLogicalEarlyReturn
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testSourceCopiedCResultCorruptionThrowsRatherThanNilOrLogicalFallback
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testStabilityCopiedCResultCorruptionThrowsRatherThanFalseFallback
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testActualCInputsStayBitExactIncludingAbsentMetadataNaNAndSignedZero
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testTypedFacadePreservesHighBitIdentityTopologyKindAndOrdinarySourceAliases
+    CaptureCoreTests.ScreenVideoDisplayAdmissionRustTests/testTypedFacadeProjectsEveryRawInputBitAfterCallingActualC
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testCaptureStartupRejectsFramebufferResolutionDrift
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRequirementAcceptsExactSoleMainIdentity
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRequirementRejectsRecycledIDIdentity
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRequirementRejectsTopologyDrift
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOrdinaryDisplayKeepsScreenCaptureKitLogicalDimensions
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOpenSteamerPhoneDisplayUsesFramebufferPixels
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOpenSteamerCombinedDisplayUsesFramebufferPixels
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testMatchingProductFromAnotherVendorKeepsLogicalDimensions
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testUnknownOpenSteamerProductKeepsLogicalDimensions
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayResolvesEverySupportedSelectedFramebuffer
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOrdinaryDisplayIgnoresFilterPixelScale
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRejectsInvalidFilterGeometry
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayRejectsFramebufferOverflow
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayUsesCurrentCoreGraphicsFramebufferDespiteStaleFilterScale
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOwnedDisplayAcceptsOnlyReconciledFilterAndCoreGraphicsFramebuffer
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testPhoneRetinaModeUsesFullFramebufferPixels
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testLandscapeFramebufferScalesWithinWidthCap
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testOddDimensionsRoundDownForVideoChromaPlanes
+    CaptureCoreTests.ScreenVideoOutputPolicyTests/testInvalidDimensionsFailClosed
   ].freeze
   RUST_PINNED = %w[
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
@@ -914,6 +1008,41 @@ module MicrophoneRegressionGate
     invalid_evidence_fields_do_not_alias_legitimate_poison
     invalid_peer_fields_refuse_even_with_matching_generation_payloads
     uuid_bytes_layout_and_observation_c_export_are_exact
+    display_admission_all_seven_layouts_and_every_field_offset_are_literal
+    display_requirement_each_original_identity_and_liveness_guard_is_independent
+    display_requirement_sole_topology_is_exact_singleton_including_duplicates
+    display_requirement_sole_main_mismatch_alone_refuses
+    display_requirement_optional_topology_ignores_main_count_and_singleton
+    display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum
+    source_kind_frozen_literal_table_selects_only_the_two_owned_products
+    source_kind_cartesian_boundaries_match_independent_frozen_native
+    source_dimensions_all_twenty_nine_supported_native_modes_return_exact_pixels
+    ordinary_source_preserves_entire_signed_domain_before_any_metadata_guard
+    owned_source_logical_width_and_height_minimum_are_two
+    owned_source_logical_width_and_height_maximum_are_32768
+    owned_source_pixel_width_and_height_minimum_are_two
+    owned_source_pixel_width_and_height_maximum_are_32768
+    owned_source_core_graphics_logical_minimum_literals_and_exact_snapshot_equality
+    owned_source_core_graphics_width_snapshot_mismatch_alone_refuses
+    owned_source_core_graphics_height_snapshot_mismatch_alone_refuses
+    owned_source_filter_width_must_be_finite
+    owned_source_filter_height_must_be_finite
+    owned_source_scale_includes_one_and_four_and_refuses_actual_double_neighbors
+    owned_source_filter_width_half_pixel_boundary_is_inclusive_both_directions
+    owned_source_filter_height_half_pixel_boundary_is_inclusive_both_directions
+    owned_source_returns_current_framebuffer_independent_of_scale_ratio_or_rounding
+    owned_source_literal_startup_geometry_trace_covers_stale_scale_and_refusals
+    owned_source_cartesian_integer_and_float_boundaries_match_frozen_native
+    source_stability_requires_both_dimensions_exactly_equal_without_sanity_limits
+    source_stability_literal_startup_trace_refuses_single_axis_drift_and_recovers
+    display_requirement_unknown_abi_is_invalid_independent_of_policy_result
+    display_requirement_reserved_is_invalid_independent_of_policy_result
+    display_requirement_each_raw_boolean_domain_is_closed_even_if_ignored
+    source_kind_unknown_abi_and_reserved_are_independent_invalid_inputs
+    source_dimensions_invalid_bridge_is_distinct_from_legitimate_owned_absence
+    source_stability_unknown_abi_and_reserved_are_independent_invalid_inputs
+    display_admission_all_copied_inputs_remain_exact_including_nan_payload_bits
+    source_kind_and_dimensions_high_bit_identity_aliases_remain_ordinary
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -1077,6 +1206,67 @@ module MicrophoneRegressionGate
     'safe-output-invalid-initializer-fabricates-failure-counter' => 'invalid_constructor_envelope_preserves_requested_values_but_is_not_accepted',
     'hosted-call-peer-accepts-zero-abi' => 'invalid_peer_fields_refuse_even_with_matching_generation_payloads',
     'hosted-call-peer-ignores-reserved-one' => 'invalid_peer_fields_refuse_even_with_matching_generation_payloads',
+    'display-envelope-version-ignored' => 'display_requirement_unknown_abi_is_invalid_independent_of_policy_result',
+    'display-envelope-reserved-ignored' => 'display_requirement_reserved_is_invalid_independent_of_policy_result',
+    'display-requirement-envelope-bypassed' => 'display_requirement_unknown_abi_is_invalid_independent_of_policy_result',
+    'display-kind-envelope-bypassed' => 'source_kind_unknown_abi_and_reserved_are_independent_invalid_inputs',
+    'display-source-envelope-bypassed' => 'source_dimensions_invalid_bridge_is_distinct_from_legitimate_owned_absence',
+    'display-stability-envelope-bypassed' => 'source_stability_unknown_abi_and_reserved_are_independent_invalid_inputs',
+    'display-raw-sole-boolean-domain-opened' => 'display_requirement_each_raw_boolean_domain_is_closed_even_if_ignored',
+    'display-raw-online-boolean-domain-opened' => 'display_requirement_each_raw_boolean_domain_is_closed_even_if_ignored',
+    'display-raw-active-boolean-domain-opened' => 'display_requirement_each_raw_boolean_domain_is_closed_even_if_ignored',
+    'display-online-admission-removed' => 'display_requirement_each_original_identity_and_liveness_guard_is_independent',
+    'display-active-admission-removed' => 'display_requirement_each_original_identity_and_liveness_guard_is_independent',
+    'display-vendor-identity-admission-removed' => 'display_requirement_each_original_identity_and_liveness_guard_is_independent',
+    'display-product-identity-admission-removed' => 'display_requirement_each_original_identity_and_liveness_guard_is_independent',
+    'display-serial-identity-admission-removed' => 'display_requirement_each_original_identity_and_liveness_guard_is_independent',
+    'display-identity-vendor-truncated-to-u16' => 'display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum',
+    'display-identity-product-truncated-to-u16' => 'display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum',
+    'display-identity-serial-truncated-to-u16' => 'display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum',
+    'display-zero-id-refused' => 'display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum',
+    'display-optional-topology-still-required' => 'display_requirement_optional_topology_ignores_main_count_and_singleton',
+    'display-main-id-admission-removed' => 'display_requirement_sole_main_mismatch_alone_refuses',
+    'display-main-id-truncated-to-u16' => 'display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum',
+    'display-singleton-count-widened-to-membership' => 'display_requirement_sole_topology_is_exact_singleton_including_duplicates',
+    'display-singleton-count-truncated-to-u32' => 'display_requirement_sole_topology_is_exact_singleton_including_duplicates',
+    'display-singleton-id-admission-removed' => 'display_requirement_sole_topology_is_exact_singleton_including_duplicates',
+    'display-singleton-id-truncated-to-u16' => 'display_requirement_identity_and_display_ids_preserve_zero_and_u32_maximum',
+    'display-source-kind-vendor-restriction-removed' => 'source_kind_frozen_literal_table_selects_only_the_two_owned_products',
+    'display-source-kind-phone-product-removed' => 'source_kind_frozen_literal_table_selects_only_the_two_owned_products',
+    'display-source-kind-combined-product-removed' => 'source_kind_frozen_literal_table_selects_only_the_two_owned_products',
+    'display-source-kind-unknown-product-admitted' => 'source_kind_frozen_literal_table_selects_only_the_two_owned_products',
+    'display-ordinary-source-filter-finite-guard-introduced' => 'ordinary_source_preserves_entire_signed_domain_before_any_metadata_guard',
+    'display-ordinary-source-clamps-signed-dimensions' => 'ordinary_source_preserves_entire_signed_domain_before_any_metadata_guard',
+    'display-owned-logical-width-minimum-tightened-to-three' => 'owned_source_logical_width_and_height_minimum_are_two',
+    'display-owned-logical-height-minimum-tightened-to-three' => 'owned_source_logical_width_and_height_minimum_are_two',
+    'display-owned-logical-width-maximum-removed' => 'owned_source_logical_width_and_height_maximum_are_32768',
+    'display-owned-logical-height-maximum-removed' => 'owned_source_logical_width_and_height_maximum_are_32768',
+    'display-owned-filter-width-finite-guard-removed' => 'owned_source_filter_width_must_be_finite',
+    'display-owned-filter-height-finite-guard-removed' => 'owned_source_filter_height_must_be_finite',
+    'display-owned-scale-lower-bound-tightened' => 'owned_source_scale_includes_one_and_four_and_refuses_actual_double_neighbors',
+    'display-owned-scale-upper-bound-exclusive' => 'owned_source_scale_includes_one_and_four_and_refuses_actual_double_neighbors',
+    'display-owned-scale-range-removed' => 'owned_source_scale_includes_one_and_four_and_refuses_actual_double_neighbors',
+    'display-owned-cg-logical-width-minimum-tightened-to-three' => 'owned_source_core_graphics_logical_minimum_literals_and_exact_snapshot_equality',
+    'display-owned-cg-logical-height-minimum-tightened-to-three' => 'owned_source_core_graphics_logical_minimum_literals_and_exact_snapshot_equality',
+    'display-owned-pixel-width-minimum-removed' => 'owned_source_pixel_width_and_height_minimum_are_two',
+    'display-owned-pixel-height-minimum-removed' => 'owned_source_pixel_width_and_height_minimum_are_two',
+    'display-owned-pixel-width-maximum-removed' => 'owned_source_pixel_width_and_height_maximum_are_32768',
+    'display-owned-pixel-height-maximum-removed' => 'owned_source_pixel_width_and_height_maximum_are_32768',
+    'display-owned-cg-logical-width-equality-removed' => 'owned_source_core_graphics_width_snapshot_mismatch_alone_refuses',
+    'display-owned-cg-logical-height-equality-removed' => 'owned_source_core_graphics_height_snapshot_mismatch_alone_refuses',
+    'display-owned-filter-width-half-pixel-exclusive' => 'owned_source_filter_width_half_pixel_boundary_is_inclusive_both_directions',
+    'display-owned-filter-height-half-pixel-exclusive' => 'owned_source_filter_height_half_pixel_boundary_is_inclusive_both_directions',
+    'display-owned-filter-width-half-pixel-widened-to-one' => 'owned_source_filter_width_half_pixel_boundary_is_inclusive_both_directions',
+    'display-owned-filter-height-half-pixel-widened-to-one' => 'owned_source_filter_height_half_pixel_boundary_is_inclusive_both_directions',
+    'display-owned-refusal-mislabeled-invalid-bridge' => 'source_dimensions_invalid_bridge_is_distinct_from_legitimate_owned_absence',
+    'display-owned-refusal-retains-nonzero-payload' => 'source_dimensions_invalid_bridge_is_distinct_from_legitimate_owned_absence',
+    'display-owned-pixels-replaced-with-logical' => 'owned_source_returns_current_framebuffer_independent_of_scale_ratio_or_rounding',
+    'display-owned-pixels-encoder-rounded-prematurely' => 'owned_source_returns_current_framebuffer_independent_of_scale_ratio_or_rounding',
+    'display-stability-width-equality-removed' => 'source_stability_requires_both_dimensions_exactly_equal_without_sanity_limits',
+    'display-stability-height-equality-removed' => 'source_stability_requires_both_dimensions_exactly_equal_without_sanity_limits',
+    'display-stability-unrequested-dimension-sanity-introduced' => 'source_stability_requires_both_dimensions_exactly_equal_without_sanity_limits',
+    'display-source-kind-vendor-truncated-to-u16' => 'source_kind_and_dimensions_high_bit_identity_aliases_remain_ordinary',
+    'display-source-kind-product-truncated-to-u16' => 'source_kind_and_dimensions_high_bit_identity_aliases_remain_ordinary',
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -1110,7 +1300,13 @@ module MicrophoneRegressionGate
     'BelugaCore Swift safe output retry import/link PASS: exact layouts, frozen literal transitions and unchanged refusals',
     'BelugaCore Swift system audio start import/link PASS: exact layouts, 64 literal choices and 1152 closed-field refusals',
     'BelugaCore Swift hosted call import/link PASS: exact layouts, strict watermark and generation identity, unchanged refusals',
+    'BelugaCore C display admission ABI PASS: exact layouts, native branch order, signed endpoints and unchanged refusals',
+    'BelugaCore Swift display admission import/link PASS: exact layouts, native branch order, signed endpoints and unchanged refusals',
   ].freeze
+  # Preserve the old 30-marker enrollment prefix while matching actual C-then-Swift stdout.
+  BELUGA_CORE_RUNTIME_MARKER_ORDER = (BELUGA_CORE_RUNTIME_MARKERS.first(15) +
+    [BELUGA_CORE_RUNTIME_MARKERS.fetch(30)] + BELUGA_CORE_RUNTIME_MARKERS[15, 15] +
+    [BELUGA_CORE_RUNTIME_MARKERS.fetch(31)]).freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
     test_beluga_core_phases_and_exact_crate_commands_are_mandatory
@@ -1198,6 +1394,12 @@ module MicrophoneRegressionGate
     test_batch_a_actor_source_discovery_and_each_exact_case_are_mandatory
     test_batch_a_native_body_companions_reject_rehashed_tamper_missing_and_linked_bytes
     test_batch_a_actor_enrollment_preserves_prior_complete_inventory
+    test_display_admission_source_and_each_actual_rust_case_are_mandatory
+    test_display_admission_runtime_markers_and_compiled_controls_are_mandatory
+    test_display_admission_native_exact_discovery_and_every_result_are_mandatory
+    test_display_admission_native_body_companions_refuse_tamper_missing_and_links
+    test_display_admission_native_declaration_drift_and_borrowed_coverage_are_rejected
+    test_display_admission_enrollment_preserves_complete_previous_inventory
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -1669,6 +1871,45 @@ module MicrophoneRegressionGate
                ids.uniq.length == ids.length && ids.sort == SUPPORTED_PLAYER_PINNED.fetch(suite).sort,
                'supported player native source inventory is incomplete, malformed or duplicated: ' + suite)
       [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.validate_display_admission_native_sources(root)
+    DISPLAY_ADMISSION_NATIVE_SOURCE_SHA256.each do |relative, expected|
+      path = File.join(root, relative)
+      require!(File.exist?(path), 'display admission native source companion is missing: ' + relative)
+      stat = regular!(path)
+      require!(File.realpath(path) == path && stat.size <= 2 * 1024 * 1024 && sha(path) == expected,
+               'display admission reviewed native/reference source changed: ' + relative)
+      utf8_text(File.binread(path), 'display admission native source companion')
+    end
+    nil
+  end
+
+  def self.display_admission_native_source_inventory(root)
+    validate_display_admission_native_sources(root)
+    DISPLAY_ADMISSION_NATIVE_FILES.map do |suite, relative|
+      source = utf8_text(File.binread(File.join(root, relative)), 'display admission native test source')
+      name = suite.split('.').last
+      methods = source.scan(/^[ \t]*func (test\w+)[ \t]*\(/).flatten
+      ids = methods.map { |method| suite + '/' + method }
+      require!(source.scan(/^[ \t]*final class #{Regexp.escape(name)}[ \t]*:[ \t]*XCTestCase[ \t]*\{/).length == 1 &&
+               ids.uniq.length == ids.length && ids.sort == DISPLAY_ADMISSION_NATIVE_PINNED.fetch(suite).sort,
+               'display admission native source inventory is incomplete, malformed or duplicated: ' + suite)
+      [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.display_admission_native_inventory(root, text)
+    source = display_admission_native_source_inventory(root)
+    lines = utf8_text(text, 'display admission native discovery').lines.map(&:strip)
+    source.map do |suite, expected|
+      methods = lines.select { |line| line.start_with?(suite + '/') }
+      require!(methods.uniq.length == methods.length &&
+               methods.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/test\w+\z/) } &&
+               methods.sort == expected,
+               'display admission native discovery differs from exact source inventory: ' + suite)
+      [suite, methods.sort]
     end.to_h
   end
 
@@ -2728,7 +2969,7 @@ module MicrophoneRegressionGate
 
   def self.validate_beluga_core_link(text)
     lines = utf8_text(text, 'Beluga core link result').lines.map(&:chomp)
-    markers = BELUGA_CORE_RUNTIME_MARKERS + ['BELUGA_CORE_LINK_SMOKE_PASS'] +
+    markers = BELUGA_CORE_RUNTIME_MARKER_ORDER + ['BELUGA_CORE_LINK_SMOKE_PASS'] +
               BELUGA_CORE_TARGETS.drop(1).map { |target| 'BELUGA_CORE_CROSS_LINK_PASS target=' + target }
     observed = lines.select do |line|
       line.start_with?('BelugaCore C ', 'BelugaCore Swift ', 'BELUGA_CORE_LINK_SMOKE_PASS', 'BELUGA_CORE_CROSS_LINK_PASS')
@@ -3153,6 +3394,7 @@ module MicrophoneRegressionGate
       mac_methods = MicrophoneRegressionGate.mac_inventory(mac_discovery)
       MicrophoneRegressionGate.supported_player_inventory(@root, mac_discovery)
       MicrophoneRegressionGate.batch_a_native_inventory(@root, mac_discovery)
+      MicrophoneRegressionGate.display_admission_native_inventory(@root, mac_discovery)
       shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
       replay_methods = MicrophoneRegressionGate.shared_replay_inventory(@root, mac_discovery)
       reconnect_methods = MicrophoneRegressionGate.shared_reconnect_counter_inventory(@root, mac_discovery)
@@ -3318,6 +3560,7 @@ module MicrophoneRegressionGate
     mac = mac_inventory(read_phase.call('mac-discovery'))
     supported_player_inventory(root, read_phase.call('mac-discovery'))
     batch_a_native_inventory(root, read_phase.call('mac-discovery'))
+    display_admission_native_inventory(root, read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     replay = shared_replay_inventory(root, read_phase.call('mac-discovery'))
     reconnect = shared_reconnect_counter_inventory(root, read_phase.call('mac-discovery'))
