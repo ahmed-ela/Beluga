@@ -298,6 +298,79 @@ beluga_core_youtube_handoff_operation_result_t beluga_core_youtube_handoff_opera
     uint32_t abi_version, beluga_core_youtube_handoff_operation_state_t state,
     beluga_core_youtube_handoff_operation_event_t event);
 
+/* Sixth scalar contract. Native generation equality, callback invocation,
+ * exact one-use owner custody and durable record effects stay in Swift. */
+#define BELUGA_INVITATION_ACCEPTANCE_ABI_VERSION UINT32_C(1)
+enum beluga_invitation_acceptance_opcode {
+    BELUGA_INVITATION_ARM = 0,
+    BELUGA_INVITATION_PREPARE_ADMISSION = 1,
+    BELUGA_INVITATION_PREPARE_COMPLETION = 2,
+    BELUGA_INVITATION_ACKNOWLEDGE_CALLBACK = 3,
+    BELUGA_INVITATION_CANCEL = 4
+};
+enum beluga_invitation_acceptance_status {
+    BELUGA_INVITATION_APPLIED = 0,
+    BELUGA_INVITATION_IGNORED = 1,
+    BELUGA_INVITATION_NEEDS_CALLBACK = 2,
+    BELUGA_INVITATION_NOT_RECOVERABLE = 3,
+    BELUGA_INVITATION_NOT_ACTIVE = 4,
+    BELUGA_INVITATION_CALLBACK_FAILED = 5,
+    BELUGA_INVITATION_STALE_PREPARED_PLAN = 6,
+    BELUGA_INVITATION_INVALID_INPUT = 7
+};
+enum beluga_invitation_callback_kind {
+    BELUGA_INVITATION_NO_CALLBACK = 0,
+    BELUGA_INVITATION_ADMISSION_CALLBACK = 1,
+    BELUGA_INVITATION_COMPLETION_CALLBACK = 2
+};
+enum beluga_invitation_pairing_phase {
+    BELUGA_INVITATION_PHASE_OTHER = 0,
+    BELUGA_INVITATION_PHASE_ACCEPTED_ISSUED = 1,
+    BELUGA_INVITATION_PHASE_ACTIVE = 2
+};
+enum beluga_invitation_callback_outcome {
+    BELUGA_INVITATION_CALLBACK_UNUSED = 0,
+    BELUGA_INVITATION_CALLBACK_SUCCEEDED = 1,
+    BELUGA_INVITATION_CALLBACK_THREW = 2
+};
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t flags;
+} beluga_core_invitation_acceptance_state_t;
+typedef struct {
+    uint32_t opcode;
+    uint32_t generation_matches;
+    uint32_t phase;
+    uint32_t admission_callback_present;
+    uint32_t prepared_kind;
+    uint32_t prepared_flags;
+    uint32_t owner_matches;
+    uint32_t callback_outcome;
+} beluga_core_invitation_acceptance_event_t;
+typedef struct {
+    beluga_core_invitation_acceptance_state_t state;
+    beluga_core_invitation_acceptance_state_t callback_success_state;
+    uint32_t status;
+    uint32_t completion_succeeded;
+    uint32_t callback_kind;
+    uint32_t prepared_flags;
+} beluga_core_invitation_acceptance_result_t;
+
+/* State flags: armed1, admission callback2, completion callback4, admission consumed8.
+ * Legal states: 0,5,7,13,15. No UUID, closure, record, pointer, heap or secret crosses ABI.
+ * All structs are copied and have alignment4; expected sizes State8/Event32/Result32.
+ * NeedsCallback: state unchanged; success candidate authoritative but not committed;
+ * callback kind1/2 and prepared_flags==before.flags. Native exact one-use custody mandatory.
+ * Success is never inferred from a copied callback-kind/status field.
+ */
+beluga_core_invitation_acceptance_state_t beluga_core_invitation_acceptance_initial(void);
+beluga_core_invitation_acceptance_result_t beluga_core_invitation_acceptance_step(
+    uint32_t abi_version,
+    beluga_core_invitation_acceptance_state_t state,
+    beluga_core_invitation_acceptance_event_t event
+);
+
 #ifdef __cplusplus
 }
 #endif

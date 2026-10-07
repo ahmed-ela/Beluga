@@ -7,6 +7,22 @@ pub mod host_lifecycle;
 pub mod handoff_transactions;
 pub mod handoff_offers;
 pub mod youtube_handoff_operation;
+pub mod invitation_acceptance;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_invitation_acceptance_initial() -> invitation_acceptance::RawState {
+    invitation_acceptance::initial()
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_invitation_acceptance_step(
+    abi_version: u32, state: invitation_acceptance::RawState, event: invitation_acceptance::RawEvent,
+) -> invitation_acceptance::RawOutput {
+    invitation_acceptance::step(abi_version, state, event)
+}
+
 
 #[no_mangle]
 #[must_use]

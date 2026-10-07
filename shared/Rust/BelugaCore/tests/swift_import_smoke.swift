@@ -416,3 +416,95 @@ private func phoneOperationSmoke() {
     print("BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes")
 }
 phoneOperationSmoke()
+
+private typealias InvitationState = beluga_core_invitation_acceptance_state_t
+private typealias InvitationEvent = beluga_core_invitation_acceptance_event_t
+private typealias InvitationOutput = beluga_core_invitation_acceptance_result_t
+
+private func invitationAcceptanceSmoke() {
+    precondition(MemoryLayout<InvitationState>.size == 8 && MemoryLayout<InvitationState>.alignment == 4)
+    precondition(MemoryLayout<InvitationState>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<InvitationState>.offset(of: \.flags) == 4)
+    precondition(MemoryLayout<InvitationEvent>.size == 32 && MemoryLayout<InvitationEvent>.alignment == 4)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.generation_matches) == 4)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.phase) == 8)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.admission_callback_present) == 12)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.prepared_kind) == 16)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.prepared_flags) == 20)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.owner_matches) == 24)
+    precondition(MemoryLayout<InvitationEvent>.offset(of: \.callback_outcome) == 28)
+    precondition(MemoryLayout<InvitationOutput>.size == 32 && MemoryLayout<InvitationOutput>.alignment == 4)
+    precondition(MemoryLayout<InvitationOutput>.offset(of: \.state) == 0)
+    precondition(MemoryLayout<InvitationOutput>.offset(of: \.callback_success_state) == 8)
+    precondition(MemoryLayout<InvitationOutput>.offset(of: \.status) == 16)
+    precondition(MemoryLayout<InvitationOutput>.offset(of: \.completion_succeeded) == 20)
+    precondition(MemoryLayout<InvitationOutput>.offset(of: \.callback_kind) == 24)
+    precondition(MemoryLayout<InvitationOutput>.offset(of: \.prepared_flags) == 28)
+
+    var state = beluga_core_invitation_acceptance_initial()
+    precondition(state.abi_version == 1 && state.flags == 0)
+    var event = InvitationEvent()
+    event.opcode = 0; event.admission_callback_present = 1
+    var result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 0 && result.state.flags == 7 && result.callback_kind == 0)
+    state = result.state
+
+    event = InvitationEvent()
+    event.opcode = 1; event.phase = UInt32.max
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 1 && result.state.flags == 7 && result.callback_kind == 0)
+    event.generation_matches = 1; event.phase = 1
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 2 && result.state.flags == 7)
+    precondition(result.callback_success_state.flags == 15 && result.callback_kind == 1)
+    precondition(result.prepared_flags == 7 && result.completion_succeeded == 0)
+    let admission = result
+
+    event = InvitationEvent()
+    event.opcode = 3; event.prepared_kind = admission.callback_kind
+    event.prepared_flags = admission.prepared_flags; event.owner_matches = 1; event.callback_outcome = 2
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 5 && result.state.flags == 7 && result.completion_succeeded == 0)
+    event.callback_outcome = 1
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 0 && result.state.flags == 15)
+    state = result.state
+
+    event = InvitationEvent()
+    event.opcode = 1; event.generation_matches = 1; event.phase = UInt32.max
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 1 && result.state.flags == 15)
+    event = InvitationEvent()
+    event.opcode = 2; event.generation_matches = 1; event.phase = 2
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 2 && result.state.flags == 15 && result.callback_success_state.flags == 0)
+    precondition(result.callback_kind == 2 && result.completion_succeeded == 0)
+    let completion = result
+
+    event = InvitationEvent()
+    event.opcode = 3; event.prepared_kind = completion.callback_kind
+    event.prepared_flags = completion.prepared_flags; event.callback_outcome = 1
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 6 && result.state.flags == 15)
+    event.owner_matches = 1
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 0 && result.state.flags == 0 && result.completion_succeeded == 1)
+    state = result.state
+
+    event = InvitationEvent(); event.opcode = 0
+    state = beluga_core_invitation_acceptance_step(1, state, event).state
+    precondition(state.flags == 5)
+    event = InvitationEvent(); event.opcode = 1; event.generation_matches = 1; event.phase = 1
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 0 && result.state.flags == 13 && result.callback_kind == 0)
+    state = result.state
+    event = InvitationEvent(); event.opcode = 4; event.generation_matches = 1
+    result = beluga_core_invitation_acceptance_step(2, state, event)
+    precondition(result.status == 7 && result.state.flags == 13 && result.callback_kind == 0)
+    event.opcode = UInt32.max
+    result = beluga_core_invitation_acceptance_step(1, state, event)
+    precondition(result.status == 7 && result.state.flags == 13 && result.callback_kind == 0)
+    print("BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes")
+}
+invitationAcceptanceSmoke()

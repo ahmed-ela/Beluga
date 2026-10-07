@@ -24,6 +24,13 @@ class MicrophoneRegressionGateTests < Minitest::Test
       "final class #{name}: XCTestCase {\n" + methods.map { |method| "func #{method.split('/').last}() {}\n" }.join + "}\n"
     end
     write(File.join(@root, 'iOS/opensteamer/Tests/AudioTests.swift'), classes.join)
+    @pairing_methods = Gate::PAIRING_PINNED.dup
+    reviewed_root = File.dirname(File.dirname(File.realpath(__FILE__)))
+    # Read source bytes only: fixture declarations and the reviewed App root are
+    # never compiled or launched by these parser/receipt self-tests.
+    (Gate::PAIRING_FILES.values + [Gate::PAIRING_APP_ROOT]).each do |relative|
+      write(File.join(@root, relative), File.binread(File.join(reviewed_root, relative)))
+    end
     @gate_methods = Gate.gate_inventory(File.dirname(File.dirname(File.realpath(__FILE__))))
     write(File.join(@root, 'scripts/test-validate-microphone-regressions.rb'),
           @gate_methods.map { |method| "def #{method}\nend\n" }.join)
@@ -187,6 +194,405 @@ class MicrophoneRegressionGateTests < Minitest::Test
     write(File.join(core_artifact, 'ARTIFACT_MANIFEST.sha256'), text)
   end
 
+  def pairing_summary
+    counts = { 'passedTests' => 104, 'skippedTests' => 0, 'failedTests' => 0, 'expectedFailures' => 0 }
+    counts.merge('result' => 'Passed', 'totalTestCount' => 104, 'testFailures' => [],
+                 'devicesAndConfigurations' => [counts.merge('device' => { 'deviceId' => SIMULATOR, 'platform' => 'iOS Simulator' })])
+  end
+
+  def pairing_results
+    { 'testNodes' => @pairing_methods.map { |id| { 'nodeType' => 'Test Case', 'nodeIdentifier' => id + '()', 'result' => 'Passed' } } }
+  end
+
+  def pairing_process_fixture(name, argv, start, finish, pid = 12345)
+    { 'schema' => 'beluga.pairing.process-group.v1', 'phase' => name, 'pid' => pid, 'pgid' => pid,
+      'argvSHA256' => Digest::SHA256.hexdigest(JSON.generate(argv)), 'startedAtNanoseconds' => start, 'finishedAtNanoseconds' => finish,
+      'timeoutSeconds' => Gate::PAIRING_PHASE_TIMEOUTS.fetch(name), 'leaderReaped' => true, 'leaderExitStatus' => 0, 'leaderSignal' => nil,
+      'groupAbsent' => true, 'absenceProof' => 'ESRCH', 'termSent' => false, 'killSent' => false, 'completion' => 'success' }
+  end
+
+  def pairing_build_fixture
+    started = (Time.now.to_r * 1_000_000_000).to_i
+    app_root = File.join(@root, Gate::PAIRING_APP_ROOT)
+    paths = Gate.pairing_compiler_paths(@scratch)
+    bytes = { 'Beluga.SwiftFileList' => Shellwords.escape(app_root) + "\n",
+              'opensteamer-OutputFileMap.json' => JSON.generate(app_root => { 'object' => paths.fetch('OpensteamerApp.o') }),
+              'OpensteamerApp.o' => 'fixture only: actual object reading/linking is not executed by parser self-tests' }
+    paths.each { |name, path| write(path, bytes.fetch(name)) }
+    swiftc = File.join(@developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc')
+    driver = Shellwords.join(['builtin-SwiftDriver', '--', swiftc, '-module-name', 'opensteamer', '-target', 'arm64-apple-ios17.0-simulator',
+                             '-DDEBUG', '-DOPENSTEAMER_UPDATE_VALIDATION_HOST', '-c', '@' + paths.fetch('Beluga.SwiftFileList'),
+                             '-output-file-map', paths.fetch('opensteamer-OutputFileMap.json')]) + "\n"
+    log = driver + 'SwiftCompile normal arm64 ' + app_root + " (in target 'opensteamer' from project 'opensteamer')\n** BUILD SUCCEEDED **\n"
+    finished = (Time.now.to_r * 1_000_000_000).to_i
+    invocation = { 'developer_directory' => @developer, 'scratch' => @scratch }
+    argv = Gate.pairing_commands(@root, @evidence, invocation, SIMULATOR).fetch('pairing-inert-build')
+    @pairing_build_process = pairing_process_fixture('pairing-inert-build', argv, started, finished)
+    @pairing_original_object = Gate.pairing_object_metadata(paths.fetch('OpensteamerApp.o'))
+    contract = Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, log, bytes, @pairing_build_process, @pairing_original_object)
+    parent = File.join(@evidence, 'pairing-inert-root-contract')
+    FileUtils.mkdir_p(parent, mode: 0700)
+    bytes.merge('app-swift-driver.txt' => driver).each do |name, contents|
+      path = File.join(parent, name)
+      write(path, contents); File.chmod(0600, path)
+    end
+    contract['retainedObjectMetadata'] = Gate.pairing_object_metadata(File.join(parent, 'OpensteamerApp.o'))
+    [log, bytes, contract]
+  end
+
+  def assert_pairing_retired(executor, completion, exit_status = nil)
+    proof = executor.last_proof
+    assert_equal 'beluga.pairing.process-group.v1', proof.fetch('schema')
+    assert_equal completion, proof.fetch('completion')
+    assert_equal true, proof.fetch('leaderReaped')
+    assert_equal true, proof.fetch('groupAbsent')
+    assert_equal 'ESRCH', proof.fetch('absenceProof')
+    assert_equal proof.fetch('pid'), proof.fetch('pgid')
+    assert_equal exit_status, proof.fetch('leaderExitStatus') if exit_status
+    assert_raises(Errno::ESRCH) { Process.kill(0, -proof.fetch('pgid')) }
+    assert_raises(Errno::ECHILD) { Process.waitpid(proof.fetch('pid'), Process::WNOHANG) }
+  end
+
+  def test_pairing_executor_success_nonzero_and_timeout_retire_exact_group
+    executor = Gate::PairingExecutor.new
+    log = File.join(@evidence, 'pairing-process.log')
+    environment = { 'PATH' => '/usr/bin:/bin' }
+    assert_equal "inert fixture\n", executor.run(['/usr/bin/ruby', '-e', 'puts "inert fixture"'], environment, @root, log, 1)
+    assert_pairing_retired(executor, 'success', 0)
+    rejects('unsuccessfully') { executor.run(['/usr/bin/ruby', '-e', 'exit 7'], environment, @root, log, 1) }
+    assert_pairing_retired(executor, 'exit-failure', 7)
+    rejects('exceeded its deadline') { executor.run(['/usr/bin/ruby', '-e', 'sleep 5'], environment, @root, log, 0.05) }
+    assert_pairing_retired(executor, 'timeout')
+  end
+
+  def test_pairing_executor_reaped_leader_cannot_abandon_living_descendant
+    executor = Gate::PairingExecutor.new
+    log = File.join(@evidence, 'pairing-descendant.log')
+    script = 'reader, writer = IO.pipe; child = fork { reader.close; trap("TERM") {}; writer.write("ready"); writer.close; loop { sleep 1 } }; writer.close; reader.read; puts child; STDOUT.flush; exit! 0'
+    text = executor.run(['/usr/bin/ruby', '-e', script], { 'PATH' => '/usr/bin:/bin' }, @root, log, 1)
+    assert_match(/\A\d+\n\z/, text)
+    assert_equal true, executor.last_proof.fetch('termSent')
+    assert_equal true, executor.last_proof.fetch('killSent')
+    assert_pairing_retired(executor, 'success', 0)
+    assert_raises(Errno::ESRCH) { Process.kill(0, Integer(text.strip)) }
+  end
+
+  def test_pairing_executor_interruption_still_reaps_and_proves_group_absent
+    executor = Gate::PairingExecutor.new
+    log = File.join(@evidence, 'pairing-interruption.log')
+    executing = Thread.current
+    interrupt = Thread.new { sleep 0.1; executing.raise Interrupt, 'owned fixture interruption' }
+    assert_raises(Interrupt) do
+      executor.run(['/usr/bin/ruby', '-e', 'sleep 5'], { 'PATH' => '/usr/bin:/bin' }, @root, log, 2)
+    end
+    assert_pairing_retired(executor, 'interrupted')
+  ensure
+    interrupt.join if interrupt
+  end
+
+  def test_pairing_executor_eperm_never_becomes_a_successful_absence_proof
+    probe_class = Class.new(Gate::PairingExecutor) do
+      def group_present?(_pgid)
+        raise RuntimeError, 'pairing owned process group cannot be proven absent: EPERM'
+      end
+    end
+    executor = probe_class.new
+    log = File.join(@evidence, 'pairing-eperm.log')
+    rejects('EPERM') { executor.run(['/usr/bin/ruby', '-e', 'exit 0'], { 'PATH' => '/usr/bin:/bin' }, @root, log, 1) }
+    assert_nil executor.last_proof
+    assert_raises(Errno::ESRCH) { Process.kill(0, -executor.last_pgid) }
+    signal_class = Class.new(Gate::PairingExecutor) do
+      def signal_group(_signal, _pgid)
+        raise RuntimeError, 'pairing owned process group teardown refused: EPERM'
+      end
+    end
+    executor = signal_class.new
+    rejects('EPERM') { executor.run(['/usr/bin/ruby', '-e', 'sleep 5'], { 'PATH' => '/usr/bin:/bin' }, @root, log, 0.05) }
+    assert_nil executor.last_proof
+  ensure
+    # This is only an injected-permission fixture's exact owned group; it is
+    # never the canonical gate, a compiler, an app or an external process.
+    if executor && executor.last_pgid
+      begin
+        Process.kill('KILL', -executor.last_pgid)
+      rescue Errno::ESRCH
+      end
+      begin
+        Process.waitpid(executor.last_pgid)
+      rescue Errno::ECHILD
+      end
+      assert_raises(Errno::ESRCH) { Process.kill(0, -executor.last_pgid) }
+    end
+  end
+
+  def test_pairing_stale_object_and_forged_process_records_refuse_before_launch
+    log, bytes, contract = pairing_build_fixture
+    context = { 'scratch' => @scratch, 'developer_directory' => @developer }
+    original = @pairing_original_object
+    %w[modifiedAtNanoseconds changedAtNanoseconds].each do |key|
+      stale = original.merge(key => @pairing_build_process.fetch('startedAtNanoseconds') - 1)
+      rejects('stale or outside') do
+        Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, log, bytes, @pairing_build_process, stale)
+      end
+      future = original.merge(key => @pairing_build_process.fetch('finishedAtNanoseconds') + 1)
+      rejects('stale or outside') do
+        Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, log, bytes, @pairing_build_process, future)
+      end
+    end
+    path = Gate.pairing_compiler_paths(@scratch).fetch('OpensteamerApp.o')
+    File.utime(Time.at(1), Time.at(1), path)
+    rejects('stale or outside') do
+      Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, log, bytes, @pairing_build_process, Gate.pairing_object_metadata(path))
+    end
+    retained = File.join(@evidence, 'pairing-inert-root-contract/OpensteamerApp.o')
+    File.chmod(0400, retained)
+    rejects('metadata differs') { Gate.validate_pairing_contract(@root, @evidence, context, @tools, log, contract, @pairing_build_process) }
+    File.chmod(0600, retained)
+    value = receipt
+    commands = Gate.commands(@root, @evidence, value['invocation'], @tools, SIMULATOR, @mac_methods, @handoff_methods)
+    records = value.fetch('pairing_processes')
+    assert_equal records, Gate.validate_pairing_processes(records, commands, (value['created_at'] + 1) * 1_000_000_000, 1800)
+    %w[leaderReaped groupAbsent].each do |key|
+      forged = Marshal.load(Marshal.dump(records)); forged.first[key] = false
+      rejects('reap and ESRCH') { Gate.validate_pairing_processes(forged, commands, (value['created_at'] + 1) * 1_000_000_000, 1800) }
+    end
+    [{ 'leaderExitStatus' => 1 }, { 'leaderSignal' => 9 }, { 'completion' => 'timeout' }, { 'absenceProof' => 'EPERM' },
+     { 'argvSHA256' => '0' * 64 }, { 'pgid' => records.first['pid'] + 1 }, { 'timeoutSeconds' => 601 },
+     { 'finishedAtNanoseconds' => (value['created_at'] + 2) * 1_000_000_000 }].each do |replacement|
+      forged = Marshal.load(Marshal.dump(records)); forged.first.merge!(replacement)
+      rejects('pairing process') { Gate.validate_pairing_processes(forged, commands, (value['created_at'] + 1) * 1_000_000_000, 1800) }
+    end
+    [records.drop(1), records.reverse, records + [records.first]].each do |forged|
+      rejects('missing, duplicated or reordered') { Gate.validate_pairing_processes(forged, commands, (value['created_at'] + 1) * 1_000_000_000, 1800) }
+    end
+    forged = Marshal.load(Marshal.dump(records)); forged[1]['startedAtNanoseconds'] = forged[0]['finishedAtNanoseconds'] - 1
+    rejects('ordering or overall') { Gate.validate_pairing_processes(forged, commands, (value['created_at'] + 1) * 1_000_000_000, 1800) }
+    %w[pairing_processes].each do |key|
+      missing = receipt; missing.delete(key)
+      rejects('unrecognized field set') { verify(missing) }
+    end
+    forged = receipt; forged['pairing_processes'].first['groupAbsent'] = false
+    rejects('reap and ESRCH') { verify(forged) }
+    forged = receipt; forged['pairing_inert_root']['originalObjectMetadata']['modifiedAtNanoseconds'] = 1
+    rejects('stale or outside') { verify(forged) }
+    forged = receipt; forged['pairing_processes'].first['startedAtNanoseconds'] += 1
+    rejects('differs from actual build') { verify(forged) }
+  end
+
+  def test_pairing_inventory_is_exact104_separate_from_original_simulator_skips
+    assert_equal [58, 8, 22, 16], Gate::PAIRING_BY_CLASS.values.map(&:length)
+    assert_equal 104, Gate::PAIRING_PINNED.length
+    assert_equal @pairing_methods, Gate.pairing_inventory(@root)
+    assert_empty Gate::PAIRING_CLASSES & Gate::SIMULATOR_CLASSES
+    assert_empty Gate::PAIRING_PINNED & Gate::SIMULATOR_SKIPS
+    assert_equal @sim_methods, Gate.simulator_inventory(@root)
+    Gate::PAIRING_FILES.each do |name, relative|
+      path = File.join(@root, relative)
+      original = File.binread(path)
+      begin
+        File.write(path, original.sub(/\bfunc\s+test\w+\s*\(/, 'func removed('))
+        rejects('reviewed source changed') { Gate.pairing_inventory(@root) }
+        File.write(path, original + "\nfunc testUnreviewedExtra() {}\n")
+        rejects('reviewed source changed') { Gate.pairing_inventory(@root) }
+        File.write(path, original.sub(name + ': XCTestCase', 'RenamedFixture: XCTestCase'))
+        rejects('reviewed source changed') { Gate.pairing_inventory(@root) }
+      ensure
+        File.binwrite(path, original)
+      end
+    end
+  end
+
+  def test_pairing_zero_skip_named_results_cannot_omit_duplicate_or_fail_cases
+    assert_equal @pairing_methods, Gate.validate_pairing(pairing_summary, pairing_results, @pairing_methods, SIMULATOR)
+    @pairing_methods.each do |id|
+      changed = pairing_results
+      changed['testNodes'].reject! { |entry| entry['nodeIdentifier'] == id + '()' }
+      rejects('pairing cases') { Gate.validate_pairing(pairing_summary, changed, @pairing_methods, SIMULATOR) }
+    end
+    %w[Skipped Failed ExpectedFailure Unknown].each do |status|
+      changed = pairing_results; changed['testNodes'].first['result'] = status
+      rejects('failed or skipped') { Gate.validate_pairing(pairing_summary, changed, @pairing_methods, SIMULATOR) }
+    end
+    changed = pairing_results; changed['testNodes'] << changed['testNodes'].first.dup
+    rejects('pairing cases') { Gate.validate_pairing(pairing_summary, changed, @pairing_methods, SIMULATOR) }
+    changed = pairing_results; changed['testNodes'].first['nodeIdentifier'] = 'Unreviewed/testExtra()'
+    rejects('unexpected') { Gate.validate_pairing(pairing_summary, changed, @pairing_methods, SIMULATOR) }
+    %w[totalTestCount passedTests skippedTests failedTests expectedFailures].each do |key|
+      changed = pairing_summary; changed[key] += 1
+      rejects('pairing summary') { Gate.validate_pairing(changed, pairing_results, @pairing_methods, SIMULATOR) }
+    end
+    changed = pairing_summary; changed['devicesAndConfigurations'].first['passedTests'] = 103
+    rejects('per-configuration') { Gate.validate_pairing(changed, pairing_results, @pairing_methods, SIMULATOR) }
+    changed = pairing_summary; changed['devicesAndConfigurations'].first['device']['platform'] = 'iOS'
+    rejects('physical or different') { Gate.validate_pairing(changed, pairing_results, @pairing_methods, SIMULATOR) }
+    rejects('expected inventory') { Gate.validate_pairing(pairing_summary, pairing_results, @pairing_methods.drop(1), SIMULATOR) }
+  end
+
+  def test_pairing_compiler_requires_fresh_inert_driver_source_filelist_map_and_object
+    log, bytes, contract = pairing_build_fixture
+    context = { 'scratch' => @scratch, 'developer_directory' => @developer }
+    assert_equal contract, Gate.validate_pairing_contract(@root, @evidence, context, @tools, log, contract, @pairing_build_process)
+    driver = log.lines.first
+    mutations = [log.sub(driver, ''), driver + log, log.sub('-module-name opensteamer', '-module-name foreign'),
+                 log.sub('-DDEBUG', ''), log.sub('-DOPENSTEAMER_UPDATE_VALIDATION_HOST', ''),
+                 log.sub('-DDEBUG', '-DDEBUG -DDEBUG'), log.sub('arm64-apple-ios17.0-simulator', 'arm64-apple-ios17.0'),
+                 log.sub('-c ', ''), log.sub('-output-file-map ', '-wrong-file-map '),
+                 log.sub(/^SwiftCompile[^\n]+\n/, ''), log + log.lines[1], log.sub('BUILD SUCCEEDED', 'BUILD FAILED')]
+    mutations.each do |changed|
+      rejects('pairing') { Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, changed, bytes, @pairing_build_process, @pairing_original_object) }
+    end
+    app_root = File.join(@root, Gate::PAIRING_APP_ROOT)
+    [{ 'Beluga.SwiftFileList' => '' }, { 'Beluga.SwiftFileList' => bytes.fetch('Beluga.SwiftFileList') * 2 },
+     { 'Beluga.SwiftFileList' => '/foreign/App.swift' }, { 'opensteamer-OutputFileMap.json' => '{}' },
+     { 'OpensteamerApp.o' => '' }, { 'OpensteamerApp.o' => 'x' * (16 * 1024 * 1024 + 1) }].each do |replacement|
+      rejects('pairing') { Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, log, bytes.merge(replacement), @pairing_build_process, @pairing_original_object) }
+    end
+    original = File.binread(app_root)
+    begin
+      File.write(app_root, original + '// changed root')
+      rejects('inert App root changed') { Gate.pairing_compiler_proof(@root, @scratch, @developer, @tools, log, bytes, @pairing_build_process, @pairing_original_object) }
+    ensure
+      File.binwrite(app_root, original)
+    end
+    changed = Marshal.load(Marshal.dump(contract)); changed['driverSHA256'] = '0' * 64
+    rejects('differs from actual build') { Gate.validate_pairing_contract(@root, @evidence, context, @tools, log, changed, @pairing_build_process) }
+    path = File.join(@evidence, contract['driverPath']); original = File.binread(path)
+    begin
+      File.write(path, original + 'unbound line')
+      rejects('differs from actual build') { Gate.validate_pairing_contract(@root, @evidence, context, @tools, log, contract, @pairing_build_process) }
+    ensure
+      File.binwrite(path, original)
+    end
+  end
+
+  def test_pairing_owned_compiler_files_and_lock_replacement_fail_closed
+    log, bytes, contract = pairing_build_fixture
+    path = Gate.pairing_compiler_paths(@scratch).fetch('OpensteamerApp.o')
+    assert_equal bytes.fetch('OpensteamerApp.o'), Gate.pairing_owned_bytes(path, 1024)
+    rejects('unbounded') { Gate.pairing_owned_bytes(path, 1) }
+    original = File.binread(path)
+    File.rename(path, path + '.kept')
+    begin
+      File.symlink(path + '.kept', path)
+      rejects('noncanonical') { Gate.pairing_owned_bytes(path, 1024) }
+      File.unlink(path); File.link(path + '.kept', path)
+      rejects('unsafe') { Gate.pairing_owned_bytes(path, 1024) }
+      File.unlink(path)
+      rejects('absent or inaccessible') { Gate.pairing_owned_bytes(path, 1024) }
+    ensure
+      File.unlink(path) if File.exist?(path) || File.symlink?(path)
+      File.rename(path + '.kept', path)
+    end
+    lock_path = File.join(@scratch, '.microphone-regressions.lock')
+    held = File.open(lock_path, File::RDWR | File::CREAT, 0600)
+    assert held.flock(File::LOCK_EX | File::LOCK_NB)
+    runner = Gate::Runner.new(@root, { scratch: @scratch, timeout: 1800 })
+    runner.instance_variable_set(:@lock, held)
+    runner.instance_variable_set(:@pairing_started, true)
+    runner.instance_variable_set(:@pairing_lock_path, lock_path)
+    runner.instance_variable_set(:@pairing_lock_identity, [held.stat.dev, held.stat.ino])
+    runner.instance_variable_set(:@pairing_compiler_files, contract.fetch('files'))
+    assert_nil runner.check_pairing_fences
+    begin
+      File.write(path, original + 'changed object')
+      rejects('input/object changed') { runner.check_pairing_fences }
+      File.binwrite(path, original)
+      File.rename(lock_path, lock_path + '.kept')
+      File.open(lock_path, File::RDWR | File::CREAT, 0600) { |file| file.write('foreign lock') }
+      rejects('cache lock identity changed') { runner.check_pairing_fences }
+      File.unlink(lock_path); File.rename(lock_path + '.kept', lock_path)
+      runner.instance_variable_set(:@pairing_deadline, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1)
+      rejects('bounded deadline') { runner.check_pairing_fences }
+    ensure
+      File.binwrite(path, original)
+      if File.exist?(lock_path + '.kept')
+        File.unlink(lock_path) if File.exist?(lock_path)
+        File.rename(lock_path + '.kept', lock_path)
+      end
+      held.close
+    end
+  end
+
+  def test_pairing_run_never_launches_without_fresh_compiler_custody
+    log, _bytes, _contract = pairing_build_fixture
+    lock_path = File.join(@scratch, '.microphone-regressions.lock')
+    held = File.open(lock_path, File::RDWR | File::CREAT, 0600)
+    assert held.flock(File::LOCK_EX | File::LOCK_NB)
+    fake_class = Class.new do
+      attr_reader :calls, :last_proof
+      def initialize(text)
+        @text = text; @calls = []
+      end
+      def run(argv, _environment, _root, log_path, timeout)
+        started = (Time.now.to_r * 1_000_000_000).to_i
+        @calls << argv
+        raise RuntimeError, 'unexpected native test launch' if argv[1] == 'test'
+        File.write(log_path, @text)
+        @last_proof = { 'schema' => 'beluga.pairing.process-group.v1', 'pid' => 12345, 'pgid' => 12345,
+          'argvSHA256' => Digest::SHA256.hexdigest(JSON.generate(argv)), 'startedAtNanoseconds' => started,
+          'finishedAtNanoseconds' => (Time.now.to_r * 1_000_000_000).to_i, 'timeoutSeconds' => timeout,
+          'leaderReaped' => true, 'leaderExitStatus' => 0, 'leaderSignal' => nil, 'groupAbsent' => true,
+          'absenceProof' => 'ESRCH', 'termSent' => false, 'killSent' => false, 'completion' => 'success' }
+        @text
+      end
+    end
+    [log.sub(/^SwiftCompile[^\n]+\n/, ''), log.sub('-DOPENSTEAMER_UPDATE_VALIDATION_HOST', ''), log].each do |text|
+      fake = fake_class.new(text)
+      runner = Gate::Runner.new(@root, { scratch: @scratch, timeout: 1800 }, fake, fake)
+      { source: Gate.source_identity(@root), tools: @tools, evidence: @evidence, environment: {}, lock: held }.each do |name, value|
+        runner.instance_variable_set('@' + name.to_s, value)
+      end
+      capture_io { rejects('pairing') { runner.run_pairing(@scratch, @developer, SIMULATOR) } }
+      assert_equal ['build'], fake.calls.map { |argv| argv[1] }
+      assert_nil runner.instance_variable_get(:@pairing_result)
+    end
+  ensure
+    held.close if held && !held.closed?
+  end
+
+  def test_pairing_receipt_cannot_omit_rehash_or_weaken_inert_phases_and_artifacts
+    names = Gate::PAIRING_PHASE_TIMEOUTS.keys
+    assert_equal 38, Gate::PHASES.length
+    assert_equal names, Gate::PHASES[Gate::PHASES.index('simulator-entitlements') + 1, 6]
+    assert_equal 1200, Gate::PAIRING_OVERALL_SECONDS
+    assert_equal 'passed', verify(receipt)['status']
+    names.each do |name|
+      value = receipt; value['phases'].reject! { |entry| entry['name'] == name }
+      rejects('absent, duplicate') { verify(value) }
+    end
+    %w[pairing-inert-build pairing-tests].each do |name|
+      value = receipt; argv = value['phases'].find { |entry| entry['name'] == name }['argv']
+      argv.delete(Gate::PAIRING_INERT_CONDITIONS)
+      rejects('canonical offline invocation') { verify(value) }
+    end
+    value = receipt
+    argv = value['phases'].find { |entry| entry['name'] == 'pairing-tests' }['argv']
+    argv.delete('-only-testing:opensteamerTests/ViewerPairingPersistenceTests')
+    rejects('canonical offline invocation') { verify(value) }
+    %w[pairing-result pairing-app pairing-inert-root-contract].each do |name|
+      value = receipt; value['artifacts'].reject! { |entry| entry['name'] == name }
+      rejects('artifacts are incomplete') { verify(value) }
+    end
+    value = receipt; value['coverage']['pairing'].shift
+    rejects('pairing coverage differs') { verify(value) }
+    value = receipt
+    changed = pairing_results; changed['testNodes'].first['result'] = 'Skipped'
+    path = File.join(@evidence, 'pairing-results.log'); File.write(path, JSON.generate(changed))
+    value['phases'].find { |entry| entry['name'] == 'pairing-results' }['sha256'] = Gate.sha(path)
+    rejects('failed or skipped') { verify(value) }
+    value = receipt
+    path = File.join(@evidence, 'pairing-inert-build.log')
+    File.write(path, File.read(path).sub('-DOPENSTEAMER_UPDATE_VALIDATION_HOST', ''))
+    value['phases'].find { |entry| entry['name'] == 'pairing-inert-build' }['sha256'] = Gate.sha(path)
+    rejects('inert definitions') { verify(value) }
+    value = receipt
+    proof = value['pairing_inert_root']
+    path = File.join(@evidence, proof['driverPath']); File.write(path, File.read(path) + 'forged compiler')
+    proof['driverSHA256'] = Gate.sha(path)
+    value['artifacts'].find { |entry| entry['name'] == 'pairing-inert-root-contract' }['sha256'] = Gate.tree_identity(File.dirname(path))
+    rejects('differs from actual build') { verify(value) }
+  end
+
   def summary
     counts = { 'passedTests' => @sim_methods.length - Gate::SIMULATOR_SKIPS.length,
                'skippedTests' => Gate::SIMULATOR_SKIPS.length, 'failedTests' => 0, 'expectedFailures' => 0 }
@@ -242,10 +648,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
       "✔ Test run with #{methods.length} tests in 1 suite passed after 0.003 seconds.\n"
   end
 
-  def signing_record_fixture
+  def signing_record_fixture(relative = 'simulator-app/Beluga.app')
     # Structural receipt fixture, deliberately not a signed executable. The
     # collector's actual byte/signature parser has its own mandatory test phase.
-    app = File.join(@evidence, 'simulator-app/Beluga.app')
+    app = File.join(@evidence, relative)
     write(app + '/Info.plist', 'fixture Info identity')
     write(app + '/Beluga', 'x' * 17000)
     file_record = lambda do |path|
@@ -274,6 +680,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
 
   def receipt
     @collected_signing_record = signing_record_fixture
+    @collected_pairing_signing_record = signing_record_fixture('pairing-app/Beluga.app')
+    pairing_build, _pairing_bytes, pairing_contract = pairing_build_fixture
     log_texts = {
       'gate-self-tests' => gate_log,
       'simulator-signing-self-tests' => signing_log,
@@ -287,6 +695,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'shared-handoff-tests' => mac_log(@handoff_methods),
       'simulator-summary' => JSON.generate(summary), 'simulator-results' => JSON.generate(results),
       'simulator-entitlements' => JSON.generate(@collected_signing_record),
+      'pairing-inert-build' => pairing_build,
+      'pairing-summary' => JSON.generate(pairing_summary), 'pairing-results' => JSON.generate(pairing_results),
+      'pairing-entitlements' => JSON.generate(@collected_pairing_signing_record),
       'rust-discovery' => @rust_methods.map { |method| method + ': test' }.join("\n") + "\n",
       'beluga-core-discovery' => @core_methods.map { |method| method + ': test' }.join("\n") + "\n",
       'beluga-core-tests' => rust_log(@core_methods),
@@ -312,10 +723,20 @@ class MicrophoneRegressionGateTests < Minitest::Test
     end
     artifacts << { 'name' => 'simulator-app', 'path' => 'simulator-app/Beluga.app',
                    'sha256' => Gate.tree_identity(@collected_signing_record['appPath']), 'tree' => true }
+    write(File.join(@evidence, 'pairing.xcresult/bytes'), 'fresh pairing result fixture')
+    [['pairing-result', 'pairing.xcresult'], ['pairing-app', 'pairing-app/Beluga.app'],
+     ['pairing-inert-root-contract', 'pairing-inert-root-contract']].each do |name, relative|
+      artifacts << { 'name' => name, 'path' => relative, 'sha256' => Gate.tree_identity(File.join(@evidence, relative)), 'tree' => true }
+    end
+    processes = [@pairing_build_process]
+    Gate::PAIRING_PHASE_TIMEOUTS.keys.drop(1).each_with_index do |name, index|
+      start = processes.last.fetch('finishedAtNanoseconds')
+      processes << pairing_process_fixture(name, commands.fetch(name), start, start + 1, 12346 + index)
+    end
     { 'schema' => Gate::SCHEMA, 'status' => 'passed', 'scope' => 'offline-source-only', 'root' => @root,
       'created_at' => Time.now.to_i, 'source' => Gate.source_identity(@root), 'tools' => @tools, 'simulator' => SIMULATOR,
-      'invocation' => invocation, 'mac_format' => 'darwin-xctest-log', 'phases' => phases, 'artifacts' => artifacts,
-      'coverage' => { 'mac' => @mac_methods, 'simulator' => @sim_methods, 'intentional_simulator_skips' => Gate::SIMULATOR_SKIPS,
+      'invocation' => invocation, 'mac_format' => 'darwin-xctest-log', 'phases' => phases, 'artifacts' => artifacts, 'pairing_inert_root' => pairing_contract, 'pairing_processes' => processes,
+      'coverage' => { 'mac' => @mac_methods, 'simulator' => @sim_methods, 'intentional_simulator_skips' => Gate::SIMULATOR_SKIPS, 'pairing' => @pairing_methods.dup,
                       'rust' => @rust_methods, 'beluga_core' => @core_methods, 'shared_handoff' => @handoff_methods, 'c' => @c_methods } }
   end
 
@@ -331,9 +752,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
     # Isolated fixture seam only. Production receipt verification always uses
     # the fixed codesign/plutil collector on the retained real app.
     Signing.stub(:collect, lambda { |app|
-      raise Signing::Refusal, 'fixture app binding differs' unless app == @collected_signing_record['appPath']
+      record = [@collected_signing_record, @collected_pairing_signing_record].find { |candidate| candidate['appPath'] == app }
+      raise Signing::Refusal, 'fixture app binding differs' unless record
       during_collection.call if during_collection
-      Marshal.load(Marshal.dump(@collected_signing_record))
+      Marshal.load(Marshal.dump(record))
     }) { Gate.verify_receipt(path, digest, @root) }
   end
 
@@ -676,7 +1098,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
     assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 24, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 26, Gate::BELUGA_CORE_SOURCE_FILES.length
     %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs
        src/youtube_handoff_operation.rs tests/youtube_handoff_operation.rs].each do |path|
       assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path
@@ -893,7 +1315,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
                unknown_operation_is_invalid_unchanged_without_retirement_or_success
                wire_authorization_and_exact_numeric_identity_guard_slots exported_offer_functions_match_safe_reducer]
-    assert_equal 76, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 98, Gate::BELUGA_CORE_PINNED.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(44).last(tests.length)
     tests.each do |id|
       omitted = @core_methods - [id]
@@ -921,7 +1343,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                  offers-freshness-inclusive offers-deadline-inclusive offers-timeline-tolerance-widened
                  offers-host-position-tolerance-widened offers-clear-resets-counters offers-sent-sequence-reused
                  offers-unknown-operation-clears-state]
-    assert_equal 33, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 42, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.first(27).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name|
@@ -985,9 +1407,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
                malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
                deterministic_independent_traces_compare_every_raw_state_event_and_boolean]
     assert_equal 32, tests.length
-    assert_equal 76, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 98, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
-    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.first(76).last(tests.length)
     tests.each do |id|
       omitted = @core_methods - [id]
       rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
@@ -1014,8 +1436,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
       'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
     }
-    assert_equal 33, Gate::BELUGA_CORE_MUTANTS.length
-    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.last(mutants.length)
+    assert_equal 42, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(33).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
       assert_includes tests, test
@@ -1058,6 +1480,111 @@ class MicrophoneRegressionGateTests < Minitest::Test
     rejects('mutation oracle is incomplete') { verify(value) }
     rejects('result footer disagrees') do
       Gate.validate_rust(rust_log(@core_methods).sub("#{@core_methods.length} passed", '44 passed'), @core_methods)
+    end
+  end
+
+  def test_beluga_core_invitation_source_tests_link_smokes_and_mutants_are_mandatory
+    tests = %w[
+      initial_is_canonical_and_owns_nothing
+      arm_replaces_optional_callback_and_resets_consumed
+      foreign_admission_ignores_phase_before_any_error
+      already_consumed_admission_ignores_invalid_phase
+      matched_admission_rejects_nonrecoverable_native_phases
+      nil_admission_callback_still_consumes_after_accepted_issued
+      callback_preparation_never_consumes_before_native_success
+      thrown_admission_callback_remains_armed_retryable
+      successful_admission_is_consumed_once
+      active_completion_does_not_require_admission
+      idle_and_foreign_completion_ignore_phase
+      matched_completion_checks_active_only_after_owner_guard
+      thrown_completion_preserves_every_owned_field
+      successful_completion_clears_owner_callbacks_and_consumed
+      cancellation_is_exact_and_rearm_cannot_be_cancelled_by_foreign_owner
+      stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch
+      copied_states_are_independent_and_do_not_share_consumption
+      malformed_inputs_never_invite_callback_or_clear_existing_owner
+      forged_callback_ack_without_an_eligible_prepared_shape_is_invalid
+      exact_raw_layout_is_copy_only_and_has_no_native_pointer
+      all_reachable_original_states_and_events_match_independent_flat_reference
+      seeded_original_trace_with_rearm_cancellation_and_value_copies_matches
+    ]
+    assert_equal 22, tests.length
+    assert_equal 98, Gate::BELUGA_CORE_PINNED.length
+    assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED.last(tests.length)
+    tests.each do |id|
+      omitted = @core_methods - [id]
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |method| method + ': test' }.join("\n")) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(omitted), @core_methods) }
+      rejects('ignored') { Gate.validate_rust(rust_log(@core_methods).sub("test #{id} ... ok", "test #{id} ... ignored"), @core_methods) }
+    end
+    %w[src/invitation_acceptance.rs tests/invitation_acceptance.rs].each do |relative|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, relative
+      path = File.join(core_crate, relative)
+      original = File.binread(path)
+      File.unlink(path)
+      refresh_core_source_manifest
+      refresh_core_artifact_manifest
+      rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+      File.binwrite(path, original)
+      refresh_core_source_manifest
+      refresh_core_artifact_manifest
+    end
+    mutants = {
+      'invitation-phase-before-owner-and-consumed' => 'foreign_admission_ignores_phase_before_any_error',
+      'invitation-nil-admission-not-consumed' => 'nil_admission_callback_still_consumes_after_accepted_issued',
+      'invitation-prepared-state-committed-prematurely' => 'callback_preparation_never_consumes_before_native_success',
+      'invitation-thrown-callback-consumes' => 'thrown_admission_callback_remains_armed_retryable',
+      'invitation-completion-requires-admission' => 'active_completion_does_not_require_admission',
+      'invitation-arm-keeps-consumed' => 'arm_replaces_optional_callback_and_resets_consumed',
+      'invitation-foreign-cancellation-clears-owner' => 'cancellation_is_exact_and_rearm_cannot_be_cancelled_by_foreign_owner',
+      'invitation-native-prepared-owner-ignored' => 'stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch',
+      'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed'
+    }
+    assert_equal 42, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.last(mutants.length)
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    mutants.each do |name, test|
+      assert_includes tests, test
+      marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, '')) }
+      rejects('mutation oracle is incomplete') do
+        Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, marker.sub('assertion-failed', 'compile-failed')))
+      end
+      segment = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
+      [segment.sub("test #{test} ... FAILED", "test unrelated_assertion ... FAILED"),
+       segment.sub("test #{test} ... FAILED", "test #{test} ... ignored"),
+       segment.sub('0 passed; 1 failed; 0 ignored', '0 passed; 1 failed; 1 ignored')].each do |changed|
+        rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(segment, changed)) }
+      end
+    end
+    rejects('mutation oracle is incomplete') do
+      Gate.validate_beluga_core_mutations(core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(33)))
+    end
+    [
+      'BelugaCore C invitation acceptance ABI PASS: exact layouts, original guard order and one-use callback outcomes',
+      'BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes'
+    ].each do |marker|
+      assert_includes Gate::BELUGA_CORE_RUNTIME_MARKERS, marker
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
+    end
+    value = receipt
+    without_invitation = @core_methods - tests
+    path = File.join(@evidence, 'beluga-core-discovery.log')
+    File.write(path, without_invitation.map { |method| method + ': test' }.join("\n"))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(path)
+    value['coverage']['beluga_core'] = without_invitation
+    result = File.join(@evidence, 'beluga-core-tests.log')
+    File.write(result, rust_log(without_invitation))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(result)
+    rejects('missing critical Beluga core') { verify(value) }
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(33)))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+    rejects('result footer disagrees') do
+      Gate.validate_rust(rust_log(@core_methods).sub("#{@core_methods.length} passed", '76 passed'), @core_methods)
     end
   end
 
@@ -1555,8 +2082,9 @@ class MicrophoneRegressionGateTests < Minitest::Test
     File.write(@collected_signing_record['appPath'] + '/Beluga', 'different executable')
     rejects('artifact bytes changed') { verify(value) }
     value = receipt
-    value['artifacts'].find { |artifact| artifact['name'] == 'simulator-app' }['path'] = 'driver-bundle-1-artifact'
-    value['artifacts'].last['sha256'] = value['artifacts'][1]['sha256']
+    retained_app = value['artifacts'].find { |artifact| artifact['name'] == 'simulator-app' }
+    retained_app['path'] = 'driver-bundle-1-artifact'
+    retained_app['sha256'] = value['artifacts'].find { |artifact| artifact['name'] == 'driver-bundle-1' }['sha256']
     rejects('retained app artifact') { verify(value) }
   end
 

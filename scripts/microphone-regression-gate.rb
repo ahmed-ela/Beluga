@@ -7,6 +7,7 @@ require 'json'
 require 'open3'
 require 'rexml/document'
 require 'set'
+require 'shellwords'
 require 'tmpdir'
 require_relative 'microphone-simulator-signing'
 
@@ -25,8 +26,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -59,6 +60,143 @@ module MicrophoneRegressionGate
                            'zero timestamp publication keeps returned lifecycle',
                            'diagnostic snapshot concurrent coherency and progress']
   }.freeze
+  PAIRING_FILES = {
+    'ViewerPairingPersistenceTests' => 'iOS/opensteamer/Tests/ViewerPairingPersistenceTests.swift',
+    'ViewerPairedMacCatalogTests' => 'iOS/opensteamer/Tests/ViewerPairedMacCatalogTests.swift',
+    'BelugaRustInvitationAcceptanceActionTests' => 'iOS/opensteamer/Tests/InvitationAcceptanceActionNativeTests.swift',
+    'BelugaRustInvitationAcceptanceTests' => 'iOS/opensteamer/Tests/BelugaRustInvitationAcceptanceTests.swift',
+  }.freeze
+  PAIRING_CLASSES = PAIRING_FILES.keys.freeze
+  PAIRING_SOURCE_SHA256 = {
+    'ViewerPairingPersistenceTests' => '7fcff607e12020beec94d5e0772ded59709125031b2d69fbe3d47b5e46892203',
+    'ViewerPairedMacCatalogTests' => '2ed701ff30341c49c279681f16d944d79635135b30c76cf9f5ca6b23df29f63e',
+    'BelugaRustInvitationAcceptanceActionTests' => 'ff5c34c02c5210afaa4ca076a3c86a6b335d2c92418c2719493a5e7941c4e176',
+    'BelugaRustInvitationAcceptanceTests' => '4e71293a0f04075eee0d8c354fb365c2a8960f13c70331299d8e4433f95402e0',
+  }.freeze
+  PAIRING_BY_CLASS = {
+    'ViewerPairingPersistenceTests' => %w[
+      testAbsoluteDeadlineClosesAHealthySocketThatWaitsForeverForTheMac
+      testAcceptedIssuedRecordSurvivesRelaunchForCommitRecovery
+      testActiveViewerResendsActivationProofBeforeReconnectRequest
+      testAdmissionBoundaryRelaunchesThroughRecoverablePairingRecord
+      testAuthenticatedCompletionPersistsBeforeInvitationDeletionExactlyOnce
+      testAvailabilityRetriesWhenHostRegistrationIsNotReady
+      testAvailabilityRetrySleepIsCancellableWithoutLosingPairing
+      testAvailabilityRetryUsesThirtySecondDeadlineAndFourSecondCap
+      testBothEmptyNamespacesCreateIdentityOnlyInPrimary
+      testCancellationDuringViewerConfirmationSendCannotPublishCommittingState
+      testCancelledOperationCannotCloseOrResetReplacementOperation
+      testCancelledSuspendedActivationCannotOverwriteReplacementPair
+      testCancelledSuspendedActivationCannotResavePairAfterForget
+      testCorruptPrimaryRecordFailsClosedWithoutLegacyFallback
+      testDeadlineCloseBeforeReadySendStillPublishesRetainedPairRecovery
+      testDifferentInvitationBypassesPriorAdmissionMarker
+      testFailedHydrationCanRetryAfterProtectedDataBecomesAvailable
+      testFailureBeforeRecoverableBoundaryLeavesInvitationRetryable
+      testForgetDeletesPairButPreservesViewerIdentity
+      testFreshAttemptRetiresTerminalMediaHistoryButPassiveLifecycleDoesNot
+      testFreshExchangeImmediatelyResendsWithANewerReconnectSequence
+      testHostOnlyAcceptedReceivedStateIsRejectedByViewerStore
+      testInterruptedPairingRetriesSavedInvitationThenFallsBackToDurablePair
+      testInterruptedPairingRetriesTransientReplacementConflict
+      testLegacyForgetPromotesIdentityAndDeletesSelectedLegacyPairLast
+      testLegacyIdentityOnlyIsNotFallbackAndCreatesOnlyPrimaryIdentity
+      testLegacyReadFailureDoesNotCreatePrimaryIdentity
+      testLegacySelectedForgetAcceptsEqualPrimaryIdentityWithoutRewritingIt
+      testLegacySelectedForgetPromotesExactIdentityThenDeletesBothPairs
+      testLegacySelectedForgetRejectsConflictingPrimaryIdentityBeforeDeleting
+      testNamespaceSelectorPrefersCompletePrimaryPairWithoutProbingLegacy
+      testNamespaceSelectorPropagatesKeychainReadFailureWithoutFallback
+      testNamespaceSelectorUsesCompleteLegacyPairOnlyWhenPrimaryIsEmpty
+      testPairOnlyKeychainNamespaceFailsClosedWithoutCreatingIdentity
+      testPairOnlyPrimaryFailsClosedWithoutProbingLegacyOrWriting
+      testPairPersistenceFailureNeverDeletesInvitation
+      testPairedMacMustBeBoundToExactViewerIdentity
+      testPairingKeychainItemsAreThisDeviceOnly
+      testPairingPreparationKeepsBackgroundLeaseUntilExplicitCancellation
+      testPendingPairingCompletionCannotDeleteInvitation
+      testPendingRecordCannotPersistAdmissionBoundary
+      testPendingViewerRecordHydratesOnlyAsRecoveryState
+      testPrimaryForgetDeletesUnselectedLegacyPairBeforeSelectedPrimaryPair
+      testPrimaryIdentityOnlyIsExplicitlyUnpairedAndDoesNotProbeLegacy
+      testPrimaryRecordBoundToAnotherIdentityFailsClosedWithoutMixing
+      testPrimarySelectedForgetDeletesBothPairsAndPreservesBothIdentities
+      testReadyThenProcessDeathWithoutPairLeavesSavedInvitationRetryable
+      testReconnectDeadlineAlsoBoundsASuspendedRequestSend
+      testReconnectResponseAtAbsoluteDeadlineCannotStartMedia
+      testSavingAfterLegacySelectionWritesOnlyLegacyNamespace
+      testSilentReconnectResponseClosesAttemptAndRetriesWithNextSequence
+      testStoredHostIdentityIsRejectedInsteadOfSilentlyReplaced
+      testSuccessfulRecoveryBootstrapAvailabilityDeadlineDoesNotFallbackOrRestartBudget
+      testSuccessfulRecoveryBootstrapNontransientAvailabilityErrorDoesNotFallback
+      testThreeColdReconnectPayloadSequencesAreAcceptedByTheRealHostRecord
+      testViewerIdentityAndPairedMacSurviveStateReconstruction
+      testViewerPersistenceFailurePreventsConfirmationTransmission
+      testViewerPersistsPendingRecordBeforeSendingItsConfirmation
+    ].freeze,
+    'ViewerPairedMacCatalogTests' => %w[
+      testAddingAndForgettingMacsNeverDropsOtherPairsOrRotatesIdentity
+      testCatalogRejectsIdentityMismatchAndMissingIdentityWithoutManufacturingReplacement
+      testCorruptionUnknownSelectionAndWriteFailureFailClosedWithoutDeletingPairs
+      testInterruptedSecondPairRetainsFirstActiveMacAndPendingSelectionAcrossRelaunch
+      testMigratedPendingMacDoesNotGuessWhichUnboundInvitationBelongsToIt
+      testMigrationAndSecondMacPreserveIdentityAndBothIndependentPairsAcrossRelaunch
+      testPendingMacRecoveryBindsInvitationToExactSelectedPairAcrossRelaunch
+      testSavedMacSwitchWaitsForBothRetirementsAndRejectsEveryStaleBoundary
+    ].freeze,
+    'BelugaRustInvitationAcceptanceActionTests' => %w[
+      testAbsentAdmissionCallbackStillConsumesTheAcceptedIssuedBoundary
+      testCallbackReceivesExactSuppliedRecordWithoutInventedPairBinding
+      testCompletionDoesNotRequireAnAdmissionCallOrSuccessfulAdmission
+      testCopiesAfterAdmissionPreserveConsumptionButRetireIndependently
+      testCopiesBeforeAdmissionHaveIndependentOnceOnlyGates
+      testExactCancelRetiresAllGatesAndIsIdempotent
+      testExactGenerationRejectsEveryNonActivePhaseWithoutCallback
+      testExactGenerationRejectsEveryNonRecoverablePhaseWithoutCallback
+      testForeignCancelCannotRetireOrResetTheCurrentOwner
+      testForeignGenerationReturnsBeforeRecoverableAndActiveValidation
+      testRearmAfterCompletionOrCancellationCreatesFreshAuthority
+      testRearmWithDifferentGenerationReplacesClosuresAndRejectsTheOldOwner
+      testRearmingOneValueCopyCannotReplaceAnotherCopiesClosure
+      testSameUUIDRearmResetsConsumptionAndInstallsOnlyNewClosures
+      testSeededTracePreservesFrozenOrderingOutcomesCallbacksAndRecords
+      testSuccessfulAdmissionRunsOnceAndDuplicateReturnsBeforePhaseCheck
+      testSuccessfulCompletionRetiresAllGatesBeforeAnyLatePhaseCheck
+      testThrowingAdmissionPreservesRetryAndConsumesOnlyAfterSuccess
+      testThrowingCallbacksRetainActualEffectsButPermitRetry
+      testThrowingCompletionDoesNotRetireEitherCallback
+      testThrowingCompletionPreservesAlreadyConsumedAdmission
+      testUnarmedCallsReturnBeforeEveryPairingPhaseGuard
+    ].freeze,
+    'BelugaRustInvitationAcceptanceTests' => %w[
+      testBoundaryCannotLoseExactCancelRetirementOnMalformedOutput
+      testBoundaryRejectsAdmissionPlanThatClearsCompletionAuthority
+      testBoundaryRejectsCallbackKindAndPreparedFlagsSwaps
+      testBoundaryRejectsCompletionPlanThatLosesRetirement
+      testBoundaryRejectsForgedAdmissionPermissionForWrongPhase
+      testBoundaryRejectsForgedCallbackPermissionForForeignUUID
+      testBoundaryRejectsForgedCompletionPermissionForWrongPhase
+      testBoundaryRejectsMalformedVersionsStatusesBooleansAndImpossibleStates
+      testBoundaryRejectsPreEffectAdmissionConsumption
+      testBoundaryRejectsPreEffectCompletionRetirement
+      testBoundaryRejectsWrongStatusAndFabricatedCompletionBoolean
+      testControlsAcceptEveryLegitimateStateGuardAndIndependentValueCopy
+      testDifferentGenerationAndCancelledCallsCannotUseRetiredNativeOwner
+      testPartialEffectCallbackFailurePropagatesAndExactRetryRemainsPossible
+      testPrevalidatedCandidateCommitsFromActualSuccessWithNoPostEffectFFIOrReplay
+      testSameUUIDRearmRotatesOwnerAndOnlyReplacementClosuresCanRun
+    ].freeze,
+  }.freeze
+  PAIRING_PINNED = PAIRING_BY_CLASS.flat_map { |name, methods| methods.map { |method| name + '/' + method } }.sort.freeze
+  PAIRING_APP_ROOT = 'iOS/opensteamer/Sources/App/OpensteamerApp.swift'.freeze
+  PAIRING_APP_ROOT_SHA256 = '8109b0dbae6db7f1555e6dbfb10a70dcba5c364709a99be4630b1af3bbe1f08f'.freeze
+  PAIRING_INERT_CONDITIONS = 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=DEBUG OPENSTEAMER_UPDATE_VALIDATION_HOST'.freeze
+  PAIRING_PROOF_FILES = { 'Beluga.SwiftFileList' => 1024 * 1024, 'opensteamer-OutputFileMap.json' => 4 * 1024 * 1024,
+                          'OpensteamerApp.o' => 16 * 1024 * 1024, 'app-swift-driver.txt' => 1024 * 1024 }.freeze
+  PAIRING_PHASE_TIMEOUTS = { 'pairing-inert-build' => 600, 'pairing-tests' => 900, 'pairing-summary' => 30,
+                             'pairing-results' => 30, 'pairing-signature' => 30, 'pairing-entitlements' => 30 }.freeze
+  PAIRING_OVERALL_SECONDS = 1200
+
   SIMULATOR_CLASSES = %w[WorldwideAudioLifecycleTests WebRTCAudioPlaybackSessionTests IOSAudioDiagnosticsJournalTests
                         ScreenVideoIdleTimerTests ScreenVideoIdleTimerViewTests
                         YouTubeHandoffOperationTests YouTubeHandoffWebViewTests
@@ -335,6 +473,28 @@ module MicrophoneRegressionGate
     malformed_abi_and_every_structural_state_field_fail_byte_identically
     malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
     deterministic_independent_traces_compare_every_raw_state_event_and_boolean
+    initial_is_canonical_and_owns_nothing
+    arm_replaces_optional_callback_and_resets_consumed
+    foreign_admission_ignores_phase_before_any_error
+    already_consumed_admission_ignores_invalid_phase
+    matched_admission_rejects_nonrecoverable_native_phases
+    nil_admission_callback_still_consumes_after_accepted_issued
+    callback_preparation_never_consumes_before_native_success
+    thrown_admission_callback_remains_armed_retryable
+    successful_admission_is_consumed_once
+    active_completion_does_not_require_admission
+    idle_and_foreign_completion_ignore_phase
+    matched_completion_checks_active_only_after_owner_guard
+    thrown_completion_preserves_every_owned_field
+    successful_completion_clears_owner_callbacks_and_consumed
+    cancellation_is_exact_and_rearm_cannot_be_cancelled_by_foreign_owner
+    stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch
+    copied_states_are_independent_and_do_not_share_consumption
+    malformed_inputs_never_invite_callback_or_clear_existing_owner
+    forged_callback_ack_without_an_eligible_prepared_shape_is_invalid
+    exact_raw_layout_is_copy_only_and_has_no_native_pointer
+    all_reachable_original_states_and_events_match_independent_flat_reference
+    seeded_original_trace_with_rearm_cancellation_and_value_copies_matches
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -369,7 +529,16 @@ module MicrophoneRegressionGate
     'phone-repeated-begin-reservation' => 'only_reserved_correlated_completion_moves_and_cannot_be_replayed',
     'phone-original-proof-age-refreshed' => 'original_proof_age_never_renews_but_completion_uses_latest_sample',
     'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
-    'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
+    'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal',
+    'invitation-phase-before-owner-and-consumed' => 'foreign_admission_ignores_phase_before_any_error',
+    'invitation-nil-admission-not-consumed' => 'nil_admission_callback_still_consumes_after_accepted_issued',
+    'invitation-prepared-state-committed-prematurely' => 'callback_preparation_never_consumes_before_native_success',
+    'invitation-thrown-callback-consumes' => 'thrown_admission_callback_remains_armed_retryable',
+    'invitation-completion-requires-admission' => 'active_completion_does_not_require_admission',
+    'invitation-arm-keeps-consumed' => 'arm_replaces_optional_callback_and_resets_consumed',
+    'invitation-foreign-cancellation-clears-owner' => 'cancellation_is_exact_and_rearm_cannot_be_cancelled_by_foreign_owner',
+    'invitation-native-prepared-owner-ignored' => 'stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch',
+    'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed'
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -378,11 +547,13 @@ module MicrophoneRegressionGate
     'BelugaCore C transaction ABI PASS: exact identity, cached reply, revocation and unknown outcome',
     'BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts',
     'BelugaCore C phone operation ABI PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
+    'BelugaCore C invitation acceptance ABI PASS: exact layouts, original guard order and one-use callback outcomes',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
     'BelugaCore Swift offers import/link PASS: independent owners, sequence burn, consuming rejection and exact layouts',
-    'BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes'
+    'BelugaCore Swift phone operation import/link PASS: exact layouts, original ordering, immutable proof and honest pause outcomes',
+    'BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes'
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -412,6 +583,18 @@ module MicrophoneRegressionGate
     test_shared_handoff_offers_full_discovered_and_pinned_coverage_cannot_be_removed
     test_beluga_core_compiled_mutation_assertions_reject_uncompiled_wrong_case_and_bad_footer
     test_beluga_core_phone_operation_source_tests_link_smokes_and_mutants_are_mandatory
+    test_beluga_core_invitation_source_tests_link_smokes_and_mutants_are_mandatory
+    test_pairing_inventory_is_exact104_separate_from_original_simulator_skips
+    test_pairing_zero_skip_named_results_cannot_omit_duplicate_or_fail_cases
+    test_pairing_compiler_requires_fresh_inert_driver_source_filelist_map_and_object
+    test_pairing_owned_compiler_files_and_lock_replacement_fail_closed
+    test_pairing_receipt_cannot_omit_rehash_or_weaken_inert_phases_and_artifacts
+    test_pairing_run_never_launches_without_fresh_compiler_custody
+    test_pairing_executor_success_nonzero_and_timeout_retire_exact_group
+    test_pairing_executor_reaped_leader_cannot_abandon_living_descendant
+    test_pairing_executor_interruption_still_reaps_and_proves_group_absent
+    test_pairing_executor_eperm_never_becomes_a_successful_absence_proof
+    test_pairing_stale_object_and_forged_process_records_refuse_before_launch
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -511,7 +694,7 @@ module MicrophoneRegressionGate
     WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryRejectsForgedMintConsumptionRetirementAndCounterReset
   ].freeze
   PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests shared-handoff-tests simulator-tests simulator-summary simulator-results simulator-signature
-              simulator-entitlements rust-discovery rust-tests beluga-core-discovery beluga-core-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
+              simulator-entitlements pairing-inert-build pairing-tests pairing-summary pairing-results pairing-signature pairing-entitlements rust-discovery rust-tests beluga-core-discovery beluga-core-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
               driver-build-2 driver-verifier driver-load driver-malformed-bundles].freeze
   PROTECTED_ROOTS = ['/Applications', '/Library', '/System', '/Users/ahmed/Library/Application Support/opensteamer'].freeze
 
@@ -830,6 +1013,260 @@ module MicrophoneRegressionGate
     Digest::SHA256.hexdigest(JSON.generate(entries.sort))
   end
 
+  # Pairing owns a distinct zero-skip inventory. Never broaden the ordinary
+  # app-root Simulator suite or borrow its physical exclusions.
+  def self.pairing_inventory(root)
+    require!(PAIRING_PINNED.length == 104 && PAIRING_PINNED.uniq.length == 104 &&
+             PAIRING_FILES.keys == PAIRING_BY_CLASS.keys && PAIRING_FILES.keys == PAIRING_SOURCE_SHA256.keys,
+             'pairing reviewed inventory is malformed')
+    observed = []
+    PAIRING_FILES.each do |name, relative|
+      path = File.join(root, relative)
+      bytes = pairing_owned_bytes(path, 4 * 1024 * 1024)
+      require!(Digest::SHA256.hexdigest(bytes) == PAIRING_SOURCE_SHA256.fetch(name), 'pairing reviewed source changed: ' + name)
+      text = utf8_text(bytes, 'pairing source')
+      classes = text.scan(/\b(?:final\s+)?class\s+(\w+)\s*:\s*XCTestCase\b/).flatten
+      methods = text.scan(/\bfunc\s+(test\w+)\s*\(/).flatten.sort
+      require!(classes == [name] && methods == PAIRING_BY_CLASS.fetch(name).sort && methods.uniq == methods,
+               'pairing source inventory is missing, duplicated or unexpected: ' + name)
+      observed.concat(methods.map { |method| name + '/' + method })
+    end
+    require!(observed.sort == PAIRING_PINNED, 'pairing source inventory differs from reviewed names')
+    observed.sort
+  end
+
+  def self.validate_pairing(summary, results, expected, simulator)
+    require!(expected == PAIRING_PINNED && expected.length == 104 && expected.uniq.length == 104, 'pairing expected inventory changed')
+    require!(summary.is_a?(Hash) && summary['result'] == 'Passed' &&
+             summary.values_at('totalTestCount', 'passedTests', 'skippedTests', 'failedTests', 'expectedFailures', 'testFailures') ==
+             [104, 104, 0, 0, 0, []], 'pairing summary requires exactly 104 passes and zero skips/failures')
+    configurations = summary['devicesAndConfigurations']
+    require!(configurations.is_a?(Array) && configurations.length == 1 && configurations.first.is_a?(Hash), 'pairing requires one configuration')
+    configuration = configurations.first
+    device = configuration['device']
+    require!(device.is_a?(Hash) && device['deviceId'].to_s.casecmp?(simulator) && device['platform'].to_s.include?('Simulator'),
+             'pairing belongs to a physical or different destination')
+    %w[passedTests skippedTests failedTests expectedFailures].each do |key|
+      require!(configuration[key] == summary[key], 'pairing per-configuration counts disagree')
+    end
+    require!(results.is_a?(Hash), 'pairing result tree is malformed')
+    cases = []
+    walk = lambda do |node|
+      if node.is_a?(Hash)
+        cases << node if node['nodeType'] == 'Test Case'
+        node.each_value { |value| walk.call(value) }
+      elsif node.is_a?(Array)
+        node.each { |value| walk.call(value) }
+      end
+    end
+    walk.call(results)
+    observed = cases.map do |node|
+      id = node.fetch('nodeIdentifier', '').sub(/\(\)\z/, '').sub(/\AopensteamerTests\//, '')
+      require!(expected.include?(id) && node['result'] == 'Passed', 'pairing unexpected, failed or skipped case: ' + id)
+      id
+    end
+    require!(observed.length == 104 && observed.uniq.length == 104 && observed.sort == expected,
+             'pairing cases are absent, duplicated, extra or unexecuted')
+    observed.sort
+  end
+
+  def self.pairing_stat_identity(stat)
+    [stat.dev, stat.ino, stat.size, stat.uid, stat.nlink, stat.mode, stat.mtime.to_r, stat.ctime.to_r]
+  end
+
+  def self.pairing_owned_bytes(path, maximum)
+    require!(File.realpath(path) == path, 'pairing evidence path is noncanonical: ' + path)
+    before = File.lstat(path)
+    require!(before.file? && !before.symlink? && before.uid == Process.uid && before.nlink == 1 &&
+             before.size.positive? && before.size <= maximum, 'pairing evidence file is unsafe, empty or unbounded: ' + path)
+    bytes = File.open(path, File::RDONLY | File::NOFOLLOW) do |file|
+      opened = file.stat
+      require!(pairing_stat_identity(opened) == pairing_stat_identity(before), 'pairing file identity changed at open')
+      contents = file.read(maximum + 1)
+      require!(contents.bytesize == before.size && pairing_stat_identity(file.stat) == pairing_stat_identity(opened),
+               'pairing file identity changed during read')
+      contents
+    end
+    require!(pairing_stat_identity(File.lstat(path)) == pairing_stat_identity(before) && Digest::SHA256.hexdigest(bytes) == sha(path),
+             'pairing file identity changed after read')
+    bytes
+  rescue SystemCallError
+    raise RuntimeError, 'pairing evidence file is absent or inaccessible: ' + path
+  end
+
+  PAIRING_PROCESS_KEYS = %w[schema phase pid pgid argvSHA256 startedAtNanoseconds finishedAtNanoseconds timeoutSeconds
+                            leaderReaped leaderExitStatus leaderSignal groupAbsent absenceProof termSent killSent completion].freeze
+  PAIRING_OBJECT_KEYS = %w[device inode size uid links mode modifiedAtNanoseconds changedAtNanoseconds].freeze
+
+  def self.validate_pairing_process(record, name, argv, latest_nanoseconds, timeout_limit)
+    exact_keys!(record, PAIRING_PROCESS_KEYS, 'pairing process teardown proof')
+    require!(record['schema'] == 'beluga.pairing.process-group.v1' && record['phase'] == name &&
+             PAIRING_PHASE_TIMEOUTS.key?(name) && record['argvSHA256'] == Digest::SHA256.hexdigest(JSON.generate(argv)),
+             'pairing process proof belongs to a different phase or command')
+    require!(%w[pid pgid startedAtNanoseconds finishedAtNanoseconds].all? do |key|
+      record[key].is_a?(Integer) && record[key].positive? && record[key] < 2**63
+    end, 'pairing process identity or time bounds are malformed')
+    duration = record['finishedAtNanoseconds'] - record['startedAtNanoseconds']
+    timeout = record['timeoutSeconds']
+    require!(record['pid'] == record['pgid'] && record['pid'] < 2**31 && duration >= 0 &&
+             record['finishedAtNanoseconds'] <= latest_nanoseconds && timeout.is_a?(Numeric) && timeout.finite? &&
+             timeout.positive? && timeout <= [PAIRING_PHASE_TIMEOUTS.fetch(name), timeout_limit].min &&
+             duration <= ((timeout + 3.0) * 1_000_000_000).ceil,
+             'pairing process deadline or owned leader/group identity changed')
+    require!(record.values_at('leaderReaped', 'leaderExitStatus', 'leaderSignal', 'groupAbsent', 'absenceProof', 'completion') ==
+             [true, 0, nil, true, 'ESRCH', 'success'] &&
+             [true, false].include?(record['termSent']) && [true, false].include?(record['killSent']) &&
+             (!record['killSent'] || record['termSent']), 'pairing process lacks successful exact reap and ESRCH teardown')
+    record
+  end
+
+  def self.validate_pairing_processes(records, expected_commands, latest_nanoseconds, timeout_limit)
+    require!(records.is_a?(Array) && records.map { |record| record.is_a?(Hash) && record['phase'] } == PAIRING_PHASE_TIMEOUTS.keys,
+             'pairing process proofs are missing, duplicated or reordered')
+    records.each { |record| validate_pairing_process(record, record['phase'], expected_commands.fetch(record['phase']), latest_nanoseconds, timeout_limit) }
+    require!(records.map { |record| record['pgid'] }.uniq.length == 6 &&
+             records.each_cons(2).all? { |before, after| before['finishedAtNanoseconds'] <= after['startedAtNanoseconds'] } &&
+             records.last['finishedAtNanoseconds'] - records.first['startedAtNanoseconds'] <= PAIRING_OVERALL_SECONDS * 1_000_000_000,
+             'pairing process group ordering or overall deadline changed')
+    records
+  end
+
+  def self.pairing_object_metadata(path)
+    before = File.lstat(path)
+    bytes = pairing_owned_bytes(path, PAIRING_PROOF_FILES.fetch('OpensteamerApp.o'))
+    after = File.lstat(path)
+    require!(pairing_stat_identity(before) == pairing_stat_identity(after) && bytes.bytesize == before.size,
+             'pairing App root object changed during metadata collection')
+    { 'device' => before.dev, 'inode' => before.ino, 'size' => before.size, 'uid' => before.uid,
+      'links' => before.nlink, 'mode' => before.mode, 'modifiedAtNanoseconds' => (before.mtime.to_r * 1_000_000_000).to_i,
+      'changedAtNanoseconds' => (before.ctime.to_r * 1_000_000_000).to_i }
+  rescue SystemCallError
+    raise RuntimeError, 'pairing App root object metadata is absent or inaccessible'
+  end
+
+  def self.validate_pairing_object_metadata(record, bytes, build_process = nil, retained = false)
+    exact_keys!(record, PAIRING_OBJECT_KEYS, 'pairing App root object metadata')
+    require!(PAIRING_OBJECT_KEYS.all? { |key| record[key].is_a?(Integer) && record[key] >= 0 && record[key] < 2**64 } &&
+             record['inode'].positive? && record['links'] == 1 && record['uid'] == Process.uid &&
+             record['mode'] < 2**16 && (record['mode'] & 0170000) == 0100000 &&
+             record['size'] == bytes.bytesize && record['size'].positive? && record['size'] <= PAIRING_PROOF_FILES.fetch('OpensteamerApp.o') &&
+             %w[modifiedAtNanoseconds changedAtNanoseconds].all? { |key| record[key].positive? && record[key] < 2**63 } &&
+             (!retained || (record['mode'] & 0777) == 0600), 'pairing App root object metadata is unsafe or unbounded')
+    if build_process
+      start = build_process.fetch('startedAtNanoseconds'); finish = build_process.fetch('finishedAtNanoseconds')
+      require!(%w[modifiedAtNanoseconds changedAtNanoseconds].all? { |key| record[key] >= start && record[key] <= finish },
+               'pairing App root object is stale or outside the actual inert build wall interval')
+    end
+    record
+  end
+
+  def self.pairing_compiler_paths(scratch)
+    base = File.join(scratch, 'DerivedData/Build/Intermediates.noindex/opensteamer.build/Debug-iphonesimulator/opensteamer.build/Objects-normal/arm64')
+    PAIRING_PROOF_FILES.keys.first(3).map { |name| [name, File.join(base, name)] }.to_h
+  end
+
+  # Only actual fresh xcodebuild compiler output admits test launch. All inputs
+  # here are subsequently retained and recomputed by receipt verification.
+  def self.pairing_compiler_proof(root, scratch, developer, tools, build_text, bytes_by_name, build_process, original_object_metadata, retained_object_metadata = nil)
+    exact_keys!(bytes_by_name, PAIRING_PROOF_FILES.keys.first(3), 'pairing compiler files')
+    app_root = File.join(root, PAIRING_APP_ROOT)
+    require!(Digest::SHA256.hexdigest(pairing_owned_bytes(app_root, 1024 * 1024)) == PAIRING_APP_ROOT_SHA256,
+             'pairing reviewed inert App root changed')
+    swiftc = File.join(developer, 'Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc')
+    require!(tools[swiftc] == sha(swiftc), 'pairing actual compiler identity changed')
+    paths = pairing_compiler_paths(scratch)
+    text = utf8_text(build_text, 'pairing inert build result')
+    drivers = text.lines.each_with_object([]) do |line, matches|
+      next unless line.strip.start_with?('builtin-SwiftDriver -- ')
+      tokens = Shellwords.shellsplit(line.strip)
+      next unless tokens[0, 3] == ['builtin-SwiftDriver', '--', swiftc]
+      indices = tokens.each_index.select { |index| tokens[index] == '-module-name' }
+      next unless indices.length == 1 && tokens[indices.first + 1] == 'opensteamer'
+      matches << [line, tokens]
+    end
+    require!(drivers.length == 1, 'pairing needs a unique fresh actual app SwiftDriver before launch')
+    driver, tokens = drivers.first
+    definitions = []
+    tokens.each_with_index do |token, index|
+      definitions << tokens[index + 1] if token == '-D'
+      definitions << token[2..-1] if token.start_with?('-D') && token != '-D'
+    end
+    targets = tokens.each_index.select { |index| tokens[index] == '-target' }
+    maps = tokens.each_index.select { |index| tokens[index] == '-output-file-map' }
+    require!(definitions.count('DEBUG') == 1 && definitions.count('OPENSTEAMER_UPDATE_VALIDATION_HOST') == 1 &&
+             targets.length == 1 && tokens[targets.first + 1] == 'arm64-apple-ios17.0-simulator' && maps.length == 1 &&
+             tokens[maps.first + 1] == paths.fetch('opensteamer-OutputFileMap.json') &&
+             tokens.count('@' + paths.fetch('Beluga.SwiftFileList')) == 1 && tokens.include?('-c'),
+             'pairing actual app compiler does not prove inert definitions/target/input/output')
+    marker = 'SwiftCompile normal arm64 ' + app_root + " (in target 'opensteamer' from project 'opensteamer')"
+    require!(text.lines.count { |line| line.strip == marker } == 1 &&
+             text.lines.count { |line| line.strip == '** BUILD SUCCEEDED **' } == 1 && !text.include?('** BUILD FAILED **'),
+             'pairing requires fresh successful App root compilation; incremental-only proof refuses before launch')
+    inputs = utf8_text(bytes_by_name.fetch('Beluga.SwiftFileList'), 'pairing file list').lines.flat_map { |line| Shellwords.shellsplit(line) }
+    require!(inputs.count(app_root) == 1, 'pairing file list must bind exact App root once')
+    map = parse_json(utf8_text(bytes_by_name.fetch('opensteamer-OutputFileMap.json'), 'pairing output map'), 'pairing output map')
+    require!(map.is_a?(Hash) && map[app_root].is_a?(Hash) && map[app_root]['object'] == paths.fetch('OpensteamerApp.o'),
+             'pairing output map must bind exact App root object')
+    exact_keys!(build_process, PAIRING_PROCESS_KEYS, 'pairing inert build process')
+    require!(build_process['phase'] == 'pairing-inert-build' && build_process.values_at('leaderReaped', 'leaderExitStatus', 'leaderSignal', 'groupAbsent', 'absenceProof', 'completion') ==
+             [true, 0, nil, true, 'ESRCH', 'success'] &&
+             %w[startedAtNanoseconds finishedAtNanoseconds].all? { |key| build_process[key].is_a?(Integer) && build_process[key].positive? } &&
+             build_process['startedAtNanoseconds'] <= build_process['finishedAtNanoseconds'], 'pairing inert build lacks a bounded successful process interval')
+    validate_pairing_object_metadata(original_object_metadata, bytes_by_name.fetch('OpensteamerApp.o'), build_process)
+    validate_pairing_object_metadata(retained_object_metadata, bytes_by_name.fetch('OpensteamerApp.o'), nil, true) if retained_object_metadata
+    records = paths.map do |name, path|
+      bytes = bytes_by_name.fetch(name)
+      require!(bytes.is_a?(String) && bytes.bytesize.positive? && bytes.bytesize <= PAIRING_PROOF_FILES.fetch(name), 'pairing compiler input/output is empty or unbounded')
+      { 'path' => path, 'retainedPath' => 'pairing-inert-root-contract/' + name,
+        'byteCount' => bytes.bytesize, 'sha256' => Digest::SHA256.hexdigest(bytes) }
+    end
+    { 'schema' => 'beluga.pairing-inert-compiler.v1', 'appRoot' => PAIRING_APP_ROOT, 'appRootSHA256' => PAIRING_APP_ROOT_SHA256,
+      'compiler' => swiftc, 'compilerSHA256' => tools.fetch(swiftc), 'target' => 'arm64-apple-ios17.0-simulator',
+      'buildSettingArgv' => PAIRING_INERT_CONDITIONS, 'requiredDefinitions' => %w[DEBUG OPENSTEAMER_UPDATE_VALIDATION_HOST],
+      'proofPhase' => 'pairing-inert-build', 'proofLogSHA256' => Digest::SHA256.hexdigest(build_text), 'compileMarker' => marker,
+      'driverPath' => 'pairing-inert-root-contract/app-swift-driver.txt', 'driverSHA256' => Digest::SHA256.hexdigest(driver),
+      'files' => records, 'buildProcessSHA256' => Digest::SHA256.hexdigest(JSON.generate(build_process)),
+      'originalObjectMetadata' => original_object_metadata, 'retainedObjectMetadata' => retained_object_metadata }
+  rescue ArgumentError
+    raise RuntimeError, 'pairing compiler command framing is malformed'
+  end
+
+  def self.validate_pairing_contract(root, directory, invocation, tools, build_text, contract, build_process)
+    exact_keys!(contract, %w[schema appRoot appRootSHA256 compiler compilerSHA256 target buildSettingArgv requiredDefinitions
+                            proofPhase proofLogSHA256 compileMarker driverPath driverSHA256 files buildProcessSHA256 originalObjectMetadata retainedObjectMetadata], 'pairing compiler contract')
+    parent = File.join(directory, 'pairing-inert-root-contract')
+    stat = File.lstat(parent)
+    require!(File.realpath(parent) == parent && stat.directory? && !stat.symlink? && stat.uid == Process.uid && (stat.mode & 0777) == 0700 &&
+             Dir.children(parent).sort == PAIRING_PROOF_FILES.keys.sort, 'pairing retained compiler inventory is unsafe or incomplete')
+    bytes = PAIRING_PROOF_FILES.map { |name, maximum| [name, pairing_owned_bytes(File.join(parent, name), maximum)] }.to_h
+    retained_metadata = pairing_object_metadata(File.join(parent, 'OpensteamerApp.o'))
+    require!(contract['retainedObjectMetadata'] == retained_metadata, 'pairing retained object metadata differs from actual build evidence')
+    expected = pairing_compiler_proof(root, invocation.fetch('scratch'), invocation.fetch('developer_directory'), tools, build_text,
+                                     bytes.reject { |name, _| name == 'app-swift-driver.txt' }, build_process,
+                                     contract['originalObjectMetadata'], retained_metadata)
+    require!(contract == expected && Digest::SHA256.hexdigest(bytes.fetch('app-swift-driver.txt')) == expected.fetch('driverSHA256'),
+             'pairing retained compiler contract differs from actual build evidence')
+    expected
+  end
+
+  def self.pairing_commands(root, directory, invocation, simulator)
+    developer = invocation.fetch('developer_directory')
+    base = [File.join(developer, 'usr/bin/xcodebuild')]
+    common = ['-project', File.join(root, 'iOS/opensteamer/opensteamer.xcodeproj'), '-scheme', 'opensteamer', '-configuration', 'Debug',
+              '-destination', 'platform=iOS Simulator,id=' + simulator, '-derivedDataPath', File.join(invocation.fetch('scratch'), 'DerivedData'), '-jobs', '2']
+    signing = [PAIRING_INERT_CONDITIONS, 'DEVELOPMENT_TEAM=MSMG8CJLB3', 'CODE_SIGNING_ALLOWED=YES']
+    result = File.join(directory, 'pairing.xcresult')
+    app = File.join(directory, 'pairing-app/Beluga.app')
+    { 'pairing-inert-build' => base + ['build'] + common + signing,
+      'pairing-tests' => base + ['test'] + common + ['-resultBundlePath', result, '-parallel-testing-enabled', 'NO',
+        '-test-timeouts-enabled', 'YES', '-default-test-execution-time-allowance', '90', '-maximum-test-execution-time-allowance', '90'] +
+        PAIRING_CLASSES.map { |name| '-only-testing:opensteamerTests/' + name } + signing,
+      'pairing-summary' => ['/usr/bin/xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', result, '--compact'],
+      'pairing-results' => ['/usr/bin/xcrun', 'xcresulttool', 'get', 'test-results', 'tests', '--path', result, '--compact'],
+      'pairing-signature' => ['/usr/bin/codesign', '--verify', '--strict', app],
+      'pairing-entitlements' => ['/usr/bin/ruby', File.join(root, 'scripts/microphone-simulator-signing.rb'), app] }
+  end
+
   def self.commands(root, directory, invocation, tools, simulator, mac_methods, handoff_methods)
     exact_keys!(invocation, %w[developer_directory scratch swift_scratch timeout_seconds], 'invocation')
     developer = invocation.fetch('developer_directory')
@@ -896,7 +1333,7 @@ module MicrophoneRegressionGate
       'driver-verifier' => [File.join(driver, 'scripts/verify-driver-bundle.sh'), bundles[0]],
       'driver-load' => [File.join(driver, 'scripts/test-built-driver-bundle.sh'), bundles[0]],
       'driver-malformed-bundles' => [File.join(driver, 'scripts/test-driver-bundle-verifier.sh'), bundles[0]]
-    }
+    }.merge(pairing_commands(root, directory, invocation, simulator))
   end
 
   def self.gate_inventory(root)
@@ -1268,6 +1705,123 @@ module MicrophoneRegressionGate
     end, 'Beluga core assertion-failing mutation oracle is incomplete: unframed trailing result')
   end
 
+  # New pairing phases alone use retained-PGID teardown. Do not change the
+  # existing phase executor's behavior as part of this additive seam.
+  class PairingExecutor
+    attr_reader :last_proof, :last_pgid
+
+    def wall_nanoseconds
+      (Time.now.to_r * 1_000_000_000).to_i
+    end
+
+    def group_present?(pgid)
+      Process.kill(0, -pgid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      raise RuntimeError, 'pairing owned process group cannot be proven absent: EPERM'
+    end
+
+    def signal_group(signal, pgid)
+      Process.kill(signal, -pgid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      raise RuntimeError, 'pairing owned process group teardown refused: EPERM'
+    end
+
+    def reap_leader(pid)
+      return if @leader_status
+      result = Process.waitpid2(pid, Process::WNOHANG)
+      @leader_status = result[1] if result
+    rescue Errno::ECHILD
+      raise RuntimeError, 'pairing exact owned leader was not reaped by this executor'
+    end
+
+    def await_absence(pid, pgid, seconds, can_reap = true)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + seconds
+      loop do
+        reap_leader(pid) if can_reap
+        return true unless group_present?(pgid)
+        return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        sleep 0.01
+      end
+    end
+
+    def teardown(pid, pgid)
+      reap_error = nil
+      begin
+        reap_leader(pid)
+      rescue Exception => error
+        reap_error = error
+      end
+      # Reaping failure does not waive teardown of this still-owned group.
+      begin
+        if group_present?(pgid)
+          @term_sent = signal_group('TERM', pgid)
+          unless await_absence(pid, pgid, 0.25, !reap_error)
+            @kill_sent = signal_group('KILL', pgid)
+            MicrophoneRegressionGate.require!(await_absence(pid, pgid, 2.0, !reap_error), 'pairing owned process group survived bounded teardown')
+          end
+        end
+      ensure
+        reap_leader(pid) unless @leader_status || reap_error
+      end
+      raise reap_error if reap_error
+      MicrophoneRegressionGate.require!(@leader_status && !group_present?(pgid),
+                                       'pairing teardown lacks exact leader reap and final ESRCH proof')
+    end
+
+    def run(argv, environment, root, log, timeout)
+      @last_proof = nil; @leader_status = nil; @term_sent = false; @kill_sent = false
+      @completion = nil; @last_pgid = nil
+      MicrophoneRegressionGate.require!(timeout.is_a?(Numeric) && timeout.finite? && timeout.positive?, 'pairing command timeout is invalid')
+      pid = nil; pgid = nil; primary_error = nil
+      started = wall_nanoseconds
+      begin
+        pid = Process.spawn(environment, *argv, chdir: root, out: log, err: [:child, :out], pgroup: true, unsetenv_others: true)
+        pgid = pid; @last_pgid = pgid # Retained even after the leader is reaped.
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+        loop do
+          reap_leader(pid)
+          if @leader_status
+            @completion = @leader_status.success? ? 'success' : 'exit-failure'
+            break
+          end
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+            @completion = 'timeout'
+            raise RuntimeError, 'pairing command exceeded its deadline; inspect ' + log
+          end
+          sleep 0.01
+        end
+      rescue Exception => error # Interruption still owns and must retire this exact group.
+        primary_error = error
+        @completion ||= 'interrupted'
+      ensure
+        if pgid
+          begin
+            teardown(pid, pgid)
+            @last_proof = { 'schema' => 'beluga.pairing.process-group.v1', 'pid' => pid, 'pgid' => pgid,
+              'argvSHA256' => Digest::SHA256.hexdigest(JSON.generate(argv)), 'startedAtNanoseconds' => started,
+              'finishedAtNanoseconds' => wall_nanoseconds, 'timeoutSeconds' => timeout,
+              'leaderReaped' => true, 'leaderExitStatus' => @leader_status.exitstatus, 'leaderSignal' => @leader_status.termsig,
+              'groupAbsent' => true, 'absenceProof' => 'ESRCH', 'termSent' => @term_sent, 'killSent' => @kill_sent,
+              'completion' => @completion }
+          rescue Exception => cleanup_error
+            primary_error = cleanup_error # A safety failure takes precedence; never return a passing proof.
+            @last_proof = nil
+          end
+        end
+      end
+      raise primary_error if primary_error
+      MicrophoneRegressionGate.require!(@leader_status && @leader_status.success? && @last_proof,
+                                       'pairing command exited unsuccessfully; inspect ' + log)
+      File.read(log)
+    end
+  end
+
   class Executor
     def run(argv, environment, root, log, timeout)
       pid = Process.spawn(environment, *argv, chdir: root, out: log, err: [:child, :out], pgroup: true, unsetenv_others: true)
@@ -1307,10 +1861,12 @@ module MicrophoneRegressionGate
   class Runner
     attr_reader :evidence
 
-    def initialize(root, options, executor = Executor.new)
+    def initialize(root, options, executor = Executor.new, pairing_executor = PairingExecutor.new)
       @root = File.realpath(root)
       @options = options
       @executor = executor
+      @pairing_executor = pairing_executor
+      @pairing_processes = []
       @phases = []
     end
 
@@ -1325,17 +1881,110 @@ module MicrophoneRegressionGate
     def phase(name, argv, environment = @environment, root = @root)
       check_source
       check_tools
+      check_pairing_fences
+      timeout = @options.fetch(:timeout)
+      if PAIRING_PHASE_TIMEOUTS.key?(name)
+        MicrophoneRegressionGate.require!(@pairing_deadline, 'pairing phase was not admitted under its owned bounded group')
+        remaining = @pairing_deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        MicrophoneRegressionGate.require!(remaining.positive?, 'pairing group exceeded its bounded deadline')
+        timeout = [timeout, PAIRING_PHASE_TIMEOUTS.fetch(name), remaining].min
+      end
       log = File.join(@evidence, name + '.log')
-      puts "microphone-regressions: #{name}; deadline #{@options.fetch(:timeout)}s; log #{log}"
-      text = @executor.run(argv, environment, root, log, @options.fetch(:timeout))
+      puts "microphone-regressions: #{name}; deadline #{timeout}s; log #{log}"
+      executor = PAIRING_PHASE_TIMEOUTS.key?(name) ? @pairing_executor : @executor
+      text = executor.run(argv, environment, root, log, timeout)
+      if PAIRING_PHASE_TIMEOUTS.key?(name)
+        proof = executor.last_proof
+        MicrophoneRegressionGate.require!(proof.is_a?(Hash), 'pairing phase lacks owned process teardown evidence')
+        proof = proof.merge('phase' => name)
+        MicrophoneRegressionGate.validate_pairing_process(proof, name, argv, (Time.now.to_r * 1_000_000_000).to_i, timeout)
+        @pairing_processes << proof
+      end
       check_source
       check_tools
+      check_pairing_fences
       @phases << { 'name' => name, 'argv' => argv, 'log' => File.basename(log), 'sha256' => MicrophoneRegressionGate.sha(log) }
       text
     end
 
     def artifact(name, path)
       { 'name' => name, 'path' => path.delete_prefix(@evidence + '/'), 'sha256' => File.directory?(path) ? MicrophoneRegressionGate.tree_identity(path) : MicrophoneRegressionGate.sha(path), 'tree' => File.directory?(path) }
+    end
+
+    def check_pairing_fences
+      return unless @pairing_started
+      MicrophoneRegressionGate.require!(!@pairing_deadline || Process.clock_gettime(Process::CLOCK_MONOTONIC) < @pairing_deadline,
+                                       'pairing group exceeded its bounded deadline')
+      lock_path = @pairing_lock_path
+      actual = File.lstat(lock_path)
+      held = @lock.stat
+      MicrophoneRegressionGate.require!(File.realpath(lock_path) == lock_path && actual.file? && !actual.symlink? &&
+                                       actual.uid == Process.uid && actual.nlink == 1 && (actual.mode & 0777) == 0600 &&
+                                       held.uid == Process.uid && held.nlink == 1 && (held.mode & 0777) == 0600 &&
+                                       [actual.dev, actual.ino] == [held.dev, held.ino] && [held.dev, held.ino] == @pairing_lock_identity,
+                                       'pairing canonical cache lock identity changed')
+      (@pairing_compiler_files || []).each do |record|
+        name = File.basename(record.fetch('path'))
+        bytes = MicrophoneRegressionGate.pairing_owned_bytes(record.fetch('path'), PAIRING_PROOF_FILES.fetch(name))
+        MicrophoneRegressionGate.require!(bytes.bytesize == record.fetch('byteCount') && Digest::SHA256.hexdigest(bytes) == record.fetch('sha256'),
+                                         'pairing compiled source/input/object changed before receipt')
+      end
+      if @pairing_object_metadata
+        path = MicrophoneRegressionGate.pairing_compiler_paths(@options.fetch(:scratch)).fetch('OpensteamerApp.o')
+        MicrophoneRegressionGate.require!(MicrophoneRegressionGate.pairing_object_metadata(path) == @pairing_object_metadata,
+                                         'pairing actual compiled App root object metadata changed before receipt')
+      end
+      nil
+    end
+
+    def run_pairing(scratch, developer, simulator)
+      @pairing_started = true
+      @pairing_lock_path = File.join(scratch, '.microphone-regressions.lock')
+      @pairing_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + PAIRING_OVERALL_SECONDS
+      @pairing_lock_identity = [@lock.stat.dev, @lock.stat.ino]
+      check_pairing_fences
+      @pairing_methods = MicrophoneRegressionGate.pairing_inventory(@root)
+      context = { 'developer_directory' => developer, 'scratch' => scratch }
+      argv = MicrophoneRegressionGate.pairing_commands(@root, @evidence, context, simulator)
+      build_text = phase('pairing-inert-build', argv.fetch('pairing-inert-build')) # Compile only. No test launch yet.
+      paths = MicrophoneRegressionGate.pairing_compiler_paths(scratch)
+      bytes = paths.map { |name, path| [name, MicrophoneRegressionGate.pairing_owned_bytes(path, PAIRING_PROOF_FILES.fetch(name))] }.to_h
+      @pairing_contract = MicrophoneRegressionGate.pairing_compiler_proof(@root, scratch, developer, @tools, build_text, bytes,
+        @pairing_processes.first, @pairing_object_metadata = MicrophoneRegressionGate.pairing_object_metadata(paths.fetch('OpensteamerApp.o')))
+      @pairing_compiler_files = @pairing_contract.fetch('files')
+      @pairing_proof_path = File.join(@evidence, 'pairing-inert-root-contract')
+      Dir.mkdir(@pairing_proof_path, 0700)
+      driver = build_text.lines.find { |line| Digest::SHA256.hexdigest(line) == @pairing_contract.fetch('driverSHA256') }
+      MicrophoneRegressionGate.require!(driver, 'pairing actual driver line is absent')
+      bytes.merge('app-swift-driver.txt' => driver).each do |name, contents|
+        File.open(File.join(@pairing_proof_path, name), File::WRONLY | File::CREAT | File::EXCL, 0600) do |file|
+          file.write(contents); file.flush; file.fsync
+        end
+      end
+      @pairing_contract['retainedObjectMetadata'] = MicrophoneRegressionGate.pairing_object_metadata(File.join(@pairing_proof_path, 'OpensteamerApp.o'))
+      MicrophoneRegressionGate.validate_pairing_contract(@root, @evidence, context, @tools, build_text, @pairing_contract, @pairing_processes.first)
+      check_source; check_tools; check_pairing_fences # Admission fence, after actual compile proof, immediately before tests.
+      phase('pairing-tests', argv.fetch('pairing-tests'))
+      summary = phase('pairing-summary', argv.fetch('pairing-summary'))
+      results = phase('pairing-results', argv.fetch('pairing-results'))
+      MicrophoneRegressionGate.validate_pairing(MicrophoneRegressionGate.parse_json(summary, 'pairing summary'),
+                                               MicrophoneRegressionGate.parse_json(results, 'pairing results'), @pairing_methods, simulator)
+      @pairing_result = File.join(@evidence, 'pairing.xcresult')
+      source_app = File.join(scratch, 'DerivedData/Build/Products/Debug-iphonesimulator/Beluga.app')
+      identity = MicrophoneRegressionGate.tree_identity(source_app)
+      parent = File.join(@evidence, 'pairing-app')
+      Dir.mkdir(parent, 0700)
+      FileUtils.cp_r(source_app, parent, preserve: true)
+      @pairing_app = File.join(parent, 'Beluga.app')
+      MicrophoneRegressionGate.require!(MicrophoneRegressionGate.tree_identity(@pairing_app) == identity &&
+                                       MicrophoneRegressionGate.tree_identity(source_app) == identity, 'pairing signed app changed during retention')
+      phase('pairing-signature', argv.fetch('pairing-signature'))
+      entitlements = phase('pairing-entitlements', argv.fetch('pairing-entitlements'))
+      MicrophoneSimulatorSigning.validate_record(MicrophoneRegressionGate.parse_json(entitlements, 'pairing signed identity'), expected_app: @pairing_app)
+      check_source; check_tools; check_pairing_fences
+      MicrophoneRegressionGate.validate_pairing_contract(@root, @evidence, context, @tools, build_text, @pairing_contract, @pairing_processes.first)
+      MicrophoneRegressionGate.validate_pairing_processes(@pairing_processes, argv, (Time.now.to_r * 1_000_000_000).to_i, @options.fetch(:timeout))
+      @pairing_deadline = nil # The bounded pairing group is complete; preserve compiler and lock fences through receipt.
     end
 
     def run
@@ -1470,6 +2119,7 @@ module MicrophoneRegressionGate
       phase('simulator-signature', ['/usr/bin/codesign', '--verify', '--strict', app])
       entitlements = phase('simulator-entitlements', ['/usr/bin/ruby', File.join(@root, 'scripts/microphone-simulator-signing.rb'), app])
       MicrophoneSimulatorSigning.validate_record(MicrophoneRegressionGate.parse_json(entitlements, 'Simulator signed identity'), expected_app: app)
+      run_pairing(scratch, developer, simulator) # The ordinary signed app above is already retained; pairing never launches the ordinary root.
       crate = File.join(@root, 'iOS/opensteamer/Rust/AudioTransactionAuthority')
       rust_methods = MicrophoneRegressionGate.rust_inventory(phase('rust-discovery', [cargo, 'test', '--offline', '--locked', '--', '--list'], @environment, crate))
       MicrophoneRegressionGate.validate_rust(phase('rust-tests', [cargo, 'test', '--offline', '--locked', '--', '--test-threads=1'], @environment, crate), rust_methods)
@@ -1498,13 +2148,15 @@ module MicrophoneRegressionGate
       check_source
       check_tools
       artifacts = [artifact('simulator-result', result), artifact('driver-bundle-1', bundles[0]), artifact('driver-bundle-2', bundles[1])]
+      check_pairing_fences
       artifacts << artifact('simulator-app', app)
+      artifacts.concat([artifact('pairing-result', @pairing_result), artifact('pairing-app', @pairing_app), artifact('pairing-inert-root-contract', @pairing_proof_path)])
       artifacts << artifact('mac-xunit', mac_xml) if File.file?(mac_xml)
       receipt = { 'schema' => SCHEMA, 'status' => 'passed', 'scope' => 'offline-source-only', 'root' => @root,
                   'created_at' => Time.now.to_i, 'source' => @source, 'tools' => @tools, 'simulator' => simulator,
                   'invocation' => { 'developer_directory' => developer, 'scratch' => scratch, 'swift_scratch' => @swift_scratch, 'timeout_seconds' => @options.fetch(:timeout) },
-                  'mac_format' => mac_format, 'phases' => @phases, 'artifacts' => artifacts,
-                  'coverage' => { 'mac' => mac_methods, 'simulator' => sim_methods, 'intentional_simulator_skips' => SIMULATOR_SKIPS,
+                  'mac_format' => mac_format, 'phases' => @phases, 'artifacts' => artifacts, 'pairing_inert_root' => @pairing_contract, 'pairing_processes' => @pairing_processes,
+                  'coverage' => { 'mac' => mac_methods, 'simulator' => sim_methods, 'intentional_simulator_skips' => SIMULATOR_SKIPS, 'pairing' => @pairing_methods,
                                   'rust' => rust_methods, 'beluga_core' => core_methods, 'shared_handoff' => handoff_methods, 'c' => c_methods } }
       path = File.join(@evidence, 'receipt.json')
       File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.pretty_generate(receipt) + "\n"); file.flush; file.fsync }
@@ -1526,7 +2178,7 @@ module MicrophoneRegressionGate
              File.realpath(File.dirname(path)) == File.dirname(path), 'receipt parent must be canonical, owner-owned and private mode 0700')
     require!(File.realpath(path) == path && sha(path) == expected_digest, 'receipt bytes or canonical path changed')
     receipt = parse_json(File.read(path), 'Receipt')
-    exact_keys!(receipt, %w[schema status scope root created_at source tools simulator invocation mac_format phases artifacts coverage], 'receipt')
+    exact_keys!(receipt, %w[schema status scope root created_at source tools simulator invocation mac_format phases artifacts coverage pairing_inert_root pairing_processes], 'receipt')
     require!(receipt['schema'] == SCHEMA && receipt['status'] == 'passed' && receipt['scope'] == 'offline-source-only' && receipt['root'] == File.realpath(root), 'wrong receipt identity or scope')
     require!(receipt['created_at'].is_a?(Integer) && receipt['created_at'] <= now && now - receipt['created_at'] <= 7 * 86400, 'future or expired receipt')
     require!(receipt['source'] == source_identity(root), 'receipt source identity is stale or changed')
@@ -1561,7 +2213,7 @@ module MicrophoneRegressionGate
     validate_beluga_core_link(read_phase.call('beluga-core-link'))
     validate_beluga_core_mutations(read_phase.call('beluga-core-mutations'))
     artifacts = receipt['artifacts']
-    required_artifacts = %w[simulator-result driver-bundle-1 driver-bundle-2 simulator-app]
+    required_artifacts = %w[simulator-result driver-bundle-1 driver-bundle-2 simulator-app pairing-result pairing-app pairing-inert-root-contract]
     required_artifacts << 'mac-xunit' if receipt['mac_format'] == 'xunit'
     require!(artifacts.is_a?(Array) && artifacts.map { |entry| entry['name'] } == required_artifacts, 'receipt artifacts are incomplete or duplicated')
     check_artifacts = lambda do
@@ -1577,7 +2229,7 @@ module MicrophoneRegressionGate
     end
     check_artifacts.call
     coverage = receipt['coverage']
-    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips rust beluga_core shared_handoff c], 'coverage')
+    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     handoff = shared_handoff_inventory(read_phase.call('mac-discovery'))
@@ -1585,6 +2237,7 @@ module MicrophoneRegressionGate
     require!(coverage['shared_handoff'] == handoff, 'shared handoff coverage differs from discovery')
     expected_commands = commands(root, directory, receipt['invocation'], tools, receipt['simulator'], mac, handoff)
     phases.each { |entry| require!(entry['argv'] == expected_commands.fetch(entry['name']), 'phase command does not match canonical offline invocation: ' + entry['name']) }
+    validate_pairing_processes(receipt['pairing_processes'], expected_commands, (receipt['created_at'] + 1) * 1_000_000_000, receipt['invocation'].fetch('timeout_seconds'))
     if receipt['mac_format'] == 'xunit'
       xml = artifacts.find { |entry| entry['name'] == 'mac-xunit' }
       validate_xunit(File.read(File.join(directory, xml['path'])), mac)
@@ -1597,6 +2250,14 @@ module MicrophoneRegressionGate
     sim = simulator_inventory(root)
     require!(coverage['simulator'] == sim && coverage['intentional_simulator_skips'] == SIMULATOR_SKIPS, 'Simulator coverage or skip contract changed')
     validate_simulator(parse_json(read_phase.call('simulator-summary'), 'Simulator summary'), parse_json(read_phase.call('simulator-results'), 'Simulator results'), sim, receipt['simulator'])
+    pairing = pairing_inventory(root)
+    require!(coverage['pairing'] == pairing, 'pairing coverage differs from exact source inventory')
+    validate_pairing(parse_json(read_phase.call('pairing-summary'), 'pairing summary'), parse_json(read_phase.call('pairing-results'), 'pairing results'), pairing, receipt['simulator'])
+    validate_pairing_contract(root, directory, receipt['invocation'], tools, read_phase.call('pairing-inert-build'), receipt['pairing_inert_root'], receipt['pairing_processes'].first)
+    %w[pairing-result pairing-app pairing-inert-root-contract].zip(%w[pairing.xcresult pairing-app/Beluga.app pairing-inert-root-contract]).each do |name, relative|
+      retained = artifacts.find { |entry| entry['name'] == name }
+      require!(retained['path'] == relative && retained['tree'] == true, 'pairing evidence does not bind exact retained artifact path')
+    end
     rust = rust_inventory(read_phase.call('rust-discovery'))
     require!(coverage['rust'] == rust, 'Rust coverage differs from discovery')
     validate_rust(read_phase.call('rust-tests'), rust)
@@ -1622,10 +2283,15 @@ module MicrophoneRegressionGate
     signed_record = parse_json(read_phase.call('simulator-entitlements'), 'Simulator signed identity')
     MicrophoneSimulatorSigning.validate_record(signed_record, expected_app: app)
     require!(MicrophoneSimulatorSigning.collect(app) == signed_record, 'retained Simulator signed identity changed')
+    pairing_app = File.join(directory, 'pairing-app/Beluga.app')
+    pairing_signed = parse_json(read_phase.call('pairing-entitlements'), 'pairing signed identity')
+    MicrophoneSimulatorSigning.validate_record(pairing_signed, expected_app: pairing_app)
+    require!(MicrophoneSimulatorSigning.collect(pairing_app) == pairing_signed, 'retained pairing signed identity changed')
     # Recollection invokes read-only tools. Fence the complete invocation again,
     # not just the main executable/Info bytes observed inside the collector.
     PHASES.each { |name| read_phase.call(name) }
     check_artifacts.call
+    validate_pairing_contract(root, directory, receipt['invocation'], tools, read_phase.call('pairing-inert-build'), receipt['pairing_inert_root'], receipt['pairing_processes'].first)
     require!(receipt['source'] == source_identity(root), 'receipt source identity changed during verification')
     tools.each { |tool, digest| require!(sha(tool) == digest, 'receipt tool identity drifted during verification') }
     current = regular!(path)

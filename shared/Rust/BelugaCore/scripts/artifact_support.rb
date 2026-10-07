@@ -36,8 +36,8 @@ module BelugaCoreArtifact
     .gitignore Cargo.lock Cargo.toml README.md THIRD_PARTY_NOTICES.html
     include/beluga_core.h include/module.modulemap rust-toolchain.toml
     scripts/artifact_support.rb scripts/build-xcframework.rb scripts/mutation-tests.rb
-    scripts/verify-xcframework.rb src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs
-    tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs
+    scripts/verify-xcframework.rb src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs
+    tests/c_abi_smoke.c tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
   ARTIFACT_FILES = (%w[
@@ -65,7 +65,11 @@ module BelugaCoreArtifact
   def self.run!(*argv, env: {}, chdir: CRATE, timeout: 300)
     output = ''
     status = nil
-    Open3.popen2e(env, *argv, chdir: chdir, pgroup: true) do |input, stream, waiter|
+    group_mode = ENV['BELUGA_CORE_OWNED_PROCESS_GROUP']
+    assert(group_mode.nil? || group_mode == 'inherit', 'Unknown owned process group mode')
+    inherit_group = group_mode == 'inherit'
+    assert(!inherit_group || Process.pid == Process.getpgrp, 'Inherited tools require the exclusively owned builder group')
+    Open3.popen2e(env, *argv, chdir: chdir, pgroup: !inherit_group) do |input, stream, waiter|
       input.close
       begin
         Timeout.timeout(timeout) do
@@ -73,9 +77,12 @@ module BelugaCoreArtifact
           status = waiter.value
         end
       rescue Timeout::Error
-        Process.kill('TERM', -waiter.pid) rescue nil
+        # The outer owner cleans the whole inherited group; a nested timeout
+        # must not signal its own builder. Ordinary callers retain group kill.
+        signal_target = inherit_group ? waiter.pid : -waiter.pid
+        Process.kill('TERM', signal_target) rescue nil
         sleep 0.1
-        Process.kill('KILL', -waiter.pid) rescue nil
+        Process.kill('KILL', signal_target) rescue nil
         raise "Timed out after #{timeout}s: #{argv.first}"
       end
     end

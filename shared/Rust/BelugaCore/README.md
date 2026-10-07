@@ -2,7 +2,8 @@
 
 This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
-the one-use offer/timeline reducer, and the phone playback-operation reducer**. It is not the complete product-core
+the one-use offer/timeline reducer, the phone playback-operation reducer, and
+the invitation acceptance policy**. It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
 
@@ -56,6 +57,20 @@ Independent reference traces, native equality/value copies, malformed projection
 candidate exhaustion, actual C/Swift linkage and signed Simulator composition are
 required. Raw policy tests do not prove physical playback or acoustic output.
 
+Invitation acceptance uses copy-only scalar state and exhaustive typed operations.
+Rust preserves foreign-owner and consumed-before-phase guards, optional admission
+consumption, active completion without prior admission, and exact cancellation.
+Swift keeps the whole generation UUID, a fresh per-arm native custody marker,
+closures, authenticated records, cryptography and persistence. A prepared callback
+leaves its before-state unchanged and supplies a success candidate which the native
+boundary validates before invoking the exact synchronous closure. Actual success
+commits that candidate; the original thrown error leaves state and custody retryable.
+There is no post-effect FFI or implied rollback of a callback's partial effects.
+Value copies remain independent gates. Malformed copied results cannot grant
+callbacks, consume admission early, fabricate completion or prevent local cleanup.
+Independent original-reference traces and copied-output corruption tests complement
+the Rust tests; none substitutes for real network pairing or physical-device proof.
+
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.
 Each slice is a **static `BelugaCore.framework`**, with its module map under
@@ -91,5 +106,7 @@ visibility defect, ignored unknown bits, missing command admission, availability
 departure erasing an independent media owner, stale media-end ownership, transaction
 busy/exact identity/conflicting-reply guards, revocation, unknown timeout outcomes,
 sixteen offer identity, retirement, replay, boundary, counter, and unknown-operation defects,
-and six phone identity/clock ordering, proof-age, reservation and truthful-outcome defects. They use
+six phone identity/clock ordering, proof-age, reservation and truthful-outcome defects,
+and nine invitation owner/order, optional-callback, pre-effect state, thrown-effect,
+completion, rearm and cancellation defects. They use
 temporary copies and never modify the production archive or source.

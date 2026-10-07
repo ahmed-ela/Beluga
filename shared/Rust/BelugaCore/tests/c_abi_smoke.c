@@ -345,6 +345,82 @@ static void phone_operation_smoke(void) {
 #undef PHONE_TYPE
 
 
+_Static_assert(_Alignof(beluga_core_invitation_acceptance_state_t) == 4, "invitation state alignment");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_state_t, abi_version) == 0, "invitation state version offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_state_t, flags) == 4, "invitation flags offset");
+_Static_assert(_Alignof(beluga_core_invitation_acceptance_event_t) == 4, "invitation event alignment");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, opcode) == 0, "invitation opcode offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, generation_matches) == 4, "invitation generation projection offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, phase) == 8, "invitation phase offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, admission_callback_present) == 12, "invitation admission projection offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, prepared_kind) == 16, "invitation prepared kind offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, prepared_flags) == 20, "invitation prepared flags offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, owner_matches) == 24, "invitation exact owner projection offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_event_t, callback_outcome) == 28, "invitation actual outcome offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_result_t, state) == 0, "invitation state offset");
+_Static_assert(sizeof(beluga_core_invitation_acceptance_state_t) == 8, "state size");
+_Static_assert(sizeof(beluga_core_invitation_acceptance_event_t) == 32, "event size");
+_Static_assert(sizeof(beluga_core_invitation_acceptance_result_t) == 32, "result size");
+_Static_assert(_Alignof(beluga_core_invitation_acceptance_result_t) == 4, "result alignment");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_result_t, callback_success_state) == 8, "candidate offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_result_t, status) == 16, "status offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_result_t, completion_succeeded) == 20, "completion offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_result_t, callback_kind) == 24, "kind offset");
+_Static_assert(offsetof(beluga_core_invitation_acceptance_result_t, prepared_flags) == 28, "prepared offset");
+
+static beluga_core_invitation_acceptance_result_t invitation_step(
+    beluga_core_invitation_acceptance_state_t state,
+    beluga_core_invitation_acceptance_event_t event) {
+    return beluga_core_invitation_acceptance_step(1, state, event);
+}
+static void invitation_acceptance_smoke(void) {
+    beluga_core_invitation_acceptance_state_t state = beluga_core_invitation_acceptance_initial();
+    assert(state.abi_version == 1 && state.flags == 0);
+    beluga_core_invitation_acceptance_event_t e = { .opcode = BELUGA_INVITATION_ARM, .admission_callback_present = 1 };
+    beluga_core_invitation_acceptance_result_t r = invitation_step(state, e);
+    assert(r.status == BELUGA_INVITATION_APPLIED && r.state.flags == 7 && r.callback_kind == 0);
+    state = r.state;
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_PREPARE_ADMISSION, .phase = UINT32_MAX };
+    r = invitation_step(state, e);
+    assert(r.status == BELUGA_INVITATION_IGNORED && r.state.flags == 7 && r.callback_kind == 0);
+    e.generation_matches = 1; e.phase = BELUGA_INVITATION_PHASE_ACCEPTED_ISSUED;
+    r = invitation_step(state, e);
+    assert(r.status == BELUGA_INVITATION_NEEDS_CALLBACK && r.state.flags == 7 &&
+          r.callback_success_state.flags == 15 && r.callback_kind == BELUGA_INVITATION_ADMISSION_CALLBACK &&
+          r.prepared_flags == 7 && r.completion_succeeded == 0);
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_ACKNOWLEDGE_CALLBACK,
+        .prepared_kind = r.callback_kind, .prepared_flags = r.prepared_flags,
+        .owner_matches = 1, .callback_outcome = BELUGA_INVITATION_CALLBACK_THREW };
+    r = invitation_step(state, e);
+    assert(r.status == BELUGA_INVITATION_CALLBACK_FAILED && r.state.flags == 7 && r.completion_succeeded == 0);
+    e.callback_outcome = BELUGA_INVITATION_CALLBACK_SUCCEEDED;
+    r = invitation_step(state, e); assert(r.status == BELUGA_INVITATION_APPLIED && r.state.flags == 15);
+    state = r.state;
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_PREPARE_ADMISSION,
+        .generation_matches = 1, .phase = UINT32_MAX };
+    r = invitation_step(state, e); assert(r.status == BELUGA_INVITATION_IGNORED && r.state.flags == 15);
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_PREPARE_COMPLETION,
+        .generation_matches = 1, .phase = BELUGA_INVITATION_PHASE_ACTIVE };
+    r = invitation_step(state, e);
+    assert(r.status == BELUGA_INVITATION_NEEDS_CALLBACK && r.state.flags == 15 && r.callback_success_state.flags == 0 && r.callback_kind == 2);
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_ACKNOWLEDGE_CALLBACK,
+        .prepared_kind = r.callback_kind, .prepared_flags = r.prepared_flags,
+        .owner_matches = 0, .callback_outcome = BELUGA_INVITATION_CALLBACK_SUCCEEDED };
+    r = invitation_step(state, e); assert(r.status == BELUGA_INVITATION_STALE_PREPARED_PLAN && r.state.flags == 15);
+    e.owner_matches = 1; r = invitation_step(state, e);
+    assert(r.status == BELUGA_INVITATION_APPLIED && r.state.flags == 0 && r.completion_succeeded == 1);
+    state = r.state;
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_ARM };
+    state = invitation_step(state, e).state;
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_PREPARE_ADMISSION,
+        .generation_matches = 1, .phase = BELUGA_INVITATION_PHASE_ACCEPTED_ISSUED };
+    r = invitation_step(state, e); assert(r.status == BELUGA_INVITATION_APPLIED && r.state.flags == 13 && r.callback_kind == 0);
+    e = (beluga_core_invitation_acceptance_event_t){ .opcode = BELUGA_INVITATION_CANCEL, .generation_matches = 1 };
+    r = beluga_core_invitation_acceptance_step(2, state, e);
+    assert(r.status == BELUGA_INVITATION_INVALID_INPUT && r.state.flags == state.flags && r.callback_kind == 0);
+    puts("BelugaCore C invitation acceptance ABI PASS: exact layouts, original guard order and one-use callback outcomes");
+}
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -454,5 +530,6 @@ int main(void) {
     assert(offer_result.retired_sent == 100 && offer_result.retired_received == 100);
     puts("BelugaCore C offers ABI PASS: independent owners, sequence burn, consuming rejection and exact layouts");
     phone_operation_smoke();
+    invitation_acceptance_smoke();
     return 0;
 }
