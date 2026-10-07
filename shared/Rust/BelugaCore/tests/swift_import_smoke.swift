@@ -786,3 +786,72 @@ private func pairingCommitSmoke() {
     print("BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal")
 }
 pairingCommitSmoke()
+
+func supportedPlayerArbitrationSmoke() {
+    typealias Input = beluga_core_supported_player_arbitration_input_t
+    typealias Output = beluga_core_supported_player_arbitration_output_t
+    precondition(MemoryLayout<Input>.size == 20 && MemoryLayout<Input>.stride == 20)
+    precondition(MemoryLayout<Input>.alignment == 4)
+    precondition(MemoryLayout<Input>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Input>.offset(of: \.selected_source) == 4)
+    precondition(MemoryLayout<Input>.offset(of: \.browser_observation) == 8)
+    precondition(MemoryLayout<Input>.offset(of: \.music_observation) == 12)
+    precondition(MemoryLayout<Input>.offset(of: \.reserved) == 16)
+    precondition(MemoryLayout<Output>.size == 16 && MemoryLayout<Output>.stride == 16)
+    precondition(MemoryLayout<Output>.alignment == 4)
+    precondition(MemoryLayout<Output>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Output>.offset(of: \.action) == 4)
+    precondition(MemoryLayout<Output>.offset(of: \.primary_or_hold) == 8)
+    precondition(MemoryLayout<Output>.offset(of: \.reserved) == 12)
+    // Frozen native-reference rows; expected choices never call a Swift chooser.
+    let literals: [[UInt32]] = [
+        [0,0,0,2,0], [0,0,1,2,2], [0,0,2,2,2], [0,0,3,1,0],
+        [0,1,0,2,1], [0,1,1,2,1], [0,1,2,2,2], [0,1,3,1,0],
+        [0,2,0,2,1], [0,2,1,2,1], [0,2,2,2,1], [0,2,3,1,0],
+        [0,3,0,1,0], [0,3,1,1,0], [0,3,2,1,0], [0,3,3,1,0],
+        [1,0,0,2,0], [1,0,1,2,2], [1,0,2,2,2], [1,0,3,1,1],
+        [1,1,0,2,1], [1,1,1,2,1], [1,1,2,2,2], [1,1,3,1,1],
+        [1,2,0,2,1], [1,2,1,2,1], [1,2,2,2,1], [1,2,3,1,1],
+        [1,3,0,1,1], [1,3,1,1,1], [1,3,2,1,1], [1,3,3,1,1],
+        [2,0,0,2,0], [2,0,1,2,2], [2,0,2,2,2], [2,0,3,1,2],
+        [2,1,0,2,1], [2,1,1,2,2], [2,1,2,2,2], [2,1,3,1,2],
+        [2,2,0,2,1], [2,2,1,2,1], [2,2,2,2,2], [2,2,3,1,2],
+        [2,3,0,1,2], [2,3,1,1,2], [2,3,2,1,2], [2,3,3,1,2]
+    ]
+    let invalids: [[UInt32]] = [[0,2,UInt32.max], [3,4,UInt32.max],
+        [4,5,UInt32.max], [4,5,UInt32.max], [1,2,UInt32.max]]
+    precondition(literals.count == 48)
+    var invalidAttempts = 0
+    for literal in literals {
+        precondition(literal.count == 5)
+        var input = Input()
+        input.abi_version = 1; input.selected_source = literal[0]
+        input.browser_observation = literal[1]; input.music_observation = literal[2]
+        let output = beluga_core_supported_player_arbitrate(input)
+        precondition(output.abi_version == 1 && output.action == literal[3])
+        precondition(output.primary_or_hold == literal[4] && output.reserved == 0)
+        for field in 0..<5 {
+            for bad in invalids[field] {
+                var raw = input
+                switch field {
+                case 0: raw.abi_version = bad
+                case 1: raw.selected_source = bad
+                case 2: raw.browser_observation = bad
+                case 3: raw.music_observation = bad
+                case 4: raw.reserved = bad
+                default: preconditionFailure("unknown smoke field")
+                }
+                let refused = beluga_core_supported_player_arbitrate(raw)
+                precondition(refused.abi_version == 1 && refused.action == 0)
+                precondition(refused.primary_or_hold == 0 && refused.reserved == 0)
+                invalidAttempts += 1
+            }
+        }
+        precondition(input.abi_version == 1 && input.selected_source == literal[0])
+        precondition(input.browser_observation == literal[1] && input.music_observation == literal[2])
+        precondition(input.reserved == 0)
+    }
+    precondition(invalidAttempts == 720)
+    print("BelugaCore Swift supported player arbitration import/link PASS: exact layouts, 48 literal choices and 720 closed-field refusals")
+}
+supportedPlayerArbitrationSmoke()

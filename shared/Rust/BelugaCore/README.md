@@ -5,7 +5,7 @@ the worldwide host lifecycle state machine, the handoff transaction ledger, and
 the one-use offer/timeline reducer, the phone playback-operation reducer, and
 the invitation acceptance policy, the bounded signaling replay window, and
 catalog-checkpoint attempt admission/revocation, durable reconnect counter
-proposals, and pairing-commit phase/recovery plans**.
+proposals, pairing-commit phase/recovery plans, and supported-player arbitration**.
 It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
@@ -124,6 +124,23 @@ activation acknowledgement does. Active-host completion is ephemeral rather
 than becoming a new recovery cache. Verification requires failed storage at each
 durable cut, including actual write-then-throw behavior; a model trace is not durable,
 cryptographic or physical-device evidence.
+
+Supported-player arbitration is a stateless copied contract over exactly two
+native observations (browser and Music) and an optional retained selection.
+Any indeterminate child read returns retry while retaining the selection hold;
+otherwise the selected playing source wins, then the first playing source,
+then the selected available paused source, then the first available source.
+No available source publishes none. Rust uses exhaustive source/observation/
+decision domains, while native code retains the original `playbackRate > 0`
+comparison, full snapshots, capabilities, opaque tokens, fetch epochs and all
+queued command/handoff effects. A stale fetch is rejected before any core call.
+Starting a pending fetch alone does not revoke existing publication authority.
+Malformed copied results revoke current publications, preserve the hold, and
+return a bounded distinct retry diagnostic, never a successful Swift fallback.
+Verification includes independent literal 48-case traces, closed-field and
+copied-output refusal cases, native stale/recovery histories and retained command
+admission, with actual C/Swift layout and link checks. An ordinal or policy pass
+does not prove live discovery, phone continuation, native pause or acoustic output.
 
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.

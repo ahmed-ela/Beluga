@@ -37,6 +37,7 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
     private var lastDiagnostics: String?
     private var lastReport = -Double.infinity
     private let diagnostics: @Sendable (String) -> Void
+    private let arbitrationProducer: BelugaRustSupportedPlayerArbitrationProducer
     var isAvailable: Bool { browser.isAvailable || music.isAvailable }
 
     convenience init() {
@@ -48,8 +49,10 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
     }
 
     init(browser: any MacSystemNowPlayingRuntime, music: any MacSystemNowPlayingRuntime,
+         arbitrationProducer: BelugaRustSupportedPlayerArbitrationProducer = .actual,
          diagnostics: @escaping @Sendable (String) -> Void = { _ in }) {
         self.browser = browser; self.music = music; self.diagnostics = diagnostics
+        self.arbitrationProducer = arbitrationProducer
     }
 
     func fetchSnapshot(completion: @escaping @Sendable (MacNowPlayingRuntimeSnapshotResult) -> Void) {
@@ -69,9 +72,27 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
             var report: String?
             let result: MacNowPlayingRuntimeCatalogResult = self.lock.withLock {
                 guard self.epoch == generation else { return .retry }
+                let projection = BelugaRustSupportedPlayerArbitrationBoundary.project(
+                    results: results, selected: self.selected)
+                let decision = projection.flatMap {
+                    BelugaRustSupportedPlayerArbitrationBoundary.decision(
+                        input: $0.input, output: self.arbitrationProducer.arbitrate($0.input))
+                }
+                guard let projection, let decision else {
+                    // An invalid copied policy result never manufactures successful native authority.
+                    self.lifecycle &+= 1
+                    self.identity = nil
+                    self.publications = [:]
+                    let summary = "source=unavailable reason=invalid-supported-player-arbitration-bridge"
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if summary != self.lastDiagnostics || now - self.lastReport >= 15 {
+                        self.lastDiagnostics = summary; self.lastReport = now; report = summary
+                    }
+                    return .retry
+                }
                 // An indeterminate read must not transfer command authority to
                 // another player or resurrect a previous selection.
-                if results.values.contains(where: { if case .retry = $0 { return true }; return false }) {
+                if case .retry = decision {
                     self.lifecycle &+= 1
                     self.identity = nil
                     self.publications = [:]
@@ -83,16 +104,9 @@ final class MacSupportedNowPlayingRuntime: MacSystemNowPlayingRuntime, @unchecke
                     }
                     return .retry
                 }
-                var available: [Int: MacNowPlayingRuntimeSnapshot] = [:]
-                for (key, result) in results {
-                    if case .snapshot(let value) = result { available[key] = value }
-                }
+                let available = projection.available
                 let playing = available.keys.filter { available[$0]!.metadata.playbackRate > 0 }.sorted()
-                let chosen: Int?
-                if let selected = self.selected, playing.contains(selected) { chosen = selected }
-                else if let first = playing.first { chosen = first }
-                else if let selected = self.selected, available[selected] != nil { chosen = selected }
-                else { chosen = available.keys.sorted().first }
+                guard case .publish(let chosen) = decision else { return .retry }
                 self.wasPlaying = [0: playing.contains(0), 1: playing.contains(1)]
                 let snapshot = chosen.flatMap { available[$0] }
                 var next: [Int: (token: MacNowPlayingClientToken, snapshot: MacNowPlayingRuntimeSnapshot)] = [:]

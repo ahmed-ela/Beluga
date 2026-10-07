@@ -493,6 +493,32 @@ beluga_core_pairing_commit_result_t beluga_core_pairing_commit_step(
     uint32_t abi_version, beluga_core_pairing_commit_state_t state,
     beluga_core_pairing_commit_event_t event);
 
+/* Eleventh copied scalar contract: supported-player source arbitration only.
+ * Native fetch generations, snapshots, tokens, metadata and effects stay native.
+ * selected: none0/browser1/Music2; child: no-media0/paused1/playing2/retry3.
+ * Both structs are copied, alignment4; input20/output16. ABI1/reserved0 only.
+ * action: invalid0/retry1/publish2. Retry carries the unchanged selected hold;
+ * publish carries none0/browser1/Music2. Invalid is canonical ABI1/action0/source0.
+ * A source ordinal never grants native snapshot or command authority by itself.
+ */
+typedef struct {
+    uint32_t abi_version;
+    uint32_t selected_source;
+    uint32_t browser_observation;
+    uint32_t music_observation;
+    uint32_t reserved;
+} beluga_core_supported_player_arbitration_input_t;
+
+typedef struct {
+    uint32_t abi_version;
+    uint32_t action;
+    uint32_t primary_or_hold;
+    uint32_t reserved;
+} beluga_core_supported_player_arbitration_output_t;
+
+beluga_core_supported_player_arbitration_output_t beluga_core_supported_player_arbitrate(
+    beluga_core_supported_player_arbitration_input_t input);
+
 #ifdef __cplusplus
 }
 #endif

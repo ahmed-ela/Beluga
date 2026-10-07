@@ -42,6 +42,7 @@ module BelugaCoreArtifact
     src/pairing_catalog_checkpoint.rs tests/pairing_catalog_checkpoint.rs
     src/reconnect_counters.rs tests/reconnect_counters.rs
     src/pairing_commit.rs tests/pairing_commit.rs
+    src/supported_player_arbitration.rs tests/supported_player_arbitration.rs
     tests/swift_import_smoke.swift
   ].sort.freeze
   ARTIFACT_FILES = (%w[

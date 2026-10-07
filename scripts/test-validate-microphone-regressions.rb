@@ -79,7 +79,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       entries = Gate::C_PINNED.fetch(label).map { |test| "{\"#{test}\", test_behavior},\n" }.join
       write(File.join(@root, 'macOS/VirtualAudioDriver/tests', name), "int main() {\nstruct fixture { int value; } tests[] = {\n" + entries + "};\n}\n")
     end
-    @mac_methods = (Gate::MAC_CLASSES.map { |name| name + '/testFixture' } + Gate::MAC_PINNED).uniq.sort
+    @mac_methods = (Gate::MAC_CLASSES.reject { |name| Gate::SUPPORTED_PLAYER_FILES.key?(name) }.map { |name| name + '/testFixture' } + Gate::MAC_PINNED).uniq.sort
     @shared_methods = (Gate::SHARED_SIGNALING_PINNED + %w[firstConcurrentFixture secondConcurrentFixture].map do |name|
       Gate::SHARED_SIGNALING_SUITE + '/' + name + '()'
     end).sort
@@ -95,6 +95,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
     write(File.join(@root, Gate::SHARED_RECONNECT_COUNTER_FILE), "struct #{Gate::SHARED_RECONNECT_COUNTER_SUITE.split('.').last} {\n" +
       @shared_reconnect_counter_methods.map { |id| "  @Test func #{id.split('/').last.delete_suffix('()')}() {}\n" }.join + "}\n")
     @shared_pairing_commit_methods = Gate::SHARED_PAIRING_COMMIT_PINNED.sort
+    Gate::SUPPORTED_PLAYER_SOURCE_SHA256.each_key do |relative|
+      # Exact source-bound parser fixture only, not compiled C/Swift runtime proof.
+      write(File.join(@root, relative), File.binread(File.join(reviewed_root, relative)))
+    end
     Gate::SHARED_PAIRING_COMMIT_SOURCE_SHA256.merge(Gate::SHARED_PAIRING_COMMIT_MAC_SOURCE_SHA256).each_key do |relative|
       write(File.join(@root, relative), File.binread(File.join(reviewed_root, relative)))
     end
@@ -1128,7 +1132,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
   def test_beluga_core_multiplatform_slice_inventory_and_each_copied_abi_are_exact
     assert_equal %w[ios-arm64 ios-arm64_x86_64-simulator macos-arm64], Gate::BELUGA_CORE_SLICES.keys.sort
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
-    assert_equal 34, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 36, Gate::BELUGA_CORE_SOURCE_FILES.length
     %w[src/handoff_transactions.rs tests/handoff_transactions.rs src/handoff_offers.rs tests/handoff_offers.rs
        src/youtube_handoff_operation.rs tests/youtube_handoff_operation.rs].each do |path|
       assert_includes Gate::BELUGA_CORE_SOURCE_FILES, path
@@ -1345,7 +1349,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                nonfinite_events_preserve_order_but_nonfinite_owned_state_is_invalid
                unknown_operation_is_invalid_unchanged_without_retirement_or_success
                wire_authorization_and_exact_numeric_identity_guard_slots exported_offer_functions_match_safe_reducer]
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(44).last(tests.length)
     tests.each do |id|
       omitted = @core_methods - [id]
@@ -1373,7 +1377,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                  offers-freshness-inclusive offers-deadline-inclusive offers-timeline-tolerance-widened
                  offers-host-position-tolerance-widened offers-clear-resets-counters offers-sent-sequence-reused
                  offers-unknown-operation-clears-state]
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants, Gate::BELUGA_CORE_MUTANTS.first(27).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name|
@@ -1437,7 +1441,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
                malformed_opcodes_domains_optional_payloads_and_primitive_fields_fail_closed
                deterministic_independent_traces_compare_every_raw_state_event_and_boolean]
     assert_equal 32, tests.length
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(76).last(tests.length)
     tests.each do |id|
@@ -1466,7 +1470,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'phone-paused-outcome-forgotten' => 'successful_native_pause_is_retained_even_when_phone_freshness_fails',
       'phone-pending-failure-keeps-reservation' => 'every_pending_failure_retains_proof_but_becomes_unknown_terminal'
     }
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(33).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1539,7 +1543,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       seeded_original_trace_with_rearm_cancellation_and_value_copies_matches
     ]
     assert_equal 22, tests.length
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED.first(98).last(tests.length)
     tests.each do |id|
@@ -1571,7 +1575,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'invitation-native-prepared-owner-ignored' => 'stale_callback_ack_rejects_same_flags_rearm_native_owner_mismatch',
       'invitation-success-callback-not-committed' => 'successful_completion_clears_owner_callbacks_and_consumed'
     }
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(42).last(mutants.length)
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -1656,12 +1660,12 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'replay-impossible-past-bits-ignored' => 'malformed_raw_state_is_unchanged_and_never_accepted'
     }
     assert_equal 21, tests.length
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED[98, 21]
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[42, 11]
-    assert_equal 34, Gate::BELUGA_CORE_SOURCE_FILES.length
-    assert_equal 20, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal 36, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 22, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
     tests.each do |id|
       omitted = @core_methods - [id]
       rejects('missing critical Beluga core') do
@@ -1708,7 +1712,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
       'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection'
     ]
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[6], Gate::BELUGA_CORE_RUNTIME_MARKERS[16]]
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[6], Gate::BELUGA_CORE_RUNTIME_MARKERS[17]]
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", (marker + "\n") * 2)) }
@@ -1746,10 +1750,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
       checkpoint_raw_value_copies_do_not_share_mutation
     ]
     assert_equal 8, tests.length
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED[119, 8]
-    assert_equal 34, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 36, Gate::BELUGA_CORE_SOURCE_FILES.length
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
     assert_equal 43, Gate::PHASES.length
     assert_equal @core_methods, Gate.beluga_core_inventory(@core_methods.map { |id| id + ': test' }.join("\n"))
@@ -1798,8 +1802,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback',
       'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback'
     ]
-    assert_equal 20, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[7], Gate::BELUGA_CORE_RUNTIME_MARKERS[17]]
+    assert_equal 22, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[7], Gate::BELUGA_CORE_RUNTIME_MARKERS[18]]
     assert_nil Gate.validate_beluga_core_link(core_link_log)
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
@@ -1831,7 +1835,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'checkpoint-revoked-readback-denied' => 'checkpoint_readback_ignores_revocation_and_owner_but_requires_snapshot'
     }
     assert_equal 12, mutants.length
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[53, 12]
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -2093,10 +2097,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
       reconnect_raw_value_copies_remain_independent
     ]
     assert_equal 12, tests.length
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED[127, 12]
-    assert_equal 34, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 36, Gate::BELUGA_CORE_SOURCE_FILES.length
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
     assert_equal 43, Gate::PHASES.length
     assert_equal @core_methods, Gate.beluga_core_inventory(@core_methods.map { |id| id + ': test' }.join("\n"))
@@ -2145,8 +2149,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
       'BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal'
     ]
-    assert_equal 20, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[8], Gate::BELUGA_CORE_RUNTIME_MARKERS[18]]
+    assert_equal 22, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[8], Gate::BELUGA_CORE_RUNTIME_MARKERS[19]]
     assert_nil Gate.validate_beluga_core_link(core_link_log)
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
@@ -2178,7 +2182,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'reconnect-unused-outbound-sequence-admitted' => 'reconnect_outbound_unused_request_sequence_is_rejected'
     }
     assert_equal 12, mutants.length
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[65, 12]
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -2396,10 +2400,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
       pairing_commit_critical_modeled_error_priority_uses_literal_original_traces
     ]
     assert_equal 20, tests.length
-    assert_equal 159, Gate::BELUGA_CORE_PINNED.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
     assert_equal Gate::BELUGA_CORE_PINNED.length, Gate::BELUGA_CORE_PINNED.uniq.length
     assert_equal tests, Gate::BELUGA_CORE_PINNED[139, 20]
-    assert_equal 34, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 36, Gate::BELUGA_CORE_SOURCE_FILES.length
     assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
     assert_equal 43, Gate::PHASES.length
     assert_equal @core_methods, Gate.beluga_core_inventory(@core_methods.map { |id| id + ': test' }.join("\n"))
@@ -2448,8 +2452,8 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'BelugaCore C pairing commit ABI PASS: exact layouts, phase plans, auth ordering and unchanged refusal',
       'BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal'
     ]
-    assert_equal 20, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
-    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[9], Gate::BELUGA_CORE_RUNTIME_MARKERS[19]]
+    assert_equal 22, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[9], Gate::BELUGA_CORE_RUNTIME_MARKERS[20]]
     assert_nil Gate.validate_beluga_core_link(core_link_log)
     markers.each do |marker|
       rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
@@ -2489,7 +2493,7 @@ class MicrophoneRegressionGateTests < Minitest::Test
       'pairing-commit-invalid-role-canonicalized' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot'
     }
     assert_equal 20, mutants.length
-    assert_equal 97, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
     assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[77, 20]
     assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
     mutants.each do |name, test|
@@ -2824,10 +2828,10 @@ class MicrophoneRegressionGateTests < Minitest::Test
     assert_equal 42, prior_phases.length
     assert_equal '30b6927210930540da73552685d3ef1b0a58caa52aa03091476e025b5a870f07',
                  Digest::SHA256.hexdigest(prior_phases.join("\n") + "\n")
-    prior_sources = Gate::BELUGA_CORE_SOURCE_FILES - %w[src/pairing_commit.rs tests/pairing_commit.rs]
+    prior_sources = Gate::BELUGA_CORE_SOURCE_FILES - %w[src/pairing_commit.rs tests/pairing_commit.rs src/supported_player_arbitration.rs tests/supported_player_arbitration.rs]
     assert_equal '764ade11b319ac5d1e037971b4a8b79ee5e6f700e2d440e1acde25bfbf7d3bba',
                  Digest::SHA256.hexdigest(prior_sources.join("\n") + "\n")
-    prior_markers = Gate::BELUGA_CORE_RUNTIME_MARKERS.reject { |line| line.include?(' pairing commit ') }
+    prior_markers = Gate::BELUGA_CORE_RUNTIME_MARKERS.reject { |line| line.include?(' pairing commit ') || line.include?(' supported player arbitration ') }
     assert_equal '5be23d58b82344f047bfc0478f41c1511d0c267e066fb99c6f5877b49426f1b7',
                  Digest::SHA256.hexdigest(prior_markers.join("\n") + "\n")
     assert_equal 22, Gate::SIMULATOR_SKIPS.length
@@ -3619,6 +3623,269 @@ class MicrophoneRegressionGateTests < Minitest::Test
       end
       Process.waitpid(child)
     end
+  end
+
+
+  # Parser/admission fixtures only. Actual Rust, linked C/Swift and native effects
+  # must be provided separately by the ordinary canonical compiler/test phases.
+  def test_beluga_core_supported_player_source_and_named_cases_are_mandatory
+    tests = %w[
+      literal_reference_covers_every_typed_input_exactly_once
+      literal_48_cases_match_original_native_priority
+      every_raw_closed_field_rejects_against_all_48_valid_bases
+      every_distinct_pair_of_invalid_fields_stays_invalid
+      every_valid_output_has_closed_action_source_and_zero_reserved
+      copied_layout_pins_every_field_offset_size_and_alignment
+      a_retry_from_either_child_beats_a_playing_successor
+      retry_retains_selected_provider_even_when_absent
+      selected_playing_music_beats_browser_playing_fallback
+      playing_tie_without_selection_bootstraps_browser
+      paused_selected_music_is_retained_over_browser_available_fallback
+      paused_tie_without_selection_bootstraps_browser
+      absence_publishes_none_and_does_not_retain_stale_selection
+      unsupported_abi_is_canonical_invalid_not_a_selection
+      reserved_input_is_canonical_invalid_not_a_selection
+      unknown_selected_source_is_not_normalized_to_none
+      unknown_child_observation_is_not_normalized_to_retry
+    ]
+    assert_equal 17, tests.length
+    assert_equal 176, Gate::BELUGA_CORE_PINNED.length
+    assert_equal tests, Gate::BELUGA_CORE_PINNED[159, 17]
+    assert_equal 36, Gate::BELUGA_CORE_SOURCE_FILES.length
+    assert_equal 16, Gate::BELUGA_CORE_ARTIFACT_FILES.length
+    assert_equal 43, Gate::PHASES.length
+    tests.each do |id|
+      omitted = @core_methods - [id]
+      rejects('missing critical Beluga core') { Gate.beluga_core_inventory(omitted.map { |name| name + ': test' }.join("\n")) }
+      rejects('duplicate Beluga core') { Gate.beluga_core_inventory((@core_methods + [id]).map { |name| name + ': test' }.join("\n")) }
+      rejects('missing, duplicate') { Gate.validate_rust(rust_log(omitted), @core_methods) }
+      ['FAILED', 'ignored'].each do |status|
+        rejects('failed or was ignored') { Gate.validate_rust(rust_log(@core_methods).sub("test #{id} ... ok", "test #{id} ... #{status}"), @core_methods) }
+      end
+      value = receipt
+      path = File.join(@evidence, 'beluga-core-discovery.log')
+      File.write(path, omitted.map { |name| name + ': test' }.join("\n"))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-discovery' }['sha256'] = Gate.sha(path)
+      path = File.join(@evidence, 'beluga-core-tests.log')
+      File.write(path, rust_log(omitted))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-tests' }['sha256'] = Gate.sha(path)
+      value['coverage']['beluga_core'] = omitted
+      rejects('missing critical Beluga core') { verify(value) }
+    end
+    %w[src/supported_player_arbitration.rs tests/supported_player_arbitration.rs].each do |relative|
+      assert_includes Gate::BELUGA_CORE_SOURCE_FILES, relative
+      path = File.join(core_crate, relative)
+      original = File.binread(path)
+      begin
+        File.binwrite(path, original + "\nchanged unreviewed selector source\n")
+        rejects('checksum differs') { Gate.validate_beluga_core_artifacts(@root) }
+        File.unlink(path)
+        refresh_core_source_manifest
+        refresh_core_artifact_manifest
+        rejects('required source files are missing or unbound') { Gate.validate_beluga_core_artifacts(@root) }
+      ensure
+        File.binwrite(path, original)
+        refresh_core_source_manifest
+        refresh_core_artifact_manifest
+      end
+    end
+  end
+
+  def test_beluga_core_supported_player_link_contract_cannot_be_borrowed
+    markers = [
+      'BelugaCore C supported player arbitration ABI PASS: exact layouts, 48 literal choices and 720 closed-field refusals',
+      'BelugaCore Swift supported player arbitration import/link PASS: exact layouts, 48 literal choices and 720 closed-field refusals'
+    ]
+    assert_equal 22, Gate::BELUGA_CORE_RUNTIME_MARKERS.length
+    assert_equal markers, [Gate::BELUGA_CORE_RUNTIME_MARKERS[10], Gate::BELUGA_CORE_RUNTIME_MARKERS[21]]
+    assert_nil Gate.validate_beluga_core_link(core_link_log)
+    markers.each do |marker|
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", '')) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker + "\n", (marker + "\n") * 2)) }
+      rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(core_link_log.sub(marker, marker + ' unverified')) }
+      value = receipt
+      path = File.join(@evidence, 'beluga-core-link.log')
+      File.write(path, core_link_log.sub(marker + "\n", ''))
+      value['phases'].find { |phase| phase['name'] == 'beluga-core-link' }['sha256'] = Gate.sha(path)
+      rejects('link oracle is incomplete') { verify(value) }
+    end
+    swapped = core_link_log.sub(markers.first, 'SELECTOR_MARKER_TEMP').sub(markers.last, markers.first).sub('SELECTOR_MARKER_TEMP', markers.last)
+    rejects('link oracle is incomplete') { Gate.validate_beluga_core_link(swapped) }
+  end
+
+  def test_beluga_core_supported_player_each_compiled_assertion_mutant_is_mandatory
+    mutants = {
+      'supported-player-retry-requires-both-children' => 'a_retry_from_either_child_beats_a_playing_successor',
+      'supported-player-retry-forgets-selection-hold' => 'retry_retains_selected_provider_even_when_absent',
+      'supported-player-selected-playing-is-not-sticky' => 'selected_playing_music_beats_browser_playing_fallback',
+      'supported-player-playing-fallback-prefers-music' => 'playing_tie_without_selection_bootstraps_browser',
+      'supported-player-paused-current-source-is-not-retained' => 'paused_selected_music_is_retained_over_browser_available_fallback',
+      'supported-player-available-fallback-prefers-music' => 'paused_tie_without_selection_bootstraps_browser',
+      'supported-player-no-media-fabricates-browser' => 'absence_publishes_none_and_does_not_retain_stale_selection',
+      'supported-player-unknown-abi-is-accepted' => 'unsupported_abi_is_canonical_invalid_not_a_selection',
+      'supported-player-reserved-input-is-accepted' => 'reserved_input_is_canonical_invalid_not_a_selection',
+      'supported-player-unknown-selection-is-normalized-none' => 'unknown_selected_source_is_not_normalized_to_none',
+      'supported-player-unknown-child-is-normalized-retry' => 'unknown_child_observation_is_not_normalized_to_retry',
+      'supported-player-reserved-output-is-nonzero' => 'every_valid_output_has_closed_action_source_and_zero_reserved',
+      'supported-player-input-field-offsets-are-reordered' => 'copied_layout_pins_every_field_offset_size_and_alignment',
+      'supported-player-output-field-offsets-are-reordered' => 'copied_layout_pins_every_field_offset_size_and_alignment',
+    }
+    assert_equal 14, mutants.length
+    assert_equal 111, Gate::BELUGA_CORE_MUTANTS.length
+    assert_equal mutants.to_a, Gate::BELUGA_CORE_MUTANT_TESTS.to_a[97, 14]
+    assert_nil Gate.validate_beluga_core_mutations(core_mutations_log)
+    mutants.each do |name, test|
+      assert_includes Gate::BELUGA_CORE_PINNED[159, 17], test
+      marker = "BELUGA_CORE_MUTANT_REJECTED #{name} assertion-failed\n"
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, '')) }
+      rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(marker, marker * 2)) }
+      segment = core_mutations_log([name]).sub("BELUGA_CORE_MUTATIONS_PASS cases=1\n", '')
+      [
+        segment.sub("test #{test} ... FAILED", "test unrelated_assertion ... FAILED"),
+        segment.sub("test #{test} ... FAILED", "test #{test} ... ignored"),
+        segment.sub("thread '#{test}'", "thread 'unrelated_assertion'"),
+        segment.sub('0 passed; 1 failed; 0 ignored', '0 passed; 1 failed; 1 ignored'),
+        segment.sub(/^[ \t]*Finished .* profile .* target.*\n/, ''),
+        segment + "error: could not compile mutation fixture\n"
+      ].each do |changed|
+        rejects('mutation oracle is incomplete') { Gate.validate_beluga_core_mutations(core_mutations_log.sub(segment, changed)) }
+      end
+    end
+    value = receipt
+    path = File.join(@evidence, 'beluga-core-mutations.log')
+    File.write(path, core_mutations_log(Gate::BELUGA_CORE_MUTANTS.first(97)))
+    value['phases'].find { |phase| phase['name'] == 'beluga-core-mutations' }['sha256'] = Gate.sha(path)
+    rejects('mutation oracle is incomplete') { verify(value) }
+  end
+
+  def test_supported_player_native_source_and_discovery_are_exact
+    pins = %w[
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testActualCopiedABIAndAll48LiteralOriginalDecisions
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAll48CurrentNativeHistoriesMatchIndependentOriginalAndRetainedHold
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAll48StaleNativeHistoriesCannotCallCoreOrRetireCurrentAuthority
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testEveryBoundedCopiedOutputCorruptionRetriesRevokesAndCanRecover
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testUnselectedChildRetryRevokesBothCatalogCommandsAndActualHandoff
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testMusicHoldSurvivesAbsentRetryAndBothPausedRecovery
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testFirstRetryCallbackCannotBeOverwrittenByDuplicateSnapshot
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testStopThenFreshPublicationCannotBeClearedByOldRetryJoin
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testStartingNewFetchDoesNotRevokeQueuedOrdinaryOrActualHandoff
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testInvalidCurrentOutputRetiresActualHandoffBeforeNativePauseEffect
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testWrappedSnapshotsPreserveExactNativeValuesCapabilitiesAndHandoffReference
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testSameNativeClientAndItemRetainTokensAcrossRateChanges
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testReplacementNativeClientOrItemRetiresQueuedOrdinaryAuthority
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testNoMediaClearsHoldBeforePausedFallbackAndRetiresQueuedCommand
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testOriginalRateGreaterThanZeroComparisonIsNotNewNumericValidation
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testNativeProjectionRequiresExactSlotsAndValidHold
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testActualRawInvalidInputsReturnInvalidAndNativeDecoderRejectsThem
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAdditionalBrowserCannotHandoffWhenMusicIsSelected
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testDistinctInvalidDiagnosticIsThrottledAndContainsNoNativeContent
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testExternalRevocationAndStopRejectBothHeldOrdinaryAndHandoff
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSimultaneouslyDiscoveredPlayersPublishStablePrimaryAndIndependentCatalog
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSameInnerIdentityWithReplacementTokenRetiresPriorPublication
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testPlayingYouTubeWinsPausedMusicAndPreservesExactMetadataAndCapabilities
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testNewlyPlayingMusicDoesNotStealPrimaryUntilBrowserPauses
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSelectedSourceRetryRetiresCommandAuthorityWithoutSwitchingPlayer
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testCommandGoesOnlyToSelectedSourceAndExternalRevocationClosesPendingAction
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSourceReplacementRejectsOldSnapshotAndAlreadyQueuedCommand
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testQueuedCommandCannotRegainAuthorityAfterSourceReturnsToSameIdentity
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testQueuedCommandCannotRegainAuthorityAfterItemReturnsToSameIdentity
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testStopRevokesPendingCommandEvenAfterFreshFetchRestoresSameIdentity
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testOutOfOrderFetchCannotReplaceNewerSelection
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testDuplicateCallbacksCannotOverwriteFirstSourceResultOrCompleteTwice
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testFetchCompletionAfterStopCannotReviveSelection
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testMissingPlayersClearSelectionAndDiagnosticsContainNoMediaContent
+    ]
+    assert_equal 34, pins.length
+    assert_equal [20, 14], Gate::SUPPORTED_PLAYER_PINNED.values.map(&:length)
+    assert_equal pins, Gate::SUPPORTED_PLAYER_PINNED.values.flatten
+    assert_equal pins, Gate::MAC_PINNED.last(34)
+    assert_equal 139, Gate::MAC_PINNED.length
+    expected = Gate::SUPPORTED_PLAYER_PINNED.transform_values(&:sort)
+    assert_equal expected, Gate.supported_player_source_inventory(@root)
+    assert_equal expected, Gate.supported_player_inventory(@root, @mac_methods.join("\n"))
+    pins.each do |id|
+      rejects('supported player native discovery differs') { Gate.supported_player_inventory(@root, (@mac_methods - [id]).join("\n")) }
+      rejects('supported player native discovery differs') { Gate.supported_player_inventory(@root, (@mac_methods + [id]).join("\n")) }
+      renamed = @mac_methods.map { |method| method == id ? id + 'Unrelated' : method }
+      rejects('supported player native discovery differs') { Gate.supported_player_inventory(@root, renamed.join("\n")) }
+    end
+    Gate::SUPPORTED_PLAYER_FILES.each_key do |suite|
+      rejects('supported player native discovery differs') { Gate.supported_player_inventory(@root, (@mac_methods + [suite + '/malformed']).join("\n")) }
+    end
+    value = receipt
+    argv = Gate.commands(@root, @evidence, value['invocation'], @tools, SIMULATOR, @mac_methods, @handoff_methods).fetch('mac-tests')
+    filter = Regexp.new(argv.fetch(argv.index('--filter') + 1))
+    pins.each { |id| assert_match filter, id }
+    refute_match filter, pins.first + 'Unreviewed'
+    refute_match filter, 'CaptureServerTests.UnrelatedClass/' + pins.first.split('/').last
+  end
+
+  def test_supported_player_native_companions_reject_changed_missing_and_linked_bytes
+    assert_equal 5, Gate::SUPPORTED_PLAYER_SOURCE_SHA256.length
+    assert_nil Gate.validate_supported_player_sources(@root)
+    Gate::SUPPORTED_PLAYER_SOURCE_SHA256.each do |relative, expected|
+      path = File.join(@root, relative)
+      original = File.binread(path)
+      assert_equal expected, Gate.sha(path)
+      foreign = File.join(@temporary, 'supported-player-source-copy')
+      begin
+        File.binwrite(path, original + "\nchanged reviewed source\n")
+        rejects('supported player reviewed native/reference source changed') { Gate.validate_supported_player_sources(@root) }
+        value = receipt
+        value['source'] = Gate.source_identity(@root)
+        rejects('supported player reviewed native/reference source changed') { verify(value) }
+        File.unlink(path)
+        rejects('supported player source companion is missing') { Gate.validate_supported_player_sources(@root) }
+        File.binwrite(foreign, original)
+        File.symlink(foreign, path)
+        rejects('regular') { Gate.validate_supported_player_sources(@root) }
+      ensure
+        File.unlink(path) if File.exist?(path) || File.symlink?(path)
+        File.binwrite(path, original)
+        File.unlink(foreign) if File.exist?(foreign)
+      end
+    end
+  end
+
+  def test_supported_player_native_results_and_rehashed_coverage_cannot_be_borrowed
+    pins = Gate::SUPPORTED_PLAYER_PINNED.values.flatten
+    assert_equal @mac_methods, Gate.validate_mac_log(mac_log, @mac_methods)
+    pins.each do |id|
+      rejects('missing Mac result') { Gate.validate_mac_log(mac_log(@mac_methods - [id]), @mac_methods) }
+      rejects('duplicate') { Gate.validate_mac_log(mac_log(@mac_methods + [id]), @mac_methods) }
+      klass, method = id.split('/')
+      passed = "Test Case '-[#{klass} #{method}]' passed (0.001 seconds)."
+      ['failed', 'skipped'].each do |status|
+        rejects('failed, skipped') { Gate.validate_mac_log(mac_log.sub(passed, passed.sub('passed', status)), @mac_methods) }
+      end
+      value = receipt
+      omitted = @mac_methods - [id]
+      path = File.join(@evidence, 'mac-discovery.log')
+      File.write(path, (omitted + @shared_methods + @shared_replay_methods.values.flatten + @shared_reconnect_counter_methods + @shared_pairing_commit_methods + @handoff_methods).join("\n"))
+      value['phases'].find { |phase| phase['name'] == 'mac-discovery' }['sha256'] = Gate.sha(path)
+      path = File.join(@evidence, 'mac-tests.log')
+      File.write(path, mac_log(omitted))
+      value['phases'].find { |phase| phase['name'] == 'mac-tests' }['sha256'] = Gate.sha(path)
+      value['coverage']['mac'] = omitted
+      rejects('missing critical Mac test') { verify(value) }
+    end
+    rejects('footer has missing') { Gate.validate_mac_log(mac_log.sub("Executed #{@mac_methods.length} tests", "Executed #{@mac_methods.length - 1} tests"), @mac_methods) }
+  end
+
+  def test_supported_player_enrollment_preserves_exact_previous_prefixes
+    previous = [
+      Gate::BELUGA_CORE_PINNED.first(159),
+      Gate::BELUGA_CORE_MUTANT_TESTS.to_a.first(97),
+      Gate::BELUGA_CORE_SOURCE_FILES - %w[src/supported_player_arbitration.rs tests/supported_player_arbitration.rs],
+      Gate::BELUGA_CORE_RUNTIME_MARKERS.reject { |line| line.include?(' supported player arbitration ') },
+      Gate::PHASES,
+      Gate::MAC_CLASSES.first(29),
+      Gate::MAC_PINNED.first(105),
+      Gate::SIMULATOR_SKIPS
+    ]
+    assert_equal [159, 97, 34, 20, 43, 29, 105, 22], previous.map(&:length)
+    assert_equal 'e705569246a8b458ba41d17f4b4655071eae9087afe5ea10df867b0b5861c307',
+                 Digest::SHA256.hexdigest(JSON.generate(previous) + "\n")
   end
 
   def test_cache_is_not_deleted_by_receipt_verification

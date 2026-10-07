@@ -10,6 +10,16 @@ pub mod youtube_handoff_operation;
 pub mod invitation_acceptance;
 pub mod replay_policy;
 pub mod pairing_catalog_checkpoint;
+pub mod supported_player_arbitration;
+
+// Eleventh copied scalar contract: source choice only; no native authority or effects.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_supported_player_arbitrate(
+    input: supported_player_arbitration::ArbitrationInput,
+) -> supported_player_arbitration::ArbitrationOutput {
+    supported_player_arbitration::arbitrate(input)
+}
 
 pub mod pairing_commit;
 

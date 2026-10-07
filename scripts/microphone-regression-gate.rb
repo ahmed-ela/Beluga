@@ -26,8 +26,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs src/pairing_catalog_checkpoint.rs src/reconnect_counters.rs src/pairing_commit.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/pairing_catalog_checkpoint.rs tests/reconnect_counters.rs tests/pairing_commit.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs src/pairing_catalog_checkpoint.rs src/reconnect_counters.rs src/pairing_commit.rs src/supported_player_arbitration.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/pairing_catalog_checkpoint.rs tests/reconnect_counters.rs tests/pairing_commit.rs tests/supported_player_arbitration.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -307,6 +307,59 @@ module MicrophoneRegressionGate
     BelugaRustYouTubeHandoffOperationTests/testCopiedBoundaryRejectsMissingRevocationFictionalOutcomesAndReplay
     BelugaRustYouTubeHandoffOperationTests/testMalformedCopiedOutputFailsClosedWithHonestStatusAndSilentBoolFallback
   ].freeze
+  # Exact reviewed native/reference bytes; refresh only after review of any change.
+  SUPPORTED_PLAYER_SOURCE_SHA256 = {
+    'macOS/Sources/CaptureServer/BelugaRustSupportedPlayerArbitration.swift' => 'bfd79da465e40bb7ab1101876ea96c1bf92ba9a64ce2f14092f0d4870cf42b01',
+    'macOS/Sources/CaptureServer/MacSupportedNowPlayingRuntime.swift' => 'fa5eabd215535707046d220b6ace63ef97e30815ef3f4842f3221608cedc084e',
+    'macOS/Tests/CaptureServerTests/BelugaRustSupportedPlayerArbitrationTests.swift' => '1467ebb5a6e4eb07c5187718523e3749df3b2fa799551593eabfb42eb2888ead',
+    'macOS/Tests/CaptureServerTests/SupportedPlayerArbitrationOriginalReference.swift' => 'bcd7f51c1bd987ff0032cda2a0e936ab72401f5846a9ea2c32a964b2040a8694',
+    'macOS/Tests/CaptureServerTests/MacSupportedNowPlayingRuntimeTests.swift' => 'ee02e658eede1a4713f02c03f2e7b4372372946d3b36cbc2d8d2676407f82314',
+  }.freeze
+  SUPPORTED_PLAYER_FILES = {
+    'CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests' => 'macOS/Tests/CaptureServerTests/BelugaRustSupportedPlayerArbitrationTests.swift',
+    'CaptureServerTests.MacSupportedNowPlayingRuntimeTests' => 'macOS/Tests/CaptureServerTests/MacSupportedNowPlayingRuntimeTests.swift'
+  }.freeze
+  SUPPORTED_PLAYER_PINNED = {
+    'CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests' => %w[
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testActualCopiedABIAndAll48LiteralOriginalDecisions
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAll48CurrentNativeHistoriesMatchIndependentOriginalAndRetainedHold
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAll48StaleNativeHistoriesCannotCallCoreOrRetireCurrentAuthority
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testEveryBoundedCopiedOutputCorruptionRetriesRevokesAndCanRecover
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testUnselectedChildRetryRevokesBothCatalogCommandsAndActualHandoff
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testMusicHoldSurvivesAbsentRetryAndBothPausedRecovery
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testFirstRetryCallbackCannotBeOverwrittenByDuplicateSnapshot
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testStopThenFreshPublicationCannotBeClearedByOldRetryJoin
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testStartingNewFetchDoesNotRevokeQueuedOrdinaryOrActualHandoff
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testInvalidCurrentOutputRetiresActualHandoffBeforeNativePauseEffect
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testWrappedSnapshotsPreserveExactNativeValuesCapabilitiesAndHandoffReference
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testSameNativeClientAndItemRetainTokensAcrossRateChanges
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testReplacementNativeClientOrItemRetiresQueuedOrdinaryAuthority
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testNoMediaClearsHoldBeforePausedFallbackAndRetiresQueuedCommand
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testOriginalRateGreaterThanZeroComparisonIsNotNewNumericValidation
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testNativeProjectionRequiresExactSlotsAndValidHold
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testActualRawInvalidInputsReturnInvalidAndNativeDecoderRejectsThem
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAdditionalBrowserCannotHandoffWhenMusicIsSelected
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testDistinctInvalidDiagnosticIsThrottledAndContainsNoNativeContent
+      CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testExternalRevocationAndStopRejectBothHeldOrdinaryAndHandoff
+    ],
+    'CaptureServerTests.MacSupportedNowPlayingRuntimeTests' => %w[
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSimultaneouslyDiscoveredPlayersPublishStablePrimaryAndIndependentCatalog
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSameInnerIdentityWithReplacementTokenRetiresPriorPublication
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testPlayingYouTubeWinsPausedMusicAndPreservesExactMetadataAndCapabilities
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testNewlyPlayingMusicDoesNotStealPrimaryUntilBrowserPauses
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSelectedSourceRetryRetiresCommandAuthorityWithoutSwitchingPlayer
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testCommandGoesOnlyToSelectedSourceAndExternalRevocationClosesPendingAction
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSourceReplacementRejectsOldSnapshotAndAlreadyQueuedCommand
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testQueuedCommandCannotRegainAuthorityAfterSourceReturnsToSameIdentity
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testQueuedCommandCannotRegainAuthorityAfterItemReturnsToSameIdentity
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testStopRevokesPendingCommandEvenAfterFreshFetchRestoresSameIdentity
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testOutOfOrderFetchCannotReplaceNewerSelection
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testDuplicateCallbacksCannotOverwriteFirstSourceResultOrCompleteTwice
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testFetchCompletionAfterStopCannotReviveSelection
+      CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testMissingPlayersClearSelectionAndDiagnosticsContainNoMediaContent
+    ]
+  }.transform_values(&:freeze).freeze
+
   MAC_CLASSES = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests
     CaptureCoreTests.CoreAudioProcessTapStartupDiagnosticsTests
@@ -337,6 +390,8 @@ module MicrophoneRegressionGate
     CaptureServerTests.BelugaUpdateCandidateMetadataTests
     CaptureServerTests.BelugaUpdateInstalledArtifactTests
     CaptureServerTests.BelugaUpdateSparkleSessionTests
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests
   ].freeze
   MAC_PINNED = %w[
     CaptureCoreTests.CoreAudioProcessTapAggregateConfigurationTests/testEveryFreshAggregateStartsWithoutWaitingForTappedPlayback
@@ -444,6 +499,40 @@ module MicrophoneRegressionGate
     CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testMalformedRevokeIsStickyWithoutErasingKnownSnapshotOrBinding
     CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testMalformedInitialCannotInvokeOwnerOrStore
     CaptureServerTests.BelugaRustPairingCatalogCheckpointTests/testActualCopiedBoundaryAndLayoutsPreserveAllValidCases
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testActualCopiedABIAndAll48LiteralOriginalDecisions
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAll48CurrentNativeHistoriesMatchIndependentOriginalAndRetainedHold
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAll48StaleNativeHistoriesCannotCallCoreOrRetireCurrentAuthority
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testEveryBoundedCopiedOutputCorruptionRetriesRevokesAndCanRecover
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testUnselectedChildRetryRevokesBothCatalogCommandsAndActualHandoff
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testMusicHoldSurvivesAbsentRetryAndBothPausedRecovery
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testFirstRetryCallbackCannotBeOverwrittenByDuplicateSnapshot
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testStopThenFreshPublicationCannotBeClearedByOldRetryJoin
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testStartingNewFetchDoesNotRevokeQueuedOrdinaryOrActualHandoff
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testInvalidCurrentOutputRetiresActualHandoffBeforeNativePauseEffect
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testWrappedSnapshotsPreserveExactNativeValuesCapabilitiesAndHandoffReference
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testSameNativeClientAndItemRetainTokensAcrossRateChanges
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testReplacementNativeClientOrItemRetiresQueuedOrdinaryAuthority
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testNoMediaClearsHoldBeforePausedFallbackAndRetiresQueuedCommand
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testOriginalRateGreaterThanZeroComparisonIsNotNewNumericValidation
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testNativeProjectionRequiresExactSlotsAndValidHold
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testActualRawInvalidInputsReturnInvalidAndNativeDecoderRejectsThem
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testAdditionalBrowserCannotHandoffWhenMusicIsSelected
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testDistinctInvalidDiagnosticIsThrottledAndContainsNoNativeContent
+    CaptureServerTests.BelugaRustSupportedPlayerArbitrationTests/testExternalRevocationAndStopRejectBothHeldOrdinaryAndHandoff
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSimultaneouslyDiscoveredPlayersPublishStablePrimaryAndIndependentCatalog
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSameInnerIdentityWithReplacementTokenRetiresPriorPublication
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testPlayingYouTubeWinsPausedMusicAndPreservesExactMetadataAndCapabilities
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testNewlyPlayingMusicDoesNotStealPrimaryUntilBrowserPauses
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSelectedSourceRetryRetiresCommandAuthorityWithoutSwitchingPlayer
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testCommandGoesOnlyToSelectedSourceAndExternalRevocationClosesPendingAction
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testSourceReplacementRejectsOldSnapshotAndAlreadyQueuedCommand
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testQueuedCommandCannotRegainAuthorityAfterSourceReturnsToSameIdentity
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testQueuedCommandCannotRegainAuthorityAfterItemReturnsToSameIdentity
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testStopRevokesPendingCommandEvenAfterFreshFetchRestoresSameIdentity
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testOutOfOrderFetchCannotReplaceNewerSelection
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testDuplicateCallbacksCannotOverwriteFirstSourceResultOrCompleteTwice
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testFetchCompletionAfterStopCannotReviveSelection
+    CaptureServerTests.MacSupportedNowPlayingRuntimeTests/testMissingPlayersClearSelectionAndDiagnosticsContainNoMediaContent
   ].freeze
   RUST_PINNED = %w[
     ordinary_raw_microphone_effective_sharing_preserves_requested_and_observed_values
@@ -610,6 +699,23 @@ module MicrophoneRegressionGate
     pairing_commit_all_rejected_plans_preserve_whole_candidate_without_actions
     pairing_commit_every_ready_plan_has_deterministic_modeled_failure_and_cache_custody
     pairing_commit_critical_modeled_error_priority_uses_literal_original_traces
+    literal_reference_covers_every_typed_input_exactly_once
+    literal_48_cases_match_original_native_priority
+    every_raw_closed_field_rejects_against_all_48_valid_bases
+    every_distinct_pair_of_invalid_fields_stays_invalid
+    every_valid_output_has_closed_action_source_and_zero_reserved
+    copied_layout_pins_every_field_offset_size_and_alignment
+    a_retry_from_either_child_beats_a_playing_successor
+    retry_retains_selected_provider_even_when_absent
+    selected_playing_music_beats_browser_playing_fallback
+    playing_tie_without_selection_bootstraps_browser
+    paused_selected_music_is_retained_over_browser_available_fallback
+    paused_tie_without_selection_bootstraps_browser
+    absence_publishes_none_and_does_not_retain_stale_selection
+    unsupported_abi_is_canonical_invalid_not_a_selection
+    reserved_input_is_canonical_invalid_not_a_selection
+    unknown_selected_source_is_not_normalized_to_none
+    unknown_child_observation_is_not_normalized_to_retry
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -708,7 +814,21 @@ module MicrophoneRegressionGate
     'pairing-commit-event-reserved-ignored' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot',
     'pairing-commit-unused-uuid-fact-admitted' => 'pairing_commit_unused_uuid_fact_is_not_an_alternative_authorization',
     'pairing-commit-host-ack-phase-guard-removed' => 'pairing_commit_role_and_phase_guards_precede_inbound_authentication',
-    'pairing-commit-invalid-role-canonicalized' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot'
+    'pairing-commit-invalid-role-canonicalized' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot',
+    'supported-player-retry-requires-both-children' => 'a_retry_from_either_child_beats_a_playing_successor',
+    'supported-player-retry-forgets-selection-hold' => 'retry_retains_selected_provider_even_when_absent',
+    'supported-player-selected-playing-is-not-sticky' => 'selected_playing_music_beats_browser_playing_fallback',
+    'supported-player-playing-fallback-prefers-music' => 'playing_tie_without_selection_bootstraps_browser',
+    'supported-player-paused-current-source-is-not-retained' => 'paused_selected_music_is_retained_over_browser_available_fallback',
+    'supported-player-available-fallback-prefers-music' => 'paused_tie_without_selection_bootstraps_browser',
+    'supported-player-no-media-fabricates-browser' => 'absence_publishes_none_and_does_not_retain_stale_selection',
+    'supported-player-unknown-abi-is-accepted' => 'unsupported_abi_is_canonical_invalid_not_a_selection',
+    'supported-player-reserved-input-is-accepted' => 'reserved_input_is_canonical_invalid_not_a_selection',
+    'supported-player-unknown-selection-is-normalized-none' => 'unknown_selected_source_is_not_normalized_to_none',
+    'supported-player-unknown-child-is-normalized-retry' => 'unknown_child_observation_is_not_normalized_to_retry',
+    'supported-player-reserved-output-is-nonzero' => 'every_valid_output_has_closed_action_source_and_zero_reserved',
+    'supported-player-input-field-offsets-are-reordered' => 'copied_layout_pins_every_field_offset_size_and_alignment',
+    'supported-player-output-field-offsets-are-reordered' => 'copied_layout_pins_every_field_offset_size_and_alignment',
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -722,6 +842,7 @@ module MicrophoneRegressionGate
     'BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback',
     'BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
     'BelugaCore C pairing commit ABI PASS: exact layouts, phase plans, auth ordering and unchanged refusal',
+    'BelugaCore C supported player arbitration ABI PASS: exact layouts, 48 literal choices and 720 closed-field refusals',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
@@ -731,7 +852,8 @@ module MicrophoneRegressionGate
     'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
     'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback',
     'BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
-    'BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal'
+    'BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal',
+    'BelugaCore Swift supported player arbitration import/link PASS: exact layouts, 48 literal choices and 720 closed-field refusals'
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -803,6 +925,13 @@ module MicrophoneRegressionGate
     test_pairing_commit_concrete_native_reference_and_caller_sources_are_mandatory
     test_pairing_commit_enrollment_preserves_exact_previous_prefixes
     test_pairing_commit_mac_ack_storage_and_viewer_decode_composition_are_mandatory
+    test_beluga_core_supported_player_source_and_named_cases_are_mandatory
+    test_beluga_core_supported_player_link_contract_cannot_be_borrowed
+    test_beluga_core_supported_player_each_compiled_assertion_mutant_is_mandatory
+    test_supported_player_native_source_and_discovery_are_exact
+    test_supported_player_native_companions_reject_changed_missing_and_linked_bytes
+    test_supported_player_native_results_and_rehashed_coverage_cannot_be_borrowed
+    test_supported_player_enrollment_preserves_exact_previous_prefixes
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -1249,6 +1378,45 @@ module MicrophoneRegressionGate
                'shared replay source inventory is incomplete, malformed or duplicated: ' + suite)
       [suite, ids.sort]
     end
+  end
+
+  def self.validate_supported_player_sources(root)
+    SUPPORTED_PLAYER_SOURCE_SHA256.each do |relative, expected|
+      path = File.join(root, relative)
+      require!(File.exist?(path), 'supported player source companion is missing: ' + relative)
+      stat = regular!(path)
+      require!(File.realpath(path) == path && stat.size <= 2 * 1024 * 1024 &&
+               sha(path) == expected, 'supported player reviewed native/reference source changed: ' + relative)
+      utf8_text(File.binread(path), 'supported player source companion')
+    end
+    nil
+  end
+
+  def self.supported_player_source_inventory(root)
+    validate_supported_player_sources(root)
+    SUPPORTED_PLAYER_FILES.map do |suite, relative|
+      source = utf8_text(File.binread(File.join(root, relative)), 'supported player native test source')
+      name = suite.split('.').last
+      methods = source.scan(/^[ \t]*func (test\w+)[ \t]*\(/).flatten
+      ids = methods.map { |method| suite + '/' + method }
+      require!(source.scan(/^[ \t]*final class #{Regexp.escape(name)}[ \t]*:[ \t]*XCTestCase[ \t]*\{/).length == 1 &&
+               ids.uniq.length == ids.length && ids.sort == SUPPORTED_PLAYER_PINNED.fetch(suite).sort,
+               'supported player native source inventory is incomplete, malformed or duplicated: ' + suite)
+      [suite, ids.sort]
+    end.to_h
+  end
+
+  def self.supported_player_inventory(root, text)
+    source = supported_player_source_inventory(root)
+    lines = utf8_text(text, 'supported player native discovery').lines.map(&:strip)
+    source.map do |suite, expected|
+      methods = lines.select { |line| line.start_with?(suite + '/') }
+      require!(methods.uniq.length == methods.length &&
+               methods.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/test\w+\z/) } &&
+               methods.sort == expected,
+               'supported player native discovery differs from exact source inventory: ' + suite)
+      [suite, methods.sort]
+    end.to_h
   end
 
   def self.shared_replay_inventory(root, text)
@@ -2673,6 +2841,7 @@ module MicrophoneRegressionGate
       swift_base = [swift, 'test', '--package-path', @root, '--scratch-path', @swift_scratch, '--jobs', '2']
       mac_discovery = phase('mac-discovery', swift_base + ['--list-tests'])
       mac_methods = MicrophoneRegressionGate.mac_inventory(mac_discovery)
+      MicrophoneRegressionGate.supported_player_inventory(@root, mac_discovery)
       shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
       replay_methods = MicrophoneRegressionGate.shared_replay_inventory(@root, mac_discovery)
       reconnect_methods = MicrophoneRegressionGate.shared_reconnect_counter_inventory(@root, mac_discovery)
@@ -2836,6 +3005,7 @@ module MicrophoneRegressionGate
     coverage = receipt['coverage']
     exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff shared_replay shared_reconnect_counters shared_pairing_commit c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
+    supported_player_inventory(root, read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     replay = shared_replay_inventory(root, read_phase.call('mac-discovery'))
     reconnect = shared_reconnect_counter_inventory(root, read_phase.call('mac-discovery'))

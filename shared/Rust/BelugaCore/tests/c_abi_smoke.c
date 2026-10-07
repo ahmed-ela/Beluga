@@ -707,6 +707,76 @@ static void pairing_commit_smoke(void) {
     pc_invalid(1, before, (beluga_core_pairing_commit_event_t){6, 0, 1, 0});
     puts("BelugaCore C pairing commit ABI PASS: exact layouts, phase plans, auth ordering and unchanged refusal");
 }
+_Static_assert(sizeof(beluga_core_supported_player_arbitration_input_t) == 20, "arbitration input size");
+_Static_assert(_Alignof(beluga_core_supported_player_arbitration_input_t) == 4, "arbitration input alignment");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_input_t, abi_version) == 0, "arbitration input ABI offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_input_t, selected_source) == 4, "arbitration selected offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_input_t, browser_observation) == 8, "arbitration browser offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_input_t, music_observation) == 12, "arbitration Music offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_input_t, reserved) == 16, "arbitration input reserved offset");
+_Static_assert(sizeof(beluga_core_supported_player_arbitration_output_t) == 16, "arbitration output size");
+_Static_assert(_Alignof(beluga_core_supported_player_arbitration_output_t) == 4, "arbitration output alignment");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_output_t, abi_version) == 0, "arbitration output ABI offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_output_t, action) == 4, "arbitration action offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_output_t, primary_or_hold) == 8, "arbitration primary/hold offset");
+_Static_assert(offsetof(beluga_core_supported_player_arbitration_output_t, reserved) == 12, "arbitration output reserved offset");
+
+static void supported_player_arbitration_smoke(void) {
+    /* Frozen native-reference rows: selected/browser/Music/action/source-or-hold. */
+    const uint32_t literals[48][5] = {
+        {0,0,0,2,0}, {0,0,1,2,2}, {0,0,2,2,2}, {0,0,3,1,0},
+        {0,1,0,2,1}, {0,1,1,2,1}, {0,1,2,2,2}, {0,1,3,1,0},
+        {0,2,0,2,1}, {0,2,1,2,1}, {0,2,2,2,1}, {0,2,3,1,0},
+        {0,3,0,1,0}, {0,3,1,1,0}, {0,3,2,1,0}, {0,3,3,1,0},
+        {1,0,0,2,0}, {1,0,1,2,2}, {1,0,2,2,2}, {1,0,3,1,1},
+        {1,1,0,2,1}, {1,1,1,2,1}, {1,1,2,2,2}, {1,1,3,1,1},
+        {1,2,0,2,1}, {1,2,1,2,1}, {1,2,2,2,1}, {1,2,3,1,1},
+        {1,3,0,1,1}, {1,3,1,1,1}, {1,3,2,1,1}, {1,3,3,1,1},
+        {2,0,0,2,0}, {2,0,1,2,2}, {2,0,2,2,2}, {2,0,3,1,2},
+        {2,1,0,2,1}, {2,1,1,2,2}, {2,1,2,2,2}, {2,1,3,1,2},
+        {2,2,0,2,1}, {2,2,1,2,1}, {2,2,2,2,2}, {2,2,3,1,2},
+        {2,3,0,1,2}, {2,3,1,1,2}, {2,3,2,1,2}, {2,3,3,1,2}
+    };
+    const uint32_t invalids[5][3] = {
+        {0,2,UINT32_MAX}, {3,4,UINT32_MAX}, {4,5,UINT32_MAX},
+        {4,5,UINT32_MAX}, {1,2,UINT32_MAX}
+    };
+    size_t invalid_attempts = 0;
+    for (size_t row = 0; row < 48; ++row) {
+        const uint32_t *literal = literals[row];
+        const beluga_core_supported_player_arbitration_input_t input = {
+            1, literal[0], literal[1], literal[2], 0
+        };
+        const beluga_core_supported_player_arbitration_output_t output =
+            beluga_core_supported_player_arbitrate(input);
+        assert(output.abi_version == 1 && output.action == literal[3]);
+        assert(output.primary_or_hold == literal[4] && output.reserved == 0);
+        for (size_t field = 0; field < 5; ++field) {
+            for (size_t bad = 0; bad < 3; ++bad) {
+                beluga_core_supported_player_arbitration_input_t raw = input;
+                switch (field) {
+                    case 0: raw.abi_version = invalids[field][bad]; break;
+                    case 1: raw.selected_source = invalids[field][bad]; break;
+                    case 2: raw.browser_observation = invalids[field][bad]; break;
+                    case 3: raw.music_observation = invalids[field][bad]; break;
+                    case 4: raw.reserved = invalids[field][bad]; break;
+                    default: assert(0); break;
+                }
+                const beluga_core_supported_player_arbitration_output_t refused =
+                    beluga_core_supported_player_arbitrate(raw);
+                assert(refused.abi_version == 1 && refused.action == 0);
+                assert(refused.primary_or_hold == 0 && refused.reserved == 0);
+                ++invalid_attempts;
+            }
+        }
+        assert(input.abi_version == 1 && input.selected_source == literal[0]);
+        assert(input.browser_observation == literal[1] && input.music_observation == literal[2]);
+        assert(input.reserved == 0);
+    }
+    assert(invalid_attempts == 720);
+    puts("BelugaCore C supported player arbitration ABI PASS: exact layouts, 48 literal choices and 720 closed-field refusals");
+}
+
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -821,5 +891,6 @@ int main(void) {
     pairing_catalog_checkpoint_smoke();
     reconnect_counters_smoke();
     pairing_commit_smoke();
+    supported_player_arbitration_smoke();
     return 0;
 }

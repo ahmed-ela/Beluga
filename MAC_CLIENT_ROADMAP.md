@@ -352,12 +352,44 @@ A per-call throwing preconstructor probe is a boundary/error-order fixture, not 
 actual CryptoKit constructor failure. Denial-only immutable decoder selection
 cannot return a candidate, survive in decoded records or modify stored bytes.
 
-The final test fixture now follows Foundation's Sendable userInfo contract without
+The final test fixture follows Foundation's Sendable userInfo contract without
 removing malformed-type controls. Candidate-roundtrip and Viewer store/bootstrap
-composition are additionally enrolled; fresh complete 43-phase validation, compiled
-mutation checks, signed Simulator/pairing results and independent receipt audits
-remain pending for this exact source. Browser sharing/Android delivery remain
-paused. This is neither an installed-host/phone update nor full migration completion.
+composition are additionally enrolled. The tenth checkpoint subsequently passed
+the complete 43-phase gate and independent audits and was committed locally as
+`1f66f784533f67053800077e5eea1ae10bea37a3`; receipt SHA-256 is
+`8948a80d52b9a924a73ee1a66311db1e52bd438807d318d0acb5a57e4e0d556d`.
+It is not proof for the changed eleventh source. Browser sharing/Android delivery
+remain paused. Neither checkpoint represents an installed-host/phone update or
+full migration completion.
+
+### Supported-player arbitration — eleventh source integration, not released
+
+The two-provider browser/Music selection policy now uses a stateless Rust reducer
+through copied 20-byte input and 16-byte output values. It preserves the original
+first-playing-provider hold, browser-before-Music fallback, selected paused source
+and retry behavior. Native discovery, media snapshots, opaque handoff descriptors,
+publication identity, queued commands, authentication and platform effects remain
+native. The original fetch-epoch guard runs before projection and the C call.
+Invalid current copied output retires publication authority, retains the selection
+hold and returns one distinct throttled diagnostic; no successful Swift fallback.
+
+Actual focused execution passed 17 Rust cases (48 literal choices, 720 single-field
+and 4,320 two-field invalid trials) and 34 Mac cases through the real C boundary:
+20 new arbitration/lifecycle/corruption tests plus 14 unchanged selector regressions.
+The official four-target source dependency was built and promoted locally; Mac
+C/Swift smokes executed and three iOS target links passed, not physical execution.
+The first native build exposed a test-local generic-inference error; evidence was
+preserved and explicit Bool specialization passed the fresh attempt. No product
+assertion was removed. Gate parser self-tests passed 133 cases/15,179 assertions.
+
+The canonical gate now enrolls 176 core tests, 111 compiled Rust mutation controls,
+550 Mac cases and 139 critical Mac cases while preserving the previous coverage
+prefixes, phase order and 22 physical-only Simulator exclusions. Enrollment does
+not claim a completed gate. Independent native compiled controls and a fresh full
+source-bound gate are the remaining validation boundaries for this integration.
+Detailed progress and terminal evidence are retained outside source in
+`/Volumes/t7/beluga-supported-player-validation.TLmvsI/RESULTS.md`. The installed
+Mac menu transition, physical phone behavior and deployment remain unverified.
 
 ## Earlier implementation ledger
 
