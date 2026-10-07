@@ -464,6 +464,35 @@ beluga_core_reconnect_counters_result_t beluga_core_reconnect_counters_step(
     uint32_t abi_version, beluga_core_reconnect_counters_state_t state,
     beluga_core_reconnect_counters_event_t event);
 
+/* Stateless pairing recovery plan. Native authentication, signing and durable writes remain mandatory. */
+typedef struct {
+    uint32_t abi_version;
+    uint32_t reserved;
+    uint32_t local_role;
+    uint32_t pairing_state;
+    uint32_t recovery_phase;
+    uint32_t reserved_tail;
+} beluga_core_pairing_commit_state_t;
+
+typedef struct {
+    uint32_t opcode;
+    uint32_t reserved;
+    uint32_t commit_id_matches;
+    uint32_t reserved_tail;
+} beluga_core_pairing_commit_event_t;
+
+typedef struct {
+    beluga_core_pairing_commit_state_t candidate_state;
+    uint32_t decision;
+    uint32_t action;
+    uint32_t auth_phase;
+    uint32_t reserved;
+} beluga_core_pairing_commit_result_t;
+
+beluga_core_pairing_commit_result_t beluga_core_pairing_commit_step(
+    uint32_t abi_version, beluga_core_pairing_commit_state_t state,
+    beluga_core_pairing_commit_event_t event);
+
 #ifdef __cplusplus
 }
 #endif

@@ -47,9 +47,11 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
 
     private static let serializationLock = NSLock()
     private let dataStore: any WorldwidePairingDataStore
+    private let pairedRecordDecodeFault: UInt32?
 
-    init(dataStore: any WorldwidePairingDataStore) {
+    init(dataStore: any WorldwidePairingDataStore, pairedRecordDecodeFault: UInt32? = nil) {
         self.dataStore = dataStore
+        self.pairedRecordDecodeFault = pairedRecordDecodeFault
     }
 
     /// Imports the original record at most once, without changing any of its original bytes.
@@ -74,7 +76,11 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
             if let legacyBytes = try dataStore.data(for: WorldwidePairingStore.pairedViewerAccount) {
                 try validateSize(legacyBytes)
                 let record: RemotePairedDeviceRecord
-                do { record = try JSONDecoder().decode(RemotePairedDeviceRecord.self, from: legacyBytes) }
+                do {
+                    record = try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                        .decode(RemotePairedDeviceRecord.self, from: legacyBytes)
+                }
+                catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge { throw error }
                 catch { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
                 try validateRecord(record, for: identity)
                 catalog.records = [record]
@@ -136,9 +142,14 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
                   phaseRank(record.pairingState) >= phaseRank(previous.pairingState) else {
                 throw WorldwidePairedPhoneCatalogError.staleRecord
             }
+            let previousRecovery = previous.recoveryAction
+            let candidateRecovery = record.recoveryAction
+            guard previousRecovery != .invalidBridge, candidateRecovery != .invalidBridge else {
+                throw RemoteSessionCoreError.invalidPairingCommitBridge
+            }
             if previous.pairingState == record.pairingState,
-               case let .resend(commit) = previous.recoveryAction,
-               record.recoveryAction != .resend(commit) {
+               case let .resend(commit) = previousRecovery,
+               candidateRecovery != .resend(commit) {
                 throw WorldwidePairedPhoneCatalogError.staleRecord
             }
             catalog.records[index] = record
@@ -229,14 +240,16 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
             // Wrapper schemas are strict; the existing paired-record decoder validates the
             // complete cryptographic recovery state and keeps its deployed ABI unchanged.
             try validateWrapperKeys(bytes)
-            catalog = try JSONDecoder().decode(Catalog.self, from: bytes)
+            catalog = try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                .decode(Catalog.self, from: bytes)
             // Only this new store writes catalog bytes. Exact canonical round-trip rejects
             // duplicate keys, ignored nested fields, null/omitted aliases, and trailing data;
             // legacy import intentionally retains the deployed decoder's existing behavior.
             guard try Self.encoder().encode(catalog) == bytes else {
                 throw WorldwidePairedPhoneCatalogError.invalidCatalog
             }
-        } catch { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+        } catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge { throw error }
+        catch { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
         try validate(catalog, for: identity)
         return catalog
     }
@@ -308,8 +321,10 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
         do {
             let bytes = try Self.encoder().encode(record)
             try validateSize(bytes)
-            _ = try JSONDecoder().decode(RemotePairedDeviceRecord.self, from: bytes)
+            _ = try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                .decode(RemotePairedDeviceRecord.self, from: bytes)
         } catch let error as WorldwidePairedPhoneCatalogError { throw error }
+        catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge { throw error }
         catch { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
     }
 

@@ -1,5 +1,5 @@
 import Foundation
-import RemoteSessionCore
+@testable import RemoteSessionCore
 import Security
 import XCTest
 @testable import opensteamer
@@ -11,6 +11,174 @@ import XCTest
 /// authoritative oracles; UI text alone is never accepted as proof of a saved pair.
 @MainActor
 final class ViewerPairingPersistenceTests: XCTestCase {
+    func testActualKeychainDecodeBridgeRefusalSurvivesBothReadsWithoutChangingBytes() throws {
+        let items = makeKeychainItems(testName: #function)
+        defer { deleteKeychainItems(items) }
+        let actual = ViewerPairingKeychainStore(identityItem: items.identity,
+                                                pairedMacItem: items.pairedMac)
+        let identity = try actual.loadOrCreateViewerIdentity()
+        let issued = try makePairingRecords(viewerIdentity: identity).viewerAcceptedIssued
+        try actual.savePairedMac(issued, for: identity)
+        let before = try XCTUnwrap(KeychainStore(item: items.pairedMac).loadData())
+        let denied = ViewerPairingKeychainStore(identityItem: items.identity,
+            pairedMacItem: items.pairedMac, pairedRecordDecodeFault: UInt32(1))
+
+        XCTAssertThrowsError(try denied.loadPairedMac(for: identity)) { error in
+            XCTAssertEqual(error as? RemoteSessionCoreError, .invalidPairingCommitBridge)
+        }
+        XCTAssertThrowsError(try denied.loadNamespaceSnapshot()) { error in
+            XCTAssertEqual(error as? RemoteSessionCoreError, .invalidPairingCommitBridge)
+        }
+        let wrongRole = try RemoteDeviceIdentity.generate(role: .host)
+        XCTAssertThrowsError(try denied.loadPairedMac(for: wrongRole)) { error in
+            XCTAssertEqual(error as? ViewerPairingStoreError, .invalidViewerIdentity,
+                "The original supplied-identity guard remains before decoding")
+        }
+        XCTAssertEqual(try KeychainStore(item: items.pairedMac).loadData(), before)
+        XCTAssertEqual(try actual.loadPairedMac(for: identity), issued)
+    }
+
+    func testActualIssuedCatalogReadbackBridgeRefusalPrecedesInterruptedBootstrapFallback() async throws {
+        let viewerIdentity = try RemoteDeviceIdentity.generate(role: .viewer)
+        let hostIdentity = try RemoteDeviceIdentity.generate(role: .host)
+        let invitation = try RemoteInvitationCode.generate()
+        let oldHost = try RemotePairingParticipant(identity: hostIdentity, invitation: invitation)
+        let oldViewer = try RemotePairingParticipant(identity: viewerIdentity, invitation: invitation)
+        let oldHostAgreement = try oldHost.accept(oldViewer.hello)
+        let oldViewerAgreement = try oldViewer.accept(oldHost.hello)
+        let original = try oldViewerAgreement.makePendingRecord(
+            peerConfirmation: oldHostAgreement.makeConfirmation())
+
+        // The real catalog (not a record-returning store stub) writes and decodes actual bytes.
+        let bytes = PairingCommitDecodeCatalogBytes()
+        let compatibility = ViewerPairingStoreStub(identity: viewerIdentity)
+        let cold = ViewerPairedMacCatalogStore(compatibilityStore: compatibility, dataStore: bytes)
+        try cold.saveBootstrapPair(original, invitationCode: invitation.exportedCode,
+                                   for: viewerIdentity)
+        XCTAssertEqual(bytes.saved.count, 2,
+            "The real cold catalog writes its empty wrapper, then the seeded pending record")
+        let selector = BelugaPairingCommitDecodeSelection.reservedResultMatching(
+            role: .viewer, state: .acceptedIssued, cache: .acknowledgement)
+        let denied = ViewerPairedMacCatalogStore(compatibilityStore: compatibility, dataStore: bytes,
+                                                pairedRecordDecodeFault: selector)
+        let state = ViewerPairingState(store: denied)
+        XCTAssertEqual(state.pairingRecord, original,
+            "A nonmatching pending decode uses the actual production producer")
+        XCTAssertNil(state.storageError)
+
+        let admissionStore = WorldwideInvitationAdmissionStoreStub()
+        let admission = WorldwideInvitationAdmissionState(store: admissionStore)
+        let bootstrap = PairingBootstrapTransportStub()
+        let availability = PairedAvailabilityTransportStub()
+        var availabilityFactoryCount = 0
+        var completionCount = 0
+        var invitationDeletionCount = 0
+        let coordinator = WorldwideViewerConnectionCoordinator(
+            bootstrapClientFactory: { _, _ in bootstrap },
+            availabilityClientFactory: { _, _ in
+                availabilityFactoryCount += 1
+                return availability
+            })
+        let endpoint = try XCTUnwrap(URL(string: "wss://example.test/rendezvous"))
+        var finished = false
+        let task = Task { @MainActor in
+            defer { finished = true }
+            return try await coordinator.recoverInterruptedPairingAndPrepareMediaSession(
+                invitationCode: invitation.exportedCode, endpoint: endpoint, pairingState: state,
+                onRecoverableInvitationAdmitted: { try admission.markAdmitted(invitation.exportedCode) },
+                onAuthenticatedPairingCompleted: {
+                    completionCount += 1
+                    invitationDeletionCount += 1
+                    _ = admission.clearMarker()
+                })
+        }
+        addTeardownBlock { @MainActor in
+            coordinator.cancel(); task.cancel(); await bootstrap.close()
+            await availability.close(); _ = await task.result
+        }
+
+        // Re-enter the real authentication protocol with the same bound host identity.
+        // A fresh agreement/pair is expected; no fabricated accepted plan or synthetic error.
+        let host = try RemotePairingParticipant(identity: hostIdentity, invitation: invitation)
+        try await waitForConnect(bootstrap)
+        await bootstrap.yield(.ready(role: .viewer,
+                                     invitationExpiresAt: Date().addingTimeInterval(60)))
+        try await waitForSentPayloadCount(1, client: bootstrap)
+        let helloPayloads = await bootstrap.sentPayloadsSnapshot()
+        guard case .hello(let viewerHello) = helloPayloads[0] else {
+            throw PairingTestFailure.unexpectedPayload
+        }
+        let agreement = try host.accept(viewerHello)
+        await bootstrap.yield(.signal(.hello(host.hello)))
+        await bootstrap.yield(.signal(.confirmation(try agreement.makeConfirmation())))
+        try await waitForSentPayloadCount(2, client: bootstrap)
+        let confirmationPayloads = await bootstrap.sentPayloadsSnapshot()
+        guard case .confirmation(let viewerConfirmation) = confirmationPayloads[1] else {
+            throw PairingTestFailure.unexpectedPayload
+        }
+        let freshlyPending = try XCTUnwrap(state.pairingRecord)
+        XCTAssertEqual(freshlyPending.pairingState, .pending)
+        var hostRecord = try agreement.makePendingRecord(peerConfirmation: viewerConfirmation)
+        let proposal = try hostRecord.prepareProposal(using: hostIdentity)
+        await bootstrap.yield(.signal(.commit(proposal)))
+
+        // Bound the probe even if a regression wrongly begins ordinary durable fallback.
+        for _ in 0..<500 {
+            if finished || availabilityFactoryCount != 0 { break }
+            try await Task<Never, Never>.sleep(nanoseconds: 2_000_000)
+        }
+        if !finished {
+            coordinator.cancel(); task.cancel(); await availability.close()
+        }
+        let result = await task.result
+        guard case .failure(let error) = result else {
+            return XCTFail("The distinct bridge refusal must abort the recovery attempt")
+        }
+        XCTAssertEqual(error as? RemoteSessionCoreError, .invalidPairingCommitBridge)
+        XCTAssertEqual(availabilityFactoryCount, 0,
+            "Bridge refusal must not be laundered into durable fallback")
+        let bootstrapConnects = await bootstrap.connectCallCount()
+        let bootstrapCloses = await bootstrap.closeCallCount()
+        let bootstrapPayloads = await bootstrap.sentPayloadsSnapshot()
+        let availabilityPayloads = await availability.sentPayloadsSnapshot()
+        XCTAssertEqual(bootstrapConnects, 1)
+        XCTAssertEqual(bootstrapCloses, 1)
+        XCTAssertEqual(bootstrapPayloads, confirmationPayloads,
+            "Only hello and viewer confirmation may have been sent, never the issued ACK")
+        XCTAssertTrue(availabilityPayloads.isEmpty)
+        XCTAssertEqual(admissionStore.saveCount, 0)
+        XCTAssertEqual(admissionStore.deleteCount, 0)
+        XCTAssertEqual(completionCount, 0)
+        XCTAssertEqual(invitationDeletionCount, 0)
+        XCTAssertEqual(compatibility.saveCount, 0)
+        XCTAssertEqual(compatibility.deleteCount, 0)
+        XCTAssertEqual(bytes.saved.count, 4,
+            "Empty catalog, seed, fresh pending and issued are the only actual catalog writes")
+        XCTAssertEqual(state.pairingRecord, freshlyPending,
+            "A failed readback must not publish the issued successor")
+
+        // The issued write really happened before the denied readback. Cold recovery with
+        // absent context must retain its opaque ACK, not claim rollback to the old pending bytes.
+        let durableBytes = try XCTUnwrap(bytes.data)
+        let durable = try XCTUnwrap(cold.loadPairedMac(for: viewerIdentity))
+        XCTAssertEqual(durable.pairingState, .acceptedIssued)
+        XCTAssertEqual(durable.pairID, freshlyPending.pairID)
+        XCTAssertEqual(durable.commitID, freshlyPending.commitID)
+        XCTAssertEqual(durable.nextOutboundReconnectSequence,
+                       freshlyPending.nextOutboundReconnectSequence)
+        XCTAssertEqual(durable.highestAcceptedReconnectSequence,
+                       freshlyPending.highestAcceptedReconnectSequence)
+        guard case .resend(let acknowledgement) = durable.recoveryAction else {
+            return XCTFail("A cold actual decode must expose the already-durable ACK")
+        }
+        XCTAssertEqual(acknowledgement.phase, .acknowledgement)
+        try hostRecord.acceptAcknowledgement(acknowledgement)
+        XCTAssertEqual(hostRecord.pairingState, .acceptedReceived,
+            "The genuine peer must authenticate the exact cold-read opaque ACK")
+        XCTAssertEqual(bytes.data, durableBytes)
+        XCTAssertEqual(bytes.saved.count, 4, "Cold read is not a rewrite, resend or reset")
+    }
+
     func testViewerIdentityAndPairedMacSurviveStateReconstruction() throws {
         let items = makeKeychainItems(testName: #function)
         let firstStore = ViewerPairingKeychainStore(
@@ -3456,4 +3624,12 @@ private enum PairingTestFailure: Error {
     case load
     case timeout
     case unexpectedPayload
+}
+
+/// Test backend records actual catalog bytes; it never invents errors or decoded records.
+private final class PairingCommitDecodeCatalogBytes: ViewerPairedMacCatalogDataStoring {
+    private(set) var data: Data?
+    private(set) var saved: [Data] = []
+    func loadData() throws -> Data? { data }
+    func saveData(_ bytes: Data) throws { data = bytes; saved.append(bytes) }
 }

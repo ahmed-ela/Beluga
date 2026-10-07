@@ -26,8 +26,8 @@ module MicrophoneRegressionGate
   BELUGA_CORE_CRATE = 'shared/Rust/BelugaCore'.freeze
   BELUGA_CORE_ARTIFACT = 'shared/Vendor/BelugaCore.xcframework'.freeze
   BELUGA_CORE_SOURCE_FILES = %w[Cargo.toml Cargo.lock rust-toolchain.toml .gitignore README.md THIRD_PARTY_NOTICES.html
-                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs src/pairing_catalog_checkpoint.rs src/reconnect_counters.rs include/beluga_core.h include/module.modulemap
-                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/pairing_catalog_checkpoint.rs tests/reconnect_counters.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
+                               src/lib.rs src/host_lifecycle.rs src/handoff_transactions.rs src/handoff_offers.rs src/youtube_handoff_operation.rs src/invitation_acceptance.rs src/replay_policy.rs src/pairing_catalog_checkpoint.rs src/reconnect_counters.rs src/pairing_commit.rs include/beluga_core.h include/module.modulemap
+                               tests/policy.rs tests/host_lifecycle.rs tests/handoff_transactions.rs tests/handoff_offers.rs tests/youtube_handoff_operation.rs tests/invitation_acceptance.rs tests/replay_policy.rs tests/pairing_catalog_checkpoint.rs tests/reconnect_counters.rs tests/pairing_commit.rs tests/c_abi_smoke.c tests/swift_import_smoke.swift
                                scripts/artifact_support.rb scripts/build-xcframework.rb scripts/verify-xcframework.rb
                                scripts/mutation-tests.rb].freeze
   BELUGA_CORE_FRAMEWORK = 'BelugaCore.framework'.freeze
@@ -68,13 +68,15 @@ module MicrophoneRegressionGate
   }.freeze
   PAIRING_CLASSES = PAIRING_FILES.keys.freeze
   PAIRING_SOURCE_SHA256 = {
-    'ViewerPairingPersistenceTests' => 'cd63bdfff6237254a8a725e72a2671b06f4e0fe43a5335b6df53b80187521b6c',
+    'ViewerPairingPersistenceTests' => '2ee5308801720111b504549146c652057583af8ac9601335efa8e63ea837e724',
     'ViewerPairedMacCatalogTests' => '2ed701ff30341c49c279681f16d944d79635135b30c76cf9f5ca6b23df29f63e',
     'BelugaRustInvitationAcceptanceActionTests' => 'ff5c34c02c5210afaa4ca076a3c86a6b335d2c92418c2719493a5e7941c4e176',
     'BelugaRustInvitationAcceptanceTests' => '4e71293a0f04075eee0d8c354fb365c2a8960f13c70331299d8e4433f95402e0',
   }.freeze
   PAIRING_BY_CLASS = {
     'ViewerPairingPersistenceTests' => %w[
+      testActualKeychainDecodeBridgeRefusalSurvivesBothReadsWithoutChangingBytes
+      testActualIssuedCatalogReadbackBridgeRefusalPrecedesInterruptedBootstrapFallback
       testAbsoluteDeadlineClosesAHealthySocketThatWaitsForeverForTheMac
       testAcceptedIssuedRecordSurvivesRelaunchForCommitRecovery
       testActiveViewerResendsActivationProofBeforeReconnectRequest
@@ -320,6 +322,8 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwidePairedPhoneCatalogTests
     CaptureServerTests.WorldwideHostCoordinatorTests
     CaptureServerTests.WorldwidePreparedMediaMenuIntegrationTests
+    CaptureServerTests.WorldwideHostPairingCommitPersistenceTests
+    CaptureServerTests.WorldwidePairingCommitDecodeFaultTests
     CaptureServerTests.WorldwideHostLifecycleTests
     CaptureServerTests.WorldwidePairingCatalogBootstrapTests
     CaptureServerTests.BelugaRustPairingCatalogCheckpointTests
@@ -358,6 +362,14 @@ module MicrophoneRegressionGate
     CaptureServerTests.WorldwideHostCoordinatorTests/testSelectionWaitsForExactOldCloseAndRechecksOwnerBeforeMutation
     CaptureServerTests.WorldwideHostCoordinatorTests/testActivePeerAndUnvalidatedSocketCannotAuthorizeCatalogActions
     CaptureServerTests.WorldwideHostCoordinatorTests/testStopDuringRecoverySendCannotPersistLateCompletionSent
+    CaptureServerTests.WorldwideHostPairingCommitPersistenceTests/testAcknowledgementFirstSaveFailureBlocksCompletionAndColdRetryUsesStoredProposal
+    CaptureServerTests.WorldwideHostPairingCommitPersistenceTests/testAcknowledgementFirstWriteThenThrowKeepsReceivedWithoutCacheForColdRecovery
+    CaptureServerTests.WorldwideHostPairingCommitPersistenceTests/testAcknowledgementSecondSaveFailureKeepsReceivedWithoutCacheForColdRecovery
+    CaptureServerTests.WorldwideHostPairingCommitPersistenceTests/testAcknowledgementSecondWriteThenThrowKeepsExactCachedCompletionWithoutSending
+    CaptureServerTests.WorldwideHostPairingCommitPersistenceTests/testCompletionSendRequiresBothDurableAcknowledgementCutsAndNeverActivatesHost
+    CaptureServerTests.WorldwidePairingCommitDecodeFaultTests/testLegacyRecordDecodeBridgeRefusalPreservesExactBytesWithoutMigrationOrDeletion
+    CaptureServerTests.WorldwidePairingCommitDecodeFaultTests/testCatalogLoadAndCheckpointReadbackBridgeRefusalNeverResetNamespaceOrWrite
+    CaptureServerTests.WorldwidePairingCommitDecodeFaultTests/testCandidateRecordRoundtripBridgeRefusalPreservesOriginalCatalogAndIdentityPriority
     CaptureServerTests.WorldwideHostLifecycleTests/testMediaDepartureReturnsPairedHostToAvailability
     CaptureServerTests.WorldwideHostLifecycleTests/testInvitationMustCommitBeforeAvailabilityCanAcceptViewer
     CaptureServerTests.WorldwideHostLifecycleTests/testBootstrapLossAfterDurableRecordMovesToAvailabilityRecovery
@@ -578,6 +590,26 @@ module MicrophoneRegressionGate
     reconnect_candidate_is_committed_only_after_modeled_constructor_success
     reconnect_bounded_effect_success_and_failure_traces_match_original
     reconnect_raw_value_copies_remain_independent
+    pairing_commit_exact_copied_layout_and_export
+    pairing_commit_all_720_syntactic_cases_match_frozen_original
+    pairing_commit_recovery_getter_is_not_global_stored_shape_validation
+    pairing_commit_proposal_preserves_cache_or_requires_original_constructor
+    pairing_commit_ack_cached_replay_still_authenticates_and_does_not_tighten_cache
+    pairing_commit_host_ack_replay_reauthenticates_and_preserves_exact_cache
+    pairing_commit_active_host_completion_is_ephemeral_not_reopened
+    pairing_commit_send_success_never_activates_or_retires_completion
+    pairing_commit_active_viewer_authenticates_before_missing_cache_refusal
+    pairing_commit_issued_viewer_requires_completion_auth_and_activation_constructor
+    pairing_commit_activation_ack_authenticates_active_replay_and_retires_cache
+    pairing_commit_role_and_phase_guards_precede_inbound_authentication
+    pairing_commit_stored_shape_exactly_matches_original_eight_allowed_shapes
+    pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot
+    pairing_commit_unused_uuid_fact_is_not_an_alternative_authorization
+    pairing_commit_proposals_commit_only_after_modeled_authentication_and_constructor
+    pairing_commit_seeded_bounded_histories_and_value_copies_match_reference
+    pairing_commit_all_rejected_plans_preserve_whole_candidate_without_actions
+    pairing_commit_every_ready_plan_has_deterministic_modeled_failure_and_cache_custody
+    pairing_commit_critical_modeled_error_priority_uses_literal_original_traces
   ].freeze
   BELUGA_CORE_MUTANT_TESTS = {
     'visibility-coupled-to-target' => 'stable_visibility_survives_missing_target_and_session_churn',
@@ -656,7 +688,27 @@ module MicrophoneRegressionGate
     'reconnect-state-reserved-ignored' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
     'reconnect-event-reserved-ignored' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
     'reconnect-unknown-opcode-admitted' => 'reconnect_unknown_abi_opcode_and_reserved_fields_fail_closed',
-    'reconnect-unused-outbound-sequence-admitted' => 'reconnect_outbound_unused_request_sequence_is_rejected'
+    'reconnect-unused-outbound-sequence-admitted' => 'reconnect_outbound_unused_request_sequence_is_rejected',
+    'pairing-commit-issued-cached-ack-skips-auth' => 'pairing_commit_ack_cached_replay_still_authenticates_and_does_not_tighten_cache',
+    'pairing-commit-host-ack-replay-drops-cache' => 'pairing_commit_host_ack_replay_reauthenticates_and_preserves_exact_cache',
+    'pairing-commit-active-completion-reopens-host' => 'pairing_commit_active_host_completion_is_ephemeral_not_reopened',
+    'pairing-commit-completion-send-activates-host' => 'pairing_commit_send_success_never_activates_or_retires_completion',
+    'pairing-commit-active-completion-refusal-before-auth' => 'pairing_commit_active_viewer_authenticates_before_missing_cache_refusal',
+    'pairing-commit-active-cached-completion-skips-auth' => 'pairing_commit_active_viewer_authenticates_before_missing_cache_refusal',
+    'pairing-commit-activation-replay-skips-auth' => 'pairing_commit_activation_ack_authenticates_active_replay_and_retires_cache',
+    'pairing-commit-activation-keeps-obsolete-cache' => 'pairing_commit_activation_ack_authenticates_active_replay_and_retires_cache',
+    'pairing-commit-issued-viewer-forgets-activation-constructor' => 'pairing_commit_issued_viewer_requires_completion_auth_and_activation_constructor',
+    'pairing-commit-pending-ack-forgets-constructor' => 'pairing_commit_ack_cached_replay_still_authenticates_and_does_not_tighten_cache',
+    'pairing-commit-proposal-retains-empty-cache' => 'pairing_commit_proposal_preserves_cache_or_requires_original_constructor',
+    'pairing-commit-recovery-tighter-than-original' => 'pairing_commit_recovery_getter_is_not_global_stored_shape_validation',
+    'pairing-commit-active-stored-shape-allows-cache' => 'pairing_commit_stored_shape_exactly_matches_original_eight_allowed_shapes',
+    'pairing-commit-mark-uuid-mismatch-admitted' => 'pairing_commit_send_success_never_activates_or_retires_completion',
+    'pairing-commit-outer-abi-ignored' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot',
+    'pairing-commit-state-reserved-ignored' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot',
+    'pairing-commit-event-reserved-ignored' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot',
+    'pairing-commit-unused-uuid-fact-admitted' => 'pairing_commit_unused_uuid_fact_is_not_an_alternative_authorization',
+    'pairing-commit-host-ack-phase-guard-removed' => 'pairing_commit_role_and_phase_guards_precede_inbound_authentication',
+    'pairing-commit-invalid-role-canonicalized' => 'pairing_commit_invalid_abi_domains_and_reserved_fields_preserve_raw_snapshot'
   }.freeze
   BELUGA_CORE_MUTANTS = BELUGA_CORE_MUTANT_TESTS.keys.freeze
   BELUGA_CORE_RUNTIME_MARKERS = [
@@ -669,6 +721,7 @@ module MicrophoneRegressionGate
     'BelugaCore C signaling replay ABI PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
     'BelugaCore C catalog checkpoint ABI PASS: exact layouts, candidate custody, terminal revoke and full readback',
     'BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
+    'BelugaCore C pairing commit ABI PASS: exact layouts, phase plans, auth ordering and unchanged refusal',
     'BelugaCore Swift import/link PASS: 4096 flags and unknown ABI',
     'BelugaCore Swift lifecycle import/link PASS: reconnect ownership and invalid ABI',
     'BelugaCore Swift transaction import/link PASS: exact identity, cached reply, revocation and unknown outcome',
@@ -677,7 +730,8 @@ module MicrophoneRegressionGate
     'BelugaCore Swift invitation acceptance import/link PASS: exact layouts, original guard order and one-use callback outcomes',
     'BelugaCore Swift signaling replay import/link PASS: exact layouts, zero/MAX, 63/64 window and unchanged rejection',
     'BelugaCore Swift catalog checkpoint import/link PASS: exact layouts, candidate custody, terminal revoke and full readback',
-    'BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal'
+    'BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal',
+    'BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal'
   ].freeze
   GATE_PINNED = %w[
     test_beluga_core_has_independent_discovered_non_skipping_coverage
@@ -738,6 +792,17 @@ module MicrophoneRegressionGate
     test_shared_reconnect_counters_suite_boundaries_counts_order_and_concurrency_are_exact
     test_shared_reconnect_counters_phase_and_coverage_cannot_be_removed_or_rehashed
     test_shared_reconnect_counters_actual_suite_execution_cannot_be_borrowed
+    test_beluga_core_pairing_commit_source_and_named_cases_are_mandatory
+    test_beluga_core_pairing_commit_link_contract_cannot_be_borrowed
+    test_beluga_core_pairing_commit_each_compiled_assertion_mutant_is_mandatory
+    test_shared_pairing_commit_source_discovery_and_every_critical_case_are_exact
+    test_shared_pairing_commit_named_results_reject_missing_duplicate_skip_failure_and_wrong_suite
+    test_shared_pairing_commit_suite_boundaries_counts_order_and_concurrency_are_exact
+    test_shared_pairing_commit_phase_and_coverage_cannot_be_removed_or_rehashed
+    test_shared_pairing_commit_actual_suite_execution_cannot_be_borrowed
+    test_pairing_commit_concrete_native_reference_and_caller_sources_are_mandatory
+    test_pairing_commit_enrollment_preserves_exact_previous_prefixes
+    test_pairing_commit_mac_ack_storage_and_viewer_decode_composition_are_mandatory
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -851,6 +916,60 @@ module MicrophoneRegressionGate
     redactedErrorsAndRecordNeverExposeCountersOrCredentials
   ].map { |name| SHARED_RECONNECT_COUNTER_SUITE + '/' + name + '()' }.freeze
 
+  SHARED_PAIRING_COMMIT_PHASE = 'shared-pairing-commit-tests'.freeze
+  SHARED_PAIRING_COMMIT_SUITE = 'RemoteSessionCoreTests.BelugaRustPairingCommitTests'.freeze
+  SHARED_PAIRING_COMMIT_FILE = 'shared/Tests/RemoteSessionCoreTests/BelugaRustPairingCommitTests.swift'.freeze
+  SHARED_PAIRING_COMMIT_SOURCE_SHA256 = {
+    'macOS/Sources/CaptureServer/WorldwideHostCoordinator.swift' => 'ead928d68dce9a0eed5060ebe635b840c5d510a6854aae7553f4f6d14db4e5cf',
+    'macOS/Sources/CaptureServer/WorldwidePairedPhoneCatalogStore.swift' => '94b2cc4456bb47b0d52d705b5a01dd9cf6d6c5b915569650471cc4e0254402f7',
+    'macOS/Sources/CaptureServer/WorldwidePairingStore.swift' => 'a00a3c47ecba1c7021d136a9c9e2d93d7c1d0ed10f94e65fc8a4faa8c07a3914',
+    'iOS/opensteamer/Sources/Security/ViewerPairingStore.swift' => 'e365d5907849d5aac26dbc8db72e1df2b8c72709b5fdb5d0f81066b194387c2a',
+    'iOS/opensteamer/Sources/Security/ViewerPairedMacCatalogStore.swift' => '81793eb2ff472d05a7f8d0409ded43cd0968ac2e731c27bff33ef75e3d2b9bb1',
+    'iOS/opensteamer/Sources/ViewModels/WorldwideViewerConnectionCoordinator.swift' => '15bbb2ed7c7645417f6404cf0a70550c8c5d76241ef787b6a3ea13813d3151cc',
+    'shared/Sources/RemoteSessionCore/BelugaRustPairingCommitBoundary.swift' => 'd48f62d623cdbd157c3aa156326bc5751bea2d28618f35ce044290a16412f8b4',
+    'shared/Sources/RemoteSessionCore/BelugaPairingCommitFaultComposition.swift' => '3f11d44be35930f1a2cb36b2601cf39a7e4be6ecc056500f3e5199ec8710ac52',
+    'shared/Sources/RemoteSessionCore/RemotePairedDevice.swift' => '45ce3ab193aaf69a993fce92b3f2a729bb1b62286046a63d7e5016f7c48b16af',
+    'shared/Sources/RemoteSessionCore/RemoteSessionCoreError.swift' => '232e3bc453d40e57dfd14bc21dd51f64c40f427f6eed34ac56d77809a5ea12d8',
+    'shared/Tests/RemoteSessionCoreTests/BelugaRustPairingCommitTests.swift' => '56018df935a12320ed1e22735cc0c659567577258fbc15f4359f5304831549c0',
+    'shared/Tests/RemoteSessionCoreTests/BelugaRustPairingCommitReference.swift' => '7232aa39bcc94fed5211483a83b9e41e7461466626d89e9f5b1d7b39c11585c3'
+  }.freeze
+  # Concrete Mac composition fixtures are separately bound, not extra native/caller companions.
+  SHARED_PAIRING_COMMIT_MAC_SOURCE_SHA256 = {
+    'macOS/Tests/CaptureServerTests/WorldwideHostPairingCommitPersistenceTests.swift' => '074551166189d0848189c685b6e3518aed32cdacf1ea4ebbf4dbc41c34f0401d',
+    'macOS/Tests/CaptureServerTests/WorldwidePairingCommitDecodeFaultTests.swift' => 'bd1732268e43e2b7d75de93da4cfc96beefd8cb6f57161ef21009db2b6e20526'
+  }.freeze
+  SHARED_PAIRING_COMMIT_PINNED = %w[
+    actualCopiedLayoutsAndAll720PlansMatchFrozenOriginal
+    genuineSevenTransitionsAndEveryCachedReturnRetainWholeCommit
+    genuineEveryCommitOperationPreservesAllOtherFieldsAndNontrivialExactCounters
+    coldValueRoundTripsKeepBothHostAcknowledgementCutsAndSendNonactivation
+    identityMismatchWinsBeforePolicyAndProducerForEveryIdentityTakingMethod
+    originalRoleAndPhaseRefusalPrecedesBadInboundAuthentication
+    cachedIssuedAcknowledgementAuthenticatesActualNewProposalBeforeExactReturn
+    hostAcknowledgementReplayReauthenticatesAndPreservesKnownUnusualCache
+    activeViewerAuthenticatesCompletionBeforeMissingOrWrongCacheRefusal
+    activeHostCompletionIsGenuineEphemeralAndDoesNotReopenRecovery
+    markCompletionSentRequiresExactNativeUUIDAndNeverActivatesOrRetires
+    genuineAuthenticationFailurePreservesWholeRecordAtAllInboundOperations
+    knownWeirdTypedStatesKeepOriginalGetterWithoutGlobalStoredShapeGate
+    pendingViewerCanReplaceKnownCacheOnlyAfterActualProposalAuthentication
+    issuedViewerReplaysUnusualKnownCacheAfterAuthenticatingActualProposal
+    storedShapeValidationRemainsSeparateAndVerifiesActualOpaqueCacheProof
+    malformedGetterIsExplicitInvalidBridgeNeverLegitimateNoneOrRecordMutation
+    malformedMintOutputCannotCreateOrCommitARecoveryObject
+    malformedAuthPlansCannotBypassActualPeerProofOrReplaceCachedValue
+    allSevenOperationsRejectMalformedCopiedOutputWithoutWholeRecordMutation
+    copiedOutputCannotConvertPostAuthRefusalIntoPrematureRefusalOrSuccess
+    valueCopiesRemainIndependentWithNoSharedProducerOrNativeCommitLedger
+    producerIsCalledExactlyOnceWithNoPostEffectAcknowledgement
+    invalidAbiClosedDomainsReservedAndUnusedFactsRefuseExactRawSnapshot
+    storedShapeBridgeFailureRemainsDistinctAndCannotAlterTrustworthyBytes
+    decodedFaultContextIsClosedAndOriginalImmutableGuardWins
+    absentAndNonmatchingDecodeUseActualPlanAndRetainNoContext
+    fourGenuineMintSitesPreserveOriginalInjectedErrorAndWholePredecessor
+    cachedReturnsActualAuthenticationAndRefusalsNeverInvokeConstructionProbe
+  ].map { |name| SHARED_PAIRING_COMMIT_SUITE + '/' + name + '()' }.freeze
+
   SHARED_HANDOFF_CLASSES = %w[WebRTCTransportTests.MediaHandoffProtocolTests
                             WebRTCTransportTests.MediaHandoffTransactionTests
                             WebRTCTransportTests.RemoteMediaControlsProtocolTests
@@ -917,7 +1036,7 @@ module MicrophoneRegressionGate
     WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryAcceptsAllLegitimateCustodyTransitions
     WebRTCTransportTests.BelugaRustHandoffOffersTests/testCopiedOfferBoundaryRejectsForgedMintConsumptionRetirementAndCounterReset
   ].freeze
-  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests shared-replay-native-tests shared-replay-authentication-tests shared-replay-durable-tests shared-reconnect-counter-tests shared-handoff-tests simulator-tests simulator-summary simulator-results simulator-signature
+  PHASES = %w[gate-self-tests simulator-signing-self-tests release-hook-self-tests host-release-hook-self-tests mac-producer-contract-tests product-identity product-identity-mutations rust-artifact-validation beluga-core-artifact-validation beluga-core-link beluga-core-mutations mac-discovery mac-tests shared-signaling-tests shared-replay-native-tests shared-replay-authentication-tests shared-replay-durable-tests shared-reconnect-counter-tests shared-pairing-commit-tests shared-handoff-tests simulator-tests simulator-summary simulator-results simulator-signature
               simulator-entitlements pairing-inert-build pairing-tests pairing-summary pairing-results pairing-signature pairing-entitlements rust-discovery rust-tests beluga-core-discovery beluga-core-tests driver-tests driver-sanitizers driver-diagnostic-reader driver-build-1
               driver-build-2 driver-verifier driver-load driver-malformed-bundles].freeze
   PROTECTED_ROOTS = ['/Applications', '/Library', '/System', '/Users/ahmed/Library/Application Support/opensteamer'].freeze
@@ -1172,6 +1291,46 @@ module MicrophoneRegressionGate
     methods.sort
   end
 
+  def self.validate_shared_pairing_commit_sources(root)
+    SHARED_PAIRING_COMMIT_SOURCE_SHA256.merge(SHARED_PAIRING_COMMIT_MAC_SOURCE_SHA256).each do |relative, expected|
+      path = File.join(root, relative)
+      require!(File.exist?(path), 'pairing commit source companion is missing: ' + relative)
+      stat = regular!(path)
+      require!(File.realpath(path) == path && stat.size <= 2 * 1024 * 1024 &&
+               sha(path) == expected, 'pairing commit reviewed native/reference/caller source changed: ' + relative)
+      utf8_text(File.binread(path), 'pairing commit source companion')
+    end
+    nil
+  end
+
+  def self.shared_pairing_commit_source_inventory(root)
+    path = File.join(root, SHARED_PAIRING_COMMIT_FILE)
+    regular!(path)
+    source = utf8_text(File.binread(path), 'shared pairing commit source')
+    name = SHARED_PAIRING_COMMIT_SUITE.split('.').last
+    methods = source.scan(/^[ \t]*@Test(?:\(.*\))?[ \t]+func (\w+)[ \t]*\(/).flatten
+    ids = methods.map { |method| SHARED_PAIRING_COMMIT_SUITE + '/' + method + '()' }
+    require!(source.bytesize <= 2 * 1024 * 1024 &&
+             source.scan(/^\s*struct #{Regexp.escape(name)}\s*\{/).length == 1 &&
+             (1..128).cover?(ids.length) && ids.uniq.length == ids.length &&
+             source.scan(/^\s*@Test\b/).length == ids.length &&
+             ids.sort == SHARED_PAIRING_COMMIT_PINNED.sort,
+             'shared pairing commit source inventory is incomplete, malformed or duplicated')
+    validate_shared_pairing_commit_sources(root)
+    ids.sort
+  end
+
+  def self.shared_pairing_commit_inventory(root, text)
+    expected = shared_pairing_commit_source_inventory(root)
+    suite = SHARED_PAIRING_COMMIT_SUITE
+    methods = utf8_text(text, 'shared pairing commit discovery').lines.map(&:strip).select { |line| line.start_with?(suite + '/') }
+    require!(methods.uniq.length == methods.length &&
+             methods.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/\w+\(\)\z/) } &&
+             methods.sort == expected,
+             'shared pairing commit discovery differs from exact source inventory')
+    methods.sort
+  end
+
   def self.shared_handoff_inventory(text)
     methods = utf8_text(text, 'shared handoff discovery').lines.map(&:strip).select do |line|
       SHARED_HANDOFF_CLASSES.any? { |name| line.start_with?(name + '/') }
@@ -1333,6 +1492,56 @@ module MicrophoneRegressionGate
     expected.sort
   end
 
+  def self.validate_shared_pairing_commit(text, expected)
+    suite = SHARED_PAIRING_COMMIT_SUITE
+    name = suite.split('.').last
+    text = utf8_text(text, 'shared pairing commit result')
+    require!(text.bytesize <= 2 * 1024 * 1024 && (1..128).cover?(expected.length) &&
+             expected.uniq.length == expected.length &&
+             expected.sort == SHARED_PAIRING_COMMIT_PINNED.sort &&
+             expected.all? { |id| id.match?(/\A#{Regexp.escape(suite)}\/\w+\(\)\z/) },
+             'shared pairing commit result bounds or expected inventory are invalid')
+    lines = text.lines.map(&:chomp)
+    require!(lines.length <= 4096, 'shared pairing commit result exceeds line bound')
+    run_starts = []
+    suite_starts = []
+    suite_passes = []
+    footers = []
+    starts = {}
+    passes = {}
+    lines.each_with_index do |line, index|
+      if line == '◇ Test run started.'
+        run_starts << index
+      elsif line == "◇ Suite #{name} started."
+        suite_starts << index
+      elsif line.match?(/\A✔ Suite #{Regexp.escape(name)} passed after \d+(?:\.\d+)? seconds\.\z/)
+        suite_passes << index
+      elsif (match = /\A✔ Test run with (\d+) tests in (\d+) suite passed after \d+(?:\.\d+)? seconds\.\z/.match(line))
+        footers << [index, match[1].to_i, match[2].to_i]
+      elsif (match = /\A◇ Test (\w+\(\)) started\.\z/.match(line))
+        id = suite + '/' + match[1]
+        require!(expected.include?(id) && !starts.key?(id), 'shared pairing commit start is unexpected or duplicated')
+        starts[id] = index
+      elsif (match = /\A✔ Test (\w+\(\)) passed after \d+(?:\.\d+)? seconds\.\z/.match(line))
+        id = suite + '/' + match[1]
+        require!(expected.include?(id) && starts.key?(id) && starts[id] < index && !passes.key?(id),
+                 'shared pairing commit pass is unexpected, duplicated or lacks a matching start')
+        passes[id] = index
+      else
+        require!(!line.match?(/\A(?:\S+\s+)?(?:Test|Suite)\b/),
+                 'shared pairing commit result is malformed, failed, skipped or belongs to another suite')
+      end
+    end
+    require!(run_starts.length == 1 && suite_starts.length == 1 && suite_passes.length == 1 && footers.length == 1 &&
+             run_starts.first < suite_starts.first && suite_starts.first < suite_passes.first &&
+             suite_passes.first < footers.first[0] && footers.first.drop(1) == [expected.length, 1],
+             'shared pairing commit suite/run footer is missing, duplicated, out of order or disagrees')
+    require!(starts.keys.sort == expected.sort && passes.keys.sort == expected.sort &&
+             (starts.values + passes.values).all? { |index| index > suite_starts.first && index < suite_passes.first },
+             'shared pairing commit cases are missing or outside the exact suite')
+    expected.sort
+  end
+
   def self.rust_inventory(text)
     methods = text.lines.map { |line| /\A([\w:]+): test\s*\z/.match(line)&.[](1) }.compact
     require!(!methods.empty? && methods.uniq.length == methods.length, 'empty or duplicate Rust discovery')
@@ -1397,7 +1606,7 @@ module MicrophoneRegressionGate
   # Pairing owns a distinct zero-skip inventory. Never broaden the ordinary
   # app-root Simulator suite or borrow its physical exclusions.
   def self.pairing_inventory(root)
-    require!(PAIRING_PINNED.length == 106 && PAIRING_PINNED.uniq.length == 106 &&
+    require!(PAIRING_PINNED.length == 108 && PAIRING_PINNED.uniq.length == 108 &&
              PAIRING_FILES.keys == PAIRING_BY_CLASS.keys && PAIRING_FILES.keys == PAIRING_SOURCE_SHA256.keys,
              'pairing reviewed inventory is malformed')
     observed = []
@@ -1417,10 +1626,10 @@ module MicrophoneRegressionGate
   end
 
   def self.validate_pairing(summary, results, expected, simulator)
-    require!(expected == PAIRING_PINNED && expected.length == 106 && expected.uniq.length == 106, 'pairing expected inventory changed')
+    require!(expected == PAIRING_PINNED && expected.length == 108 && expected.uniq.length == 108, 'pairing expected inventory changed')
     require!(summary.is_a?(Hash) && summary['result'] == 'Passed' &&
              summary.values_at('totalTestCount', 'passedTests', 'skippedTests', 'failedTests', 'expectedFailures', 'testFailures') ==
-             [106, 106, 0, 0, 0, []], 'pairing summary requires exactly 106 passes and zero skips/failures')
+             [108, 108, 0, 0, 0, []], 'pairing summary requires exactly 108 passes and zero skips/failures')
     configurations = summary['devicesAndConfigurations']
     require!(configurations.is_a?(Array) && configurations.length == 1 && configurations.first.is_a?(Hash), 'pairing requires one configuration')
     configuration = configurations.first
@@ -1446,7 +1655,7 @@ module MicrophoneRegressionGate
       require!(expected.include?(id) && node['result'] == 'Passed', 'pairing unexpected, failed or skipped case: ' + id)
       id
     end
-    require!(observed.length == 106 && observed.uniq.length == 106 && observed.sort == expected,
+    require!(observed.length == 108 && observed.uniq.length == 108 && observed.sort == expected,
              'pairing cases are absent, duplicated, extra or unexecuted')
     observed.sort
   end
@@ -1697,6 +1906,7 @@ module MicrophoneRegressionGate
       'mac-tests' => swift_base + ['--skip-build', '--filter', filter, '--xunit-output', File.join(directory, 'mac-results.xml')],
       'shared-signaling-tests' => swift_base + ['--skip-build', '--disable-xctest', '--filter', SHARED_SIGNALING_FILTER],
       SHARED_RECONNECT_COUNTER_PHASE => swift_base + ['--skip-build', '--disable-xctest', '--filter', '^' + Regexp.escape(SHARED_RECONNECT_COUNTER_SUITE) + '/'],
+      SHARED_PAIRING_COMMIT_PHASE => swift_base + ['--skip-build', '--disable-xctest', '--filter', '^' + Regexp.escape(SHARED_PAIRING_COMMIT_SUITE) + '/'],
       'shared-handoff-tests' => swift_base + ['--skip-build', '--filter', handoff_filter],
       'simulator-tests' => sim,
       'simulator-summary' => ['/usr/bin/xcrun', 'xcresulttool', 'get', 'test-results', 'summary', '--path', result, '--compact'],
@@ -2466,6 +2676,7 @@ module MicrophoneRegressionGate
       shared_methods = MicrophoneRegressionGate.shared_signaling_inventory(mac_discovery)
       replay_methods = MicrophoneRegressionGate.shared_replay_inventory(@root, mac_discovery)
       reconnect_methods = MicrophoneRegressionGate.shared_reconnect_counter_inventory(@root, mac_discovery)
+      commit_methods = MicrophoneRegressionGate.shared_pairing_commit_inventory(@root, mac_discovery)
       handoff_methods = MicrophoneRegressionGate.shared_handoff_inventory(mac_discovery)
       filter = '^(?:' + mac_methods.map { |id| Regexp.escape(id) }.join('|') + ')$'
       mac_xml = File.join(@evidence, 'mac-results.xml')
@@ -2484,6 +2695,8 @@ module MicrophoneRegressionGate
       end
       reconnect_log = phase(SHARED_RECONNECT_COUNTER_PHASE, swift_base + ['--skip-build', '--disable-xctest', '--filter', '^' + Regexp.escape(SHARED_RECONNECT_COUNTER_SUITE) + '/'])
       MicrophoneRegressionGate.validate_shared_reconnect_counter(reconnect_log, reconnect_methods)
+      commit_log = phase(SHARED_PAIRING_COMMIT_PHASE, swift_base + ['--skip-build', '--disable-xctest', '--filter', '^' + Regexp.escape(SHARED_PAIRING_COMMIT_SUITE) + '/'])
+      MicrophoneRegressionGate.validate_shared_pairing_commit(commit_log, commit_methods)
       handoff_filter = '^(?:' + handoff_methods.map { |id| Regexp.escape(id) }.join('|') + ')$'
       handoff_log = phase('shared-handoff-tests', swift_base + ['--skip-build', '--filter', handoff_filter])
       MicrophoneRegressionGate.validate_mac_log(handoff_log, handoff_methods)
@@ -2549,7 +2762,7 @@ module MicrophoneRegressionGate
                   'invocation' => { 'developer_directory' => developer, 'scratch' => scratch, 'swift_scratch' => @swift_scratch, 'timeout_seconds' => @options.fetch(:timeout) },
                   'mac_format' => mac_format, 'phases' => @phases, 'artifacts' => artifacts, 'pairing_inert_root' => @pairing_contract, 'pairing_processes' => @pairing_processes,
                   'coverage' => { 'mac' => mac_methods, 'simulator' => sim_methods, 'intentional_simulator_skips' => SIMULATOR_SKIPS, 'pairing' => @pairing_methods,
-                                  'rust' => rust_methods, 'beluga_core' => core_methods, 'shared_handoff' => handoff_methods, 'shared_replay' => replay_methods, 'shared_reconnect_counters' => reconnect_methods, 'c' => c_methods } }
+                                  'rust' => rust_methods, 'beluga_core' => core_methods, 'shared_handoff' => handoff_methods, 'shared_replay' => replay_methods, 'shared_reconnect_counters' => reconnect_methods, 'shared_pairing_commit' => commit_methods, 'c' => c_methods } }
       path = File.join(@evidence, 'receipt.json')
       File.open(path, File::WRONLY | File::CREAT | File::EXCL, 0600) { |file| file.write(JSON.pretty_generate(receipt) + "\n"); file.flush; file.fsync }
       digest = MicrophoneRegressionGate.sha(path)
@@ -2621,16 +2834,18 @@ module MicrophoneRegressionGate
     end
     check_artifacts.call
     coverage = receipt['coverage']
-    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff shared_replay shared_reconnect_counters c], 'coverage')
+    exact_keys!(coverage, %w[mac simulator intentional_simulator_skips pairing rust beluga_core shared_handoff shared_replay shared_reconnect_counters shared_pairing_commit c], 'coverage')
     mac = mac_inventory(read_phase.call('mac-discovery'))
     shared = shared_signaling_inventory(read_phase.call('mac-discovery'))
     replay = shared_replay_inventory(root, read_phase.call('mac-discovery'))
     reconnect = shared_reconnect_counter_inventory(root, read_phase.call('mac-discovery'))
+    commit = shared_pairing_commit_inventory(root, read_phase.call('mac-discovery'))
     handoff = shared_handoff_inventory(read_phase.call('mac-discovery'))
     require!(coverage['mac'] == mac, 'Mac coverage differs from discovery')
     require!(coverage['shared_handoff'] == handoff, 'shared handoff coverage differs from discovery')
     require!(coverage['shared_replay'] == replay, 'shared replay coverage differs from exact source discovery')
     require!(coverage['shared_reconnect_counters'] == reconnect, 'shared reconnect counter coverage differs from exact source discovery')
+    require!(coverage['shared_pairing_commit'] == commit, 'shared pairing commit coverage differs from exact source discovery')
     expected_commands = commands(root, directory, receipt['invocation'], tools, receipt['simulator'], mac, handoff)
     phases.each { |entry| require!(entry['argv'] == expected_commands.fetch(entry['name']), 'phase command does not match canonical offline invocation: ' + entry['name']) }
     validate_pairing_processes(receipt['pairing_processes'], expected_commands, (receipt['created_at'] + 1) * 1_000_000_000, receipt['invocation'].fetch('timeout_seconds'))
@@ -2646,6 +2861,7 @@ module MicrophoneRegressionGate
       validate_shared_replay(read_phase.call(name), replay.fetch(suite), suite)
     end
     validate_shared_reconnect_counter(read_phase.call(SHARED_RECONNECT_COUNTER_PHASE), reconnect)
+    validate_shared_pairing_commit(read_phase.call(SHARED_PAIRING_COMMIT_PHASE), commit)
     validate_mac_log(read_phase.call('shared-handoff-tests'), handoff)
     sim = simulator_inventory(root)
     require!(coverage['simulator'] == sim && coverage['intentional_simulator_skips'] == SIMULATOR_SKIPS, 'Simulator coverage or skip contract changed')

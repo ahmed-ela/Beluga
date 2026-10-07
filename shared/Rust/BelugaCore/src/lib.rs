@@ -11,6 +11,15 @@ pub mod invitation_acceptance;
 pub mod replay_policy;
 pub mod pairing_catalog_checkpoint;
 
+pub mod pairing_commit;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_pairing_commit_step(
+    abi_version: u32, state: pairing_commit::RawState, event: pairing_commit::RawEvent,
+) -> pairing_commit::RawResult {
+    pairing_commit::step(abi_version, state, event)
+}
 pub mod reconnect_counters;
 
 #[no_mangle]

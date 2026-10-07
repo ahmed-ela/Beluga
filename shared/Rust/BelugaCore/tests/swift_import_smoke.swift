@@ -703,3 +703,86 @@ private func reconnectCountersSmoke() {
     print("BelugaCore Swift reconnect counters import/link PASS: exact layouts, zero/MAX, strict admission and unchanged refusal")
 }
 reconnectCountersSmoke()
+
+// Actual linked copied-value contract; not native authentication or storage proof.
+private func pairingCommitSmoke() {
+    typealias State = beluga_core_pairing_commit_state_t
+    typealias Event = beluga_core_pairing_commit_event_t
+    typealias Output = beluga_core_pairing_commit_result_t
+    precondition(MemoryLayout<State>.size == 24 && MemoryLayout<State>.alignment == 4)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<State>.offset(of: \.local_role) == 8)
+    precondition(MemoryLayout<State>.offset(of: \.pairing_state) == 12)
+    precondition(MemoryLayout<State>.offset(of: \.recovery_phase) == 16)
+    precondition(MemoryLayout<State>.offset(of: \.reserved_tail) == 20)
+    precondition(MemoryLayout<Event>.size == 16 && MemoryLayout<Event>.alignment == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.commit_id_matches) == 8)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved_tail) == 12)
+    precondition(MemoryLayout<Output>.size == 40 && MemoryLayout<Output>.alignment == 4)
+    precondition(MemoryLayout<Output>.offset(of: \.candidate_state) == 0)
+    precondition(MemoryLayout<Output>.offset(of: \.decision) == 24)
+    precondition(MemoryLayout<Output>.offset(of: \.action) == 28)
+    precondition(MemoryLayout<Output>.offset(of: \.auth_phase) == 32)
+    precondition(MemoryLayout<Output>.offset(of: \.reserved) == 36)
+    func state(_ role: UInt32, _ phase: UInt32, _ cache: UInt32) -> State {
+        var value = State(); value.abi_version = 1; value.local_role = role
+        value.pairing_state = phase; value.recovery_phase = cache; return value
+    }
+    func event(_ opcode: UInt32, _ exact: UInt32 = 0) -> Event {
+        var value = Event(); value.opcode = opcode; value.commit_id_matches = exact; return value
+    }
+    func same(_ a: State, _ b: State) {
+        precondition(a.abi_version == b.abi_version && a.reserved == b.reserved &&
+            a.local_role == b.local_role && a.pairing_state == b.pairing_state &&
+            a.recovery_phase == b.recovery_phase && a.reserved_tail == b.reserved_tail)
+    }
+    // role, phase, cache, opcode, UUID match, next phase, next cache, decision, action, auth.
+    let literals: [[UInt32]] = [
+        [0,0,0,0,0,0,0,0,2,0], [1,0,0,0,0,0,0,0,1,0], [0,1,0,0,0,1,0,0,1,0],
+        [1,2,0,0,0,2,0,0,4,0], [1,3,0,0,0,3,0,0,0,0], [0,1,4,0,0,1,4,0,3,0],
+        [0,0,0,1,0,0,1,0,5,0], [0,0,1,1,0,0,1,0,3,0], [0,0,4,1,0,0,4,1,0,0],
+        [1,0,4,2,0,1,2,0,6,1], [1,1,4,2,0,1,4,0,3,1], [1,2,4,2,0,2,4,1,0,0],
+        [0,0,3,3,0,2,0,0,0,2], [0,2,3,3,0,2,3,0,0,2], [0,3,4,3,0,3,4,0,0,2],
+        [0,2,0,4,0,2,3,0,7,0], [0,2,3,4,0,2,3,0,3,0], [0,3,0,4,0,3,0,0,7,0],
+        [0,3,3,4,0,3,3,1,0,0], [0,2,3,5,1,2,3,0,0,0], [0,2,3,5,0,2,3,1,0,0],
+        [0,3,0,5,1,3,0,0,0,0], [1,3,4,6,0,3,4,0,3,3], [1,3,0,6,0,3,0,2,0,3],
+        [1,3,3,6,0,3,3,2,0,3], [1,1,2,6,0,3,4,0,8,3], [1,0,0,6,0,0,0,1,0,0],
+        [0,2,3,7,0,3,0,0,0,4], [0,3,4,7,0,3,0,0,0,4], [1,1,2,8,0,1,2,0,9,0],
+        [0,3,3,8,0,3,3,3,0,0], [1,0,0,8,0,0,0,0,0,0]
+    ]
+    for literal in literals {
+        let before = state(literal[0], literal[1], literal[2])
+        let output = beluga_core_pairing_commit_step(1, before, event(literal[3], literal[4]))
+        same(output.candidate_state, state(literal[0], literal[5], literal[6]))
+        precondition(output.decision == literal[7] && output.action == literal[8] &&
+            output.auth_phase == literal[9] && output.reserved == 0)
+        same(before, state(literal[0], literal[1], literal[2]))
+    }
+    func invalid(_ abi: UInt32, _ before: State, _ input: Event) {
+        let output = beluga_core_pairing_commit_step(abi, before, input)
+        precondition(output.decision == 4 && output.action == 0 && output.auth_phase == 0 && output.reserved == 0)
+        same(output.candidate_state, before)
+    }
+    let before = state(1, 3, 4)
+    let input = event(6)
+    for bad: UInt32 in [0, 2, UInt32.max] {
+        invalid(bad, before, input)
+        var raw = before; raw.abi_version = bad; invalid(1, raw, input)
+    }
+    for bit in 0..<32 {
+        let bad = UInt32(1) << bit
+        var raw = before; raw.reserved = bad; invalid(1, raw, input)
+        raw = before; raw.reserved_tail = bad; invalid(1, raw, input)
+        var malformed = input; malformed.reserved = bad; invalid(1, before, malformed)
+        malformed = input; malformed.reserved_tail = bad; invalid(1, before, malformed)
+    }
+    var raw = before; raw.local_role = 2; invalid(1, raw, input)
+    raw = before; raw.pairing_state = 4; invalid(1, raw, input)
+    raw = before; raw.recovery_phase = 5; invalid(1, raw, input)
+    invalid(1, before, event(9)); invalid(1, before, event(5, 2)); invalid(1, before, event(6, 1))
+    print("BelugaCore Swift pairing commit import/link PASS: exact layouts, phase plans, auth ordering and unchanged refusal")
+}
+pairingCommitSmoke()

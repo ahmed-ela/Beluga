@@ -608,6 +608,105 @@ static void reconnect_counters_smoke(void) {
     puts("BelugaCore C reconnect counters ABI PASS: exact layouts, zero/MAX, strict admission and unchanged refusal");
 }
 
+/* Actual linked pairing-commit contract: layouts and copied plans, not native effects. */
+_Static_assert(sizeof(beluga_core_pairing_commit_state_t) == 24, "commit state size");
+_Static_assert(_Alignof(beluga_core_pairing_commit_state_t) == 4, "commit state alignment");
+_Static_assert(offsetof(beluga_core_pairing_commit_state_t, abi_version) == 0, "commit state ABI offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_state_t, reserved) == 4, "commit state reserved offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_state_t, local_role) == 8, "commit role offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_state_t, pairing_state) == 12, "commit phase offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_state_t, recovery_phase) == 16, "commit recovery offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_state_t, reserved_tail) == 20, "commit state tail offset");
+_Static_assert(sizeof(beluga_core_pairing_commit_event_t) == 16, "commit event size");
+_Static_assert(_Alignof(beluga_core_pairing_commit_event_t) == 4, "commit event alignment");
+_Static_assert(offsetof(beluga_core_pairing_commit_event_t, opcode) == 0, "commit opcode offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_event_t, reserved) == 4, "commit event reserved offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_event_t, commit_id_matches) == 8, "commit UUID fact offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_event_t, reserved_tail) == 12, "commit event tail offset");
+_Static_assert(sizeof(beluga_core_pairing_commit_result_t) == 40, "commit result size");
+_Static_assert(_Alignof(beluga_core_pairing_commit_result_t) == 4, "commit result alignment");
+_Static_assert(offsetof(beluga_core_pairing_commit_result_t, candidate_state) == 0, "commit candidate offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_result_t, decision) == 24, "commit decision offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_result_t, action) == 28, "commit action offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_result_t, auth_phase) == 32, "commit authentication offset");
+_Static_assert(offsetof(beluga_core_pairing_commit_result_t, reserved) == 36, "commit result reserved offset");
+
+static beluga_core_pairing_commit_state_t pc_state(uint32_t role, uint32_t phase, uint32_t cache) {
+    return (beluga_core_pairing_commit_state_t){1, 0, role, phase, cache, 0};
+}
+static void pc_check(beluga_core_pairing_commit_state_t before, uint32_t opcode, uint32_t exact,
+    uint32_t phase, uint32_t cache, uint32_t decision, uint32_t action, uint32_t auth) {
+    const beluga_core_pairing_commit_event_t event = {opcode, 0, exact, 0};
+    beluga_core_pairing_commit_state_t expected = before;
+    expected.pairing_state = phase; expected.recovery_phase = cache;
+    const beluga_core_pairing_commit_result_t actual = beluga_core_pairing_commit_step(1, before, event);
+    assert(memcmp(&actual.candidate_state, &expected, sizeof(expected)) == 0);
+    assert(actual.decision == decision && actual.action == action && actual.auth_phase == auth && actual.reserved == 0);
+}
+static void pc_invalid(uint32_t abi, beluga_core_pairing_commit_state_t before,
+    beluga_core_pairing_commit_event_t event) {
+    const beluga_core_pairing_commit_result_t result = beluga_core_pairing_commit_step(abi, before, event);
+    assert(result.decision == 4 && result.action == 0 && result.auth_phase == 0 && result.reserved == 0);
+    assert(memcmp(&result.candidate_state, &before, sizeof(before)) == 0);
+}
+static void pairing_commit_smoke(void) {
+    /* Literal expected original-method branches; these do not call Rust helpers. */
+    pc_check(pc_state(0, 0, 0), 0, 0, 0, 0, 0, 2, 0);
+    pc_check(pc_state(1, 0, 0), 0, 0, 0, 0, 0, 1, 0);
+    pc_check(pc_state(0, 1, 0), 0, 0, 1, 0, 0, 1, 0);
+    pc_check(pc_state(1, 2, 0), 0, 0, 2, 0, 0, 4, 0);
+    pc_check(pc_state(1, 3, 0), 0, 0, 3, 0, 0, 0, 0);
+    pc_check(pc_state(0, 1, 4), 0, 0, 1, 4, 0, 3, 0);
+    pc_check(pc_state(0, 0, 0), 1, 0, 0, 1, 0, 5, 0);
+    pc_check(pc_state(0, 0, 1), 1, 0, 0, 1, 0, 3, 0);
+    pc_check(pc_state(0, 0, 4), 1, 0, 0, 4, 1, 0, 0);
+    pc_check(pc_state(1, 0, 4), 2, 0, 1, 2, 0, 6, 1);
+    pc_check(pc_state(1, 1, 4), 2, 0, 1, 4, 0, 3, 1);
+    pc_check(pc_state(1, 2, 4), 2, 0, 2, 4, 1, 0, 0);
+    pc_check(pc_state(0, 0, 3), 3, 0, 2, 0, 0, 0, 2);
+    pc_check(pc_state(0, 2, 3), 3, 0, 2, 3, 0, 0, 2);
+    pc_check(pc_state(0, 3, 4), 3, 0, 3, 4, 0, 0, 2);
+    pc_check(pc_state(0, 2, 0), 4, 0, 2, 3, 0, 7, 0);
+    pc_check(pc_state(0, 2, 3), 4, 0, 2, 3, 0, 3, 0);
+    pc_check(pc_state(0, 3, 0), 4, 0, 3, 0, 0, 7, 0);
+    pc_check(pc_state(0, 3, 3), 4, 0, 3, 3, 1, 0, 0);
+    pc_check(pc_state(0, 2, 3), 5, 1, 2, 3, 0, 0, 0);
+    pc_check(pc_state(0, 2, 3), 5, 0, 2, 3, 1, 0, 0);
+    pc_check(pc_state(0, 3, 0), 5, 1, 3, 0, 0, 0, 0);
+    pc_check(pc_state(1, 3, 4), 6, 0, 3, 4, 0, 3, 3);
+    pc_check(pc_state(1, 3, 0), 6, 0, 3, 0, 2, 0, 3);
+    pc_check(pc_state(1, 3, 3), 6, 0, 3, 3, 2, 0, 3);
+    pc_check(pc_state(1, 1, 2), 6, 0, 3, 4, 0, 8, 3);
+    pc_check(pc_state(1, 0, 0), 6, 0, 0, 0, 1, 0, 0);
+    pc_check(pc_state(0, 2, 3), 7, 0, 3, 0, 0, 0, 4);
+    pc_check(pc_state(0, 3, 4), 7, 0, 3, 0, 0, 0, 4);
+    pc_check(pc_state(1, 1, 2), 8, 0, 1, 2, 0, 9, 0);
+    pc_check(pc_state(0, 3, 3), 8, 0, 3, 3, 3, 0, 0);
+    pc_check(pc_state(1, 0, 0), 8, 0, 0, 0, 0, 0, 0);
+    const beluga_core_pairing_commit_state_t before = pc_state(1, 3, 4);
+    const beluga_core_pairing_commit_event_t event = {6, 0, 0, 0};
+    for (uint32_t i = 0; i < 3; ++i) {
+        const uint32_t bad = i == 0 ? 0 : i == 1 ? 2 : UINT32_MAX;
+        pc_invalid(bad, before, event);
+        beluga_core_pairing_commit_state_t raw = before; raw.abi_version = bad;
+        pc_invalid(1, raw, event);
+    }
+    for (uint32_t bit = 0; bit < 32; ++bit) {
+        beluga_core_pairing_commit_state_t raw = before; raw.reserved = UINT32_C(1) << bit;
+        pc_invalid(1, raw, event); raw = before; raw.reserved_tail = UINT32_C(1) << bit;
+        pc_invalid(1, raw, event);
+        beluga_core_pairing_commit_event_t input = event; input.reserved = UINT32_C(1) << bit;
+        pc_invalid(1, before, input); input = event; input.reserved_tail = UINT32_C(1) << bit;
+        pc_invalid(1, before, input);
+    }
+    beluga_core_pairing_commit_state_t raw = before; raw.local_role = 2; pc_invalid(1, raw, event);
+    raw = before; raw.pairing_state = 4; pc_invalid(1, raw, event);
+    raw = before; raw.recovery_phase = 5; pc_invalid(1, raw, event);
+    pc_invalid(1, before, (beluga_core_pairing_commit_event_t){9, 0, 0, 0});
+    pc_invalid(1, before, (beluga_core_pairing_commit_event_t){5, 0, 2, 0});
+    pc_invalid(1, before, (beluga_core_pairing_commit_event_t){6, 0, 1, 0});
+    puts("BelugaCore C pairing commit ABI PASS: exact layouts, phase plans, auth ordering and unchanged refusal");
+}
 int main(void) {
     assert(beluga_core_abi_version() == 1);
     for (uint32_t f = 0; f < 4096; ++f) {
@@ -721,5 +820,6 @@ int main(void) {
     signaling_replay_smoke();
     pairing_catalog_checkpoint_smoke();
     reconnect_counters_smoke();
+    pairing_commit_smoke();
     return 0;
 }

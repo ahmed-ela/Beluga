@@ -327,6 +327,38 @@ cannot be borrowed. Pairing commit/recovery, media arbitration and other product
 lifecycle policies remain to migrate. No host/phone installation, push or deployment
 is performed here.
 
+### Pairing commit and recovery — tenth source integration, not released
+
+The ninth checkpoint subsequently passed all 42 source-bound offline phases and
+was committed locally as `2e3b5871049ca66e08969831b3c6bace23ca3bac`. Its receipt
+SHA-256 is `321597bb1e097833f8ce34c938da20009dd85f5bfcee97647e5f4448f10cb3be`.
+That receipt does not authorize or validate the tenth changed source.
+
+The tenth bounded Rust policy owns pairing-commit admission/recovery decisions
+through copied 24/16/40-byte values and one stateless C export. Native identity,
+authentication, opaque signed/MACed commits, Codable schema, counters and storage
+effects remain platform adapters. Cached acknowledgements still authenticate the
+new proposal first; completion-send does not activate; activation retires recovery.
+Malformed copied output fails distinctly rather than taking a successful Swift
+fallback. The original two durable host ACK cuts and post-send owner fence remain.
+
+Focused execution passed 159 ordinary Rust cases and built the official four-target
+dependency with C/Swift runtime smokes on Mac and iOS crosslinks. Only the source
+dependency was promoted; the prior dependency remains retained. Native tests then
+passed 29 genuine-crypto/actual-C cases, five real coordinator ACK persistence
+cases and two concrete Mac decoder cases. Isolated byte backends distinguish
+no-write failure, write-then-throw and actual cold readback, not power-loss proof.
+A per-call throwing preconstructor probe is a boundary/error-order fixture, not an
+actual CryptoKit constructor failure. Denial-only immutable decoder selection
+cannot return a candidate, survive in decoded records or modify stored bytes.
+
+The final test fixture now follows Foundation's Sendable userInfo contract without
+removing malformed-type controls. Candidate-roundtrip and Viewer store/bootstrap
+composition are additionally enrolled; fresh complete 43-phase validation, compiled
+mutation checks, signed Simulator/pairing results and independent receipt audits
+remain pending for this exact source. Browser sharing/Android delivery remain
+paused. This is neither an installed-host/phone update nor full migration completion.
+
 ## Earlier implementation ledger
 
 Status: implementation in progress; no DMG, updater, browser share, or new phone build deployed.

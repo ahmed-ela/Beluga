@@ -21,14 +21,16 @@ struct WorldwidePairingStore: Sendable {
     private let dataStore: any WorldwidePairingDataStore
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    private let pairedRecordDecodeFault: UInt32?
 
     /// Creates a store with deterministic JSON over one explicitly composed persistence boundary.
-    init(dataStore: any WorldwidePairingDataStore) {
+    init(dataStore: any WorldwidePairingDataStore, pairedRecordDecodeFault: UInt32? = nil) {
         self.dataStore = dataStore
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         self.encoder = encoder
         decoder = JSONDecoder()
+        self.pairedRecordDecodeFault = pairedRecordDecodeFault
     }
 
     /// Loads the durable host identity or generates and persists it once.
@@ -76,7 +78,8 @@ struct WorldwidePairingStore: Sendable {
     /// All new host callers migrate before writing. The original single-viewer item is
     /// retained as evidence, never dual-written or revived after catalog creation.
     var phoneCatalog: WorldwidePairedPhoneCatalogStore {
-        WorldwidePairedPhoneCatalogStore(dataStore: dataStore)
+        WorldwidePairedPhoneCatalogStore(dataStore: dataStore,
+            pairedRecordDecodeFault: pairedRecordDecodeFault)
     }
 
     private func requireLegacyNamespace() throws {
@@ -120,7 +123,13 @@ struct WorldwidePairingStore: Sendable {
             throw WorldwidePairingStoreError.invalidPersistedData
         }
         do {
+            if type == RemotePairedDeviceRecord.self {
+                return try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                    .decode(type, from: data)
+            }
             return try decoder.decode(type, from: data)
+        } catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge {
+            throw error
         } catch {
             throw WorldwidePairingStoreError.invalidPersistedData
         }
@@ -255,4 +264,16 @@ enum WorldwidePairingStoreError: LocalizedError, Equatable {
             "The worldwide pairing Keychain operation failed (OSStatus \(status))."
         }
     }
+}
+
+/// Fresh decoder owned by this one synchronous decode; selection is an immutable test dependency.
+/// No caller-supplied mutable JSONDecoder or active-runtime setting can reach this factory.
+internal func belugaPairingRecordDecoder(faultSelection: UInt32?) -> JSONDecoder {
+    let decoder = JSONDecoder()
+    if let faultSelection {
+        decoder.userInfo[CodingUserInfoKey(
+            rawValue: "com.elamin.beluga.testing.pairing-commit-decode-v1"
+        )!] = faultSelection
+    }
+    return decoder
 }

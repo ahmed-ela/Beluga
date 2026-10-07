@@ -4,8 +4,8 @@ This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
 the one-use offer/timeline reducer, the phone playback-operation reducer, and
 the invitation acceptance policy, the bounded signaling replay window, and
-catalog-checkpoint attempt admission/revocation, and durable reconnect counter
-proposals**.
+catalog-checkpoint attempt admission/revocation, durable reconnect counter
+proposals, and pairing-commit phase/recovery plans**.
 It is not the complete product-core
 rewrite. Swift/native code still owns observation, target identity fences, transfer authorization,
 platform media effects, pairing, audio capture, and real-time callback lifetimes.
@@ -111,6 +111,19 @@ constructor. Only constructor success commits the relevant counter. Native calle
 still persist before sending; a proposal is not authentication, storage or network
 proof. Independent numerical/reference traces, genuine native cryptographic tests,
 compiled guard controls and cross-language layout/link proof are required.
+
+Pairing commit is a stateless copied snapshot with exhaustive role, phase,
+cache, operation, decision and authentication domains. Rust preserves the
+original error and authentication ordering, cached-message custody and stored
+shape rules. It does not carry keys, signatures, UUIDs or serialized records.
+The native adapter rejects malformed plans before effects and has no successful
+Swift fallback. Native identity and proof verification, unchanged message
+construction, successful storage and current-session transmission fences remain
+mandatory. Sending completion does not activate a host; an authenticated
+activation acknowledgement does. Active-host completion is ephemeral rather
+than becoming a new recovery cache. Verification requires failed storage at each
+durable cut, including actual write-then-throw behavior; a model trace is not durable,
+cryptographic or physical-device evidence.
 
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.

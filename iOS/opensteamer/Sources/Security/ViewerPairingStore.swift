@@ -118,6 +118,7 @@ protocol ViewerPairingNamespaceStoring {
 struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceStoring {
     private let identityStore: KeychainStore
     private let pairedMacStore: KeychainStore
+    private let pairedRecordDecodeFault: UInt32?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -130,10 +131,12 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
 
     init(
         identityItem: KeychainStore.Item,
-        pairedMacItem: KeychainStore.Item
+        pairedMacItem: KeychainStore.Item,
+        pairedRecordDecodeFault: UInt32? = nil
     ) {
         identityStore = KeychainStore(item: identityItem)
         pairedMacStore = KeychainStore(item: pairedMacItem)
+        self.pairedRecordDecodeFault = pairedRecordDecodeFault
         encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         decoder = JSONDecoder()
@@ -284,7 +287,10 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
 
     private func decodePairedMacRecord(_ data: Data) throws -> RemotePairedDeviceRecord {
         do {
-            return try decoder.decode(RemotePairedDeviceRecord.self, from: data)
+            return try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                .decode(RemotePairedDeviceRecord.self, from: data)
+        } catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge {
+            throw error
         } catch {
             throw ViewerPairingStoreError.invalidPairedMacRecord
         }
@@ -319,16 +325,20 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
             throw ViewerPairingStoreError.invalidPairedMacRecord
         }
 
+        let recoveryAction = record.recoveryAction
+        guard recoveryAction != .invalidBridge else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
+        }
         // A viewer may crash between the durable pairing phases, so pending and ACK-issued
         // records are valid recovery state. Host-only state and internally inconsistent
         // recovery actions must never be surfaced as an iPhone pairing.
         switch record.pairingState {
         case .pending:
-            guard record.recoveryAction == .awaitProposal else {
+            guard recoveryAction == .awaitProposal else {
                 throw ViewerPairingStoreError.invalidPairedMacRecord
             }
         case .acceptedIssued:
-            guard case .resend(let acknowledgement) = record.recoveryAction,
+            guard case .resend(let acknowledgement) = recoveryAction,
                   validLocalRecoveryCommit(
                     acknowledgement,
                     expectedPhase: .acknowledgement,
@@ -337,7 +347,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
                 throw ViewerPairingStoreError.invalidPairedMacRecord
             }
         case .active:
-            switch record.recoveryAction {
+            switch recoveryAction {
             case .resend(let activation):
                 guard validLocalRecoveryCommit(
                     activation,
@@ -346,6 +356,8 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
                 ) else {
                     throw ViewerPairingStoreError.invalidPairedMacRecord
                 }
+            case .invalidBridge:
+                throw RemoteSessionCoreError.invalidPairingCommitBridge
             case .none, .awaitProposal, .issueProposal, .issueCompletion:
                 throw ViewerPairingStoreError.invalidPairedMacRecord
             }
@@ -572,4 +584,16 @@ enum ViewerPairingStoreError: Error, Equatable {
 /// Corruption of the fixed-width admission digest stored in Keychain.
 enum WorldwideInvitationAdmissionStoreError: Error, Equatable {
     case invalidStoredDigest
+}
+
+/// Fresh decoder owned by this one synchronous decode; selection is an immutable test dependency.
+/// No caller-supplied mutable JSONDecoder or active-runtime setting can reach this factory.
+internal func belugaPairingRecordDecoder(faultSelection: UInt32?) -> JSONDecoder {
+    let decoder = JSONDecoder()
+    if let faultSelection {
+        decoder.userInfo[CodingUserInfoKey(
+            rawValue: "com.elamin.beluga.testing.pairing-commit-decode-v1"
+        )!] = faultSelection
+    }
+    return decoder
 }

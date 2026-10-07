@@ -379,6 +379,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                 completionAfterAvailability = nil
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge {
+                throw error
             } catch {
                 // Confirmation and ACK sends cross a distributed durability boundary. If the
                 // Mac advanced farther than this process observed, raw bootstrap rejects while
@@ -944,18 +946,22 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                         operationID: operationID
                     )
                     activeAvailabilityExchangeID = exchangeID
+                    let recoveryAction = record.recoveryAction
+                    guard recoveryAction != .invalidBridge else {
+                        throw RemoteSessionCoreError.invalidPairingCommitBridge
+                    }
                     switch record.pairingState {
                     case .pending:
                         stateText = "Recovering secure pairing"
                     case .acceptedIssued:
-                        guard case .resend(let acknowledgement) = record.recoveryAction,
+                        guard case .resend(let acknowledgement) = recoveryAction,
                               acknowledgement.phase == .acknowledgement else {
                             throw WorldwideViewerConnectionError.invalidPairingRecovery
                         }
                         stateText = "Recovering secure pairing"
                         try await client.send(.pairingCommit(acknowledgement))
                     case .active:
-                        switch record.recoveryAction {
+                        switch recoveryAction {
                         case .resend(let activation):
                             guard activation.phase == .activationAcknowledgement else {
                                 throw WorldwideViewerConnectionError.invalidPairingRecovery
@@ -968,6 +974,8 @@ final class WorldwideViewerConnectionCoordinator: ObservableObject {
                                 pairingState: pairingState,
                                 operationID: operationID
                             )
+                        case .invalidBridge:
+                            throw RemoteSessionCoreError.invalidPairingCommitBridge
                         case .none, .awaitProposal, .issueProposal, .issueCompletion:
                             throw WorldwideViewerConnectionError.invalidPairingRecovery
                         }

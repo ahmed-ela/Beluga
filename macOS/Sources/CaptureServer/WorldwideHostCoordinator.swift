@@ -844,6 +844,8 @@ actor WorldwideHostCoordinator {
         switch record.recoveryAction {
         case .awaitProposal, .none:
             commit = nil
+        case .invalidBridge:
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         case .issueProposal:
             commit = try record.prepareProposal(using: identity)
             try persistSelected(record, client: client)

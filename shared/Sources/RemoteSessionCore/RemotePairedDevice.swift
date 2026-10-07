@@ -23,6 +23,9 @@ public enum RemotePairingRecoveryAction: Equatable, Sendable {
     case resend(RemotePairingCommit)
     case issueCompletion
     case none
+    /// The native record is retained, but its copied recovery plan could not be verified.
+    /// Authority callers must surface invalidPairingCommitBridge, never treat this as none.
+    case invalidBridge
 }
 
 /// Durable state created only after an authenticated pairing commit.
@@ -69,7 +72,8 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         recoveryCommit: RemotePairingCommit? = nil,
         nextOutboundReconnectSequence: UInt64 = 1,
         highestAcceptedReconnectSequence: UInt64 = 0,
-        version: UInt8 = RemotePairedDeviceRecord.currentVersion
+        version: UInt8 = RemotePairedDeviceRecord.currentVersion,
+        decodeSelection: BelugaPairingCommitDecodeSelection = .actual
     ) throws {
         guard version == Self.currentVersion,
               !remoteUUIDIsZero(pairID),
@@ -106,7 +110,9 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         self.recoveryCommit = recoveryCommit
         self.nextOutboundReconnectSequence = nextOutboundReconnectSequence
         self.highestAcceptedReconnectSequence = highestAcceptedReconnectSequence
-        try validatePersistenceState()
+        try validatePersistenceState(commitProducer: decodeSelection.producer(
+            role: localRole, state: pairingState, cache: recoveryCommit?.phase
+        ))
     }
 
     /// Stable, pair-scoped credential for exchanging only signed reconnect control messages.
@@ -133,17 +139,31 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
     public var debugDescription: String { description }
 
     /// The safe resumption step for this record's persisted commit state.
+    /// An invalid bridge does not mean an absent record or permission to reset pairing.
     public var recoveryAction: RemotePairingRecoveryAction {
-        switch pairingState {
-        case .pending:
-            if let recoveryCommit { return .resend(recoveryCommit) }
-            return localRole == .host ? .issueProposal : .awaitProposal
-        case .acceptedIssued:
-            return recoveryCommit.map(RemotePairingRecoveryAction.resend) ?? .awaitProposal
-        case .acceptedReceived:
-            return recoveryCommit.map(RemotePairingRecoveryAction.resend) ?? .issueCompletion
-        case .active:
-            return recoveryCommit.map(RemotePairingRecoveryAction.resend) ?? .none
+        recoveryAction(using: .actual)
+    }
+
+    internal func recoveryAction(
+        using producer: BelugaRustPairingCommitProducer
+    ) -> RemotePairingRecoveryAction {
+        do {
+            let plan = try pairingCommitPlan(.recoveryAction, producer: producer)
+            guard plan.decision == .ready else { return .invalidBridge }
+            switch plan.action {
+            case .none: return .none
+            case .awaitProposal: return .awaitProposal
+            case .issueProposal: return .issueProposal
+            case .issueCompletion: return .issueCompletion
+            case .exactCachedCommit:
+                guard let recoveryCommit else { return .invalidBridge }
+                return .resend(recoveryCommit)
+            case .mintProposal, .mintAcknowledgement, .mintCompletion,
+                 .mintActivation, .verifyStoredRecovery:
+                return .invalidBridge
+            }
+        } catch {
+            return .invalidBridge
         }
     }
 
@@ -237,18 +257,23 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
     public mutating func prepareProposal(
         using identity: RemoteDeviceIdentity
     ) throws -> RemotePairingCommit {
+        try prepareProposal(using: identity, commitProducer: .actual)
+    }
+
+    internal mutating func prepareProposal(
+        using identity: RemoteDeviceIdentity,
+        commitProducer: BelugaRustPairingCommitProducer,
+        constructionProbe: BelugaPairingCommitConstructionProbe = .none
+    ) throws -> RemotePairingCommit {
         try validateLocalIdentity(identity, expectedRole: .host)
-        guard pairingState == .pending else {
-            throw RemoteSessionCoreError.invalidPairingCommit
+        let plan = try checkedPairingCommitPlan(.prepareProposal, producer: commitProducer)
+        if plan.action == .exactCachedCommit { return try exactRecoveryCommit() }
+        guard plan.action == .mintProposal else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         }
-        if let recoveryCommit {
-            guard recoveryCommit.phase == .proposal else {
-                throw RemoteSessionCoreError.invalidPairingCommit
-            }
-            return recoveryCommit
-        }
+        try constructionProbe.before(.proposal)
         let commit = try makeLocalCommit(phase: .proposal, identity: identity)
-        recoveryCommit = commit
+        try applyPairingCommitPlan(plan, mintedCommit: commit)
         return commit
     }
 
@@ -258,83 +283,90 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         after proposal: RemotePairingCommit,
         using identity: RemoteDeviceIdentity
     ) throws -> RemotePairingCommit {
+        try prepareAcknowledgement(after: proposal, using: identity, commitProducer: .actual)
+    }
+
+    internal mutating func prepareAcknowledgement(
+        after proposal: RemotePairingCommit,
+        using identity: RemoteDeviceIdentity,
+        commitProducer: BelugaRustPairingCommitProducer,
+        constructionProbe: BelugaPairingCommitConstructionProbe = .none
+    ) throws -> RemotePairingCommit {
         try validateLocalIdentity(identity, expectedRole: .viewer)
-        guard pairingState == .pending || pairingState == .acceptedIssued else {
-            throw RemoteSessionCoreError.invalidPairingCommit
+        let plan = try checkedPairingCommitPlan(
+            .prepareAcknowledgement, incoming: proposal, producer: commitProducer
+        )
+        // Issued replay retains the exact opaque cache, even an unusual known phase.
+        // The actual supplied proposal has already been authenticated above.
+        if plan.action == .exactCachedCommit { return try exactRecoveryCommit() }
+        guard plan.action == .mintAcknowledgement else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         }
-        try verifyPeerCommit(proposal, expectedPhase: .proposal)
-        if pairingState == .acceptedIssued, let recoveryCommit {
-            return recoveryCommit
-        }
+        try constructionProbe.before(.acknowledgement)
         let acknowledgement = try makeLocalCommit(phase: .acknowledgement, identity: identity)
-        pairingState = .acceptedIssued
-        recoveryCommit = acknowledgement
+        try applyPairingCommitPlan(plan, mintedCommit: acknowledgement)
         return acknowledgement
     }
 
     /// Host persists the high-water commit state before preparing a completion.
     public mutating func acceptAcknowledgement(_ acknowledgement: RemotePairingCommit) throws {
-        guard localRole == .host,
-              pairingState == .pending
-                || pairingState == .acceptedReceived
-                || pairingState == .active else {
-            throw RemoteSessionCoreError.invalidPairingCommit
+        try acceptAcknowledgement(acknowledgement, commitProducer: .actual)
+    }
+
+    internal mutating func acceptAcknowledgement(
+        _ acknowledgement: RemotePairingCommit,
+        commitProducer: BelugaRustPairingCommitProducer
+    ) throws {
+        let plan = try checkedPairingCommitPlan(
+            .acceptAcknowledgement, incoming: acknowledgement, producer: commitProducer
+        )
+        guard plan.action == .none else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         }
-        try verifyPeerCommit(acknowledgement, expectedPhase: .acknowledgement)
-        guard pairingState == .pending else { return }
-        pairingState = .acceptedReceived
-        recoveryCommit = nil
+        try applyPairingCommitPlan(plan)
     }
 
     /// Host prepares an idempotent completion. Persist this state before transmitting it.
     public mutating func prepareCompletion(
         using identity: RemoteDeviceIdentity
     ) throws -> RemotePairingCommit {
+        try prepareCompletion(using: identity, commitProducer: .actual)
+    }
+
+    internal mutating func prepareCompletion(
+        using identity: RemoteDeviceIdentity,
+        commitProducer: BelugaRustPairingCommitProducer,
+        constructionProbe: BelugaPairingCommitConstructionProbe = .none
+    ) throws -> RemotePairingCommit {
         try validateLocalIdentity(identity, expectedRole: .host)
-        guard pairingState == .acceptedReceived || pairingState == .active else {
-            throw RemoteSessionCoreError.invalidPairingCommit
+        let plan = try checkedPairingCommitPlan(.prepareCompletion, producer: commitProducer)
+        if plan.action == .exactCachedCommit { return try exactRecoveryCommit() }
+        guard plan.action == .mintCompletion else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         }
-        if pairingState == .active {
-            // A delayed, authenticated ACK may be replayed after the host has already activated.
-            // Recreate an equivalent authenticated completion for the viewer without reopening
-            // recovery state or making an otherwise valid active record undecodable.
-            guard recoveryCommit == nil else {
-                throw RemoteSessionCoreError.invalidPairingCommit
-            }
-            return try makeLocalCommit(phase: .completion, identity: identity)
-        }
-        if let recoveryCommit {
-            guard recoveryCommit.phase == .completion else {
-                throw RemoteSessionCoreError.invalidPairingCommit
-            }
-            return recoveryCommit
-        }
+        try constructionProbe.before(.completion)
         let completion = try makeLocalCommit(phase: .completion, identity: identity)
-        recoveryCommit = completion
+        // Active host replay remains ephemeral: the candidate is active/nil.
+        try applyPairingCommitPlan(plan, mintedCommit: completion)
         return completion
     }
 
     /// Records a successful send, but deliberately does not activate the host. Only the
     /// viewer's signed activation acknowledgement can do that.
     public mutating func markCompletionSent(commitID: UUID) throws {
-        guard localRole == .host,
-              self.commitID == commitID else {
-            throw RemoteSessionCoreError.invalidPairingCommit
-        }
-        switch pairingState {
-        case .acceptedReceived:
-            guard recoveryCommit?.phase == .completion else {
-                throw RemoteSessionCoreError.invalidPairingCommit
-            }
-            // Keep `.acceptedReceived` and the exact completion across every send/crash boundary.
-        case .active:
-            // A replay response is deliberately ephemeral; activation already completed.
-            guard recoveryCommit == nil else {
-                throw RemoteSessionCoreError.invalidPairingCommit
-            }
-        case .pending, .acceptedIssued:
-            throw RemoteSessionCoreError.invalidPairingCommit
-        }
+        try markCompletionSent(commitID: commitID, commitProducer: .actual)
+    }
+
+    internal mutating func markCompletionSent(
+        commitID: UUID,
+        commitProducer: BelugaRustPairingCommitProducer
+    ) throws {
+        _ = try checkedPairingCommitPlan(
+            .markCompletionSent,
+            commitIDMatches: self.commitID == commitID,
+            producer: commitProducer
+        )
+        // Boundary requires an exact unchanged candidate. Send never activates or retires.
     }
 
     /// Viewer authenticates completion, persists active state, and returns an idempotent signed
@@ -343,28 +375,30 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         _ completion: RemotePairingCommit,
         using identity: RemoteDeviceIdentity
     ) throws -> RemotePairingCommit {
+        try acceptCompletion(completion, using: identity, commitProducer: .actual)
+    }
+
+    internal mutating func acceptCompletion(
+        _ completion: RemotePairingCommit,
+        using identity: RemoteDeviceIdentity,
+        commitProducer: BelugaRustPairingCommitProducer,
+        constructionProbe: BelugaPairingCommitConstructionProbe = .none
+    ) throws -> RemotePairingCommit {
         try validateLocalIdentity(identity, expectedRole: .viewer)
-        guard localRole == .viewer else {
-            throw RemoteSessionCoreError.invalidPairingCommit
+        let plan = try checkedPairingCommitPlan(
+            .acceptCompletion, incoming: completion, producer: commitProducer
+        )
+        // Active/missing-cache refusal is post-auth, not a pre-auth cache check.
+        if plan.action == .exactCachedCommit { return try exactRecoveryCommit() }
+        guard plan.action == .mintActivation else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         }
-        if pairingState == .active {
-            try verifyPeerCommit(completion, expectedPhase: .completion)
-            guard let recoveryCommit,
-                  recoveryCommit.phase == .activationAcknowledgement else {
-                throw RemoteSessionCoreError.invalidPairingCommit
-            }
-            return recoveryCommit
-        }
-        guard pairingState == .acceptedIssued else {
-            throw RemoteSessionCoreError.invalidPairingCommit
-        }
-        try verifyPeerCommit(completion, expectedPhase: .completion)
+        try constructionProbe.before(.activationAcknowledgement)
         let acknowledgement = try makeLocalCommit(
             phase: .activationAcknowledgement,
             identity: identity
         )
-        pairingState = .active
-        recoveryCommit = acknowledgement
+        try applyPairingCommitPlan(plan, mintedCommit: acknowledgement)
         return acknowledgement
     }
 
@@ -372,16 +406,121 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
     public mutating func acceptActivationAcknowledgement(
         _ acknowledgement: RemotePairingCommit
     ) throws {
-        guard localRole == .host,
-              pairingState == .acceptedReceived || pairingState == .active else {
+        try acceptActivationAcknowledgement(acknowledgement, commitProducer: .actual)
+    }
+
+    internal mutating func acceptActivationAcknowledgement(
+        _ acknowledgement: RemotePairingCommit,
+        commitProducer: BelugaRustPairingCommitProducer
+    ) throws {
+        let plan = try checkedPairingCommitPlan(
+            .acceptActivationAcknowledgement, incoming: acknowledgement, producer: commitProducer
+        )
+        guard plan.action == .none else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
+        }
+        try applyPairingCommitPlan(plan)
+    }
+
+    private func pairingCommitPlan(
+        _ operation: BelugaRustPairingCommitBoundary.Operation,
+        commitIDMatches: Bool = false,
+        producer: BelugaRustPairingCommitProducer
+    ) throws -> BelugaRustPairingCommitBoundary.Plan {
+        try BelugaRustPairingCommitBoundary.plan(
+            before: BelugaRustPairingCommitBoundary.state(
+                role: localRole,
+                pairingState: pairingState,
+                recoveryPhase: recoveryCommit?.phase
+            ),
+            event: BelugaRustPairingCommitBoundary.event(
+                operation, commitIDMatches: commitIDMatches
+            ),
+            producer: producer
+        )
+    }
+
+    private func checkedPairingCommitPlan(
+        _ operation: BelugaRustPairingCommitBoundary.Operation,
+        incoming: RemotePairingCommit? = nil,
+        commitIDMatches: Bool = false,
+        producer: BelugaRustPairingCommitProducer
+    ) throws -> BelugaRustPairingCommitBoundary.Plan {
+        let plan = try pairingCommitPlan(
+            operation, commitIDMatches: commitIDMatches, producer: producer
+        )
+        switch plan.decision {
+        case .preAuthRejected: throw RemoteSessionCoreError.invalidPairingCommit
+        case .invalidStoredShape: throw RemoteSessionCoreError.invalidPairedDeviceRecord
+        case .invalidInput: throw RemoteSessionCoreError.invalidPairingCommitBridge
+        case .ready, .postAuthRejected: break
+        }
+        switch plan.auth {
+        case .none: break
+        case .proposal, .acknowledgement, .completion, .activation:
+            guard let incoming else { throw RemoteSessionCoreError.invalidPairingCommitBridge }
+            let expectedPhase: RemotePairingCommitPhase = switch plan.auth {
+            case .proposal: .proposal
+            case .acknowledgement: .acknowledgement
+            case .completion: .completion
+            case .activation: .activationAcknowledgement
+            case .none: throw RemoteSessionCoreError.invalidPairingCommitBridge
+            }
+            try verifyPeerCommit(incoming, expectedPhase: expectedPhase)
+        }
+        if plan.decision == .postAuthRejected {
             throw RemoteSessionCoreError.invalidPairingCommit
         }
-        try verifyPeerCommit(
-            acknowledgement,
-            expectedPhase: .activationAcknowledgement
-        )
-        pairingState = .active
-        recoveryCommit = nil
+        return plan
+    }
+
+    private func exactRecoveryCommit() throws -> RemotePairingCommit {
+        guard let recoveryCommit else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
+        }
+        return recoveryCommit
+    }
+
+    /// Commits only the prevalidated candidate after real auth/constructor success.
+    /// No FFI call occurs here; counters, immutable fields and encoding are untouched.
+    private mutating func applyPairingCommitPlan(
+        _ plan: BelugaRustPairingCommitBoundary.Plan,
+        mintedCommit: RemotePairingCommit? = nil
+    ) throws {
+        let nextRecovery: RemotePairingCommit?
+        if let mintedCommit {
+            let expectedMintPhase: RemotePairingCommitPhase
+            switch plan.action {
+            case .mintProposal: expectedMintPhase = .proposal
+            case .mintAcknowledgement: expectedMintPhase = .acknowledgement
+            case .mintCompletion: expectedMintPhase = .completion
+            case .mintActivation: expectedMintPhase = .activationAcknowledgement
+            case .none, .awaitProposal, .issueProposal, .exactCachedCommit,
+                 .issueCompletion, .verifyStoredRecovery:
+                throw RemoteSessionCoreError.invalidPairingCommitBridge
+            }
+            guard mintedCommit.phase == expectedMintPhase else {
+                throw RemoteSessionCoreError.invalidPairingCommitBridge
+            }
+            if let candidatePhase = plan.candidateRecoveryPhase {
+                guard mintedCommit.phase == candidatePhase else {
+                    throw RemoteSessionCoreError.invalidPairingCommitBridge
+                }
+                nextRecovery = mintedCommit
+            } else {
+                // The sole admitted ephemeral mint is active-host completion replay.
+                nextRecovery = nil
+            }
+        } else if let candidatePhase = plan.candidateRecoveryPhase {
+            guard let recoveryCommit, recoveryCommit.phase == candidatePhase else {
+                throw RemoteSessionCoreError.invalidPairingCommitBridge
+            }
+            nextRecovery = recoveryCommit
+        } else {
+            nextRecovery = nil
+        }
+        pairingState = plan.candidatePairingState
+        recoveryCommit = nextRecovery
     }
 
     internal var rootKeyMaterial: Data { pairRootKey }
@@ -480,39 +619,13 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
         )
     }
 
-    private func validatePersistenceState() throws {
-        let expectedRecoveryPhase: RemotePairingCommitPhase?
-        let recoveryMayBeAbsent: Bool
-        switch (localRole, pairingState) {
-        case (.host, .pending):
-            expectedRecoveryPhase = .proposal
-            recoveryMayBeAbsent = true
-        case (.host, .acceptedReceived):
-            expectedRecoveryPhase = .completion
-            recoveryMayBeAbsent = true
-        case (.host, .active):
-            expectedRecoveryPhase = nil
-            recoveryMayBeAbsent = true
-        case (.viewer, .pending):
-            expectedRecoveryPhase = nil
-            recoveryMayBeAbsent = true
-        case (.viewer, .acceptedIssued):
-            expectedRecoveryPhase = .acknowledgement
-            recoveryMayBeAbsent = false
-        case (.viewer, .active):
-            expectedRecoveryPhase = .activationAcknowledgement
-            recoveryMayBeAbsent = false
-        case (.host, .acceptedIssued), (.viewer, .acceptedReceived):
-            throw RemoteSessionCoreError.invalidPairedDeviceRecord
-        }
-
-        guard let recoveryCommit else {
-            guard recoveryMayBeAbsent else {
-                throw RemoteSessionCoreError.invalidPairedDeviceRecord
-            }
-            return
-        }
-        guard let expectedRecoveryPhase,
+    internal func validatePersistenceState(
+        commitProducer: BelugaRustPairingCommitProducer = .actual
+    ) throws {
+        let plan = try checkedPairingCommitPlan(.validateStoredShape, producer: commitProducer)
+        guard let recoveryCommit else { return }
+        guard plan.action == .verifyStoredRecovery,
+              let expectedRecoveryPhase = plan.candidateRecoveryPhase,
               recoveryCommit.protocolVersion == RemotePairingCommit.currentProtocolVersion,
               recoveryCommit.isStructurallyValid,
               recoveryCommit.phase == expectedRecoveryPhase,
@@ -646,7 +759,8 @@ public struct RemotePairedDeviceRecord: Codable, Equatable, Sendable,
                     UInt64.self,
                     forKey: .highestAcceptedReconnectSequence
                 ),
-                version: container.decode(UInt8.self, forKey: .version)
+                version: container.decode(UInt8.self, forKey: .version),
+                decodeSelection: BelugaPairingCommitDecodeSelection.capture(from: decoder)
             )
         } catch let error as RemoteSessionCoreError {
             throw error

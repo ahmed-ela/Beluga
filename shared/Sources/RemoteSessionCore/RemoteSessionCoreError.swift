@@ -21,6 +21,7 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
     case pairingRoleConflict
     case pairingTranscriptMismatch
     case invalidPairingCommit
+    case invalidPairingCommitBridge
     case invalidPairedDeviceRecord
     case deviceIdentityMismatch
     case invalidReconnectMessage
@@ -69,6 +70,8 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "The pairing transcript does not match."
         case .invalidPairingCommit:
             "The pairing commit is invalid."
+        case .invalidPairingCommitBridge:
+            "The pairing commit policy could not be verified."
         case .invalidPairedDeviceRecord:
             "The paired-device record is invalid."
         case .deviceIdentityMismatch:

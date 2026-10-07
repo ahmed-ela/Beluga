@@ -37,15 +37,18 @@ final class ViewerPairedMacCatalogStore: ViewerPairedMacCatalogStoring {
 
     private let compatibilityStore: any ViewerPairingStoring
     private let dataStore: any ViewerPairedMacCatalogDataStoring
+    private let pairedRecordDecodeFault: UInt32?
 
     init(
         compatibilityStore: any ViewerPairingStoring = ViewerPairingNamespaceSelectorStore(),
         dataStore: any ViewerPairedMacCatalogDataStoring = KeychainStore(item: .init(
             service: "org.example.AudioStreamer", account: "worldwide-paired-macs-catalog"
-        ))
+        )),
+        pairedRecordDecodeFault: UInt32? = nil
     ) {
         self.compatibilityStore = compatibilityStore
         self.dataStore = dataStore
+        self.pairedRecordDecodeFault = pairedRecordDecodeFault
     }
 
     func loadOrCreateViewerIdentity() throws -> RemoteDeviceIdentity {
@@ -148,9 +151,17 @@ final class ViewerPairedMacCatalogStore: ViewerPairedMacCatalogStoring {
             throw ViewerPairingStoreError.viewerIdentityConflict
         }
         if let data = try dataStore.loadData() {
-            guard data.count <= 256 * 1024,
-                  let catalog = try? JSONDecoder().decode(Catalog.self, from: data),
-                  catalog.version == 1,
+            guard data.count <= 256 * 1024 else { throw ViewerPairedMacCatalogError.invalidCatalog }
+            let catalog: Catalog
+            do {
+                catalog = try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                    .decode(Catalog.self, from: data)
+            } catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge {
+                throw error
+            } catch {
+                throw ViewerPairedMacCatalogError.invalidCatalog
+            }
+            guard catalog.version == 1,
                   catalog.viewerDeviceID == identity.deviceID,
                   catalog.viewerSigningPublicKey == identity.signingPublicKey,
                   catalog.records.count <= Self.maximumMacCount,
