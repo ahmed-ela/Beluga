@@ -142,6 +142,186 @@ final class BelugaUpdateSparkleSessionTests: XCTestCase {
     }
 
     @MainActor
+    func testCheckPrefixNeverQueriesNativeAuthorityForIneligibleCallbacks() throws {
+        let h = Harness()
+        let session = h.makeSession()
+        XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+            XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .foreignUpdater)
+        }
+        XCTAssertEqual(h.retainedQueries, 0)
+        h.engine.onStart = {
+            let before = h.retainedQueries
+            do {
+                try session.admitCheck(from: h.engine.identity, check: .updates)
+                XCTFail("A starting engine admitted a manual check")
+            } catch {
+                XCTAssertEqual(error as? BelugaUpdateSparkleSession.SessionError, .authorityNotRetained)
+            }
+            XCTAssertEqual(h.retainedQueries, before)
+        }
+        try session.startManualCheck()
+        h.engine.onStart = nil
+        let baseline = h.retainedQueries
+        for check in [SPUUpdateCheck.updates, .updatesInBackground, .updateInformation] {
+            XCTAssertThrowsError(try session.admitCheck(from: NSObject(), check: check)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .foreignUpdater)
+            }
+        }
+        for check in [SPUUpdateCheck.updatesInBackground, .updateInformation] {
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: check)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .nonManualCheck)
+            }
+        }
+        XCTAssertEqual(h.retainedQueries, baseline)
+        h.retained = false
+        XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+            XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .authorityNotRetained)
+        }
+        XCTAssertEqual(h.retainedQueries, baseline + 1)
+        h.retained = true
+        try session.admitCheck(from: h.engine.identity, check: .updates)
+        XCTAssertEqual(h.retainedQueries, baseline + 2)
+        XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+            XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .checkNotRequested)
+        }
+        XCTAssertEqual(h.retainedQueries, baseline + 3)
+    }
+
+    @MainActor
+    func testAuthorityReentryConsumesFreshRequestAndOuterDenialPreservesNestedCycle() throws {
+        for outerRetained in [true, false] {
+            let h = Harness()
+            let session = h.makeSession()
+            try session.startManualCheck()
+            let baseline = h.retainedQueries
+            var nested = false
+            h.onRetained = { _ in
+                if nested { return true }
+                nested = true
+                do { try session.admitCheck(from: h.engine.identity, check: .updates) }
+                catch { XCTFail("Nested exact check was denied: \(error)") }
+                return outerRetained
+            }
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError,
+                    outerRetained ? .checkNotRequested : .authorityNotRetained)
+            }
+            XCTAssertEqual(h.retainedQueries, baseline + 2)
+            h.onRetained = nil
+            // A denial must not erase the successful nested native cycle.
+            try session.admitUpdate(from: h.engine.identity, item: SUAppcastItem.empty(), check: .updates)
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .checkNotRequested)
+            }
+            XCTAssertTrue(h.observations.isEmpty)
+        }
+    }
+
+    @MainActor
+    func testAuthorityCompletionReentryReadsFreshRequestWithoutNewStateGuard() throws {
+        for installed in [true, false] {
+            let h = Harness()
+            let session = h.makeSession()
+            try session.startManualCheck()
+            let baseline = h.retainedQueries
+            h.onRetained = { _ in
+                if installed { h.engine.userDriver?.showUpdateInstalledAndRelaunched(true) {} }
+                else { session.finishedCycle(from: h.engine.identity, check: .updates, error: nil) }
+                return true
+            }
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                // Original checks state before the callback, then checks the fresh request.
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .checkNotRequested)
+            }
+            XCTAssertEqual(h.retainedQueries, baseline + 1)
+            h.onRetained = nil
+            XCTAssertEqual(h.observationNames, installed ? ["installed"] : ["cycle"])
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .authorityNotRetained)
+            }
+            XCTAssertEqual(h.retainedQueries, baseline + 1)
+        }
+    }
+
+    @MainActor
+    func testCopiedPolicyRefusalNeverQueriesOrConsumesPendingNativeRequest() throws {
+        for phase: UInt32 in [1, 2] {
+            for field in 0..<3 {
+                let h = Harness()
+                let once = AdmissionCorruptionOnce(phase: phase, field: field)
+                let session = h.makeSession(admissionResultMutation: { request, result in
+                    once.mutate(request, result)
+                })
+                try session.startManualCheck()
+                let baseline = h.retainedQueries
+                XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                    XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .admissionPolicyRefused)
+                }
+                XCTAssertEqual(h.retainedQueries, baseline + (phase == 1 ? 0 : 1))
+                XCTAssertThrowsError(try session.admitUpdate(from: h.engine.identity,
+                    item: SUAppcastItem.empty(), check: .updates))
+                // The next genuine export can consume the same still-pending request.
+                try session.admitCheck(from: h.engine.identity, check: .updates)
+                try session.admitUpdate(from: h.engine.identity, item: SUAppcastItem.empty(), check: .updates)
+                XCTAssertTrue(h.observations.isEmpty)
+            }
+        }
+    }
+
+    @MainActor
+    func testCoherentWrongPhaseResultsCannotQueryOrAdmitNativeCycle() throws {
+        for phase: UInt32 in [1, 2] {
+            let h = Harness()
+            let session = h.makeSession(admissionResultMutation: { request, result in
+                guard request.phase == phase else { return result }
+                return .init(abi_version: 1, status: 0, action: phase == 1 ? 6 : 5)
+            })
+            try session.startManualCheck()
+            let baseline = h.retainedQueries
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .admissionPolicyRefused)
+            }
+            XCTAssertEqual(h.retainedQueries, baseline + (phase == 1 ? 0 : 1))
+            XCTAssertThrowsError(try session.admitUpdate(from: h.engine.identity,
+                item: SUAppcastItem.empty(), check: .updates))
+            XCTAssertTrue(h.observations.isEmpty)
+        }
+    }
+
+    @MainActor
+    func testOuterCopiedRefusalPreservesNestedAdmissionAndConsumedRequest() throws {
+        for outerRetained in [true, false] {
+            let h = Harness()
+            let session = h.makeSession(admissionResultMutation: { request, result in
+                // Nested finish is flags3. Only corrupt the later outer denial.
+                guard request.phase == 2, request.flags != 3 else { return result }
+                return .init(abi_version: 1, status: 0, action: 6)
+            })
+            try session.startManualCheck()
+            var nested = false
+            h.onRetained = { _ in
+                if nested { return true }
+                nested = true
+                do { try session.admitCheck(from: h.engine.identity, check: .updates) }
+                catch { XCTFail("Nested admission unexpectedly refused: \(error)") }
+                return outerRetained
+            }
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .admissionPolicyRefused)
+            }
+            h.onRetained = nil
+            try session.admitUpdate(from: h.engine.identity, item: SUAppcastItem.empty(), check: .updates)
+            // This seam corrupts only denial flags, not a real pending request.
+            // If outer refusal wrongly restored the request, this call would succeed.
+            XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+                XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .admissionPolicyRefused)
+            }
+            XCTAssertTrue(h.retained)
+            XCTAssertTrue(h.observations.isEmpty)
+        }
+    }
+
+    @MainActor
     func testInstallAndRetryUseExactOperationGateBeforeForwarding() throws {
         let harness = Harness()
         let session = harness.makeSession()
@@ -1245,6 +1425,163 @@ final class BelugaUpdateSparkleSessionTests: XCTestCase {
     }
 }
 
+// SOURCE-ONLY insertion into the existing session test file. Not a new target.
+extension BelugaUpdateSparkleSessionTests {
+    @MainActor
+    func testActualPrivateBrokerUnarmedProducerABIControlHasAttributedLeaseWitness() throws {
+        let fixture = try PrivateBrokerFixture()
+        defer { fixture.remove() }
+        let reacquisition = try observeActualPrivateBrokerUnarmedControl(
+            fixture: fixture, probe: "producer_abi_2")
+        XCTAssertNoThrow(try reacquisition.get(),
+                         "UNARMED_PRODUCER_ABI_CONTROL_BASELINE_REACQUIRE")
+    }
+
+    @MainActor
+    func testActualPrivateBrokerUnarmedVerifierTwoControlHasAttributedLeaseWitness() throws {
+        let fixture = try PrivateBrokerFixture()
+        defer { fixture.remove() }
+        let reacquisition = try observeActualPrivateBrokerUnarmedControl(
+            fixture: fixture, probe: "verifier_return_2")
+        XCTAssertNoThrow(try reacquisition.get(),
+                         "UNARMED_VERIFIER_TWO_CONTROL_BASELINE_REACQUIRE")
+    }
+
+    @MainActor
+    private func observeActualPrivateBrokerUnarmedControl(
+        fixture: PrivateBrokerFixture, probe: String
+    ) throws -> Result<Void, Error> {
+        let broker = try BelugaUpdateBrokerSession(
+            context: fixture.context, acquireOwnership: { try fixture.acquire() })
+        let h = Harness(target: fixture.bundle, operationID: fixture.operationID)
+        var nativeSession: BelugaUpdateSparkleSession?
+        defer { nativeSession = nil }
+        var retirements = [BelugaUpdateUnarmedCompletion]()
+        var currentProofChecks = 0
+        var retainedAuthorityReads = 0
+        let authority = BelugaUpdateSparkleSession.Authority(
+            withPreparedAuthority: { operationID, body in
+                try broker.prepare(operationID: operationID, predecessorMenuInstanceID: UUID(),
+                    controlledHistory: .init(verify: { _, _, _ in }),
+                    verifyPredecessor: { _ in try fixture.predecessor() })
+                try broker.bindBroker(.init(artifact: fixture.predecessor(),
+                                             nativeCDHash: Data(repeating: 7, count: 20)),
+                                      operationID: operationID, target: fixture.context.target)
+                h.retained = true
+                try broker.startUpdater(operationID: operationID, target: fixture.context.target, body)
+            }, isRetained: { operationID in
+                retainedAuthorityReads += 1
+                return broker.ownsLease && broker.operationID == operationID && broker.state == .started
+            }, bindCandidate: { _, _ in
+                XCTFail("Unarmed no-update probe must not bind a candidate")
+                throw TestFailure.refused
+            }, authorizeInstallation: { _ in
+                XCTFail("Unarmed no-update probe must not authorize installation")
+                return false
+            }, mayTerminateTarget: { _ in
+                XCTFail("Unarmed no-update probe must not request target termination")
+                return false
+            }, retirePreparedUnarmed: { completion in
+                retirements.append(completion)
+                try broker.retirePreparedUnarmed(completion, verifyCompletion: { value in
+                    currentProofChecks += 1
+                    guard nativeSession?.isCurrentUnarmedCompletion(value) == true else {
+                        throw TestFailure.refused
+                    }
+                    XCTAssertTrue(broker.ownsLease)
+                    XCTAssertThrowsError(try fixture.acquire()) {
+                        XCTAssertEqual($0 as? WorldwideHostProcessLockError, .alreadyRunning)
+                    }
+                }, verifyPredecessor: { _ in try fixture.predecessor() })
+            })
+        let session = h.makeSession(authority: authority)
+        nativeSession = session
+        try session.startManualCheck()
+        try session.admitCheck(from: h.engine.identity, check: .updates)
+        let error = manualNoUpdateError()
+        session.noUpdate(from: h.engine.identity, error: error)
+        let prepared = try fixture.current()
+        XCTAssertEqual(prepared.operation.stage, .prepared)
+        XCTAssertEqual(broker.state, .started)
+        XCTAssertTrue(broker.ownsLease)
+        XCTAssertEqual(broker.recordSHA256, prepared.recordSHA256)
+        XCTAssertThrowsError(try fixture.acquire()) {
+            XCTAssertEqual($0 as? WorldwideHostProcessLockError, .alreadyRunning)
+        }
+        session.aborted(from: h.engine.identity, error: error)
+        let readsBeforeFinish = retainedAuthorityReads
+        session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+        let readsThroughFinish = retainedAuthorityReads - readsBeforeFinish
+
+        let afterFence = Result { try fixture.store.read(expectedTarget: fixture.context.target) }
+        XCTAssertNoThrow(try afterFence.get(), "Probe fence read must not be infrastructure failure")
+        let reacquisition: Result<Void, Error> = Result {
+            let next = try fixture.acquire()
+            next.release()
+        }
+        guard case .success(let currentFence) = afterFence else { return reacquisition }
+
+        switch reacquisition {
+        case .success:
+            XCTAssertEqual(retirements.map(\.reason), [.noUpdate])
+            XCTAssertEqual(currentProofChecks, 2)
+            XCTAssertEqual(readsThroughFinish, 4)
+            XCTAssertEqual(broker.state, .cleared)
+            XCTAssertFalse(broker.ownsLease)
+            XCTAssertNil(currentFence)
+            XCTAssertEqual(h.observationNames, ["no-update", "aborted", "cycle", "unarmed-retired"])
+            writeUnarmedSessionControlWitness("BELUGA_UNARMED_SESSION_CONTROL_WITNESS probe=\(probe) outcome=completed " +
+                  "retirement_calls=\(retirements.count) proof_checks=\(currentProofChecks) " +
+                  "authority_delta=\(readsThroughFinish) " +
+                  "lease_owned=\(broker.ownsLease ? 1 : 0) fence_absent=\(currentFence == nil ? 1 : 0) " +
+                  "reacquire=success events=\(h.observationNames.joined(separator: ","))")
+        case .failure(let acquisitionError):
+            XCTAssertEqual(acquisitionError as? WorldwideHostProcessLockError, .alreadyRunning)
+            XCTAssertTrue(retirements.isEmpty)
+            XCTAssertEqual(currentProofChecks, 0)
+            XCTAssertEqual(readsThroughFinish, 1)
+            XCTAssertEqual(broker.state, .started)
+            XCTAssertTrue(broker.ownsLease)
+            XCTAssertEqual(broker.operationID, fixture.operationID)
+            XCTAssertEqual(broker.recordSHA256, prepared.recordSHA256)
+            XCTAssertEqual(currentFence, prepared)
+            XCTAssertEqual(h.observationNames, ["no-update", "aborted", "cycle"])
+            let samePreparedFence = currentFence == prepared
+            let retainedBroker = broker.state == .started && broker.ownsLease &&
+                broker.operationID == fixture.operationID &&
+                broker.recordSHA256 == prepared.recordSHA256
+            let lockError = (acquisitionError as? WorldwideHostProcessLockError) == .alreadyRunning
+            writeUnarmedSessionControlWitness("BELUGA_UNARMED_SESSION_CONTROL_WITNESS probe=\(probe) outcome=refused " +
+                  "retirement_calls=\(retirements.count) proof_checks=\(currentProofChecks) " +
+                  "authority_delta=\(readsThroughFinish) " +
+                  "lease_owned=\(broker.ownsLease ? 1 : 0) " +
+                  "prepared_fence_unchanged=\(samePreparedFence ? 1 : 0) " +
+                  "broker_retained=\(retainedBroker ? 1 : 0) " +
+                  "reacquire=\(lockError ? "already_running" : "other_error") " +
+                  "events=\(h.observationNames.joined(separator: ","))")
+        }
+        XCTAssertEqual(h.engine.starts, 1)
+        XCTAssertEqual(h.engine.checks, 1)
+        XCTAssertTrue(h.installRequests.isEmpty)
+        let readsBeforeTerminalProbe = retainedAuthorityReads
+        var terminalRefused = false
+        XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+            XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .authorityNotRetained)
+            terminalRefused = ($0 as? BelugaUpdateSparkleSession.SessionError) == .authorityNotRetained
+        }
+        XCTAssertEqual(retainedAuthorityReads, readsBeforeTerminalProbe)
+        writeUnarmedSessionControlWitness("BELUGA_UNARMED_SESSION_TERMINAL_WITNESS probe=\(probe) " +
+              "authority_not_retained=\(terminalRefused ? 1 : 0) " +
+              "authority_delta=\(retainedAuthorityReads - readsBeforeTerminalProbe)")
+        return reacquisition
+    }
+
+    /// Synchronous stderr keeps exact witness bytes inside the ordinary test interval.
+    private func writeUnarmedSessionControlWitness(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
+}
+
 @MainActor
 private final class Harness {
     let operationID: UUID
@@ -1274,6 +1611,8 @@ private final class Harness {
     var unarmedRetirements = [BelugaUpdateUnarmedCompletion]()
     var retirementError: Error?
     var onObservation: ((BelugaUpdateSparkleSession.Observation) -> Void)?
+    var retainedQueries = 0
+    var onRetained: ((UUID) -> Bool)?
     private weak var currentSession: BelugaUpdateSparkleSession?
 
     init(target: Bundle = .main, operationID: UUID = UUID()) {
@@ -1288,7 +1627,8 @@ private final class Harness {
         return item
     }
 
-    func makeSession(authority suppliedAuthority: BelugaUpdateSparkleSession.Authority? = nil)
+    func makeSession(authority suppliedAuthority: BelugaUpdateSparkleSession.Authority? = nil,
+                     admissionResultMutation: BelugaRustSparkleAdmission.ResultMutation? = nil)
         -> BelugaUpdateSparkleSession {
         engine.event = { [self] in events.append($0) }
         var retirementHandler: (@MainActor (BelugaUpdateUnarmedCompletion) throws -> Void)?
@@ -1309,7 +1649,10 @@ private final class Harness {
                 try body()
                 if preparation == .twice { try body() }
                 if preparation == .failAfterBody { throw TestFailure.refused }
-            }, isRetained: { [self] in $0 == operationID && retained },
+            }, isRetained: { [self] value in
+                retainedQueries += 1
+                return onRetained?(value) ?? (value == operationID && retained)
+            },
             bindCandidate: { [self] value, candidate in
                 XCTAssertEqual(value, operationID)
                 if let bindingError { throw bindingError }
@@ -1351,6 +1694,7 @@ private final class Harness {
         })
         let session = BelugaUpdateSparkleSession(targetBundle: target, operationID: operationID,
             authority: suppliedAuthority ?? authority, verifiedFeedURLString: feed, factory: factory,
+            admissionResultMutation: admissionResultMutation,
             observe: { [self] in observations.append($0); onObservation?($0) })
         currentSession = session
         return session
@@ -1376,6 +1720,28 @@ private final class Harness {
             case .unarmedRetirementFailed: "unarmed-retirement-failed"
             }
         }
+    }
+}
+
+/// Thread-safe copied-result test seam only, never a substitute verifier/authority.
+private final class AdmissionCorruptionOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private let phase: UInt32
+    private let field: Int
+    private var consumed = false
+    init(phase: UInt32, field: Int) { self.phase = phase; self.field = field }
+    func mutate(_ request: BelugaRustSparkleAdmission.Request,
+                _ actual: BelugaRustSparkleAdmission.Result) -> BelugaRustSparkleAdmission.Result {
+        lock.lock(); defer { lock.unlock() }
+        guard request.phase == phase, !consumed else { return actual }
+        consumed = true
+        var result = actual
+        switch field {
+        case 0: result.abi_version = 2
+        case 1: result.status = 1
+        default: result.action = result.action % 6 + 1
+        }
+        return result
     }
 }
 
@@ -1525,4 +1891,288 @@ private struct PrivateBrokerFixture {
                   dependencyClosureSHA256: String(repeating: "d", count: 64))
     }
     func remove() { try? FileManager.default.removeItem(at: root) }
+}
+
+// Additive actual production-adapter tests; not genuine SPUUpdater callback delivery.
+extension BelugaUpdateSparkleSessionTests {
+    @MainActor
+    func testMatchedAbortPreservesNativeNSErrorIdentityAndObservation() throws {
+        for mode in 0..<4 {
+            let h = Harness(); h.enableUnarmedRetirement = true
+            let session = h.makeSession()
+            try session.startManualCheck()
+            try session.admitCheck(from: h.engine.identity, check: .updates)
+            let error = mode == 1 ? initialFeedError(.downloadError) : manualNoUpdateError()
+            if mode == 1 {
+                let driver = try XCTUnwrap(h.engine.userDriver)
+                driver.showUserInitiatedUpdateCheck {}
+                driver.showUpdaterError(error) {}
+            } else {
+                session.noUpdate(from: h.engine.identity, error: error)
+            }
+            let supplied = mode == 2 ?
+                NSError(domain: error.domain, code: error.code, userInfo: error.userInfo) : error
+            if mode == 2 { XCTAssertFalse(supplied === error) }
+            if mode == 3 {
+                let observationsBefore = h.observations.count
+                let queriesBefore = h.retainedQueries
+                session.aborted(from: NSObject(), error: supplied)
+                XCTAssertEqual(h.observations.count, observationsBefore)
+                XCTAssertEqual(h.retainedQueries, queriesBefore)
+                XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            }
+            let observationsBefore = h.observations.count
+            let queriesBefore = h.retainedQueries
+            session.aborted(from: h.engine.identity, error: supplied)
+            XCTAssertEqual(h.observations.count, observationsBefore + 1)
+            XCTAssertEqual(h.retainedQueries, queriesBefore)
+            let observation = try XCTUnwrap(h.observations.last)
+            XCTAssertTrue(assertAbortAdapterPayload(observation, supplied: supplied,
+                                                    operationID: h.operationID))
+            XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            if mode == 2 {
+                XCTAssertTrue(h.unarmedRetirements.isEmpty)
+                XCTAssertEqual(h.observationNames, ["no-update", "aborted", "cycle"])
+            } else if mode == 1 {
+                XCTAssertEqual(h.unarmedRetirements.map(\.reason), [.failedInitialCheck(.feedFetch)])
+                XCTAssertEqual(h.observationNames, ["aborted", "cycle", "unarmed-retired"])
+            } else {
+                XCTAssertEqual(h.unarmedRetirements.map(\.reason), [.noUpdate])
+                XCTAssertEqual(h.observationNames, ["no-update", "aborted", "cycle", "unarmed-retired"])
+            }
+            XCTAssertTrue(h.observations.allSatisfy { $0.operationID == h.operationID })
+            XCTAssertEqual(h.engine.starts, 1)
+            XCTAssertEqual(h.engine.checks, 1)
+            XCTAssertTrue(h.boundCandidates.isEmpty)
+            XCTAssertTrue(h.installRequests.isEmpty)
+            XCTAssertEqual(h.terminationRequests, 0)
+        }
+    }
+
+    @MainActor
+    func testDuplicateAcknowledgedAbortPoisonsWhileStillDeliveringOriginalEvent() throws {
+        for outOfOrder in [false, true] {
+            let h = Harness(); h.enableUnarmedRetirement = true
+            h.ui.deferErrorAcknowledgements = true
+            let session = h.makeSession()
+            try session.startManualCheck()
+            try session.admitCheck(from: h.engine.identity, check: .updates)
+            let driver = try XCTUnwrap(h.engine.userDriver)
+            driver.showUserInitiatedUpdateCheck {}
+            let error = initialFeedError(.downloadError)
+            var sdkAcknowledgements = 0
+            driver.showUpdaterError(error) { sdkAcknowledgements += 1 }
+            if !outOfOrder { h.ui.errorAcknowledgements[0]() }
+            for ordinal in 0..<2 {
+                if outOfOrder && ordinal == 1 { h.ui.errorAcknowledgements[0]() }
+                let observationsBefore = h.observations.count
+                let queriesBefore = h.retainedQueries
+                session.aborted(from: h.engine.identity, error: error)
+                XCTAssertEqual(h.observations.count, observationsBefore + 1)
+                XCTAssertEqual(h.retainedQueries, queriesBefore)
+                let observation = try XCTUnwrap(h.observations.last)
+                XCTAssertTrue(assertAbortAdapterPayload(observation, supplied: error,
+                                                        operationID: h.operationID))
+                XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            }
+            XCTAssertEqual(sdkAcknowledgements, 1)
+            session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+            XCTAssertTrue(h.unarmedRetirements.isEmpty)
+            XCTAssertEqual(h.observationNames, ["aborted", "aborted", "cycle"])
+            XCTAssertTrue(h.observations.allSatisfy { $0.operationID == h.operationID })
+            XCTAssertEqual(h.engine.starts, 1)
+            XCTAssertEqual(h.engine.checks, 1)
+            XCTAssertTrue(h.boundCandidates.isEmpty)
+            XCTAssertTrue(h.installRequests.isEmpty)
+            XCTAssertEqual(h.terminationRequests, 0)
+        }
+    }
+
+    @MainActor
+    func testActualPrivateBrokerAbortProducerABIControlHasAttributedLeaseWitness() throws {
+        let fixture = try PrivateBrokerFixture()
+        defer { fixture.remove() }
+        let reacquisition = try observeActualPrivateBrokerAbortControl(
+            fixture: fixture, probe: "abort_producer_abi_2")
+        XCTAssertNoThrow(try reacquisition.get(),
+                         "ABORT_PRODUCER_ABI_CONTROL_BASELINE_REACQUIRE")
+    }
+
+    @MainActor
+    func testActualPrivateBrokerAbortVerifierTwoControlHasAttributedLeaseWitness() throws {
+        let fixture = try PrivateBrokerFixture()
+        defer { fixture.remove() }
+        let reacquisition = try observeActualPrivateBrokerAbortControl(
+            fixture: fixture, probe: "abort_verifier_return_2")
+        XCTAssertNoThrow(try reacquisition.get(),
+                         "ABORT_VERIFIER_TWO_CONTROL_BASELINE_REACQUIRE")
+    }
+
+    @MainActor
+    func testActualPrivateBrokerAbortCoherentActionControlHasAttributedLeaseWitness() throws {
+        let fixture = try PrivateBrokerFixture()
+        defer { fixture.remove() }
+        let reacquisition = try observeActualPrivateBrokerAbortControl(
+            fixture: fixture, probe: "abort_coherent_wrong_action")
+        XCTAssertNoThrow(try reacquisition.get(),
+                         "ABORT_COHERENT_ACTION_CONTROL_BASELINE_REACQUIRE")
+    }
+
+    @MainActor
+    private func assertAbortAdapterPayload(
+        _ observation: BelugaUpdateSparkleSession.Observation, supplied: NSError,
+        operationID: UUID
+    ) -> Bool {
+        XCTAssertEqual(observation.operationID, operationID)
+        guard case .aborted(let delivered) = observation.event else {
+            XCTFail("Matched production abort adapter must deliver its original aborted event")
+            return false
+        }
+        let exact = (delivered as NSError) === supplied
+        XCTAssertTrue(exact, "Matched abort must preserve supplied NSError object identity")
+        return exact && observation.operationID == operationID
+    }
+
+    @MainActor
+    private func observeActualPrivateBrokerAbortControl(
+        fixture: PrivateBrokerFixture, probe: String
+    ) throws -> Result<Void, Error> {
+        let broker = try BelugaUpdateBrokerSession(
+            context: fixture.context, acquireOwnership: { try fixture.acquire() })
+        let h = Harness(target: fixture.bundle, operationID: fixture.operationID)
+        var nativeSession: BelugaUpdateSparkleSession?
+        defer { nativeSession = nil }
+        var retirements = [BelugaUpdateUnarmedCompletion]()
+        var currentProofChecks = 0
+        var retainedAuthorityReads = 0
+        let authority = BelugaUpdateSparkleSession.Authority(
+            withPreparedAuthority: { operationID, body in
+                try broker.prepare(operationID: operationID, predecessorMenuInstanceID: UUID(),
+                    controlledHistory: .init(verify: { _, _, _ in }),
+                    verifyPredecessor: { _ in try fixture.predecessor() })
+                try broker.bindBroker(.init(artifact: fixture.predecessor(),
+                                             nativeCDHash: Data(repeating: 7, count: 20)),
+                                      operationID: operationID, target: fixture.context.target)
+                h.retained = true
+                try broker.startUpdater(operationID: operationID, target: fixture.context.target, body)
+            }, isRetained: { operationID in
+                retainedAuthorityReads += 1
+                return broker.ownsLease && broker.operationID == operationID && broker.state == .started
+            }, bindCandidate: { _, _ in
+                XCTFail("Abort no-update probe must not bind a candidate")
+                throw TestFailure.refused
+            }, authorizeInstallation: { _ in
+                XCTFail("Abort no-update probe must not authorize installation")
+                return false
+            }, mayTerminateTarget: { _ in
+                XCTFail("Abort no-update probe must not request target termination")
+                return false
+            }, retirePreparedUnarmed: { completion in
+                retirements.append(completion)
+                try broker.retirePreparedUnarmed(completion, verifyCompletion: { value in
+                    currentProofChecks += 1
+                    guard nativeSession?.isCurrentUnarmedCompletion(value) == true else {
+                        throw TestFailure.refused
+                    }
+                    XCTAssertTrue(broker.ownsLease)
+                    XCTAssertThrowsError(try fixture.acquire()) {
+                        XCTAssertEqual($0 as? WorldwideHostProcessLockError, .alreadyRunning)
+                    }
+                }, verifyPredecessor: { _ in try fixture.predecessor() })
+            })
+        let session = h.makeSession(authority: authority)
+        nativeSession = session
+        try session.startManualCheck()
+        try session.admitCheck(from: h.engine.identity, check: .updates)
+        let error = manualNoUpdateError()
+        session.noUpdate(from: h.engine.identity, error: error)
+        let prepared = try fixture.current()
+        XCTAssertEqual(prepared.operation.stage, .prepared)
+        XCTAssertEqual(broker.state, .started)
+        XCTAssertTrue(broker.ownsLease)
+        XCTAssertEqual(broker.recordSHA256, prepared.recordSHA256)
+        XCTAssertThrowsError(try fixture.acquire()) {
+            XCTAssertEqual($0 as? WorldwideHostProcessLockError, .alreadyRunning)
+        }
+        let observationsBeforeAbort = h.observations.count
+        let readsBeforeAbort = retainedAuthorityReads
+        session.aborted(from: h.engine.identity, error: error)
+        XCTAssertEqual(retainedAuthorityReads, readsBeforeAbort)
+        XCTAssertEqual(h.observations.count, observationsBeforeAbort + 1)
+        let observation = try XCTUnwrap(h.observations.last)
+        let payloadExact = assertAbortAdapterPayload(observation, supplied: error,
+                                                    operationID: fixture.operationID)
+        let readsBeforeFinish = retainedAuthorityReads
+        session.finishedCycle(from: h.engine.identity, check: .updates, error: error)
+        let readsThroughFinish = retainedAuthorityReads - readsBeforeFinish
+
+        let afterFence = Result { try fixture.store.read(expectedTarget: fixture.context.target) }
+        XCTAssertNoThrow(try afterFence.get(), "Abort fence read must not be infrastructure failure")
+        let reacquisition: Result<Void, Error> = Result {
+            let next = try fixture.acquire()
+            next.release()
+        }
+        guard case .success(let currentFence) = afterFence else { return reacquisition }
+        switch reacquisition {
+        case .success:
+            XCTAssertEqual(retirements.map(\.reason), [.noUpdate])
+            XCTAssertEqual(currentProofChecks, 2)
+            XCTAssertEqual(readsThroughFinish, 4)
+            XCTAssertEqual(broker.state, .cleared)
+            XCTAssertFalse(broker.ownsLease)
+            XCTAssertNil(currentFence)
+            XCTAssertEqual(h.observationNames, ["no-update", "aborted", "cycle", "unarmed-retired"])
+            writeAbortAdapterControlWitness("BELUGA_ABORT_SESSION_CONTROL_WITNESS probe=\(probe) outcome=completed " +
+                "payload_identity=\(payloadExact ? 1 : 0) retirement_calls=\(retirements.count) " +
+                "proof_checks=\(currentProofChecks) authority_delta=\(readsThroughFinish) " +
+                "lease_owned=\(broker.ownsLease ? 1 : 0) fence_absent=\(currentFence == nil ? 1 : 0) " +
+                "reacquire=success events=\(h.observationNames.joined(separator: ","))")
+        case .failure(let acquisitionError):
+            XCTAssertEqual(acquisitionError as? WorldwideHostProcessLockError, .alreadyRunning)
+            XCTAssertTrue(retirements.isEmpty)
+            XCTAssertEqual(currentProofChecks, 0)
+            XCTAssertEqual(readsThroughFinish, 0)
+            XCTAssertEqual(broker.state, .started)
+            XCTAssertTrue(broker.ownsLease)
+            XCTAssertEqual(broker.operationID, fixture.operationID)
+            XCTAssertEqual(broker.recordSHA256, prepared.recordSHA256)
+            XCTAssertEqual(currentFence, prepared)
+            XCTAssertEqual(h.observationNames, ["no-update", "aborted", "cycle"])
+            let samePreparedFence = currentFence == prepared
+            let retainedBroker = broker.state == .started && broker.ownsLease &&
+                broker.operationID == fixture.operationID &&
+                broker.recordSHA256 == prepared.recordSHA256
+            let lockError = (acquisitionError as? WorldwideHostProcessLockError) == .alreadyRunning
+            writeAbortAdapterControlWitness("BELUGA_ABORT_SESSION_CONTROL_WITNESS probe=\(probe) outcome=refused " +
+                "payload_identity=\(payloadExact ? 1 : 0) retirement_calls=\(retirements.count) " +
+                "proof_checks=\(currentProofChecks) authority_delta=\(readsThroughFinish) " +
+                "lease_owned=\(broker.ownsLease ? 1 : 0) " +
+                "prepared_fence_unchanged=\(samePreparedFence ? 1 : 0) " +
+                "broker_retained=\(retainedBroker ? 1 : 0) " +
+                "reacquire=\(lockError ? "already_running" : "other_error") " +
+                "events=\(h.observationNames.joined(separator: ","))")
+        }
+        XCTAssertTrue(h.observations.allSatisfy { $0.operationID == fixture.operationID })
+        XCTAssertEqual(h.engine.starts, 1)
+        XCTAssertEqual(h.engine.checks, 1)
+        XCTAssertTrue(h.installRequests.isEmpty)
+        XCTAssertEqual(h.terminationRequests, 0)
+        let readsBeforeTerminalProbe = retainedAuthorityReads
+        var terminalRefused = false
+        XCTAssertThrowsError(try session.admitCheck(from: h.engine.identity, check: .updates)) {
+            XCTAssertEqual($0 as? BelugaUpdateSparkleSession.SessionError, .authorityNotRetained)
+            terminalRefused = ($0 as? BelugaUpdateSparkleSession.SessionError) == .authorityNotRetained
+        }
+        XCTAssertEqual(retainedAuthorityReads, readsBeforeTerminalProbe)
+        writeAbortAdapterControlWitness("BELUGA_ABORT_SESSION_TERMINAL_WITNESS probe=\(probe) " +
+            "authority_not_retained=\(terminalRefused ? 1 : 0) " +
+            "authority_delta=\(retainedAuthorityReads - readsBeforeTerminalProbe)")
+        return reacquisition
+    }
+
+    /// Test-only synchronous stderr preserves witnesses inside the ordinary test interval.
+    private func writeAbortAdapterControlWitness(_ message: String) {
+        FileHandle.standardError.write(Data((message + "\n").utf8))
+    }
 }

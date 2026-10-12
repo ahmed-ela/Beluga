@@ -90,6 +90,7 @@ let package = Package(
         ),
         .target(
             name: "BelugaUpdateCore",
+            dependencies: [.target(name: "BelugaCore", condition: .when(platforms: [.macOS]))],
             path: "macOS/Sources/BelugaUpdateCore",
             linkerSettings: [.linkedLibrary("bsm", .when(platforms: [.macOS]))]
         ),
@@ -243,8 +244,18 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureServerTests",
-            dependencies: ["CaptureServer", "BelugaUpdateCore", "BelugaUpdateDriver", "WebRTCTransport", "MediaBridgeCore"],
+            dependencies: [
+                "CaptureServer", "BelugaUpdateCore", "BelugaUpdateDriver", "WebRTCTransport", "MediaBridgeCore",
+                .target(name: "BelugaRenderedAXTestSupport", condition: .when(platforms: [.macOS]))
+            ],
             path: "macOS/Tests/CaptureServerTests"
+        ),
+        .target(
+            name: "BelugaRenderedAXTestSupport",
+            path: "macOS/Tests/BelugaRenderedAXTestSupport",
+            publicHeadersPath: "include",
+            cSettings: [.unsafeFlags(["-fobjc-arc"], .when(platforms: [.macOS]))],
+            linkerSettings: [.linkedFramework("AppKit", .when(platforms: [.macOS]))]
         ),
         .testTarget(
             name: "ServerTests",
@@ -278,7 +289,8 @@ let package = Package(
             name: "WebRTCTransportTests",
             dependencies: [
                 "RemoteSessionCore",
-                "WebRTCTransport"
+                "WebRTCTransport",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS]))
             ],
             path: "shared/Tests/WebRTCTransportTests"
         ),

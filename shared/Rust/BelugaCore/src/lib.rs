@@ -3,11 +3,182 @@
 //! This pure projection never dispatches a command, owns native resources, or
 //! authorizes a target identity. Native transaction fencing remains mandatory.
 
+pub mod screen_liveness;
+pub mod ice_recovery;
 pub mod output_dimensions;
+pub mod packet_send_queue;
+pub mod rtt_evidence;
+pub mod tier_demand;
+pub mod media_command_gate;
+pub mod screen_suspension;
+pub mod phone_catalog;
+pub mod update_admission;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_admission_decide(
+    request: update_admission::RawRequest,
+) -> update_admission::RawResult {
+    update_admission::decide(request)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_admission_result_is_valid(
+    request: update_admission::RawRequest,
+    result: update_admission::RawResult,
+) -> u32 {
+    update_admission::result_is_valid(request, result)
+}
+// Add beside the existing public policy modules and C exports; preserve all others.
+pub mod runtime_catalog;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_runtime_catalog_step(
+    state: runtime_catalog::RawRuntimeCatalogState,
+    event: runtime_catalog::RawRuntimeCatalogEvent,
+) -> runtime_catalog::RawRuntimeCatalogResult {
+    runtime_catalog::step(state, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_runtime_catalog_result_is_valid(
+    state: runtime_catalog::RawRuntimeCatalogState,
+    event: runtime_catalog::RawRuntimeCatalogEvent,
+    result: runtime_catalog::RawRuntimeCatalogResult,
+) -> u32 {
+    runtime_catalog::result_is_valid(state, event, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_phone_catalog_decide(
+    input: phone_catalog::RawPhoneCatalogInput,
+) -> phone_catalog::RawPhoneCatalogResult {
+    phone_catalog::decide(input)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_phone_catalog_result_is_valid(
+    input: phone_catalog::RawPhoneCatalogInput,
+    result: phone_catalog::RawPhoneCatalogResult,
+) -> u32 {
+    phone_catalog::result_is_valid(input, result)
+}
+
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_screen_suspension_step(
+    state: screen_suspension::RawScreenSuspensionState,
+    event: screen_suspension::RawScreenSuspensionEvent,
+) -> screen_suspension::RawScreenSuspensionResult {
+    screen_suspension::transition(state, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_screen_suspension_result_is_valid(
+    state: screen_suspension::RawScreenSuspensionState,
+    event: screen_suspension::RawScreenSuspensionEvent,
+    result: screen_suspension::RawScreenSuspensionResult,
+) -> u32 {
+    screen_suspension::result_is_valid(state, event, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_media_command_gate_step(
+    state: media_command_gate::RawState, event: media_command_gate::RawEvent,
+) -> media_command_gate::RawResult {
+    media_command_gate::transition(state, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_media_command_gate_result_is_valid(
+    state: media_command_gate::RawState, event: media_command_gate::RawEvent,
+    result: media_command_gate::RawResult,
+) -> u32 {
+    media_command_gate::result_is_valid(state, event, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_tier_demand_project(
+    facts: tier_demand::RawTierDemandFacts,
+) -> tier_demand::RawTierDemandProjection {
+    tier_demand::project(facts)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_tier_demand_projection_is_valid(
+    facts: tier_demand::RawTierDemandFacts, projection: tier_demand::RawTierDemandProjection,
+) -> u32 {
+    tier_demand::projection_is_valid(facts, projection)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_rtt_evidence_step(
+    state: rtt_evidence::RawState, event: rtt_evidence::RawEvent,
+) -> rtt_evidence::RawResult {
+    rtt_evidence::transition(state, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_rtt_evidence_result_is_valid(
+    state: rtt_evidence::RawState, event: rtt_evidence::RawEvent, result: rtt_evidence::RawResult,
+) -> u32 {
+    let expected = rtt_evidence::transition(state, event);
+    u32::from(expected.status == 1 && expected == result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_packet_send_queue_step(
+    state: packet_send_queue::RawState, event: packet_send_queue::RawEvent,
+) -> packet_send_queue::RawResult {
+    packet_send_queue::transition(state, event)
+}
 pub mod display_admission;
 pub mod host_lifecycle;
 pub mod handoff_transactions;
 pub mod handoff_offers;
+pub mod handoff_source_position;
+// Copied C exports: no native identity, resources or effects cross this boundary.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_handoff_source_prepare(raw: handoff_source_position::RawPrepareFacts) -> handoff_source_position::RawDecision {
+    handoff_source_position::prepare(raw)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_handoff_source_matches(raw: handoff_source_position::RawMatchFacts) -> handoff_source_position::RawDecision {
+    handoff_source_position::matches(raw)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_handoff_source_prepare_result_is_valid(
+    raw: handoff_source_position::RawPrepareFacts, output: handoff_source_position::RawDecision,
+) -> u32 {
+    handoff_source_position::prepare_result_is_valid(raw, output)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_handoff_source_matches_result_is_valid(
+    raw: handoff_source_position::RawMatchFacts, output: handoff_source_position::RawDecision,
+) -> u32 {
+    handoff_source_position::matches_result_is_valid(raw, output)
+}
 pub mod youtube_handoff_operation;
 pub mod invitation_acceptance;
 pub mod replay_policy;
@@ -315,4 +486,228 @@ pub extern "C" fn beluga_core_source_dimensions_stable(input: display_admission:
 #[must_use]
 pub extern "C" fn beluga_core_output_dimensions(input: output_dimensions::RawOutputFacts) -> output_dimensions::RawOutputDecision {
     output_dimensions::output_dimensions(input)
+}
+
+// Append after existing exports; insert `pub mod ice_recovery;` after the intact crate-doc header.
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_ice_recovery_initialize(abi: u32, config: ice_recovery::Config)
+    -> ice_recovery::InitResult { ice_recovery::initialize(abi, config) }
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_ice_recovery_step(abi: u32, before: ice_recovery::State,
+    event: ice_recovery::Event) -> ice_recovery::Result { ice_recovery::step(abi, before, event) }
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_screen_liveness_observe(
+    abi_version: u64, state: screen_liveness::RawState, sample: screen_liveness::RawSample,
+) -> screen_liveness::RawResult {
+    screen_liveness::observe(abi_version, state, sample)
+}
+
+// Proposed additive enrollment, not applied to the canonical crate.
+pub mod update_operation;
+pub mod update_sparkle_admission;
+pub mod update_unarmed_completion;
+pub mod update_abort;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_abort_decide(
+    request: update_abort::RawRequest,
+) -> update_abort::RawResult {
+    update_abort::decide(request)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_abort_result_is_valid(
+    request: update_abort::RawRequest,
+    result: update_abort::RawResult,
+) -> u32 {
+    update_abort::result_is_valid(request, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_unarmed_completion_decide(
+    request: update_unarmed_completion::RawRequest,
+) -> update_unarmed_completion::RawResult {
+    update_unarmed_completion::decide(request)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_unarmed_completion_result_is_valid(
+    request: update_unarmed_completion::RawRequest,
+    result: update_unarmed_completion::RawResult,
+) -> u32 {
+    update_unarmed_completion::result_is_valid(request, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_sparkle_admission_decide(
+    request: update_sparkle_admission::RawRequest,
+) -> update_sparkle_admission::RawResult {
+    update_sparkle_admission::decide(request)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_sparkle_admission_result_is_valid(
+    request: update_sparkle_admission::RawRequest,
+    result: update_sparkle_admission::RawResult,
+) -> u32 {
+    update_sparkle_admission::result_is_valid(request, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_update_operation_step(
+    abi_version: u32,
+    before: update_operation::RawState,
+    event: update_operation::RawEvent,
+) -> update_operation::RawResult {
+    update_operation::step(abi_version, before, event)
+}
+
+pub mod network_adaptation_candidate;
+pub mod native_clock_assay;
+pub mod native_owner_codec;
+pub mod native_owner_events;
+pub mod network_adaptation_owner_events;
+#[cfg(test)]
+mod network_adaptation_owner_events_tests;
+pub mod native_owner_clock_events;
+pub mod network_adaptation_owner_clocked_events;
+#[cfg(test)]
+mod network_adaptation_owner_clocked_events_tests;
+pub mod network_adaptation_owner_prepare_events;
+#[cfg(test)]
+mod network_adaptation_owner_prepare_events_tests;
+pub mod network_adaptation_owner_inactive_events;
+#[cfg(test)]
+mod network_adaptation_owner_inactive_events_tests;
+pub mod network_adaptation_owner_begin_active_events;
+#[cfg(test)]
+mod network_adaptation_owner_begin_active_events_tests;
+pub mod network_adaptation_owner_completion_events;
+#[cfg(test)]
+mod network_adaptation_owner_completion_events_tests;
+pub mod network_adaptation_owner_failure_events;
+#[cfg(test)]
+mod network_adaptation_owner_failure_events_tests;
+
+pub mod microphone_forwarding_evidence;
+pub mod microphone_forwarding_retry;
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_retry_step(
+    config: microphone_forwarding_retry::RawConfig,
+    before: microphone_forwarding_retry::RawState,
+    event: microphone_forwarding_retry::RawEvent,
+) -> microphone_forwarding_retry::RawResult {
+    microphone_forwarding_retry::step(config, before, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_retry_result_is_valid(
+    config: microphone_forwarding_retry::RawConfig,
+    before: microphone_forwarding_retry::RawState,
+    event: microphone_forwarding_retry::RawEvent,
+    result: microphone_forwarding_retry::RawResult,
+) -> u32 {
+    microphone_forwarding_retry::result_is_valid(config, before, event, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_readiness_decide(
+    facts: microphone_forwarding_evidence::RawReadinessFacts,
+) -> microphone_forwarding_evidence::RawReadinessResult {
+    microphone_forwarding_evidence::readiness_decide(facts)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_watermark_step(
+    before: microphone_forwarding_evidence::RawWatermarkState,
+    event: microphone_forwarding_evidence::RawWatermarkEvent,
+) -> microphone_forwarding_evidence::RawWatermarkResult {
+    microphone_forwarding_evidence::watermark_step(before, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_freshness_decide(
+    before: microphone_forwarding_evidence::RawFreshnessState,
+    event: microphone_forwarding_evidence::RawFreshnessEvent,
+) -> microphone_forwarding_evidence::RawFreshnessResult {
+    microphone_forwarding_evidence::freshness_decide(before, event)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_readiness_result_is_valid(
+    facts: microphone_forwarding_evidence::RawReadinessFacts,
+    result: microphone_forwarding_evidence::RawReadinessResult,
+) -> u32 {
+    microphone_forwarding_evidence::readiness_result_is_valid(facts, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_watermark_result_is_valid(
+    before: microphone_forwarding_evidence::RawWatermarkState,
+    event: microphone_forwarding_evidence::RawWatermarkEvent,
+    result: microphone_forwarding_evidence::RawWatermarkResult,
+) -> u32 {
+    microphone_forwarding_evidence::watermark_result_is_valid(before, event, result)
+}
+
+#[no_mangle]
+#[must_use]
+pub extern "C" fn beluga_core_microphone_forwarding_freshness_result_is_valid(
+    before: microphone_forwarding_evidence::RawFreshnessState,
+    event: microphone_forwarding_evidence::RawFreshnessEvent,
+    result: microphone_forwarding_evidence::RawFreshnessResult,
+) -> u32 {
+    microphone_forwarding_evidence::freshness_result_is_valid(before, event, result)
+}
+
+pub mod microphone_input_lease;
+
+#[no_mangle]
+pub extern "C" fn beluga_core_microphone_input_lease_decide(
+    facts: microphone_input_lease::RawFacts,
+) -> microphone_input_lease::RawResult {
+    microphone_input_lease::decide(facts)
+}
+
+#[no_mangle]
+pub extern "C" fn beluga_core_microphone_input_lease_result_is_valid(
+    facts: microphone_input_lease::RawFacts,
+    result: microphone_input_lease::RawResult,
+) -> u32 {
+    microphone_input_lease::result_is_valid(facts, result)
+}
+
+pub mod microphone_output_format;
+
+#[no_mangle]
+pub extern "C" fn beluga_core_microphone_output_format_decide(
+    facts: microphone_output_format::RawFacts,
+) -> microphone_output_format::RawResult {
+    microphone_output_format::decide(facts)
+}
+
+#[no_mangle]
+pub extern "C" fn beluga_core_microphone_output_format_result_is_valid(
+    facts: microphone_output_format::RawFacts,
+    result: microphone_output_format::RawResult,
+) -> u32 {
+    microphone_output_format::result_is_valid(facts, result)
 }

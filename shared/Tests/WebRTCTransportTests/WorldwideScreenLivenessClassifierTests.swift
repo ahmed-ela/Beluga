@@ -2,10 +2,10 @@
 import XCTest
 
 final class WorldwideScreenLivenessClassifierTests: XCTestCase {
-    func testCoverTrackAndAwaitingBranchesHaveClosedEvidenceStates() {
+    func testCoverTrackAndAwaitingBranchesHaveClosedEvidenceStates() throws {
         var classifier = WorldwideScreenLivenessClassifier()
 
-        let intentional = classifier.observe(
+        let intentional = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1,
@@ -20,7 +20,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         )
 
         classifier.reset()
-        let privacy = classifier.observe(
+        let privacy = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1,
@@ -33,23 +33,23 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
 
         classifier.reset()
         XCTAssertEqual(
-            classifier.observe(
+            try classifier.observe(
                 sample(generation: 1, now: 1, trackAttached: false)
             ).state,
             .trackMissing
         )
 
         classifier.reset()
-        let awaiting = classifier.observe(
+        let awaiting = try classifier.observe(
             sample(generation: 1, now: 1, trackAttached: true)
         )
         XCTAssertEqual(awaiting.state, .awaitingEvidence)
         XCTAssertEqual(awaiting.resetReason, .initialSample)
     }
 
-    func testInboundDecodeAndPresentationStallBranchesUseOrderedCounterEvidence() {
+    func testInboundDecodeAndPresentationStallBranchesUseOrderedCounterEvidence() throws {
         var classifier = WorldwideScreenLivenessClassifier()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -58,7 +58,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 decodedFrames: 4
             )
         )
-        let inboundStalled = classifier.observe(
+        let inboundStalled = try classifier.observe(
             sample(
                 generation: 1,
                 now: 2_000_000_000,
@@ -72,7 +72,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(inboundStalled.inboundPacketDelta, 0)
 
         classifier.reset()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -81,7 +81,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 decodedFrames: 4
             )
         )
-        let decodeStalled = classifier.observe(
+        let decodeStalled = try classifier.observe(
             sample(
                 generation: 1,
                 now: 2_000_000_000,
@@ -94,7 +94,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(decodeStalled.decodedFrameDelta, 0)
 
         classifier.reset()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -103,7 +103,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 decodedFrames: 4
             )
         )
-        let presentationStalled = classifier.observe(
+        let presentationStalled = try classifier.observe(
             sample(
                 generation: 1,
                 now: 2_000_000_000,
@@ -116,9 +116,9 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(presentationStalled.decodedFrameDelta, 4)
     }
 
-    func testPresentedFramesDistinguishUnchangedContentFromChangingContent() {
+    func testPresentedFramesDistinguishUnchangedContentFromChangingContent() throws {
         var classifier = WorldwideScreenLivenessClassifier()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -130,7 +130,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 contentChanges: 1
             )
         )
-        let unchanged = classifier.observe(
+        let unchanged = try classifier.observe(
             sample(
                 generation: 1,
                 now: 2_000_000_000,
@@ -146,7 +146,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(unchanged.presentedFrameDelta, 4)
         XCTAssertEqual(unchanged.contentChangeDelta, 0)
 
-        let live = classifier.observe(
+        let live = try classifier.observe(
             sample(
                 generation: 1,
                 now: 3_000_000_000,
@@ -163,9 +163,9 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(live.lastPresentationAgeMilliseconds, 0)
     }
 
-    func testFreshPresentationSurvivesAnInterleavedStatisticsOnlyObservation() {
+    func testFreshPresentationSurvivesAnInterleavedStatisticsOnlyObservation() throws {
         var classifier = WorldwideScreenLivenessClassifier()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -177,7 +177,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 contentChanges: 1
             )
         )
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 2_000_000_000,
@@ -189,7 +189,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 contentChanges: 2
             )
         )
-        let statisticsOnly = classifier.observe(
+        let statisticsOnly = try classifier.observe(
             sample(
                 generation: 1,
                 now: 3_000_000_000,
@@ -207,9 +207,9 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(statisticsOnly.lastPresentationAgeMilliseconds, 1_000)
     }
 
-    func testGenerationChangeResetsEveryDeltaBeforeNewEvidenceIsCompared() {
+    func testGenerationChangeResetsEveryDeltaBeforeNewEvidenceIsCompared() throws {
         var classifier = WorldwideScreenLivenessClassifier()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -221,7 +221,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 contentChanges: 1
             )
         )
-        let reset = classifier.observe(
+        let reset = try classifier.observe(
             sample(
                 generation: 2,
                 now: 2_000_000_000,
@@ -241,7 +241,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertNil(reset.presentedFrameDelta)
         XCTAssertNil(reset.contentChangeDelta)
 
-        let next = classifier.observe(
+        let next = try classifier.observe(
             sample(
                 generation: 2,
                 now: 3_000_000_000,
@@ -258,9 +258,9 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertEqual(next.presentedFrameDelta, 1)
     }
 
-    func testCounterRegressionResetsTheWholeComparisonFloorWithoutUnsignedWrap() {
+    func testCounterRegressionResetsTheWholeComparisonFloorWithoutUnsignedWrap() throws {
         var classifier = WorldwideScreenLivenessClassifier()
-        _ = classifier.observe(
+        _ = try classifier.observe(
             sample(
                 generation: 1,
                 now: 1_000_000_000,
@@ -272,7 +272,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                 contentChanges: 2
             )
         )
-        let reset = classifier.observe(
+        let reset = try classifier.observe(
             sample(
                 generation: 1,
                 now: 2_000_000_000,
@@ -293,9 +293,9 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertNil(reset.contentChangeDelta)
     }
 
-    func testSnapshotBoundsAgeDimensionsAndFrameRateWithoutContentIdentity() {
+    func testSnapshotBoundsAgeDimensionsAndFrameRateWithoutContentIdentity() throws {
         var classifier = WorldwideScreenLivenessClassifier()
-        let snapshot = classifier.observe(
+        let snapshot = try classifier.observe(
             sample(
                 generation: 1,
                 now: 200_000_000_000_000,
@@ -322,7 +322,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         XCTAssertNil(snapshot.framesPerSecond)
     }
 
-    func testAllClassifierStatesAreCoveredByDeterministicBranchFixtures() {
+    func testAllClassifierStatesAreCoveredByDeterministicBranchFixtures() throws {
         var observed: Set<WorldwideScreenLivenessState> = []
 
         for cover in [
@@ -331,7 +331,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         ] {
             var classifier = WorldwideScreenLivenessClassifier()
             observed.insert(
-                classifier.observe(
+                try classifier.observe(
                     sample(
                         generation: 1,
                         now: 1,
@@ -344,12 +344,12 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
         do {
             var classifier = WorldwideScreenLivenessClassifier()
             observed.insert(
-                classifier.observe(
+                try classifier.observe(
                     sample(generation: 1, now: 1, trackAttached: false)
                 ).state
             )
             observed.insert(
-                classifier.observe(
+                try classifier.observe(
                     sample(generation: 2, now: 2, trackAttached: true)
                 ).state
             )
@@ -398,7 +398,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
             ),
         ] {
             var classifier = WorldwideScreenLivenessClassifier()
-            _ = classifier.observe(
+            _ = try classifier.observe(
                 sample(
                     generation: 1,
                     now: 1_000_000_000,
@@ -410,7 +410,7 @@ final class WorldwideScreenLivenessClassifierTests: XCTestCase {
                     contentChanges: second.renderObservation == nil ? nil : 1
                 )
             )
-            observed.insert(classifier.observe(second).state)
+            observed.insert(try classifier.observe(second).state)
         }
 
         XCTAssertEqual(observed, Set(WorldwideScreenLivenessState.allCases))

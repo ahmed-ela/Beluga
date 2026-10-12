@@ -269,9 +269,7 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
             button.setAccessibilityLabel("Beluga menu")
         }
         statusItem = item
-        let panel = NSPopover()
-        panel.behavior = .transient
-        panel.contentViewController = NSHostingController(rootView: BelugaMenuBarView(
+        let panel = BelugaMenuPopoverFactory.make(
             model: model, updater: updater, share: share,
             hasEndpoint: endpoint != nil || runtimeArguments != nil,
             quit: { [weak self] in self?.quit() },
@@ -279,8 +277,8 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
                 guard let self, self.model.canShareAudio else { return }
                 self.share.start(ownerIsValid: self.shareOwner.isValid,
                                  updateInProgress: self.updater.isUpdateInProgress)
-            }
-        ))
+            }, contentModifier: EmptyModifier()
+        )
         popover = panel
         refreshUpdateAdmission()
         updater.menuDidBecomeReady()
@@ -375,6 +373,26 @@ final class BelugaMenuBarApplication: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Shares the actual menu content and popover lifecycle without starting a host,
+/// creating a status item, or performing native updater operations.
+@MainActor
+enum BelugaMenuPopoverFactory {
+    static func make<Modifier: ViewModifier>(
+        model: BelugaMenuBarModel, updater: BelugaUpdateController,
+        share: BelugaAudioShareModel, hasEndpoint: Bool,
+        quit: @escaping () -> Void, startShare: @escaping () -> Void,
+        contentModifier: Modifier
+    ) -> NSPopover {
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = NSHostingController(rootView: BelugaMenuBarView(
+            model: model, updater: updater, share: share, hasEndpoint: hasEndpoint,
+            quit: quit, startShare: startShare
+        ).modifier(contentModifier))
+        return popover
+    }
+}
+
 private struct BelugaMenuBarView: View {
     @ObservedObject var model: BelugaMenuBarModel
     @ObservedObject var updater: BelugaUpdateController
@@ -389,6 +407,7 @@ private struct BelugaMenuBarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Beluga").font(.title2.bold())
+                .accessibilityIdentifier("beluga.menu-title")
             Text(versionLabel).font(.caption).foregroundStyle(.secondary)
             if !model.hasStarted {
                 Text("Stream this Mac to your phone using secure QR pairing.")
@@ -464,22 +483,7 @@ private struct BelugaMenuBarView: View {
     }
 
     private var mediaHandoffControls: some View {
-        let state = model.mediaHandoffControl
-        let target = model.presentation.connectedMediaTarget
-        return VStack(alignment: .leading, spacing: 8) {
-            if state.visible {
-                Button("Move media to phone") {
-                    if let target { model.moveMedia(to: target) }
-                }
-                .disabled(!state.enabled || updater.isUpdateInProgress)
-                if let reason = state.reason.message {
-                    Text(reason).font(.caption).foregroundStyle(.secondary)
-                }
-                if let message = model.mediaHandoffMessage {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-        }
+        BelugaMediaHandoffControlsView(model: model, isUpdateInProgress: updater.isUpdateInProgress)
     }
 
     private var phoneControls: some View {

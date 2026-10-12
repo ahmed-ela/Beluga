@@ -262,7 +262,7 @@ private final class MacRemoteMediaCommandAttempt: @unchecked Sendable {
     var isActive: Bool { lock.withLock { active } }
 }
 
-fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
+final class MacRemoteMediaCommandGate: @unchecked Sendable {
     struct Lifecycle: Sendable, Equatable {
         fileprivate let value: UInt64
     }
@@ -273,33 +273,63 @@ fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
         fileprivate let contextID: String
     }
 
+    // Read-only observation of the actual locked owner, not a state seed/setter.
+    struct Snapshot: Sendable {
+        let rawState: BelugaRustMediaCommandGate.State
+        let hasNativeFault: Bool
+        let contextIDs: Set<String>
+    }
+
+    struct AuthorizationSnapshot: Sendable, Equatable {
+        let lifecycle: UInt64
+        let commandEpoch: UInt64
+        let contextID: String
+    }
+
     private let lock = NSLock()
-    private var lifecycle: UInt64 = 0
-    private var commandEpoch: UInt64 = 0
-    private var isOpen = false
+    private var policy: BelugaRustMediaCommandGate
     private var contextIDs: Set<String> = []
+
+    init(resultMutation: BelugaRustMediaCommandGate.ResultMutation? = nil) {
+        policy = BelugaRustMediaCommandGate(resultMutation: resultMutation)
+    }
+
+    var snapshot: Snapshot {
+        lock.withLock {
+            Snapshot(rawState: policy.rawState, hasNativeFault: policy.hasNativeFault,
+                     contextIDs: contextIDs)
+        }
+    }
+
+    static func lifecycleValue(_ token: Lifecycle) -> UInt64 { token.value }
+
+    static func authorizationSnapshot(_ value: Authorization) -> AuthorizationSnapshot {
+        AuthorizationSnapshot(lifecycle: value.lifecycle, commandEpoch: value.commandEpoch,
+                              contextID: value.contextID)
+    }
 
     func open() -> Lifecycle {
         lock.withLock {
-            lifecycle &+= 1
-            commandEpoch &+= 1
-            isOpen = true
-            contextIDs = []
-            return Lifecycle(value: lifecycle)
+            if policy.open() { contextIDs = [] }
+            // A denied open retains this value solely for signature compatibility;
+            // the same faulted owner denies every subsequent authority check.
+            return Lifecycle(value: policy.rawState.lifecycle)
         }
     }
 
     func close() {
         lock.withLock {
-            lifecycle &+= 1
-            commandEpoch &+= 1
-            isOpen = false
-            contextIDs = []
+            let wasFaulted = policy.hasNativeFault
+            if policy.close() || wasFaulted {
+                // First rejected close preserves the native set. Only a later
+                // explicit close on the already-faulted owner performs cleanup.
+                contextIDs = []
+            }
         }
     }
 
     func invalidateCommands() {
-        lock.withLock { commandEpoch &+= 1 }
+        lock.withLock { _ = policy.invalidateCommands() }
     }
 
     func setContext(_ newContextID: String?) {
@@ -311,15 +341,15 @@ fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
     }
 
     func lifecycleIsCurrent(_ candidate: Lifecycle) -> Bool {
-        lock.withLock { isOpen && lifecycle == candidate.value }
+        lock.withLock { policy.lifecycleIsCurrent(candidate.value) }
     }
 
     func capture(contextID candidate: String) -> Authorization? {
         lock.withLock {
-            guard isOpen, contextIDs.contains(candidate) else { return nil }
+            guard policy.capture(contextIsCurrent: contextIDs.contains(candidate)) else { return nil }
             return Authorization(
-                lifecycle: lifecycle,
-                commandEpoch: commandEpoch,
+                lifecycle: policy.rawState.lifecycle,
+                commandEpoch: policy.rawState.command_epoch,
                 contextID: candidate
             )
         }
@@ -327,10 +357,9 @@ fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
 
     func admits(_ authorization: Authorization) -> Bool {
         lock.withLock {
-            isOpen
-                && lifecycle == authorization.lifecycle
-                && commandEpoch == authorization.commandEpoch
-                && contextIDs.contains(authorization.contextID)
+            policy.admits(lifecycle: authorization.lifecycle,
+                          commandEpoch: authorization.commandEpoch,
+                          contextIsCurrent: contextIDs.contains(authorization.contextID))
         }
     }
 }
@@ -808,7 +837,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         label: "com.elamin.opensteamer.system-now-playing",
         qos: .utility
     )
-    private let gate = MacRemoteMediaCommandGate()
+    private let gate: MacRemoteMediaCommandGate
     private let pollInterval: TimeInterval?
     private let operationTimeout: TimeInterval
     private let now: @Sendable () -> Date
@@ -839,8 +868,12 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
 
     var isAvailable: Bool { runtime?.isAvailable == true }
 
+    // Read-only observation for the injected-runtime regression seam.
+    var commandGateSnapshot: MacRemoteMediaCommandGate.Snapshot { gate.snapshot }
+
     init() {
         runtime = MacSupportedNowPlayingRuntime()
+        gate = MacRemoteMediaCommandGate()
         pollInterval = 1
         operationTimeout = 2
         now = Date.init
@@ -856,9 +889,11 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         now: @escaping @Sendable () -> Date = Date.init,
         onCommandEnqueued: (@Sendable () -> Void)? = nil,
         stateDiagnostics: @escaping @Sendable (String) -> Void = { print($0) },
-        uptime: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime }
+        uptime: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime },
+        commandGateResultMutation: BelugaRustMediaCommandGate.ResultMutation? = nil
     ) {
         self.runtime = runtime
+        gate = MacRemoteMediaCommandGate(resultMutation: commandGateResultMutation)
         self.pollInterval = pollInterval
         self.operationTimeout = operationTimeout
         self.now = now

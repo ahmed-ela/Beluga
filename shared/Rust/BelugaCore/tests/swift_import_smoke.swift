@@ -2361,3 +2361,4241 @@ func outputDimensionsSmoke() {
     print("BelugaCore Swift output dimensions import/link PASS: two layouts, twelve offsets, signed projection and distinct conversion refusal")
 }
 outputDimensionsSmoke()
+
+// Private append body. Preserve all old Swift bytes and append one call before old footer.
+func iceRecoverySmoke() {
+    typealias S = beluga_core_ice_recovery_state_t
+    typealias E = beluga_core_ice_recovery_event_t
+    func state(_ v: [UInt64]) -> S {
+        .init(abi_version: UInt32(v[0]), phase: UInt32(v[1]), epoch: v[2],
+              attempts: Int64(bitPattern: v[3]), maximum_attempts: Int64(bitPattern: v[4]),
+              exhaustion_delivered: UInt32(v[5]), grace_positive: UInt32(v[6]), cursor: UInt32(v[7]), reserved: UInt32(v[8]))
+    }
+    func stateWords(_ v: S) -> [UInt64] {
+        [UInt64(v.abi_version), UInt64(v.phase), v.epoch, UInt64(bitPattern: v.attempts), UInt64(bitPattern: v.maximum_attempts),
+         UInt64(v.exhaustion_delivered), UInt64(v.grace_positive), UInt64(v.cursor), UInt64(v.reserved)]
+    }
+    func event(_ v: [UInt64]) -> E {
+        .init(abi_version: UInt32(v[0]), opcode: UInt32(v[1]), workflow_epoch: v[2], task_cancelled: UInt32(v[3]),
+              succeeded: UInt32(v[4]), wait_kind: UInt32(v[5]), reserved: UInt32(v[6]))
+    }
+    func eventWords(_ v: E) -> [UInt64] {
+        [UInt64(v.abi_version), UInt64(v.opcode), v.workflow_epoch, UInt64(v.task_cancelled),
+         UInt64(v.succeeded), UInt64(v.wait_kind), UInt64(v.reserved)]
+    }
+    precondition(MemoryLayout<beluga_core_ice_recovery_config_t>.size == 16 && MemoryLayout<beluga_core_ice_recovery_config_t>.stride == 16 && MemoryLayout<beluga_core_ice_recovery_config_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_config_t>.offset(of: \.maximum_attempts) == 0)
+    precondition(MemoryLayout<beluga_core_ice_recovery_config_t>.offset(of: \.grace_positive) == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_config_t>.offset(of: \.reserved) == 12)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.size == 48 && MemoryLayout<beluga_core_ice_recovery_state_t>.stride == 48 && MemoryLayout<beluga_core_ice_recovery_state_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.phase) == 4)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.epoch) == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.attempts) == 16)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.maximum_attempts) == 24)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.exhaustion_delivered) == 32)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.grace_positive) == 36)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.cursor) == 40)
+    precondition(MemoryLayout<beluga_core_ice_recovery_state_t>.offset(of: \.reserved) == 44)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.size == 32 && MemoryLayout<beluga_core_ice_recovery_event_t>.stride == 32 && MemoryLayout<beluga_core_ice_recovery_event_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.opcode) == 4)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.workflow_epoch) == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.task_cancelled) == 16)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.succeeded) == 20)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.wait_kind) == 24)
+    precondition(MemoryLayout<beluga_core_ice_recovery_event_t>.offset(of: \.reserved) == 28)
+    precondition(MemoryLayout<beluga_core_ice_recovery_init_result_t>.size == 72 && MemoryLayout<beluga_core_ice_recovery_init_result_t>.stride == 72 && MemoryLayout<beluga_core_ice_recovery_init_result_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_init_result_t>.offset(of: \.status) == 0)
+    precondition(MemoryLayout<beluga_core_ice_recovery_init_result_t>.offset(of: \.reserved) == 4)
+    precondition(MemoryLayout<beluga_core_ice_recovery_init_result_t>.offset(of: \.copied_config) == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_init_result_t>.offset(of: \.candidate_state) == 24)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.size == 152 && MemoryLayout<beluga_core_ice_recovery_result_t>.stride == 152 && MemoryLayout<beluga_core_ice_recovery_result_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.status) == 4)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.copied_before) == 8)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.copied_event) == 56)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.candidate_state) == 88)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.effect) == 136)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.flags) == 140)
+    precondition(MemoryLayout<beluga_core_ice_recovery_result_t>.offset(of: \.reserved) == 144)
+    let config = beluga_core_ice_recovery_config_t(maximum_attempts: Int64.max, grace_positive: 1, reserved: 0)
+    let initial = beluga_core_ice_recovery_initialize(1, config)
+    precondition(initial.status == 0 && initial.reserved == 0)
+    precondition(initial.copied_config.maximum_attempts == Int64.max && initial.copied_config.grace_positive == 1 && initial.copied_config.reserved == 0)
+    precondition(stateWords(initial.candidate_state) == [1,0,0,0,9223372036854775807,0,1,0,0])
+    let denied = beluga_core_ice_recovery_initialize(0x10001, config)
+    precondition(denied.status == 1 && denied.reserved == 0)
+    precondition(denied.copied_config.maximum_attempts == Int64.max && denied.copied_config.grace_positive == 1 && denied.copied_config.reserved == 0)
+    precondition(stateWords(denied.candidate_state) == [0,0,0,0,0,0,0,0,0])
+    func row(_ abi: UInt32, _ b: [UInt64], _ e: [UInt64], _ status: UInt32, _ a: [UInt64], _ effect: UInt32, _ flags: UInt32) {
+        let out = beluga_core_ice_recovery_step(abi, state(b), event(e))
+        precondition(out.abi_version == 1 && out.status == status && out.effect == effect && out.flags == flags && out.reserved == 0)
+        precondition(stateWords(out.copied_before) == b && eventWords(out.copied_event) == e && stateWords(out.candidate_state) == a)
+    }
+    row(1, [1,0,18446744073709551615,0,9223372036854775807,0,1,0,0], [1,8,0,0,0,0,0], 0, [1,2,0,0,9223372036854775807,0,1,1,0], 1, 1)
+    row(1, [1,2,0,0,9223372036854775807,0,1,1,0], [1,10,0,0,0,0,0], 0, [1,2,0,0,9223372036854775807,0,1,2,0], 2, 0)
+    row(1, [1,2,0,0,9223372036854775807,0,1,2,0], [1,11,0,0,0,0,0], 0, [1,2,0,1,9223372036854775807,0,1,3,0], 3, 0)
+    row(1, [1,2,0,1,9223372036854775807,0,1,3,0], [1,12,0,0,0,0,0], 0, [1,2,0,1,9223372036854775807,0,1,6,0], 10, 0)
+    row(1, [1,2,0,9223372036854775807,9223372036854775807,0,1,6,0], [1,15,0,0,0,0,0], 0, [1,2,0,9223372036854775807,9223372036854775807,0,1,7,0], 11, 0)
+    row(1, [1,2,0,9223372036854775807,9223372036854775807,0,1,7,0], [1,16,0,0,0,0,0], 0, [1,5,0,9223372036854775807,9223372036854775807,1,1,8,0], 12, 0)
+    row(1, [1,5,0,9223372036854775807,9223372036854775807,1,1,8,0], [1,17,0,1,0,0,0], 0, [1,5,0,9223372036854775807,9223372036854775807,1,1,0,0], 14, 0)
+    row(1, [1,2,0,0,9223372036854775807,0,1,1,0], [1,10,0,2,0,0,0], 3, [1,2,0,0,9223372036854775807,0,1,1,0], 0, 0)
+    row(65537, [1,2,0,0,9223372036854775807,0,1,1,0], [1,10,0,0,0,0,0], 1, [1,2,0,0,9223372036854775807,0,1,1,0], 0, 0)
+    row(1, [1,0,18446744073709551615,9223372036854775808,9223372036854775807,0,1,0,0], [1,8,0,0,0,0,0], 2, [1,0,18446744073709551615,9223372036854775808,9223372036854775807,0,1,0,0], 0, 0)
+    print("BelugaCore Swift ICE recovery import/link PASS: five layouts, thirty-one offsets and full-width transactional transitions")
+}
+
+iceRecoverySmoke()
+
+// Authored-only architecture smoke addition; not executed/cross-linked here.
+import BelugaCore
+
+func screenLivenessSmoke() {
+    precondition(MemoryLayout<beluga_core_screen_liveness_optional_t>.size == 16)
+    precondition(MemoryLayout<beluga_core_screen_liveness_optional_t>.stride == 16)
+    precondition(MemoryLayout<beluga_core_screen_liveness_optional_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_optional_t>.offset(of: \.present) == 0)
+    precondition(MemoryLayout<beluga_core_screen_liveness_optional_t>.offset(of: \.value) == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.size == 192)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.stride == 192)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.generation) == 0)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.observed_at) == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.track_attached) == 16)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.cover) == 24)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.inbound_present) == 32)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.inbound_bytes) == 40)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.inbound_packets) == 56)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.decoded_frames) == 72)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.inbound_width) == 88)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.inbound_height) == 104)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.frames_per_second_bits) == 120)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.render_present) == 136)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.presented_frames) == 144)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.content_samples) == 152)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.content_changes) == 160)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.presented_at) == 168)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.render_width_bits) == 176)
+    precondition(MemoryLayout<beluga_core_screen_liveness_sample_t>.offset(of: \.render_height_bits) == 184)
+    precondition(MemoryLayout<beluga_core_screen_liveness_state_t>.size == 216)
+    precondition(MemoryLayout<beluga_core_screen_liveness_state_t>.stride == 216)
+    precondition(MemoryLayout<beluga_core_screen_liveness_state_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_state_t>.offset(of: \.previous_present) == 0)
+    precondition(MemoryLayout<beluga_core_screen_liveness_state_t>.offset(of: \.last_change_at) == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_state_t>.offset(of: \.previous) == 24)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.size == 296)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.stride == 296)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.liveness) == 0)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.reset_reason) == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.generation) == 16)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.track_attached) == 24)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.cover) == 32)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.inbound_bytes) == 40)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.inbound_byte_delta) == 56)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.inbound_packets) == 72)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.inbound_packet_delta) == 88)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.decoded_frames) == 104)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.decoded_frame_delta) == 120)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.presented_frames) == 136)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.presented_frame_delta) == 152)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.content_samples) == 168)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.content_sample_delta) == 184)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.content_changes) == 200)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.content_change_delta) == 216)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.presentation_age_ms) == 232)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.frame_width) == 248)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.frame_height) == 264)
+    precondition(MemoryLayout<beluga_core_screen_liveness_snapshot_t>.offset(of: \.frames_per_second_bits) == 280)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.size == 536)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.stride == 536)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.alignment == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.offset(of: \.status) == 8)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.offset(of: \.reserved) == 16)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.offset(of: \.state) == 24)
+    precondition(MemoryLayout<beluga_core_screen_liveness_result_t>.offset(of: \.snapshot) == 240)
+    var state=beluga_core_screen_liveness_state_t()
+    var sample=beluga_core_screen_liveness_sample_t()
+    sample.generation=UInt64.max
+    let out=beluga_core_screen_liveness_observe(1,state,sample)
+    precondition(out.status==0 && out.snapshot.liveness==2)
+    precondition(out.snapshot.generation==UInt64.max && out.snapshot.reset_reason==1)
+    state=out.state
+    let next=beluga_core_screen_liveness_observe(1,state,sample)
+    precondition(next.status==0 && next.snapshot.reset_reason==0)
+}
+
+
+// Additive architecture behavior corpus; source-only, uncompiled and unexecuted.
+// Literal tables are expected values, not a successful native classifier.
+// Each named-field projection preserves raw bits, options and full UInt64 words.
+// 0: zero
+private let livenessSwiftSamples0: [UInt64] = [
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 1: A_covered_high
+private let livenessSwiftSamples1: [UInt64] = [
+    0xffffffffffffffe0, 0xfffffffffffffffe, 0x1, 0x3, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f7, 0x1, 0x8000000000000021, 0x1, 0x20000000000023, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0xfff8000000000042, 0x1,
+    0xffffffffffffffe1, 0x8000000000000037, 0x20000000000041, 0xfffffffffffffffd, 0x780, 0x7ffffffffffffffa
+]
+
+// 2: B_progress
+private let livenessSwiftSamples2: [UInt64] = [
+    0xffffffffffffffe0, 0xffffffffffffffff, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 3: C_clock_reversal
+private let livenessSwiftSamples3: [UInt64] = [
+    0xffffffffffffffe0, 0x0, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 4: timing_before
+private let livenessSwiftSamples4: [UInt64] = [
+    0xffffffffffffffe0, 0x0, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0x0, 0x1, 0x340
+]
+
+// 5: timing_exact
+private let livenessSwiftSamples5: [UInt64] = [
+    0xffffffffffffffe0, 0x9502f900, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0x0, 0x1, 0x340
+]
+
+// 6: timing_ns_after
+private let livenessSwiftSamples6: [UInt64] = [
+    0xffffffffffffffe0, 0x9502f901, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0x0, 0x1, 0x340
+]
+
+// 7: timing_ms_last
+private let livenessSwiftSamples7: [UInt64] = [
+    0xffffffffffffffe0, 0x95123b3f, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0x0, 0x1, 0x340
+]
+
+// 8: timing_ms_after
+private let livenessSwiftSamples8: [UInt64] = [
+    0xffffffffffffffe0, 0x95123b40, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0x0, 0x1, 0x340
+]
+
+// 9: H_decode_stalled
+private let livenessSwiftSamples9: [UInt64] = [
+    0xffffffffffffffe0, 0xb2d05e00, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f9, 0x0, 0x0, 0x1, 0x20000000000026, 0x1,
+    0x438, 0x1, 0x924, 0x1, 0x408f400000000000, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 10: I_presentation_stalled
+private let livenessSwiftSamples10: [UInt64] = [
+    0xffffffffffffffe0, 0xb2d05e01, 0x1, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8fa, 0x0, 0x0, 0x1, 0x20000000000027, 0x1,
+    0x8000000000000000, 0x1, 0x7fffffffffffffff, 0x1, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 11: J_metadata_only
+private let livenessSwiftSamples11: [UInt64] = [
+    0xffffffffffffffe0, 0xb2d05e02, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x8001, 0x1, 0x7ff0000000000000, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 12: K_missing_track
+private let livenessSwiftSamples12: [UInt64] = [
+    0x0, 0xffffffffffffffff, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 13: L_intentional
+private let livenessSwiftSamples13: [UInt64] = [
+    0xffffffffffffffff, 0x0, 0x0, 0x1, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 14: M_privacy
+private let livenessSwiftSamples14: [UInt64] = [
+    0xffffffffffffffff, 0x1, 0x0, 0x2, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 15: N_hidden
+private let livenessSwiftSamples15: [UInt64] = [
+    0xffffffffffffffff, 0x2, 0x0, 0x4, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 16: O_regression
+private let livenessSwiftSamples16: [UInt64] = [
+    0xffffffffffffffe0, 0x1, 0x1, 0x0, 0x1, 0x1,
+    0x0, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0x1, 0x1, 0x340
+]
+
+// 17: P_generation_zero
+private let livenessSwiftSamples17: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x1,
+    0x0, 0x1, 0x0, 0x1, 0x0, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x7ff8000000000011, 0x1,
+    0x0, 0x0, 0x0, 0x0, 0x8000, 0x1
+]
+
+// 18: Q_before
+private let livenessSwiftSamples18: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x1,
+    0x7, 0x1, 0xb, 0x1, 0xd, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x4038000000000000, 0x1,
+    0x11, 0x13, 0x16, 0x0, 0x780, 0x438
+]
+
+// 19: Q_change_zero
+private let livenessSwiftSamples19: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x1,
+    0x7, 0x1, 0xb, 0x1, 0xd, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x4038000000000000, 0x1,
+    0x11, 0x13, 0x17, 0x0, 0x780, 0x438
+]
+
+// 20: R_no_objects
+private let livenessSwiftSamples20: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 21: S_empty_inbound
+private let livenessSwiftSamples21: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 22: T_before
+private let livenessSwiftSamples22: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x1,
+    0x0, 0x1, 0x0, 0x1, 0x0, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x408f400000000000, 0x1,
+    0x0, 0x0, 0x0, 0x0, 0x8000, 0x1
+]
+
+// 23: T_max
+private let livenessSwiftSamples23: [UInt64] = [
+    0x0, 0xffffffffffffffff, 0x1, 0x0, 0x1, 0x1,
+    0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x408f400000000000, 0x1,
+    0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffff, 0x0, 0x8000, 0x1
+]
+
+// 24: fps_above_upper
+private let livenessSwiftSamples24: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x1, 0x408f480000000000, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 25: fps_negative
+private let livenessSwiftSamples25: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x1, 0xbff0000000000000, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 26: fps_negative_inf
+private let livenessSwiftSamples26: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x1, 0xfff0000000000000, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 27: hidden_generation
+private let livenessSwiftSamples27: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 28: absent_inbound_payload_0
+private let livenessSwiftSamples28: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x1,
+    0xffffffffffffffff, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 29: inbound_optional_0_presence_2
+private let livenessSwiftSamples29: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x2,
+    0x11, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 30: inbound_optional_0_absent_payload
+private let livenessSwiftSamples30: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 31: absent_inbound_payload_1
+private let livenessSwiftSamples31: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x1, 0x8000000000000021, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 32: inbound_optional_1_presence_2
+private let livenessSwiftSamples32: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x2, 0x11, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 33: inbound_optional_1_absent_payload
+private let livenessSwiftSamples33: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 34: absent_inbound_payload_2
+private let livenessSwiftSamples34: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x1, 0x20000000000023, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 35: inbound_optional_2_presence_2
+private let livenessSwiftSamples35: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x2, 0x11, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 36: inbound_optional_2_absent_payload
+private let livenessSwiftSamples36: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 37: absent_inbound_payload_3
+private let livenessSwiftSamples37: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x8000000000000000, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 38: inbound_optional_3_presence_2
+private let livenessSwiftSamples38: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x2,
+    0x11, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 39: inbound_optional_3_absent_payload
+private let livenessSwiftSamples39: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 40: absent_inbound_payload_4
+private let livenessSwiftSamples40: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x1, 0x7fffffffffffffff, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 41: inbound_optional_4_presence_2
+private let livenessSwiftSamples41: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x2, 0x11, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 42: inbound_optional_4_absent_payload
+private let livenessSwiftSamples42: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 43: absent_inbound_payload_5
+private let livenessSwiftSamples43: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x1, 0xfff8000000000042, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 44: inbound_optional_5_presence_2
+private let livenessSwiftSamples44: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x2, 0x11, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 45: inbound_optional_5_absent_payload
+private let livenessSwiftSamples45: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 46: bad_track
+private let livenessSwiftSamples46: [UInt64] = [
+    0x0, 0x0, 0x2, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 47: bad_cover
+private let livenessSwiftSamples47: [UInt64] = [
+    0x0, 0x0, 0x1, 0x5, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 48: bad_inbound_presence
+private let livenessSwiftSamples48: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x2, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 49: bad_render_presence
+private let livenessSwiftSamples49: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x2,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 50: absent_render_payload_0
+private let livenessSwiftSamples50: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0xffffffffffffffff, 0x0, 0x0, 0x0, 0x0, 0x0
+]
+
+// 51: absent_render_payload_1
+private let livenessSwiftSamples51: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x8000000000000037, 0x0, 0x0, 0x0, 0x0
+]
+
+// 52: absent_render_payload_2
+private let livenessSwiftSamples52: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x20000000000041, 0x0, 0x0, 0x0
+]
+
+// 53: absent_render_payload_3
+private let livenessSwiftSamples53: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0xffffffffffffffff, 0x0, 0x0
+]
+
+// 54: absent_render_payload_4
+private let livenessSwiftSamples54: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x8000000000000000, 0x0
+]
+
+// 55: absent_render_payload_5
+private let livenessSwiftSamples55: [UInt64] = [
+    0x0, 0x0, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x7fffffffffffffff
+]
+
+// 56: bad_previous_track
+private let livenessSwiftSamples56: [UInt64] = [
+    0xffffffffffffffe0, 0xffffffffffffffff, 0x2, 0x0, 0x1, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023, 0x1, 0x20000000000026, 0x1,
+    0x8000000000000003, 0x1, 0x8000, 0x1, 0x8000000000000000, 0x1,
+    0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047, 0xfffffffffffffff8, 0x1, 0x340
+]
+
+private let livenessSwiftSamples: [[UInt64]] = [
+    livenessSwiftSamples0,
+    livenessSwiftSamples1,
+    livenessSwiftSamples2,
+    livenessSwiftSamples3,
+    livenessSwiftSamples4,
+    livenessSwiftSamples5,
+    livenessSwiftSamples6,
+    livenessSwiftSamples7,
+    livenessSwiftSamples8,
+    livenessSwiftSamples9,
+    livenessSwiftSamples10,
+    livenessSwiftSamples11,
+    livenessSwiftSamples12,
+    livenessSwiftSamples13,
+    livenessSwiftSamples14,
+    livenessSwiftSamples15,
+    livenessSwiftSamples16,
+    livenessSwiftSamples17,
+    livenessSwiftSamples18,
+    livenessSwiftSamples19,
+    livenessSwiftSamples20,
+    livenessSwiftSamples21,
+    livenessSwiftSamples22,
+    livenessSwiftSamples23,
+    livenessSwiftSamples24,
+    livenessSwiftSamples25,
+    livenessSwiftSamples26,
+    livenessSwiftSamples27,
+    livenessSwiftSamples28,
+    livenessSwiftSamples29,
+    livenessSwiftSamples30,
+    livenessSwiftSamples31,
+    livenessSwiftSamples32,
+    livenessSwiftSamples33,
+    livenessSwiftSamples34,
+    livenessSwiftSamples35,
+    livenessSwiftSamples36,
+    livenessSwiftSamples37,
+    livenessSwiftSamples38,
+    livenessSwiftSamples39,
+    livenessSwiftSamples40,
+    livenessSwiftSamples41,
+    livenessSwiftSamples42,
+    livenessSwiftSamples43,
+    livenessSwiftSamples44,
+    livenessSwiftSamples45,
+    livenessSwiftSamples46,
+    livenessSwiftSamples47,
+    livenessSwiftSamples48,
+    livenessSwiftSamples49,
+    livenessSwiftSamples50,
+    livenessSwiftSamples51,
+    livenessSwiftSamples52,
+    livenessSwiftSamples53,
+    livenessSwiftSamples54,
+    livenessSwiftSamples55,
+    livenessSwiftSamples56
+]
+// 0: empty
+private let livenessSwiftStates0: [UInt64] = [
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 1: after_A
+private let livenessSwiftStates1: [UInt64] = [
+    0x1, 0x0, 0x0, 0xffffffffffffffe0, 0xfffffffffffffffe, 0x1,
+    0x3, 0x1, 0x1, 0xfefdfcfbfaf9f8f7, 0x1, 0x8000000000000021,
+    0x1, 0x20000000000023, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0xfff8000000000042, 0x1, 0xffffffffffffffe1, 0x8000000000000037, 0x20000000000041,
+    0xfffffffffffffffd, 0x780, 0x7ffffffffffffffa
+]
+
+// 2: after_B
+private let livenessSwiftStates2: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 3: after_C
+private let livenessSwiftStates3: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 4: timing_zero_change
+private let livenessSwiftStates4: [UInt64] = [
+    0x1, 0x1, 0x0, 0xffffffffffffffe0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0x0, 0x1, 0x340
+]
+
+// 5: after_timing_exact
+private let livenessSwiftStates5: [UInt64] = [
+    0x1, 0x1, 0x0, 0xffffffffffffffe0, 0x9502f900, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0x0, 0x1, 0x340
+]
+
+// 6: after_timing_ns_after
+private let livenessSwiftStates6: [UInt64] = [
+    0x1, 0x1, 0x0, 0xffffffffffffffe0, 0x9502f901, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0x0, 0x1, 0x340
+]
+
+// 7: after_timing_ms_last
+private let livenessSwiftStates7: [UInt64] = [
+    0x1, 0x1, 0x0, 0xffffffffffffffe0, 0x95123b3f, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0x0, 0x1, 0x340
+]
+
+// 8: after_timing_ms_after
+private let livenessSwiftStates8: [UInt64] = [
+    0x1, 0x1, 0x0, 0xffffffffffffffe0, 0x95123b40, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0x0, 0x1, 0x340
+]
+
+// 9: after_H
+private let livenessSwiftStates9: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0xb2d05e00, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f9, 0x0, 0x0,
+    0x1, 0x20000000000026, 0x1, 0x438, 0x1, 0x924,
+    0x1, 0x408f400000000000, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 10: after_I
+private let livenessSwiftStates10: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0xb2d05e01, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8fa, 0x0, 0x0,
+    0x1, 0x20000000000027, 0x1, 0x8000000000000000, 0x1, 0x7fffffffffffffff,
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 11: after_J
+private let livenessSwiftStates11: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0xb2d05e02, 0x1,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x1, 0x0, 0x1, 0x8001,
+    0x1, 0x7ff0000000000000, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 12: after_K
+private let livenessSwiftStates12: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0xffffffffffffffff, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 13: after_L
+private let livenessSwiftStates13: [UInt64] = [
+    0x1, 0x0, 0x0, 0xffffffffffffffff, 0x0, 0x0,
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 14: after_M
+private let livenessSwiftStates14: [UInt64] = [
+    0x1, 0x0, 0x0, 0xffffffffffffffff, 0x1, 0x0,
+    0x2, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 15: after_N
+private let livenessSwiftStates15: [UInt64] = [
+    0x1, 0x0, 0x0, 0xffffffffffffffff, 0x2, 0x0,
+    0x4, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 16: after_O
+private let livenessSwiftStates16: [UInt64] = [
+    0x1, 0x0, 0x0, 0xffffffffffffffe0, 0x1, 0x1,
+    0x0, 0x1, 0x1, 0x0, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0x1, 0x1, 0x340
+]
+
+// 17: after_P
+private let livenessSwiftStates17: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0x0, 0x1, 0x0,
+    0x1, 0x0, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x7ff8000000000011, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x8000, 0x1
+]
+
+// 18: before_Q
+private let livenessSwiftStates18: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0x7, 0x1, 0xb,
+    0x1, 0xd, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x4038000000000000, 0x1, 0x11, 0x13, 0x16,
+    0x0, 0x780, 0x438
+]
+
+// 19: after_Q
+private let livenessSwiftStates19: [UInt64] = [
+    0x1, 0x1, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0x7, 0x1, 0xb,
+    0x1, 0xd, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x4038000000000000, 0x1, 0x11, 0x13, 0x17,
+    0x0, 0x780, 0x438
+]
+
+// 20: after_R
+private let livenessSwiftStates20: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 21: after_S
+private let livenessSwiftStates21: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 22: before_T
+private let livenessSwiftStates22: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0x0, 0x1, 0x0,
+    0x1, 0x0, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x408f400000000000, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x8000, 0x1
+]
+
+// 23: after_T
+private let livenessSwiftStates23: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0x0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xffffffffffffffff, 0x1, 0xffffffffffffffff,
+    0x1, 0xffffffffffffffff, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x408f400000000000, 0x1, 0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffff,
+    0x0, 0x8000, 0x1
+]
+
+// 24: after_fps_above_upper
+private let livenessSwiftStates24: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x1, 0x408f480000000000, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 25: after_fps_negative
+private let livenessSwiftStates25: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x1, 0xbff0000000000000, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 26: after_fps_negative_inf
+private let livenessSwiftStates26: [UInt64] = [
+    0x1, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x1, 0xfff0000000000000, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 27: bad_before_presence_2
+private let livenessSwiftStates27: [UInt64] = [
+    0x2, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 28: bad_clock_presence_2
+private let livenessSwiftStates28: [UInt64] = [
+    0x1, 0x2, 0x11, 0xffffffffffffffe0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 29: bad_clock_presence_max
+private let livenessSwiftStates29: [UInt64] = [
+    0x1, 0xffffffffffffffff, 0xffffffffffffffff, 0xffffffffffffffe0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 30: bad_clock_absent_payload
+private let livenessSwiftStates30: [UInt64] = [
+    0x1, 0x0, 0x1, 0xffffffffffffffe0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 31: bad_absent_before_generation
+private let livenessSwiftStates31: [UInt64] = [
+    0x0, 0x0, 0x0, 0x1, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 32: bad_absent_before_full
+private let livenessSwiftStates32: [UInt64] = [
+    0x0, 0x0, 0x0, 0xffffffffffffffe0, 0xffffffffffffffff, 0x1,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+// 33: bad_absent_before_clock_0
+private let livenessSwiftStates33: [UInt64] = [
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 34: bad_absent_before_clock_18446744073709551615
+private let livenessSwiftStates34: [UInt64] = [
+    0x0, 0x1, 0xffffffffffffffff, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0
+]
+
+// 35: bad_nested_previous
+private let livenessSwiftStates35: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffff, 0xffffffffffffffe0, 0xffffffffffffffff, 0x2,
+    0x0, 0x1, 0x1, 0xfefdfcfbfaf9f8f8, 0x1, 0x8000000000000023,
+    0x1, 0x20000000000026, 0x1, 0x8000000000000003, 0x1, 0x8000,
+    0x1, 0x8000000000000000, 0x1, 0xffffffffffffffe5, 0x800000000000003c, 0x20000000000047,
+    0xfffffffffffffff8, 0x1, 0x340
+]
+
+private let livenessSwiftStates: [[UInt64]] = [
+    livenessSwiftStates0,
+    livenessSwiftStates1,
+    livenessSwiftStates2,
+    livenessSwiftStates3,
+    livenessSwiftStates4,
+    livenessSwiftStates5,
+    livenessSwiftStates6,
+    livenessSwiftStates7,
+    livenessSwiftStates8,
+    livenessSwiftStates9,
+    livenessSwiftStates10,
+    livenessSwiftStates11,
+    livenessSwiftStates12,
+    livenessSwiftStates13,
+    livenessSwiftStates14,
+    livenessSwiftStates15,
+    livenessSwiftStates16,
+    livenessSwiftStates17,
+    livenessSwiftStates18,
+    livenessSwiftStates19,
+    livenessSwiftStates20,
+    livenessSwiftStates21,
+    livenessSwiftStates22,
+    livenessSwiftStates23,
+    livenessSwiftStates24,
+    livenessSwiftStates25,
+    livenessSwiftStates26,
+    livenessSwiftStates27,
+    livenessSwiftStates28,
+    livenessSwiftStates29,
+    livenessSwiftStates30,
+    livenessSwiftStates31,
+    livenessSwiftStates32,
+    livenessSwiftStates33,
+    livenessSwiftStates34,
+    livenessSwiftStates35
+]
+// 0: A_initial
+private let livenessSwiftSnapshots0: [UInt64] = [
+    0x1, 0x1, 0xffffffffffffffe0, 0x1, 0x3, 0x1,
+    0xfefdfcfbfaf9f8f7, 0x0, 0x0, 0x1, 0x8000000000000021, 0x0,
+    0x0, 0x1, 0x20000000000023, 0x0, 0x0, 0x1,
+    0xffffffffffffffe1, 0x0, 0x0, 0x1, 0x8000000000000037, 0x0,
+    0x0, 0x1, 0x20000000000041, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x780, 0x1, 0x8000, 0x0,
+    0x0
+]
+
+// 1: A_plateau
+private let livenessSwiftSnapshots1: [UInt64] = [
+    0x1, 0x0, 0xffffffffffffffe0, 0x1, 0x3, 0x1,
+    0xfefdfcfbfaf9f8f7, 0x1, 0x0, 0x1, 0x8000000000000021, 0x1,
+    0x0, 0x1, 0x20000000000023, 0x1, 0x0, 0x1,
+    0xffffffffffffffe1, 0x1, 0x0, 0x1, 0x8000000000000037, 0x1,
+    0x0, 0x1, 0x20000000000041, 0x1, 0x0, 0x1,
+    0x0, 0x1, 0x780, 0x1, 0x8000, 0x0,
+    0x0
+]
+
+// 2: B_progress
+private let livenessSwiftSnapshots2: [UInt64] = [
+    0x8, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x1, 0x1, 0x8000000000000023, 0x1,
+    0x2, 0x1, 0x20000000000026, 0x1, 0x3, 0x1,
+    0xffffffffffffffe5, 0x1, 0x4, 0x1, 0x800000000000003c, 0x1,
+    0x5, 0x1, 0x20000000000047, 0x1, 0x6, 0x1,
+    0x0, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 3: C_reversal
+private let livenessSwiftSnapshots3: [UInt64] = [
+    0x7, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x0, 0x1, 0x8000000000000023, 0x1,
+    0x0, 0x1, 0x20000000000026, 0x1, 0x0, 0x1,
+    0xffffffffffffffe5, 0x1, 0x0, 0x1, 0x800000000000003c, 0x1,
+    0x0, 0x1, 0x20000000000047, 0x1, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 4: timing_exact
+private let livenessSwiftSnapshots4: [UInt64] = [
+    0x8, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x0, 0x1, 0x8000000000000023, 0x1,
+    0x0, 0x1, 0x20000000000026, 0x1, 0x0, 0x1,
+    0xffffffffffffffe5, 0x1, 0x0, 0x1, 0x800000000000003c, 0x1,
+    0x0, 0x1, 0x20000000000047, 0x1, 0x0, 0x1,
+    0x9c4, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 5: timing_ns_after
+private let livenessSwiftSnapshots5: [UInt64] = [
+    0x7, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x0, 0x1, 0x8000000000000023, 0x1,
+    0x0, 0x1, 0x20000000000026, 0x1, 0x0, 0x1,
+    0xffffffffffffffe5, 0x1, 0x0, 0x1, 0x800000000000003c, 0x1,
+    0x0, 0x1, 0x20000000000047, 0x1, 0x0, 0x1,
+    0x9c4, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 6: timing_ms_last
+private let livenessSwiftSnapshots6: [UInt64] = [
+    0x7, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x0, 0x1, 0x8000000000000023, 0x1,
+    0x0, 0x1, 0x20000000000026, 0x1, 0x0, 0x1,
+    0xffffffffffffffe5, 0x1, 0x0, 0x1, 0x800000000000003c, 0x1,
+    0x0, 0x1, 0x20000000000047, 0x1, 0x0, 0x1,
+    0x9c4, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 7: timing_ms_after
+private let livenessSwiftSnapshots7: [UInt64] = [
+    0x4, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f8, 0x1, 0x0, 0x1, 0x8000000000000023, 0x1,
+    0x0, 0x1, 0x20000000000026, 0x1, 0x0, 0x1,
+    0xffffffffffffffe5, 0x1, 0x0, 0x1, 0x800000000000003c, 0x1,
+    0x0, 0x1, 0x20000000000047, 0x1, 0x0, 0x1,
+    0x9c5, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 8: H_decode_stalled
+private let livenessSwiftSnapshots8: [UInt64] = [
+    0x5, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8f9, 0x1, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x1, 0x20000000000026, 0x1, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x1, 0x438, 0x1, 0x924, 0x1,
+    0x408f400000000000
+]
+
+// 9: I_presentation_stalled
+private let livenessSwiftSnapshots9: [UInt64] = [
+    0x6, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0xfefdfcfbfaf9f8fa, 0x1, 0x1, 0x0, 0x0, 0x0,
+    0x0, 0x1, 0x20000000000027, 0x1, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x1,
+    0x0
+]
+
+// 10: J_metadata_only
+private let livenessSwiftSnapshots10: [UInt64] = [
+    0x3, 0x0, 0xffffffffffffffe0, 0x1, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+// 11: K_missing_track
+private let livenessSwiftSnapshots11: [UInt64] = [
+    0x2, 0x2, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+// 12: L_intentional
+private let livenessSwiftSnapshots12: [UInt64] = [
+    0x0, 0x2, 0xffffffffffffffff, 0x0, 0x1, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+// 13: M_privacy
+private let livenessSwiftSnapshots13: [UInt64] = [
+    0x1, 0x0, 0xffffffffffffffff, 0x0, 0x2, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+// 14: N_hidden
+private let livenessSwiftSnapshots14: [UInt64] = [
+    0x1, 0x0, 0xffffffffffffffff, 0x0, 0x4, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+// 15: O_regression
+private let livenessSwiftSnapshots15: [UInt64] = [
+    0x3, 0x3, 0xffffffffffffffe0, 0x1, 0x0, 0x1,
+    0x0, 0x0, 0x0, 0x1, 0x8000000000000023, 0x0,
+    0x0, 0x1, 0x20000000000026, 0x0, 0x0, 0x1,
+    0xffffffffffffffe5, 0x0, 0x0, 0x1, 0x800000000000003c, 0x0,
+    0x0, 0x1, 0x20000000000047, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x1, 0x1, 0x340, 0x1,
+    0x8000000000000000
+]
+
+// 16: P_generation_zero
+private let livenessSwiftSnapshots16: [UInt64] = [
+    0x3, 0x2, 0x0, 0x1, 0x0, 0x1,
+    0x0, 0x0, 0x0, 0x1, 0x0, 0x0,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x0, 0x0, 0x1, 0x0, 0x0,
+    0x0, 0x1, 0x0, 0x0, 0x0, 0x1,
+    0x0, 0x1, 0x8000, 0x1, 0x1, 0x0,
+    0x0
+]
+
+// 17: Q_change_zero
+private let livenessSwiftSnapshots17: [UInt64] = [
+    0x8, 0x0, 0x0, 0x1, 0x0, 0x1,
+    0x7, 0x1, 0x0, 0x1, 0xb, 0x1,
+    0x0, 0x1, 0xd, 0x1, 0x0, 0x1,
+    0x11, 0x1, 0x0, 0x1, 0x13, 0x1,
+    0x0, 0x1, 0x17, 0x1, 0x1, 0x1,
+    0x0, 0x1, 0x780, 0x1, 0x438, 0x1,
+    0x4038000000000000
+]
+
+// 18: R_no_objects
+private let livenessSwiftSnapshots18: [UInt64] = [
+    0x3, 0x1, 0x0, 0x1, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+// 19: T_max
+private let livenessSwiftSnapshots19: [UInt64] = [
+    0x8, 0x0, 0x0, 0x1, 0x0, 0x1,
+    0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1,
+    0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1,
+    0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1,
+    0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1, 0xffffffffffffffff, 0x1,
+    0x5265c00, 0x1, 0x8000, 0x1, 0x1, 0x1,
+    0x408f400000000000
+]
+
+// 20: refusal_zero
+private let livenessSwiftSnapshots20: [UInt64] = [
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0, 0x0, 0x0, 0x0, 0x0, 0x0,
+    0x0
+]
+
+private let livenessSwiftSnapshots: [[UInt64]] = [
+    livenessSwiftSnapshots0,
+    livenessSwiftSnapshots1,
+    livenessSwiftSnapshots2,
+    livenessSwiftSnapshots3,
+    livenessSwiftSnapshots4,
+    livenessSwiftSnapshots5,
+    livenessSwiftSnapshots6,
+    livenessSwiftSnapshots7,
+    livenessSwiftSnapshots8,
+    livenessSwiftSnapshots9,
+    livenessSwiftSnapshots10,
+    livenessSwiftSnapshots11,
+    livenessSwiftSnapshots12,
+    livenessSwiftSnapshots13,
+    livenessSwiftSnapshots14,
+    livenessSwiftSnapshots15,
+    livenessSwiftSnapshots16,
+    livenessSwiftSnapshots17,
+    livenessSwiftSnapshots18,
+    livenessSwiftSnapshots19,
+    livenessSwiftSnapshots20
+]
+
+private struct LivenessSwiftLiteralCase {
+    let name: String
+    let abi: UInt64
+    let beforeIndex: Int
+    let sampleIndex: Int
+    let status: UInt64
+    let afterIndex: Int
+    let snapshotIndex: Int
+}
+private let livenessSwiftCases: [LivenessSwiftLiteralCase] = [
+    .init(name: "covered_initial_full_width", abi: 0x1, beforeIndex: 0, sampleIndex: 1, status: 0x0, afterIndex: 1, snapshotIndex: 0),
+    .init(name: "covered_plateau_full_width", abi: 0x1, beforeIndex: 1, sampleIndex: 1, status: 0x0, afterIndex: 1, snapshotIndex: 1),
+    .init(name: "all_six_distinct_deltas_negative_zero", abi: 0x1, beforeIndex: 1, sampleIndex: 2, status: 0x0, afterIndex: 2, snapshotIndex: 2),
+    .init(name: "clock_reversal_retains_full_width_recent_change", abi: 0x1, beforeIndex: 2, sampleIndex: 3, status: 0x0, afterIndex: 3, snapshotIndex: 3),
+    .init(name: "timing_exact", abi: 0x1, beforeIndex: 4, sampleIndex: 5, status: 0x0, afterIndex: 5, snapshotIndex: 4),
+    .init(name: "timing_ns_after", abi: 0x1, beforeIndex: 4, sampleIndex: 6, status: 0x0, afterIndex: 6, snapshotIndex: 5),
+    .init(name: "timing_ms_last", abi: 0x1, beforeIndex: 4, sampleIndex: 7, status: 0x0, afterIndex: 7, snapshotIndex: 6),
+    .init(name: "timing_ms_after", abi: 0x1, beforeIndex: 4, sampleIndex: 8, status: 0x0, afterIndex: 8, snapshotIndex: 7),
+    .init(name: "decode_stalled_inbound_only", abi: 0x1, beforeIndex: 2, sampleIndex: 9, status: 0x0, afterIndex: 9, snapshotIndex: 8),
+    .init(name: "presentation_stalled_signed_dimension_bounds_positive_zero", abi: 0x1, beforeIndex: 9, sampleIndex: 10, status: 0x0, afterIndex: 10, snapshotIndex: 9),
+    .init(name: "metadata_only_empty_counters_inf_and_invalid_dimensions", abi: 0x1, beforeIndex: 10, sampleIndex: 11, status: 0x0, afterIndex: 11, snapshotIndex: 10),
+    .init(name: "track_missing_generation_change", abi: 0x1, beforeIndex: 11, sampleIndex: 12, status: 0x0, afterIndex: 12, snapshotIndex: 11),
+    .init(name: "intentional_cover_precedes_track_and_reset", abi: 0x1, beforeIndex: 12, sampleIndex: 13, status: 0x0, afterIndex: 13, snapshotIndex: 12),
+    .init(name: "privacy_cover", abi: 0x1, beforeIndex: 13, sampleIndex: 14, status: 0x0, afterIndex: 14, snapshotIndex: 13),
+    .init(name: "hidden_cover", abi: 0x1, beforeIndex: 14, sampleIndex: 15, status: 0x0, afterIndex: 15, snapshotIndex: 14),
+    .init(name: "counter_regression_resets_all_deltas_and_recent_change", abi: 0x1, beforeIndex: 2, sampleIndex: 16, status: 0x0, afterIndex: 16, snapshotIndex: 15),
+    .init(name: "generation_change_precedes_regression_nan_raw_history", abi: 0x1, beforeIndex: 2, sampleIndex: 17, status: 0x0, afterIndex: 17, snapshotIndex: 16),
+    .init(name: "present_zero_change_clock_is_not_absent", abi: 0x1, beforeIndex: 18, sampleIndex: 19, status: 0x0, afterIndex: 19, snapshotIndex: 17),
+    .init(name: "no_objects_is_not_empty_inbound", abi: 0x1, beforeIndex: 0, sampleIndex: 20, status: 0x0, afterIndex: 20, snapshotIndex: 18),
+    .init(name: "empty_inbound_is_not_absent_object", abi: 0x1, beforeIndex: 0, sampleIndex: 21, status: 0x0, afterIndex: 21, snapshotIndex: 18),
+    .init(name: "maximum_deltas_age_clamp_recent_clock", abi: 0x1, beforeIndex: 22, sampleIndex: 23, status: 0x0, afterIndex: 23, snapshotIndex: 19),
+    .init(name: "fps_above_upper", abi: 0x1, beforeIndex: 0, sampleIndex: 24, status: 0x0, afterIndex: 24, snapshotIndex: 18),
+    .init(name: "fps_negative", abi: 0x1, beforeIndex: 0, sampleIndex: 25, status: 0x0, afterIndex: 25, snapshotIndex: 18),
+    .init(name: "fps_negative_inf", abi: 0x1, beforeIndex: 0, sampleIndex: 26, status: 0x0, afterIndex: 26, snapshotIndex: 18),
+    .init(name: "abi_0", abi: 0x0, beforeIndex: 2, sampleIndex: 2, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "abi_2", abi: 0x2, beforeIndex: 2, sampleIndex: 2, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "abi_18446744073709551615", abi: 0xffffffffffffffff, beforeIndex: 2, sampleIndex: 2, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "bad_before_presence_2", abi: 0x1, beforeIndex: 27, sampleIndex: 2, status: 0x3, afterIndex: 27, snapshotIndex: 20),
+    .init(name: "bad_clock_presence_2", abi: 0x1, beforeIndex: 28, sampleIndex: 2, status: 0x3, afterIndex: 28, snapshotIndex: 20),
+    .init(name: "bad_clock_presence_max", abi: 0x1, beforeIndex: 29, sampleIndex: 2, status: 0x3, afterIndex: 29, snapshotIndex: 20),
+    .init(name: "bad_clock_absent_payload", abi: 0x1, beforeIndex: 30, sampleIndex: 2, status: 0x3, afterIndex: 30, snapshotIndex: 20),
+    .init(name: "bad_absent_before_generation", abi: 0x1, beforeIndex: 31, sampleIndex: 2, status: 0x3, afterIndex: 31, snapshotIndex: 20),
+    .init(name: "bad_absent_before_full", abi: 0x1, beforeIndex: 32, sampleIndex: 2, status: 0x3, afterIndex: 32, snapshotIndex: 20),
+    .init(name: "bad_absent_before_clock_0", abi: 0x1, beforeIndex: 33, sampleIndex: 2, status: 0x3, afterIndex: 33, snapshotIndex: 20),
+    .init(name: "bad_absent_before_clock_18446744073709551615", abi: 0x1, beforeIndex: 34, sampleIndex: 2, status: 0x3, afterIndex: 34, snapshotIndex: 20),
+    .init(name: "absent_inbound_payload_0", abi: 0x1, beforeIndex: 2, sampleIndex: 28, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_0_presence_2", abi: 0x1, beforeIndex: 2, sampleIndex: 29, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_0_absent_payload", abi: 0x1, beforeIndex: 2, sampleIndex: 30, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_inbound_payload_1", abi: 0x1, beforeIndex: 2, sampleIndex: 31, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_1_presence_2", abi: 0x1, beforeIndex: 2, sampleIndex: 32, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_1_absent_payload", abi: 0x1, beforeIndex: 2, sampleIndex: 33, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_inbound_payload_2", abi: 0x1, beforeIndex: 2, sampleIndex: 34, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_2_presence_2", abi: 0x1, beforeIndex: 2, sampleIndex: 35, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_2_absent_payload", abi: 0x1, beforeIndex: 2, sampleIndex: 36, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_inbound_payload_3", abi: 0x1, beforeIndex: 2, sampleIndex: 37, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_3_presence_2", abi: 0x1, beforeIndex: 2, sampleIndex: 38, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_3_absent_payload", abi: 0x1, beforeIndex: 2, sampleIndex: 39, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_inbound_payload_4", abi: 0x1, beforeIndex: 2, sampleIndex: 40, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_4_presence_2", abi: 0x1, beforeIndex: 2, sampleIndex: 41, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_4_absent_payload", abi: 0x1, beforeIndex: 2, sampleIndex: 42, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_inbound_payload_5", abi: 0x1, beforeIndex: 2, sampleIndex: 43, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_5_presence_2", abi: 0x1, beforeIndex: 2, sampleIndex: 44, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "inbound_optional_5_absent_payload", abi: 0x1, beforeIndex: 2, sampleIndex: 45, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "bad_track", abi: 0x1, beforeIndex: 2, sampleIndex: 46, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "bad_cover", abi: 0x1, beforeIndex: 2, sampleIndex: 47, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "bad_inbound_presence", abi: 0x1, beforeIndex: 2, sampleIndex: 48, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "bad_render_presence", abi: 0x1, beforeIndex: 2, sampleIndex: 49, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_render_payload_0", abi: 0x1, beforeIndex: 2, sampleIndex: 50, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_render_payload_1", abi: 0x1, beforeIndex: 2, sampleIndex: 51, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_render_payload_2", abi: 0x1, beforeIndex: 2, sampleIndex: 52, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_render_payload_3", abi: 0x1, beforeIndex: 2, sampleIndex: 53, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_render_payload_4", abi: 0x1, beforeIndex: 2, sampleIndex: 54, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "absent_render_payload_5", abi: 0x1, beforeIndex: 2, sampleIndex: 55, status: 0x3, afterIndex: 2, snapshotIndex: 20),
+    .init(name: "bad_nested_previous", abi: 0x1, beforeIndex: 35, sampleIndex: 2, status: 0x3, afterIndex: 35, snapshotIndex: 20)
+]
+
+private func livenessSwiftSampleFromWords(_ words: [UInt64]) -> beluga_core_screen_liveness_sample_t {
+    precondition(words.count == 24)
+    var out = beluga_core_screen_liveness_sample_t()
+    out.generation = words[0]
+    out.observed_at = words[1]
+    out.track_attached = words[2]
+    out.cover = words[3]
+    out.inbound_present = words[4]
+    out.inbound_bytes.present = words[5]
+    out.inbound_bytes.value = words[6]
+    out.inbound_packets.present = words[7]
+    out.inbound_packets.value = words[8]
+    out.decoded_frames.present = words[9]
+    out.decoded_frames.value = words[10]
+    out.inbound_width.present = words[11]
+    out.inbound_width.value = words[12]
+    out.inbound_height.present = words[13]
+    out.inbound_height.value = words[14]
+    out.frames_per_second_bits.present = words[15]
+    out.frames_per_second_bits.value = words[16]
+    out.render_present = words[17]
+    out.presented_frames = words[18]
+    out.content_samples = words[19]
+    out.content_changes = words[20]
+    out.presented_at = words[21]
+    out.render_width_bits = words[22]
+    out.render_height_bits = words[23]
+    return out
+}
+private func livenessSwiftSampleWords(_ sample: beluga_core_screen_liveness_sample_t) -> [UInt64] {
+    var out = [UInt64](repeating: 0, count: 24)
+    out[0] = sample.generation
+    out[1] = sample.observed_at
+    out[2] = sample.track_attached
+    out[3] = sample.cover
+    out[4] = sample.inbound_present
+    out[5] = sample.inbound_bytes.present
+    out[6] = sample.inbound_bytes.value
+    out[7] = sample.inbound_packets.present
+    out[8] = sample.inbound_packets.value
+    out[9] = sample.decoded_frames.present
+    out[10] = sample.decoded_frames.value
+    out[11] = sample.inbound_width.present
+    out[12] = sample.inbound_width.value
+    out[13] = sample.inbound_height.present
+    out[14] = sample.inbound_height.value
+    out[15] = sample.frames_per_second_bits.present
+    out[16] = sample.frames_per_second_bits.value
+    out[17] = sample.render_present
+    out[18] = sample.presented_frames
+    out[19] = sample.content_samples
+    out[20] = sample.content_changes
+    out[21] = sample.presented_at
+    out[22] = sample.render_width_bits
+    out[23] = sample.render_height_bits
+    return out
+}
+private func livenessSwiftStateFromWords(_ words: [UInt64]) -> beluga_core_screen_liveness_state_t {
+    precondition(words.count == 27)
+    var out = beluga_core_screen_liveness_state_t()
+    out.previous_present = words[0]
+    out.last_change_at.present = words[1]
+    out.last_change_at.value = words[2]
+    out.previous = livenessSwiftSampleFromWords(Array(words[3..<27]))
+    return out
+}
+private func livenessSwiftStateWords(_ state: beluga_core_screen_liveness_state_t) -> [UInt64] {
+    [state.previous_present, state.last_change_at.present, state.last_change_at.value]
+        + livenessSwiftSampleWords(state.previous)
+}
+private func livenessSwiftSnapshotWords(_ snapshot: beluga_core_screen_liveness_snapshot_t) -> [UInt64] {
+    var out = [UInt64](repeating: 0, count: 37)
+    out[0] = snapshot.liveness
+    out[1] = snapshot.reset_reason
+    out[2] = snapshot.generation
+    out[3] = snapshot.track_attached
+    out[4] = snapshot.cover
+    out[5] = snapshot.inbound_bytes.present
+    out[6] = snapshot.inbound_bytes.value
+    out[7] = snapshot.inbound_byte_delta.present
+    out[8] = snapshot.inbound_byte_delta.value
+    out[9] = snapshot.inbound_packets.present
+    out[10] = snapshot.inbound_packets.value
+    out[11] = snapshot.inbound_packet_delta.present
+    out[12] = snapshot.inbound_packet_delta.value
+    out[13] = snapshot.decoded_frames.present
+    out[14] = snapshot.decoded_frames.value
+    out[15] = snapshot.decoded_frame_delta.present
+    out[16] = snapshot.decoded_frame_delta.value
+    out[17] = snapshot.presented_frames.present
+    out[18] = snapshot.presented_frames.value
+    out[19] = snapshot.presented_frame_delta.present
+    out[20] = snapshot.presented_frame_delta.value
+    out[21] = snapshot.content_samples.present
+    out[22] = snapshot.content_samples.value
+    out[23] = snapshot.content_sample_delta.present
+    out[24] = snapshot.content_sample_delta.value
+    out[25] = snapshot.content_changes.present
+    out[26] = snapshot.content_changes.value
+    out[27] = snapshot.content_change_delta.present
+    out[28] = snapshot.content_change_delta.value
+    out[29] = snapshot.presentation_age_ms.present
+    out[30] = snapshot.presentation_age_ms.value
+    out[31] = snapshot.frame_width.present
+    out[32] = snapshot.frame_width.value
+    out[33] = snapshot.frame_height.present
+    out[34] = snapshot.frame_height.value
+    out[35] = snapshot.frames_per_second_bits.present
+    out[36] = snapshot.frames_per_second_bits.value
+    return out
+}
+private func livenessSwiftResultWords(_ result: beluga_core_screen_liveness_result_t) -> [UInt64] {
+    [result.abi_version, result.status, result.reserved]
+        + livenessSwiftStateWords(result.state)
+        + livenessSwiftSnapshotWords(result.snapshot)
+}
+
+func screenLivenessFullCustodySmoke() {
+    // Retain the frozen original layout/stride/offset and behavior prefix.
+    screenLivenessSmoke()
+    for row in livenessSwiftCases {
+        precondition(livenessSwiftStates.indices.contains(row.beforeIndex))
+        precondition(livenessSwiftStates.indices.contains(row.afterIndex))
+        precondition(livenessSwiftSamples.indices.contains(row.sampleIndex))
+        precondition(livenessSwiftSnapshots.indices.contains(row.snapshotIndex))
+        let before = livenessSwiftStateFromWords(livenessSwiftStates[row.beforeIndex])
+        let sample = livenessSwiftSampleFromWords(livenessSwiftSamples[row.sampleIndex])
+
+        // Actual export first: no fallback, callback, corruption, or policy helper.
+        let result = beluga_core_screen_liveness_observe(row.abi, before, sample)
+        let actual = livenessSwiftResultWords(result)
+        let expected: [UInt64] = [1, row.status, 0]
+            + livenessSwiftStates[row.afterIndex]
+            + livenessSwiftSnapshots[row.snapshotIndex]
+        precondition(actual.count == 67 && expected.count == 67)
+        for word in 0..<67 {
+            precondition(actual[word] == expected[word], "\(row.name): result word \(word)")
+        }
+        precondition(livenessSwiftStateWords(before) == livenessSwiftStates[row.beforeIndex],
+                     "\(row.name): all 27 before-state words unchanged")
+        precondition(livenessSwiftSampleWords(sample) == livenessSwiftSamples[row.sampleIndex],
+                     "\(row.name): all 24 sample words unchanged")
+    }
+    // No PASS marker here; root must emit it only after this entrypoint returns.
+}
+
+screenLivenessFullCustodySmoke()
+print("BelugaCore Swift screen liveness import/link PASS: exact copied layouts, full-width values and unchanged refusal")
+
+// Private unexecuted addition: append after the existing Swift marker sequence.
+// Uses its existing import BelugaCore. All exported values are copied scalars.
+private func updateOperationSmoke() {
+    typealias State = BelugaUpdateOperationState
+    typealias Event = BelugaUpdateOperationEvent
+    typealias Output = BelugaUpdateOperationResult
+    precondition(MemoryLayout<State>.size == 40 && MemoryLayout<State>.stride == 40 && MemoryLayout<State>.alignment == 4)
+    precondition(MemoryLayout<Event>.size == 40 && MemoryLayout<Event>.stride == 40 && MemoryLayout<Event>.alignment == 4)
+    precondition(MemoryLayout<Output>.size == 56 && MemoryLayout<Output>.stride == 56 && MemoryLayout<Output>.alignment == 4)
+    let stateFields: [WritableKeyPath<State, UInt32>] = [
+        \.abi_version, \.reserved, \.stage, \.broker_present, \.candidate_present,
+        \.recorded_readiness_present, \.installed_fresh, \.readiness_fresh,
+        \.challenge_present, \.reserved_tail
+    ]
+    let eventFields: [WritableKeyPath<Event, UInt32>] = [
+        \.opcode, \.reserved, \.fact0, \.fact1, \.fact2, \.fact3,
+        \.fact4, \.fact5, \.fact6, \.reserved_tail
+    ]
+    for field in 0..<10 {
+        precondition(MemoryLayout<State>.offset(of: stateFields[field]) == field * 4)
+        precondition(MemoryLayout<Event>.offset(of: eventFields[field]) == field * 4)
+    }
+    precondition(MemoryLayout<Output>.offset(of: \.candidate_state) == 0)
+    precondition(MemoryLayout<Output>.offset(of: \.decision) == 40)
+    precondition(MemoryLayout<Output>.offset(of: \.action) == 44)
+    precondition(MemoryLayout<Output>.offset(of: \.predicate) == 48)
+    precondition(MemoryLayout<Output>.offset(of: \.reserved) == 52)
+    func state(_ stage: UInt32, _ broker: UInt32, _ candidate: UInt32,
+               _ recorded: UInt32, _ installed: UInt32,
+               _ readiness: UInt32, _ challenge: UInt32) -> State {
+        var value = State()
+        value.abi_version = 1; value.stage = stage; value.broker_present = broker
+        value.candidate_present = candidate; value.recorded_readiness_present = recorded
+        value.installed_fresh = installed; value.readiness_fresh = readiness
+        value.challenge_present = challenge
+        return value
+    }
+    func event(_ opcode: UInt32, _ f0: UInt32 = 0, _ f1: UInt32 = 0,
+               _ f2: UInt32 = 0, _ f3: UInt32 = 0, _ f4: UInt32 = 0,
+               _ f5: UInt32 = 0, _ f6: UInt32 = 0) -> Event {
+        var value = Event(); value.opcode = opcode
+        value.fact0 = f0; value.fact1 = f1; value.fact2 = f2; value.fact3 = f3
+        value.fact4 = f4; value.fact5 = f5; value.fact6 = f6
+        return value
+    }
+    func stateWords(_ value: State) -> [UInt32] { stateFields.map { value[keyPath: $0] } }
+    func eventWords(_ value: Event) -> [UInt32] { eventFields.map { value[keyPath: $0] } }
+    func check(_ abi: UInt32, _ before: State, _ input: Event, _ expected: State,
+               _ decision: UInt32, _ action: UInt32, _ predicate: UInt32) {
+        let saved = stateWords(before); let savedInput = eventWords(input)
+        let actual = beluga_core_update_operation_step(abi, before, input)
+        precondition(stateWords(actual.candidate_state) == stateWords(expected))
+        precondition(actual.decision == decision && actual.action == action &&
+            actual.predicate == predicate && actual.reserved == 0)
+        precondition(stateWords(before) == saved && eventWords(input) == savedInput)
+    }
+    func invalid(_ abi: UInt32, _ before: State, _ input: Event) {
+        check(abi, before, input, before, 2, 0, 0)
+    }
+    func fact(_ input: Event, _ slot: Int, _ value: UInt32) -> Event {
+        precondition((0..<7).contains(slot))
+        var result = input; result[keyPath: eventFields[slot + 2]] = value
+        return result
+    }
+    // Literal expected plans; constructors only create DTOs, not an oracle.
+    let prepared = state(0, 0, 0, 0, 0, 0, 0)
+    let broker = state(0, 1, 0, 0, 0, 0, 0)
+    let armed = state(1, 1, 0, 0, 0, 0, 0)
+    let candidate = state(1, 1, 1, 0, 0, 0, 0)
+    let installed = state(2, 1, 1, 0, 1, 0, 0)
+    let challenged = state(2, 1, 1, 0, 1, 0, 1)
+    let ready = state(3, 1, 1, 1, 1, 1, 0)
+    let restored = state(3, 1, 1, 1, 0, 0, 0)
+    let bindBroker = event(0, 1, 1, 1, 1)
+    let bindCandidate = event(1, 1, 1, 1, 1)
+    let completion = event(3, 1, 1)
+    let challenge = event(4, 1, 1, 1, 1, 1, 1)
+    let preflight = event(5, 1, 1, 1, 1, 1, 1)
+    let commit = event(6, 1, 1, 1, 1, 1, 1, 1)
+    check(1, prepared, bindBroker, broker, 0, 1, 0)
+    check(1, broker, bindBroker, broker, 1, 0, 0)
+    check(1, broker, event(2, 1), armed, 0, 3, 0)
+    check(1, armed, bindCandidate, candidate, 0, 2, 0)
+    check(1, candidate, fact(completion, 1, 0), candidate, 1, 0, 0)
+    check(1, candidate, completion, installed, 0, 4, 0)
+    check(1, installed, challenge, challenged, 0, 5, 0)
+    check(1, challenged, preflight, challenged, 0, 6, 0)
+    check(1, challenged, fact(preflight, 5, 0), challenged, 1, 0, 0)
+    check(1, challenged, fact(commit, 6, 0), challenged, 1, 0, 0)
+    check(1, challenged, commit, ready, 0, 7, 0)
+    check(1, ready, commit, ready, 1, 0, 0) // one-use challenge
+    check(1, ready, event(7), ready, 0, 0, 0)
+    check(1, ready, event(8), ready, 0, 0, 0)
+    for opcode: UInt32 in [9, 10] {
+        check(1, ready, event(opcode), restored, 0, 8, 0)
+        check(1, challenged, event(opcode), state(2, 1, 1, 0, 0, 0, 0), 0, 8, 0)
+    }
+    check(1, prepared, event(11), prepared, 0, 0, 0)
+    check(1, ready, event(11), ready, 0, 0, 1)
+    check(1, ready, event(12), ready, 0, 0, 1)
+    check(1, restored, event(12), restored, 0, 0, 0)
+    check(1, ready, event(13), ready, 0, 0, 0)
+    check(1, restored, completion, state(3, 1, 1, 1, 1, 0, 0), 0, 4, 0)
+    // Closed projections intentionally do not invent a native whole-record invariant.
+    check(1, state(3, 1, 0, 0, 1, 1, 0), event(12), state(3, 1, 0, 0, 1, 1, 0), 0, 0, 1)
+
+    for bad: UInt32 in [0, 2, UInt32.max] {
+        invalid(bad, challenged, commit)
+        var raw = challenged; raw.abi_version = bad; invalid(1, raw, commit)
+    }
+    for bad: UInt32 in [4, UInt32.max] {
+        var raw = challenged; raw.stage = bad; invalid(1, raw, commit)
+    }
+    for field in 3...8 {
+        for bad: UInt32 in [2, UInt32.max] {
+            var raw = challenged; raw[keyPath: stateFields[field]] = bad
+            invalid(1, raw, commit)
+        }
+    }
+    for bit in 0..<32 {
+        let bad = UInt32(1) << bit
+        for field in [1, 9] {
+            var raw = challenged; raw[keyPath: stateFields[field]] = bad
+            invalid(1, raw, commit)
+            var input = commit; input[keyPath: eventFields[field]] = bad
+            invalid(1, challenged, input)
+        }
+    }
+    for slot in 0..<7 {
+        invalid(1, challenged, fact(commit, slot, 2))
+        invalid(1, challenged, fact(commit, slot, UInt32.max))
+    }
+    for bad: UInt32 in [14, UInt32.max] {
+        var input = commit; input.opcode = bad; invalid(1, challenged, input)
+    }
+    let used = [4, 4, 1, 2, 6, 6, 7, 0, 0, 0, 0, 0, 0, 0]
+    for opcode in 0..<14 {
+        for slot in used[opcode]..<7 {
+            invalid(1, challenged, fact(event(UInt32(opcode)), slot, 1))
+        }
+    }
+}
+
+updateOperationSmoke()
+print("BelugaCore Swift update operation import/link PASS: three copied layouts, exact phase plans and unchanged refusal")
+precondition(MemoryLayout<beluga_core_packet_send_queue_state_t>.size == 48)
+precondition(MemoryLayout<beluga_core_packet_send_queue_event_t>.size == 64)
+precondition(MemoryLayout<beluga_core_packet_send_queue_result_t>.size == 96)
+precondition(MemoryLayout<beluga_core_packet_send_queue_state_t>.offset(of: \.packets) == 24)
+precondition(MemoryLayout<beluga_core_packet_send_queue_event_t>.offset(of: \.low_age_seconds) == 32)
+precondition(MemoryLayout<beluga_core_packet_send_queue_result_t>.offset(of: \.state) == 48)
+var packetQueueState = beluga_core_packet_send_queue_state_t()
+packetQueueState.abi_version = 1
+var packetQueueEvent = beluga_core_packet_send_queue_event_t()
+packetQueueEvent.packets_present = 1; packetQueueEvent.delay_present = 1
+packetQueueEvent.packets = UInt64.max - 1
+var packetQueueResult = beluga_core_packet_send_queue_step(packetQueueState, packetQueueEvent)
+precondition(packetQueueResult.status == 1 && packetQueueResult.observation == 0)
+packetQueueState = packetQueueResult.state
+packetQueueEvent.packets = UInt64.max; packetQueueEvent.delay_bits = 0.020.bitPattern
+packetQueueResult = beluga_core_packet_send_queue_step(packetQueueState, packetQueueEvent)
+precondition(packetQueueResult.status == 1 && packetQueueResult.observation == 2 && packetQueueResult.upgrade == 1)
+precondition(packetQueueResult.measured_delay_bits == 0.020.bitPattern && packetQueueResult.low_action == 2)
+packetQueueState = packetQueueResult.state
+packetQueueEvent.low_age_seconds = 1; packetQueueEvent.low_age_attoseconds = 500_000_000_000_000_000
+packetQueueResult = beluga_core_packet_send_queue_step(packetQueueState, packetQueueEvent)
+precondition(packetQueueResult.observation == 1 && packetQueueResult.upgrade == 1 && packetQueueResult.low_action == 0)
+packetQueueEvent.low_age_attoseconds += 1
+packetQueueResult = beluga_core_packet_send_queue_step(packetQueueState, packetQueueEvent)
+precondition(packetQueueResult.observation == 1 && packetQueueResult.upgrade == 0 && packetQueueResult.low_action == 1)
+packetQueueState.reserved = 1
+packetQueueResult = beluga_core_packet_send_queue_step(packetQueueState, packetQueueEvent)
+precondition(packetQueueResult.status == 0 && packetQueueResult.upgrade == 0 && packetQueueResult.capacity_growth == 0)
+print("BelugaCore Swift packet queue import/link PASS: exact layouts, full-width counters and bounded evidence leases")
+precondition(MemoryLayout<beluga_core_rtt_evidence_measurement_t>.size == 80)
+precondition(MemoryLayout<beluga_core_rtt_evidence_state_t>.size == 296)
+precondition(MemoryLayout<beluga_core_rtt_evidence_event_t>.size == 128)
+precondition(MemoryLayout<beluga_core_rtt_evidence_result_t>.size == 336)
+precondition(MemoryLayout<beluga_core_rtt_evidence_state_t>.offset(of: \.watermark) == 128)
+precondition(MemoryLayout<beluga_core_rtt_evidence_event_t>.offset(of: \.age_seconds) == 112)
+precondition(MemoryLayout<beluga_core_rtt_evidence_result_t>.offset(of: \.state) == 40)
+var rttState = beluga_core_rtt_evidence_state_t()
+rttState.abi_version = 1; rttState.disposition = 6; rttState.permits_initial = 1
+var rttEvent = beluga_core_rtt_evidence_event_t()
+rttEvent.observation_kind = 2; rttEvent.fingerprint_length = 64
+rttEvent.current_present = 1; rttEvent.current_bits = Double(0.1).bitPattern
+let rttFingerprint: UInt64 = 0x6161616161616161
+rttEvent.measurement.fingerprint_words = (rttFingerprint,rttFingerprint,rttFingerprint,rttFingerprint,rttFingerprint,rttFingerprint,rttFingerprint,rttFingerprint)
+rttEvent.measurement.total_bits = Double(0.2).bitPattern; rttEvent.measurement.responses = UInt64.max
+var rttResult = beluga_core_rtt_evidence_step(rttState, rttEvent)
+precondition(rttResult.status == 1 && rttResult.allows_upgrade == 1 && rttResult.clock_action == 2)
+precondition(rttResult.state.watermark.responses == UInt64.max)
+precondition(beluga_core_rtt_evidence_result_is_valid(rttState, rttEvent, rttResult) == 1)
+rttState = rttResult.state; rttEvent.age_seconds = 4
+rttResult = beluga_core_rtt_evidence_step(rttState, rttEvent)
+precondition(rttResult.allows_upgrade == 1 && rttResult.clock_action == 0 && rttResult.state.disposition == 4)
+rttEvent.age_attoseconds = 1
+rttResult = beluga_core_rtt_evidence_step(rttState, rttEvent)
+precondition(rttResult.allows_upgrade == 0 && rttResult.state.disposition == 7)
+rttResult.allows_upgrade = 1
+precondition(beluga_core_rtt_evidence_result_is_valid(rttState, rttEvent, rttResult) == 0)
+print("BelugaCore Swift RTT evidence import/link PASS: exact copied layouts, identity and nonrenewable freshness")
+// Append after the existing RTT runtime marker; do not alter predecessor smoke bodies.
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.size == 24)
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.alignment == 8)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.size == 80)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.alignment == 8)
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.offset(of: \.abi_version) == 0)
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.offset(of: \.configured_cap) == 4)
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.offset(of: \.current_tier) == 8)
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.offset(of: \.bandwidth_present) == 12)
+precondition(MemoryLayout<beluga_core_tier_demand_facts_t>.offset(of: \.bandwidth_bits) == 16)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.abi_version) == 0)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.status) == 4)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.current_tier) == 8)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.reserved) == 12)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.basis_points) == 16)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.baseline_video) == 20)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.maximum_tier_video) == 24)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.maximum_video) == 28)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.maximum_total_rtp) == 32)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.minimum_sustainable) == 36)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.initial_tier) == 40)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.sustainable_tier) == 44)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.upgrade_present) == 48)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.upgrade_tier) == 52)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.direct_threshold_present) == 56)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.direct_threshold_minimum) == 60)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.required_bitrate_bits) == 64)
+precondition(MemoryLayout<beluga_core_tier_demand_projection_t>.offset(of: \.direct_threshold_bits) == 72)
+var tierDemandFacts = beluga_core_tier_demand_facts_t()
+tierDemandFacts.abi_version = 1; tierDemandFacts.configured_cap = 50_000_000
+tierDemandFacts.current_tier = 0; tierDemandFacts.bandwidth_present = 1
+tierDemandFacts.bandwidth_bits = Double(15_000_000).bitPattern
+var tierDemandProjection = beluga_core_tier_demand_project(tierDemandFacts)
+precondition(tierDemandProjection.status == 1 && tierDemandProjection.basis_points == 10_000)
+precondition(tierDemandProjection.maximum_tier_video == 39_744_000 && tierDemandProjection.maximum_video == 39_744_000)
+precondition(tierDemandProjection.maximum_total_rtp == 16_200_001 && tierDemandProjection.minimum_sustainable == 12_000_000)
+precondition(tierDemandProjection.initial_tier == 5 && tierDemandProjection.sustainable_tier == 0)
+precondition(tierDemandProjection.upgrade_present == 0 && tierDemandProjection.direct_threshold_present == 0)
+precondition(tierDemandProjection.required_bitrate_bits == Double(12_000_000).bitPattern)
+precondition(beluga_core_tier_demand_projection_is_valid(tierDemandFacts, tierDemandProjection) == 1)
+tierDemandFacts.current_tier = 7
+tierDemandProjection = beluga_core_tier_demand_project(tierDemandFacts)
+precondition(tierDemandProjection.upgrade_present == 1 && tierDemandProjection.upgrade_tier == 0)
+precondition(tierDemandProjection.direct_threshold_minimum == 546_000 && tierDemandProjection.direct_threshold_bits == Double(546_000).bitPattern)
+tierDemandProjection.reserved = 1
+precondition(beluga_core_tier_demand_projection_is_valid(tierDemandFacts, tierDemandProjection) == 0)
+tierDemandFacts.configured_cap = UInt32.max; tierDemandFacts.current_tier = 1
+tierDemandProjection = beluga_core_tier_demand_project(tierDemandFacts)
+precondition(tierDemandProjection.maximum_tier_video == 3_435_717_836 && tierDemandProjection.maximum_video == 2_301_930_950)
+tierDemandFacts.configured_cap = 0
+tierDemandProjection = beluga_core_tier_demand_project(tierDemandFacts)
+precondition(tierDemandProjection.abi_version == 1 && tierDemandProjection.status == 0)
+precondition(tierDemandProjection.current_tier == 0 && tierDemandProjection.reserved == 0)
+precondition(tierDemandProjection.basis_points == 0 && tierDemandProjection.baseline_video == 0)
+precondition(tierDemandProjection.maximum_tier_video == 0 && tierDemandProjection.maximum_video == 0)
+precondition(tierDemandProjection.maximum_total_rtp == 0 && tierDemandProjection.minimum_sustainable == 0)
+precondition(tierDemandProjection.initial_tier == 0 && tierDemandProjection.sustainable_tier == 0)
+precondition(tierDemandProjection.upgrade_present == 0 && tierDemandProjection.upgrade_tier == 0)
+precondition(tierDemandProjection.direct_threshold_present == 0 && tierDemandProjection.direct_threshold_minimum == 0)
+precondition(tierDemandProjection.required_bitrate_bits == 0 && tierDemandProjection.direct_threshold_bits == 0)
+precondition(beluga_core_tier_demand_projection_is_valid(tierDemandFacts, tierDemandProjection) == 0)
+print("BelugaCore Swift tier demand import/link PASS: exact copied layouts, calibrated budgets and checked projections")
+// Append after the final existing tier-demand marker. Preserve its entire predecessor prefix.
+func mediaCommandGateSmoke() {
+    typealias State = beluga_core_media_command_gate_state_t
+    typealias Event = beluga_core_media_command_gate_event_t
+    typealias Result = beluga_core_media_command_gate_result_t
+    precondition(MemoryLayout<State>.size == 24 && MemoryLayout<State>.stride == 24 && MemoryLayout<State>.alignment == 8)
+    precondition(MemoryLayout<Event>.size == 32 && MemoryLayout<Event>.stride == 32 && MemoryLayout<Event>.alignment == 8)
+    precondition(MemoryLayout<Result>.size == 40 && MemoryLayout<Result>.stride == 40 && MemoryLayout<Result>.alignment == 8)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.is_open) == 4)
+    precondition(MemoryLayout<State>.offset(of: \.lifecycle) == 8)
+    precondition(MemoryLayout<State>.offset(of: \.command_epoch) == 16)
+    precondition(MemoryLayout<Event>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<Event>.offset(of: \.context_is_current) == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved0) == 8)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved1) == 12)
+    precondition(MemoryLayout<Event>.offset(of: \.candidate_lifecycle) == 16)
+    precondition(MemoryLayout<Event>.offset(of: \.candidate_command_epoch) == 24)
+    precondition(MemoryLayout<Result>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Result>.offset(of: \.status) == 4)
+    precondition(MemoryLayout<Result>.offset(of: \.allowed) == 8)
+    precondition(MemoryLayout<Result>.offset(of: \.reserved) == 12)
+    precondition(MemoryLayout<Result>.offset(of: \.state) == 16)
+    func state(_ open: UInt32, _ life: UInt64, _ epoch: UInt64) -> State {
+        var value = State(); value.abi_version = 1; value.is_open = open
+        value.lifecycle = life; value.command_epoch = epoch; return value
+    }
+    func event(_ opcode: UInt32, _ member: UInt32 = 0, _ life: UInt64 = 0, _ epoch: UInt64 = 0) -> Event {
+        var value = Event(); value.opcode = opcode; value.context_is_current = member
+        value.candidate_lifecycle = life; value.candidate_command_epoch = epoch; return value
+    }
+    func equal(_ actual: State, _ expected: State) {
+        precondition(actual.abi_version == expected.abi_version && actual.is_open == expected.is_open)
+        precondition(actual.lifecycle == expected.lifecycle && actual.command_epoch == expected.command_epoch)
+    }
+    let initial = state(0, 0, 0), maximum = state(0, UInt64.max, UInt64.max)
+    let open = event(0), capture = event(4, 1), lifecycleZero = event(3), admitZero = event(5, 1)
+    var result = beluga_core_media_command_gate_step(initial, capture)
+    precondition(result.abi_version == 1 && result.status == 1 && result.allowed == 0 && result.reserved == 0)
+    equal(result.state, initial)
+    precondition(beluga_core_media_command_gate_result_is_valid(initial, capture, result) == 1)
+    result = beluga_core_media_command_gate_step(maximum, open)
+    let wrapped = state(1, 0, 0)
+    precondition(result.abi_version == 1 && result.status == 1 && result.allowed == 0 && result.reserved == 0)
+    equal(result.state, wrapped)
+    precondition(beluga_core_media_command_gate_result_is_valid(maximum, open, result) == 1)
+    result = beluga_core_media_command_gate_step(wrapped, lifecycleZero)
+    precondition(result.status == 1 && result.allowed == 1 && result.reserved == 0)
+    equal(result.state, wrapped)
+    precondition(beluga_core_media_command_gate_result_is_valid(wrapped, lifecycleZero, result) == 1)
+    result.state.command_epoch = 1
+    precondition(beluga_core_media_command_gate_result_is_valid(wrapped, lifecycleZero, result) == 0)
+    result = beluga_core_media_command_gate_step(wrapped, admitZero)
+    precondition(result.status == 1 && result.allowed == 1)
+    precondition(beluga_core_media_command_gate_result_is_valid(wrapped, admitZero, result) == 1)
+    result = beluga_core_media_command_gate_step(wrapped, event(2))
+    let invalidated = state(1, 0, 1)
+    precondition(result.status == 1 && result.allowed == 0)
+    equal(result.state, invalidated)
+    result = beluga_core_media_command_gate_step(invalidated, lifecycleZero)
+    precondition(result.status == 1 && result.allowed == 1)
+    result = beluga_core_media_command_gate_step(invalidated, admitZero)
+    precondition(result.status == 1 && result.allowed == 0)
+    result = beluga_core_media_command_gate_step(invalidated, event(5, 1, 0, 1))
+    precondition(result.status == 1 && result.allowed == 1)
+    result = beluga_core_media_command_gate_step(invalidated, event(1))
+    precondition(result.status == 1 && result.allowed == 0)
+    equal(result.state, state(0, 1, 2))
+    for bad in [event(4, 2), event(0, 0, 1)] {
+        result = beluga_core_media_command_gate_step(wrapped, bad)
+        precondition(result.abi_version == 1 && result.status == 0 && result.allowed == 0 && result.reserved == 0)
+        equal(result.state, initial)
+        precondition(beluga_core_media_command_gate_result_is_valid(wrapped, bad, result) == 0)
+    }
+}
+mediaCommandGateSmoke()
+print("BelugaCore Swift media command gate import/link PASS: exact copied layouts, wrapping epochs and checked admission")
+
+// Private additive smoke: append only after prior media-command marker.
+func screenSuspensionSmoke() {
+    typealias State = beluga_core_screen_suspension_state_t
+    typealias Event = beluga_core_screen_suspension_event_t
+    typealias Result = beluga_core_screen_suspension_result_t
+    precondition(MemoryLayout<State>.size == 88 && MemoryLayout<State>.stride == 88 && MemoryLayout<State>.alignment == 8)
+    precondition(MemoryLayout<State>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<State>.offset(of: \.phase) == 4)
+    precondition(MemoryLayout<State>.offset(of: \.next_generation) == 8)
+    precondition(MemoryLayout<State>.offset(of: \.screen_request_id) == 16)
+    precondition(MemoryLayout<State>.offset(of: \.suspension_generation) == 24)
+    precondition(MemoryLayout<State>.offset(of: \.peer_generation) == 32)
+    precondition(MemoryLayout<State>.offset(of: \.visibility_epoch) == 40)
+    precondition(MemoryLayout<State>.offset(of: \.recovery_epoch) == 48)
+    precondition(MemoryLayout<State>.offset(of: \.prior_screen_request_id) == 56)
+    precondition(MemoryLayout<State>.offset(of: \.prior_suspension_generation) == 64)
+    precondition(MemoryLayout<State>.offset(of: \.cover_confirmed) == 72)
+    precondition(MemoryLayout<State>.offset(of: \.inactive_confirmed) == 76)
+    precondition(MemoryLayout<State>.offset(of: \.custody_mask) == 80)
+    precondition(MemoryLayout<State>.offset(of: \.reserved) == 84)
+    precondition(MemoryLayout<Event>.size == 64 && MemoryLayout<Event>.stride == 64 && MemoryLayout<Event>.alignment == 8)
+    precondition(MemoryLayout<Event>.offset(of: \.opcode) == 0)
+    precondition(MemoryLayout<Event>.offset(of: \.flags) == 4)
+    precondition(MemoryLayout<Event>.offset(of: \.native_facts) == 8)
+    precondition(MemoryLayout<Event>.offset(of: \.reserved) == 12)
+    precondition(MemoryLayout<Event>.offset(of: \.screen_request_id) == 16)
+    precondition(MemoryLayout<Event>.offset(of: \.peer_generation) == 24)
+    precondition(MemoryLayout<Event>.offset(of: \.visibility_epoch) == 32)
+    precondition(MemoryLayout<Event>.offset(of: \.recovery_epoch) == 40)
+    precondition(MemoryLayout<Event>.offset(of: \.notice_screen_request_id) == 48)
+    precondition(MemoryLayout<Event>.offset(of: \.notice_generation) == 56)
+    precondition(MemoryLayout<Result>.size == 128 && MemoryLayout<Result>.stride == 128 && MemoryLayout<Result>.alignment == 8)
+    precondition(MemoryLayout<Result>.offset(of: \.abi_version) == 0)
+    precondition(MemoryLayout<Result>.offset(of: \.status) == 4)
+    precondition(MemoryLayout<Result>.offset(of: \.accepted) == 8)
+    precondition(MemoryLayout<Result>.offset(of: \.custody_action) == 12)
+    precondition(MemoryLayout<Result>.offset(of: \.state) == 16)
+    precondition(MemoryLayout<Result>.offset(of: \.query_flags) == 104)
+    precondition(MemoryLayout<Result>.offset(of: \.reserved) == 108)
+    precondition(MemoryLayout<Result>.offset(of: \.produced_notice_screen_request_id) == 112)
+    precondition(MemoryLayout<Result>.offset(of: \.produced_notice_generation) == 120)
+    func checked(_ state: State, _ event: Event) -> Result {
+        let result = beluga_core_screen_suspension_step(state, event)
+        precondition(result.abi_version == 1 && result.status == 1 && result.reserved == 0)
+        precondition(beluga_core_screen_suspension_result_is_valid(state, event, result) == 1)
+        return result
+    }
+    func event(_ opcode: UInt32, _ state: State, facts: UInt32 = 0, notice: Bool = false) -> Event {
+        var event = Event(); event.opcode = opcode; event.native_facts = facts
+        event.peer_generation = state.peer_generation; event.visibility_epoch = state.visibility_epoch
+        event.recovery_epoch = state.recovery_epoch
+        if notice { event.notice_screen_request_id = state.screen_request_id; event.notice_generation = state.suspension_generation }
+        return event
+    }
+    var state = State(); state.abi_version = 1; state.next_generation = UInt64.max
+    var command = Event(); command.opcode = 1; command.screen_request_id = UInt64.max
+    command.peer_generation = UInt64.max; command.visibility_epoch = UInt64.max - 1
+    var result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 1 && result.query_flags == 72)
+    state = result.state; command = event(4, state); command.flags = 1
+    result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 3 && result.state.next_generation == 1)
+    precondition(result.produced_notice_generation == UInt64.max && result.query_flags == 250)
+    state = result.state
+    command = event(6, state, facts: 1, notice: true); command.visibility_epoch = UInt64.max
+    result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 0 && result.state.inactive_confirmed == 1)
+    precondition(result.state.visibility_epoch == UInt64.max && result.state.phase == 2)
+    state = result.state
+    command = event(5, state, facts: 1 << 1, notice: true); command.visibility_epoch -= 1
+    result = checked(state, command)
+    precondition(result.accepted == 0 && result.state.visibility_epoch == UInt64.max && result.state.cover_confirmed == 0)
+    command.visibility_epoch = UInt64.max
+    result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 5 && result.state.phase == 3 && result.query_flags == 249)
+    state = result.state; command = event(7, state, facts: 1 << 2)
+    result = checked(state, command); precondition(result.accepted == 1 && result.state.custody_mask == 5); state = result.state
+    let facts: [UInt32] = [(1 << 3) | (1 << 4), 1 << 5, (1 << 3) | (1 << 6) | (1 << 7), (1 << 3) | (1 << 8) | (1 << 9)]
+    let masks: [UInt32] = [13, 21, 37, 69]
+    for index in 0..<4 {
+        command = event(8 + UInt32(index), state, facts: facts[index], notice: true)
+        result = checked(state, command)
+        precondition(result.accepted == 1 && result.state.phase == 5 + UInt32(index))
+        precondition(result.state.custody_mask == masks[index] && result.query_flags == 253)
+        state = result.state
+    }
+    command = event(16, state, facts: (1 << 3) | (1 << 10), notice: true)
+    result = checked(state, command); precondition(result.accepted == 1 && result.custody_action == 0)
+    result.accepted = 0; precondition(beluga_core_screen_suspension_result_is_valid(state, command, result) == 0)
+    command = event(12, state, facts: 1 << 10, notice: true)
+    result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 11 && result.query_flags == 248)
+    precondition(result.state.phase == 1 && result.state.suspension_generation == UInt64.max); state = result.state
+    command = event(14, state); command.flags = 1
+    result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 12 && result.state.phase == 3); state = result.state
+    command = Event(); command.opcode = 2
+    result = checked(state, command)
+    precondition(result.accepted == 1 && result.custody_action == 2 && result.state.phase == 0 && result.state.next_generation == 1)
+    state = result.state; command = Event(); command.opcode = UInt32.max
+    result = beluga_core_screen_suspension_step(state, command)
+    precondition(result.abi_version == 1 && result.status == 0 && result.accepted == 0 && result.custody_action == 0)
+    precondition(result.query_flags == 0 && result.reserved == 0 && result.state.next_generation == 1)
+    precondition(beluga_core_screen_suspension_result_is_valid(state, command, result) == 0)
+}
+screenSuspensionSmoke()
+print("BelugaCore Swift screen suspension import/link PASS: exact copied layouts, ordered transcript and retained provenance")
+
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.size == 104)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.alignment == 8)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.size == 72)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.alignment == 8)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.abi_version) == 0)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.stage) == 4)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.operation) == 8)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.flags) == 12)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.count) == 16)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.selected_slot) == 20)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.target_slot) == 24)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.duplicate_axes) == 28)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.previous_phase) == 32)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.candidate_phase) == 36)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.previous_recovery) == 40)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.candidate_recovery) == 44)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.reserved0) == 48)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.reserved1) == 52)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.revision) == 56)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.previous_outbound) == 64)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.candidate_outbound) == 72)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.previous_accepted) == 80)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.candidate_accepted) == 88)
+precondition(MemoryLayout<beluga_core_phone_catalog_input_t>.offset(of: \.reserved2) == 96)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.abi_version) == 0)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.status) == 4)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.error) == 8)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.action) == 12)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.count) == 16)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.selected_slot) == 20)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.target_slot) == 24)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.reserved) == 28)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot0) == 32)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot1) == 36)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot2) == 40)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot3) == 44)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot4) == 48)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot5) == 52)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot6) == 56)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.slot7) == 60)
+precondition(MemoryLayout<beluga_core_phone_catalog_result_t>.offset(of: \.revision) == 64)
+
+func phoneCatalogSmokeSlots(_ result: beluga_core_phone_catalog_result_t) -> [UInt32] {
+    [result.slot0,result.slot1,result.slot2,result.slot3,result.slot4,result.slot5,result.slot6,result.slot7]
+}
+func phoneCatalogSmokeAssert(_ result: beluga_core_phone_catalog_result_t,
+                            _ action: UInt32, _ count: UInt32, _ selected: UInt32,
+                            _ target: UInt32, _ map: [UInt32], _ revision: UInt64) {
+    precondition(result.abi_version == 1 && result.status == 1 && result.error == 0)
+    precondition(result.action == action && result.count == count && result.selected_slot == selected)
+    precondition(result.target_slot == target && result.reserved == 0 && result.revision == revision)
+    precondition(phoneCatalogSmokeSlots(result) == map)
+}
+func phoneCatalogSmokeCorrupt(_ input: beluga_core_phone_catalog_input_t,
+                             _ actual: beluga_core_phone_catalog_result_t) {
+    precondition(beluga_core_phone_catalog_result_is_valid(input, actual) == 1)
+    for byte in 0..<72 {
+        for bit in 0..<8 {
+            var mutant = actual
+            withUnsafeMutableBytes(of: &mutant) { bytes in bytes[byte] ^= UInt8(1 << bit) }
+            precondition(beluga_core_phone_catalog_result_is_valid(input, mutant) == 0)
+        }
+    }
+}
+for operation: UInt32 in 1...4 {
+    var input = beluga_core_phone_catalog_input_t()
+    input.abi_version = 1; input.stage = 10; input.operation = operation
+    input.count = 3; input.selected_slot = 2; input.target_slot = operation == 1 ? 8 : 0
+    var actual = beluga_core_phone_catalog_decide(input)
+    // Independent original append/replace/select/remove expectations AFTER actual C.
+    var expected: [UInt32] = [0,1,2,9,9,9,9,9]
+    var count: UInt32 = 3, selected: UInt32 = 2
+    if operation == 1 { expected[3] = 8; count = 4 }
+    if operation == 2 { expected[0] = 8 }
+    if operation == 3 { selected = 0 }
+    if operation == 4 { expected[0] = 1; expected[1] = 2; expected[2] = 9; count = 2; selected = 1 }
+    phoneCatalogSmokeAssert(actual, 1, count, selected, input.target_slot, expected, 0)
+    phoneCatalogSmokeCorrupt(input, actual)
+    input.stage = 11; input.revision = UInt64.max - 1
+    actual = beluga_core_phone_catalog_decide(input)
+    phoneCatalogSmokeAssert(actual, 3, count, selected, input.target_slot, expected, UInt64.max)
+    phoneCatalogSmokeCorrupt(input, actual)
+    input.revision = UInt64.max
+    actual = beluga_core_phone_catalog_decide(input)
+    precondition(actual.abi_version == 1 && actual.status == 1 && actual.error == 9 && actual.action == 0)
+    precondition(actual.count == 0 && actual.selected_slot == 0 && actual.target_slot == 0)
+    precondition(actual.reserved == 0 && actual.revision == 0 && phoneCatalogSmokeSlots(actual) == Array(repeating: 0, count: 8))
+    phoneCatalogSmokeCorrupt(input, actual)
+}
+for operation: UInt32 in 2...3 {
+    var input = beluga_core_phone_catalog_input_t()
+    input.abi_version = 1; input.stage = 11; input.operation = operation; input.flags = 1
+    input.count = 8; input.selected_slot = 7; input.target_slot = 7; input.revision = UInt64.max
+    let actual = beluga_core_phone_catalog_decide(input)
+    let original: [UInt32] = [0,1,2,3,4,5,6,7]
+    phoneCatalogSmokeAssert(actual, 2, 8, 7, 7, original, UInt64.max)
+    phoneCatalogSmokeCorrupt(input, actual)
+}
+var phoneCatalogSmokeInput = beluga_core_phone_catalog_input_t()
+phoneCatalogSmokeInput.abi_version = 1; phoneCatalogSmokeInput.flags = 3
+let phoneCatalogContinuation = beluga_core_phone_catalog_decide(phoneCatalogSmokeInput)
+precondition(phoneCatalogContinuation.abi_version == 1 && phoneCatalogContinuation.status == 1)
+precondition(phoneCatalogContinuation.error == 0 && phoneCatalogContinuation.action == 0 && phoneCatalogContinuation.count == 0)
+precondition(phoneCatalogContinuation.selected_slot == 0 && phoneCatalogContinuation.target_slot == 0 && phoneCatalogContinuation.reserved == 0)
+precondition(phoneCatalogContinuation.revision == 0 && phoneCatalogSmokeSlots(phoneCatalogContinuation) == Array(repeating: 0, count: 8))
+phoneCatalogSmokeCorrupt(phoneCatalogSmokeInput, phoneCatalogContinuation)
+phoneCatalogSmokeInput.abi_version = 2
+let phoneCatalogMalformed = beluga_core_phone_catalog_decide(phoneCatalogSmokeInput)
+precondition(phoneCatalogMalformed.abi_version == 1 && phoneCatalogMalformed.status == 0 && phoneCatalogMalformed.error == 0)
+precondition(phoneCatalogMalformed.action == 0 && phoneCatalogMalformed.count == 0 && phoneCatalogMalformed.selected_slot == 0)
+precondition(phoneCatalogMalformed.target_slot == 0 && phoneCatalogMalformed.reserved == 0 && phoneCatalogMalformed.revision == 0)
+precondition(phoneCatalogSmokeSlots(phoneCatalogMalformed) == Array(repeating: 0, count: 8))
+precondition(beluga_core_phone_catalog_result_is_valid(phoneCatalogSmokeInput, phoneCatalogMalformed) == 0)
+print("BelugaCore Swift phone catalog import/link PASS: every offset, all operations/actions, full maps, 72-byte verifier")
+// Append to the existing actual-import/link smoke; preserve all previous smokes.
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.size == 24)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.alignment == 4)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.offset(of: \.abi_version) == 0)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.offset(of: \.phase) == 4)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.offset(of: \.operation) == 8)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.offset(of: \.eligible) == 12)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.offset(of: \.intent) == 16)
+precondition(MemoryLayout<beluga_core_runtime_catalog_state_t>.offset(of: \.first_grant) == 20)
+precondition(MemoryLayout<beluga_core_runtime_catalog_event_t>.size == 16)
+precondition(MemoryLayout<beluga_core_runtime_catalog_event_t>.alignment == 4)
+precondition(MemoryLayout<beluga_core_runtime_catalog_event_t>.offset(of: \.opcode) == 0)
+precondition(MemoryLayout<beluga_core_runtime_catalog_event_t>.offset(of: \.operation) == 4)
+precondition(MemoryLayout<beluga_core_runtime_catalog_event_t>.offset(of: \.facts) == 8)
+precondition(MemoryLayout<beluga_core_runtime_catalog_event_t>.offset(of: \.reserved) == 12)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.size == 40)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.alignment == 4)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.offset(of: \.state) == 0)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.offset(of: \.status) == 24)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.offset(of: \.decision) == 28)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.offset(of: \.effect) == 32)
+precondition(MemoryLayout<beluga_core_runtime_catalog_result_t>.offset(of: \.value) == 36)
+
+func runtimeCatalogSmokeState(_ phase: UInt32 = 0, _ operation: UInt32 = 0,
+                              _ eligible: UInt32 = 0, _ intent: UInt32 = 0,
+                              _ grant: UInt32 = 0) -> beluga_core_runtime_catalog_state_t {
+    var s = beluga_core_runtime_catalog_state_t()
+    s.abi_version = 1; s.phase = phase; s.operation = operation
+    s.eligible = eligible; s.intent = intent; s.first_grant = grant
+    return s
+}
+func runtimeCatalogSmokeEvent(_ opcode: UInt32, _ operation: UInt32,
+                              _ facts: UInt32) -> beluga_core_runtime_catalog_event_t {
+    var e = beluga_core_runtime_catalog_event_t()
+    e.opcode = opcode; e.operation = operation; e.facts = facts; e.reserved = 0
+    return e
+}
+func runtimeCatalogSmokeExpected(_ state: beluga_core_runtime_catalog_state_t,
+                                 _ status: UInt32, _ decision: UInt32,
+                                 _ effect: UInt32, _ value: UInt32)
+    -> beluga_core_runtime_catalog_result_t {
+    var r = beluga_core_runtime_catalog_result_t()
+    r.state = state; r.status = status; r.decision = decision; r.effect = effect; r.value = value
+    return r
+}
+func runtimeCatalogSmokeWords(_ r: beluga_core_runtime_catalog_result_t) -> [UInt32] {
+    [r.state.abi_version,r.state.phase,r.state.operation,r.state.eligible,r.state.intent,
+     r.state.first_grant,r.status,r.decision,r.effect,r.value]
+}
+func runtimeCatalogSmokeAssert(_ state: beluga_core_runtime_catalog_state_t,
+                               _ event: beluga_core_runtime_catalog_event_t,
+                               _ actual: beluga_core_runtime_catalog_result_t,
+                               _ expected: beluga_core_runtime_catalog_result_t) {
+    precondition(runtimeCatalogSmokeWords(actual) == runtimeCatalogSmokeWords(expected))
+    precondition(beluga_core_runtime_catalog_result_is_valid(state,event,actual) == expected.status)
+}
+func runtimeCatalogSmokeCorrupt(_ state: beluga_core_runtime_catalog_state_t,
+                                _ event: beluga_core_runtime_catalog_event_t,
+                                _ actual: beluga_core_runtime_catalog_result_t) {
+    precondition(beluga_core_runtime_catalog_result_is_valid(state,event,actual) == 1)
+    for byte in 0..<40 {
+        for bit in 0..<8 {
+            var mutant = actual
+            withUnsafeMutableBytes(of: &mutant) { bytes in bytes[byte] ^= UInt8(1 << bit) }
+            precondition(beluga_core_runtime_catalog_result_is_valid(state,event,mutant) == 0)
+        }
+    }
+}
+func runtimeCatalogSmoke() {
+    // Independent native setup and row facts, not a candidate-generated expectation.
+    let facts: [UInt32] = [
+        0,31,24,2047,1,1,3,1,3,3,1,3,127,3,7,1,3,1,1,1,1,1,0,1,7,3,1,7,3,
+        3,1,3,2047,1,7,1,3,3,7,1,1023,3,1,63,3,1023,31,15,0,3,1,3,1,3,3,7,7,1
+    ]
+    for opcode: UInt32 in 0..<58 {
+        var state = runtimeCatalogSmokeState()
+        let event = runtimeCatalogSmokeEvent(opcode,(opcode == 2 || opcode == 8) ? 3 : 0,facts[Int(opcode)])
+        if opcode == 8 || opcode == 48 { state.eligible = 1 }
+        if opcode == 9 || opcode == 10 { state = runtimeCatalogSmokeState(1,3,0,0,1) }
+        if opcode == 11 || opcode == 12 || opcode == 14 || opcode == 24 {
+            state = runtimeCatalogSmokeState(2,3,0,0,0)
+        }
+        if opcode == 13 { state = runtimeCatalogSmokeState(2,3,0,1,0) }
+        if opcode == 21 { state = runtimeCatalogSmokeState(2,3,0,0,1) }
+        if opcode == 22 || opcode == 23 { state.intent = 1 }
+        let actual = beluga_core_runtime_catalog_step(state,event)
+        // ORIGINAL expected state/effect/value constructed AFTER the actual C call.
+        var next = state
+        var effect: UInt32 = 0, value: UInt32 = 0
+        if opcode == 1 { next.eligible = 1; effect = 1 }
+        if opcode == 8 { next.phase = 1; next.operation = 3; next.eligible = 0; next.first_grant = 1; effect = 2; value = 1 }
+        if opcode == 10 { next.phase = 2; effect = 3; value = 1 }
+        if opcode == 13 { next.phase = 0; next.operation = 0; next.first_grant = 0; effect = 4; value = 1 }
+        if opcode == 21 { next.intent = 1; next.first_grant = 0; effect = 5; value = 1 }
+        if opcode == 22 { next.intent = 0; effect = 6 }
+        if opcode == 23 { next.intent = 0; effect = 7; value = 1 }
+        if opcode == 48 { next = runtimeCatalogSmokeState(3); effect = 8 }
+        runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(next,1,0,effect,value))
+        runtimeCatalogSmokeCorrupt(state,event,actual)
+    }
+    for operation: UInt32 in 1...3 {
+        let state = runtimeCatalogSmokeState(0,0,1)
+        let event = runtimeCatalogSmokeEvent(8,operation,3)
+        let actual = beluga_core_runtime_catalog_step(state,event)
+        let grant: UInt32 = operation == 3 ? 1 : 0
+        let next = runtimeCatalogSmokeState(1,operation,0,0,grant)
+        runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(next,1,0,2,grant))
+        runtimeCatalogSmokeCorrupt(state,event,actual)
+    }
+    var state = runtimeCatalogSmokeState()
+    var event = runtimeCatalogSmokeEvent(2,1,1)
+    var actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,3,0,0))
+    event = runtimeCatalogSmokeEvent(2,3,4)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,8,0,0))
+    event.facts = 0
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,4,0,0))
+    state.intent = 1; event = runtimeCatalogSmokeEvent(8,3,0)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,0,0,0,0))
+    state = runtimeCatalogSmokeState(3); event = runtimeCatalogSmokeEvent(9,0,3)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,0,0,0))
+    event = runtimeCatalogSmokeEvent(10,0,1)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,0,0,1))
+    event = runtimeCatalogSmokeEvent(55,0,7)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,0,0,0))
+    event = runtimeCatalogSmokeEvent(56,0,7)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,1,8,0,0))
+    state.abi_version = 0; event = runtimeCatalogSmokeEvent(48,0,0)
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,0,0,0,0))
+    state = runtimeCatalogSmokeState(); event.reserved = UInt32.max
+    actual = beluga_core_runtime_catalog_step(state,event)
+    runtimeCatalogSmokeAssert(state,event,actual,runtimeCatalogSmokeExpected(state,0,0,0,0))
+}
+runtimeCatalogSmoke()
+print("BelugaCore Swift runtime catalog import/link PASS: 58 ordered cuts, every offset, historical grant, 40-byte verifier")
+
+// Additive, unexecuted import/link smoke. Synthetic lossless wire inputs are
+// not native telemetry, route/Instant custody or actual actor adoption.
+private func owner105PODBytes<T>(_ value: T) -> [UInt8] {
+    withUnsafeBytes(of: value) { Array($0) }
+}
+private func owner105ArrayBytes<T>(_ values: [T]) -> [UInt8] {
+    values.withUnsafeBufferPointer {
+        Array(UnsafeRawBufferPointer(start: $0.baseAddress,
+            count: $0.count * MemoryLayout<T>.stride))
+    }
+}
+private func owner105RawCall(_ request: beluga_core_adaptation_owner_event_request_t,
+    _ current: [beluga_core_adaptation_state_atom_t], _ outputCount: UInt32 = 179
+) -> (UInt32, [[UInt8]], [[UInt8]]) {
+    let header = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 1, count: 179)
+    let inputBefore = [owner105PODBytes(request), owner105PODBytes(header), owner105ArrayBytes(current)]
+    var outputHeader = beluga_core_adaptation_state_header_t(abi: 161, domain: 162, phase: 163, count: 164)
+    var outputAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 777, present: 778, high: -779, low: 780), count: 179)
+    var metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 801, operation: 802, scope: 803,
+        read_count: 804, invocation: 805, revision: 806, peer: 807, peer_present: 808, bound: 809,
+        route: 810, sample: 811, enabled: 812, lease: 813, queue_fault: 814, rtt_fault: 815)
+    var edits = Array(repeating: beluga_core_adaptation_time_edit_t(action: 901, source: 902,
+        index: 903, ordinal: 904, high: -905, low: 906), count: 13)
+    var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(present: 1001,
+        reserved: 1002, high: -1003, low: 1004), count: 13)
+    var reads = Array(repeating: beluga_core_adaptation_clock_reply_t(abi: 1101, status: 1102,
+        site: 1103, ordinal: 1104, invocation: 1105, high: -1106, low: 1107, reserved: 1108), count: 15)
+    let before = [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)]
+    let status = withUnsafePointer(to: request) { requestPointer in
+        withUnsafePointer(to: header) { headerPointer in
+            current.withUnsafeBufferPointer { atomsPointer in
+                outputAtoms.withUnsafeMutableBufferPointer { outputPointer in
+                    edits.withUnsafeMutableBufferPointer { editPointer in
+                        coordinates.withUnsafeMutableBufferPointer { coordinatePointer in
+                            reads.withUnsafeMutableBufferPointer { readPointer in
+                                beluga_core_network_adaptation_owner_zero_clock_event(requestPointer,
+                                    headerPointer, atomsPointer.baseAddress!, 179, &outputHeader,
+                                    outputPointer.baseAddress!, outputCount, &metadata,
+                                    editPointer.baseAddress!, 13, coordinatePointer.baseAddress!, 13,
+                                    readPointer.baseAddress!, 15)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert([owner105PODBytes(request), owner105PODBytes(header), owner105ArrayBytes(current)] == inputBefore)
+    return (status, [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms),
+        owner105PODBytes(metadata), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates),
+        owner105ArrayBytes(reads)], before)
+}
+private func adaptationOwnerZeroClockSmokeV1() {
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.size == 40)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.stride == 40)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.abi) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.operation) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.generation) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.invocation) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.show) == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.capture_source_present) == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_request_t>.offset(of: \beluga_core_adaptation_owner_event_request_t.resume_context_absent) == 36)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.size == 16)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.stride == 16)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.alignment == 4)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.offset(of: \beluga_core_adaptation_state_header_t.abi) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.offset(of: \beluga_core_adaptation_state_header_t.domain) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.offset(of: \beluga_core_adaptation_state_header_t.phase) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_state_header_t>.offset(of: \beluga_core_adaptation_state_header_t.count) == 12)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.size == 24)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.stride == 24)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.offset(of: \beluga_core_adaptation_state_atom_t.kind) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.offset(of: \beluga_core_adaptation_state_atom_t.present) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.offset(of: \beluga_core_adaptation_state_atom_t.high) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_state_atom_t>.offset(of: \beluga_core_adaptation_state_atom_t.low) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.stride == 32)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.offset(of: \beluga_core_adaptation_time_edit_t.action) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.offset(of: \beluga_core_adaptation_time_edit_t.source) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.offset(of: \beluga_core_adaptation_time_edit_t.index) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.offset(of: \beluga_core_adaptation_time_edit_t.ordinal) == 12)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.offset(of: \beluga_core_adaptation_time_edit_t.high) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_time_edit_t>.offset(of: \beluga_core_adaptation_time_edit_t.low) == 24)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.size == 24)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.stride == 24)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.offset(of: \beluga_core_adaptation_time_coordinate_t.present) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.offset(of: \beluga_core_adaptation_time_coordinate_t.reserved) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.offset(of: \beluga_core_adaptation_time_coordinate_t.high) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_time_coordinate_t>.offset(of: \beluga_core_adaptation_time_coordinate_t.low) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.size == 48)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.stride == 48)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.abi) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.status) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.site) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.ordinal) == 12)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.invocation) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.high) == 24)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.low) == 32)
+    assert(MemoryLayout<beluga_core_adaptation_clock_reply_t>.offset(of: \beluga_core_adaptation_clock_reply_t.reserved) == 40)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.size == 72)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.stride == 72)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.abi) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.operation) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.scope) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.read_count) == 12)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.invocation) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.revision) == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.peer) == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.peer_present) == 40)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.bound) == 44)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.route) == 48)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.sample) == 52)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.enabled) == 56)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.lease) == 60)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.queue_fault) == 64)
+    assert(MemoryLayout<beluga_core_adaptation_owner_event_metadata_t>.offset(of: \beluga_core_adaptation_owner_event_metadata_t.rtt_fault) == 68)
+    // Literal codec field-kind ledger; payload construction defines input only.
+    let kinds: [UInt32] = [
+        2,2,2,1,7,2,2,2,2,2,2,2,10,2,2,4,4,4,2,2,
+        7,7,7,10,2,4,7,2,10,2,2,2,4,4,4,3,1,3,2,10,
+        10,4,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        3,3,3,3,3,2,2,1,1,1,1,1,1,1,1,3,1,1,1,1,
+        1,1,1,1,1,3,1,3,10,4,6,2,2,2,2,3,2,2,2,2,
+        2,3,2,2,2,2,2,3,2,2,2,2,2,3,2,2,2,2,2,3,
+        2,2,2,2,2,3,2,2,2,2,2,3,2,2,2,2,2,3,2,5,
+        4,5,2,1,4,4,1,3,3,3,1,4,1,4,4,4,4,3,4,10,
+        3,1,3,10,1,1,4,10,1,4,8,10,1,4,7,2,2,2,3
+    ]
+    assert(kinds.count == 179)
+    var current = kinds.enumerated().map { index, kind -> beluga_core_adaptation_state_atom_t in
+        let offset = UInt64(index)
+        let low: UInt64
+        switch kind {
+        case 1: low = 10000 + offset
+        case 2: low = 1000 + offset
+        case 3: low = 0x7ff8000000000000 + offset
+        case 6: low = 20000 + offset
+        case 10: low = 1000000 + offset
+        default: low = 0
+        }
+        return beluga_core_adaptation_state_atom_t(kind: kind, present: 1, high: 0, low: low)
+    }
+    for index in [15,16,25,33,41,140,145,151,154,156,158,169,173] { current[index].low = 1 }
+    for (index, value) in [(4,5),(20,3),(21,4),(22,6),(26,1),(174,2),(139,250),(141,251),(170,1)] {
+        current[index].low = UInt64(value)
+    }
+    current[168].low = UInt64.max
+    current[171].high = -1; current[171].low = UInt64.max - 6
+    current[172].low = UInt64.max
+    let request = beluga_core_adaptation_owner_event_request_t(abi: 1, operation: 105,
+        generation: 0, invocation: 0xfedcba9876543210, show: 0,
+        capture_source_present: 0, resume_context_absent: 0)
+    let actual = owner105RawCall(request, current)
+    assert(actual.0 == 1)
+    // Handwritten complete successor: only these five Owner fields may change.
+    var expected = current
+    expected[168].low = 0; expected[169].low = 0
+    for index in 170...172 {
+        expected[index].present = 0; expected[index].high = 0; expected[index].low = 0
+    }
+    let expectedHeader = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 2, count: 179)
+    let expectedMetadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: 105,
+        scope: 2, read_count: 0, invocation: 0xfedcba9876543210, revision: 0, peer: 10003,
+        peer_present: 1, bound: 0, route: 0, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+    var expectedEdits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+    expectedEdits[12].action = 2
+    let expectedCoordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+    let expectedReads = Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15)
+    assert(actual.1 == [owner105PODBytes(expectedHeader), owner105ArrayBytes(expected),
+        owner105PODBytes(expectedMetadata), owner105ArrayBytes(expectedEdits),
+        owner105ArrayBytes(expectedCoordinates), owner105ArrayBytes(expectedReads)])
+    for mode in 0..<4 {
+        var malformedRequest = request; var malformedAtoms = current
+        var outputCount: UInt32 = 179
+        if mode == 0 { malformedRequest.operation = 104 }
+        if mode == 1 { malformedRequest.abi = 2 }
+        if mode == 2 { malformedAtoms[35].kind = 99 }
+        if mode == 3 { outputCount = 178 }
+        let denied = owner105RawCall(malformedRequest, malformedAtoms, outputCount)
+        assert(denied.0 == 2)
+        assert(denied.1 == denied.2) // all six unpublished buffers retain every byte
+    }
+}
+adaptationOwnerZeroClockSmokeV1()
+print("BelugaCore Swift adaptation Owner zero-clock PASS: layouts, full179 stop, four untouched denials")
+
+// SOURCE-ONLY additive public Swift import/link smoke. All clocks and full179
+// atoms are synthetic; no actual native Instant, actor adoption or effect proof.
+private struct Owner216ClockContext { var calls: UInt32 = 0; var mode: UInt32 = 0 }
+private let owner216Clock: @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt32,
+    UInt32, UnsafeMutablePointer<beluga_core_adaptation_clock_reply_t>?) -> UInt32 = {
+    context, invocation, site, ordinal, reply in
+    guard let context, let reply else { return 0 }
+    let clock = context.assumingMemoryBound(to: Owner216ClockContext.self)
+    precondition(invocation == 0xfedcba9876543210 && site == 2 && ordinal == 0 && clock.pointee.calls == 0)
+    clock.pointee.calls += 1
+    if clock.pointee.mode == 1 { return 0 }
+    reply.pointee = beluga_core_adaptation_clock_reply_t(abi: 1, status: 1, site: 2,
+        ordinal: 0, invocation: invocation, high: 0, low: 9000000,
+        reserved: clock.pointee.mode == 2 ? 1 : 0)
+    return 1
+}
+private func owner216SmokeSeed() -> [beluga_core_adaptation_state_atom_t] {
+    // Literal codec field-kind ledger; construction defines input only.
+    let kinds: [UInt32] = [
+        2,2,2,1,7,2,2,2,2,2,2,2,10,2,2,4,4,4,2,2,
+        7,7,7,10,2,4,7,2,10,2,2,2,4,4,4,3,1,3,2,10,
+        10,4,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+        3,3,3,3,3,2,2,1,1,1,1,1,1,1,1,3,1,1,1,1,
+        1,1,1,1,1,3,1,3,10,4,6,2,2,2,2,3,2,2,2,2,
+        2,3,2,2,2,2,2,3,2,2,2,2,2,3,2,2,2,2,2,3,
+        2,2,2,2,2,3,2,2,2,2,2,3,2,2,2,2,2,3,2,5,
+        4,5,2,1,4,4,1,3,3,3,1,4,1,4,4,4,4,3,4,10,
+        3,1,3,10,1,1,4,10,1,4,8,10,1,4,7,2,2,2,3
+    ]
+    assert(kinds.count == 179)
+    var current = kinds.enumerated().map { index, kind -> beluga_core_adaptation_state_atom_t in
+        let offset = UInt64(index)
+        let low: UInt64
+        switch kind {
+        case 1: low = 10000 + offset
+        case 2: low = 1000 + offset
+        case 3: low = 0x7ff8000000000000 + offset
+        case 6: low = 20000 + offset
+        case 10: low = 1000000 + offset
+        default: low = 0
+        }
+        return beluga_core_adaptation_state_atom_t(kind: kind, present: 1, high: 0, low: low)
+    }
+    for index in [15,16,25,33,41,140,145,151,154,156,158,169,173] { current[index].low = 1 }
+    for (index, value) in [(4,5),(20,3),(21,4),(22,6),(26,1),(174,2),(139,250),(141,251),(170,1)] {
+        current[index].low = UInt64(value)
+    }
+    current[168].low = UInt64.max
+    current[171].high = -1; current[171].low = UInt64.max - 6
+    current[172].low = UInt64.max
+    return current
+}
+private func owner216Absent(_ atoms: inout [beluga_core_adaptation_state_atom_t], _ indices: [Int]) {
+    for index in indices { atoms[index].present = 0; atoms[index].high = 0; atoms[index].low = 0 }
+}
+private func owner216RawCall(_ request: beluga_core_adaptation_owner_clocked_event_request_t,
+    _ current: [beluga_core_adaptation_state_atom_t], _ outputCount: UInt32 = 179,
+    header: beluga_core_adaptation_state_header_t = .init(abi: 1, domain: 2, phase: 1, count: 179),
+    mode: UInt32 = 0, missingCallback: Bool = false
+) -> (UInt32, [[UInt8]], [[UInt8]], UInt32) {
+    let inputBefore = [owner105PODBytes(request), owner105PODBytes(header), owner105ArrayBytes(current)]
+    var outputHeader = beluga_core_adaptation_state_header_t(abi: 161, domain: 162, phase: 163, count: 164)
+    var outputAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 777, present: 778, high: -779, low: 780), count: 179)
+    var metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 801, operation: 802, scope: 803,
+        read_count: 804, invocation: 805, revision: 806, peer: 807, peer_present: 808, bound: 809,
+        route: 810, sample: 811, enabled: 812, lease: 813, queue_fault: 814, rtt_fault: 815)
+    var edits = Array(repeating: beluga_core_adaptation_time_edit_t(action: 901, source: 902,
+        index: 903, ordinal: 904, high: -905, low: 906), count: 13)
+    var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(present: 1001,
+        reserved: 1002, high: -1003, low: 1004), count: 13)
+    var reads = Array(repeating: beluga_core_adaptation_clock_reply_t(abi: 1101, status: 1102,
+        site: 1103, ordinal: 1104, invocation: 1105, high: -1106, low: 1107, reserved: 1108), count: 15)
+    let before = [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)]
+    var clock = Owner216ClockContext(calls: 0, mode: mode)
+    let status = withUnsafeMutablePointer(to: &clock) { clockPointer in
+        withUnsafePointer(to: request) { requestPointer in
+            withUnsafePointer(to: header) { headerPointer in
+                current.withUnsafeBufferPointer { atomsPointer in
+                    outputAtoms.withUnsafeMutableBufferPointer { outputPointer in
+                        edits.withUnsafeMutableBufferPointer { editPointer in
+                            coordinates.withUnsafeMutableBufferPointer { coordinatePointer in
+                                reads.withUnsafeMutableBufferPointer { readPointer in
+                                    beluga_core_network_adaptation_owner_clocked_event(requestPointer,
+                                        headerPointer, atomsPointer.baseAddress!, 179,
+                                        missingCallback ? nil : owner216Clock, UnsafeMutableRawPointer(clockPointer),
+                                        &outputHeader, outputPointer.baseAddress!, outputCount, &metadata,
+                                        editPointer.baseAddress!, 13, coordinatePointer.baseAddress!, 13,
+                                        readPointer.baseAddress!, 15)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert([owner105PODBytes(request), owner105PODBytes(header), owner105ArrayBytes(current)] == inputBefore)
+    return (status, [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms),
+        owner105PODBytes(metadata), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates),
+        owner105ArrayBytes(reads)], before, clock.calls)
+}
+private func adaptationOwnerClockedSmokeV1() {
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.size == 48)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.stride == 48)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.alignment == 8)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.abi) == 0)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.operation) == 4)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.generation) == 8)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.invocation) == 16)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.show) == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.minimum) == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.flag) == 40)
+    assert(MemoryLayout<beluga_core_adaptation_owner_clocked_event_request_t>.offset(of: \beluga_core_adaptation_owner_clocked_event_request_t.minimum_present) == 44)
+    let request = beluga_core_adaptation_owner_clocked_event_request_t(abi: 1, operation: 216,
+        generation: 0, invocation: 0xfedcba9876543210, show: 0, minimum: 0, flag: 0, minimum_present: 0)
+    let current = owner216SmokeSeed()
+    let actual = owner216RawCall(request, current)
+    assert(actual.0 == 1 && actual.3 == 1)
+    // Literal complete successor; no reducer or result decoder constructs expected values.
+    var expected = current
+    for index in [5,6,7,8,9,10,25,145,158] { expected[index].low = 0 }
+    owner216Absent(&expected, [21,26,27,28,146,147,148,159,160,170,171,172])
+    expected[168].low = 0
+    let expectedHeader = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 2, count: 179)
+    let expectedMetadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: 216,
+        scope: 2, read_count: 1, invocation: 0xfedcba9876543210, revision: 0, peer: 10003,
+        peer_present: 1, bound: 0, route: 0, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+    var expectedEdits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+    expectedEdits[2].action = 2; expectedEdits[3].action = 2
+    expectedEdits[6].action = 1; expectedEdits[7].action = 1; expectedEdits[12].action = 2
+    var expectedCoordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+    expectedCoordinates[6] = .init(present: 1, reserved: 0, high: 0, low: 1000039)
+    expectedCoordinates[7] = .init(present: 1, reserved: 0, high: 0, low: 1000040)
+    var expectedReads = Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15)
+    expectedReads[0] = .init(abi: 1, status: 1, site: 2, ordinal: 0,
+        invocation: 0xfedcba9876543210, high: 0, low: 9000000, reserved: 0)
+    assert(actual.1 == [owner105PODBytes(expectedHeader), owner105ArrayBytes(expected),
+        owner105PODBytes(expectedMetadata), owner105ArrayBytes(expectedEdits),
+        owner105ArrayBytes(expectedCoordinates), owner105ArrayBytes(expectedReads)])
+
+    var lazyRequest = request; lazyRequest.operation = 202
+    var lazyCurrent = current; owner216Absent(&lazyCurrent, [20])
+    let lazy = owner216RawCall(lazyRequest, lazyCurrent)
+    assert(lazy.0 == 1 && lazy.3 == 0)
+    var lazyExpected = lazyCurrent
+    owner216Absent(&lazyExpected, [164,165,167,159,160])
+    for index in [166,153,154,158] { lazyExpected[index].low = 0 }
+    let lazyMetadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: 202,
+        scope: 1, read_count: 0, invocation: 0xfedcba9876543210, revision: UInt64.max, peer: 10003,
+        peer_present: 1, bound: 0, route: 0, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+    var lazyEdits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+    for index in [0,1,2,6,7] { lazyEdits[index].action = 1 }
+    lazyEdits[3].action = 2; lazyEdits[5].action = 2
+    var lazyCoordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+    for (index, value) in [(0,1000012),(1,1000023),(2,1000028),(6,1000039),(7,1000040)] {
+        lazyCoordinates[index] = .init(present: 1, reserved: 0, high: 0, low: UInt64(value))
+    }
+    let lazyReads = Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15)
+    assert(lazy.1 == [owner105PODBytes(expectedHeader), owner105ArrayBytes(lazyExpected),
+        owner105PODBytes(lazyMetadata), owner105ArrayBytes(lazyEdits),
+        owner105ArrayBytes(lazyCoordinates), owner105ArrayBytes(lazyReads)])
+
+    for mode in 0..<8 {
+        var deniedRequest = request; var deniedAtoms = current
+        var deniedHeader = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 1, count: 179)
+        var outputCount: UInt32 = 179; var clockMode: UInt32 = 0
+        if mode == 0 { deniedRequest.operation = 201 }
+        if mode == 1 { deniedRequest.abi = 2 }
+        if mode == 2 { deniedAtoms[88].kind = 99 }
+        if mode == 3 { outputCount = 178 }
+        if mode == 5 { clockMode = 1 }
+        if mode == 6 { clockMode = 2 }
+        if mode == 7 { deniedHeader.phase = 2 }
+        let denied = owner216RawCall(deniedRequest, deniedAtoms, outputCount,
+            header: deniedHeader, mode: clockMode, missingCallback: mode == 4)
+        assert(denied.0 == (mode == 5 ? 3 : mode == 6 ? 4 : 2))
+        assert(denied.3 == (mode == 5 || mode == 6 ? 1 : 0))
+        assert(denied.1 == denied.2) // every byte of all six unpublished outputs
+    }
+}
+adaptationOwnerClockedSmokeV1()
+print("BelugaCore Swift adaptation Owner clocked PASS: layout, two full179 cuts, lazy callback, eight untouched denials")
+
+// Additive PUBLIC501 import/link smoke; completed None and scalar byte shape
+// do not establish Prepared222, native Instant/route custody, or actor adoption.
+private func owner501Offset<T, V>(_ field: KeyPath<T, V>, _ expected: Int) {
+    assert(MemoryLayout<T>.offset(of: field) == expected)
+}
+private func owner501RawCall(_ request: beluga_core_adaptation_owner_prepare_request_t,
+    _ current: [beluga_core_adaptation_state_atom_t], _ outputCount: UInt32 = 222,
+    header: beluga_core_adaptation_state_header_t = .init(abi: 1, domain: 2, phase: 1, count: 179),
+    report: beluga_core_adaptation_owner_report_t = .init(),
+    observed: beluga_core_adaptation_time_coordinate_t = .init(), missingCallback: Bool = false
+) -> (UInt32, [[UInt8]], [[UInt8]], UInt32) {
+    var outputHeader = beluga_core_adaptation_state_header_t(abi: 161, domain: 162, phase: 163, count: 164)
+    var outputAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 777, present: 778, high: -779, low: 780), count: 222)
+    var metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 801, operation: 802, scope: 803,
+        read_count: 804, invocation: 805, revision: 806, peer: 807, peer_present: 808, bound: 809,
+        route: 810, sample: 811, enabled: 812, lease: 813, queue_fault: 814, rtt_fault: 815)
+    var outcome = beluga_core_adaptation_owner_prepare_outcome_t(abi: 821, operation: 822,
+        invocation: 823, prepared_present: 824, reserved: 825)
+    var edits = Array(repeating: beluga_core_adaptation_time_edit_t(action: 901, source: 902,
+        index: 903, ordinal: 904, high: -905, low: 906), count: 13)
+    var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(present: 1001,
+        reserved: 1002, high: -1003, low: 1004), count: 13)
+    var reads = Array(repeating: beluga_core_adaptation_clock_reply_t(abi: 1101, status: 1102,
+        site: 1103, ordinal: 1104, invocation: 1105, high: -1106, low: 1107, reserved: 1108), count: 15)
+    let before = [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        owner105PODBytes(outcome), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)]
+    var clock = Owner216ClockContext()
+    let status = withUnsafeMutablePointer(to: &clock) { clockPointer in
+        withUnsafePointer(to: request) { requestPointer in
+            withUnsafePointer(to: header) { headerPointer in
+                withUnsafePointer(to: report) { reportPointer in
+                    withUnsafePointer(to: observed) { observedPointer in
+                        current.withUnsafeBufferPointer { atomsPointer in
+                            // Inspect exact passed temporary storage, not just the original values.
+                            let borrowedBefore = [owner105PODBytes(requestPointer.pointee), owner105PODBytes(headerPointer.pointee),
+                                owner105ArrayBytes(Array(atomsPointer)), owner105PODBytes(reportPointer.pointee),
+                                owner105PODBytes(observedPointer.pointee)]
+                            let result = outputAtoms.withUnsafeMutableBufferPointer { outputPointer in
+                                edits.withUnsafeMutableBufferPointer { editPointer in
+                                    coordinates.withUnsafeMutableBufferPointer { coordinatePointer in
+                                        reads.withUnsafeMutableBufferPointer { readPointer in
+                                            beluga_core_network_adaptation_owner_prepare_event(requestPointer, headerPointer,
+                                                atomsPointer.baseAddress!, 179, reportPointer, observedPointer,
+                                                missingCallback ? nil : owner216Clock, UnsafeMutableRawPointer(clockPointer),
+                                                &outputHeader, outputPointer.baseAddress!, outputCount, &metadata, &outcome,
+                                                editPointer.baseAddress!, 13, coordinatePointer.baseAddress!, 13,
+                                                readPointer.baseAddress!, 15)
+                                        }
+                                    }
+                                }
+                            }
+                            assert([owner105PODBytes(requestPointer.pointee), owner105PODBytes(headerPointer.pointee),
+                                owner105ArrayBytes(Array(atomsPointer)), owner105PODBytes(reportPointer.pointee),
+                                owner105PODBytes(observedPointer.pointee)] == borrowedBefore)
+                            return result
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (status, [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        owner105PODBytes(outcome), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates),
+        owner105ArrayBytes(reads)], before, clock.calls)
+}
+private func adaptationOwnerPrepareSmokeV1() {
+    assert(MemoryLayout<beluga_core_adaptation_owner_prepare_request_t>.size == 56)
+    assert(MemoryLayout<beluga_core_adaptation_owner_prepare_request_t>.stride == 56)
+    assert(MemoryLayout<beluga_core_adaptation_owner_prepare_request_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.source_generation, 16)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.expected_revision, 24)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.current_generation, 32)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.entry_flags, 40)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.capacity_only, 44)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.allows_resume, 48)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_request_t.report_present, 52)
+    assert(MemoryLayout<beluga_core_adaptation_owner_prepare_outcome_t>.size == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_prepare_outcome_t>.stride == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_prepare_outcome_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_outcome_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_outcome_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_outcome_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_outcome_t.prepared_present, 16)
+    owner501Offset(\beluga_core_adaptation_owner_prepare_outcome_t.reserved, 20)
+    assert(MemoryLayout<beluga_core_adaptation_owner_report_t>.size == 192)
+    assert(MemoryLayout<beluga_core_adaptation_owner_report_t>.stride == 192)
+    assert(MemoryLayout<beluga_core_adaptation_owner_report_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.peer, 0)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.capture_active, 8)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.automatically_suspended, 12)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.strict, 16)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.incoming_present, 20)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.equal_to_retained, 24)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.observation_kind, 28)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.collection_sequence_present, 32)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.bandwidth_present, 36)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.current_rtt_present, 40)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.packets_present, 44)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.delay_present, 48)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.native_timestamp_present, 52)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.fingerprint_length, 56)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.reserved, 60)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.collection_sequence, 64)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.bandwidth_bits, 72)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.current_rtt_bits, 80)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.packets, 88)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.delay_bits, 96)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.native_timestamp_bits, 104)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.fingerprint, 112)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.measurement_total_bits, 176)
+    owner501Offset(\beluga_core_adaptation_owner_report_t.measurement_responses, 184)
+    let admitted = beluga_core_adaptation_owner_prepare_request_t(abi: 1, operation: 501,
+        invocation: 0xfedcba9876543210, source_generation: 42, expected_revision: UInt64.max,
+        current_generation: 42, entry_flags: 127, capacity_only: 0, allows_resume: 0, report_present: 0)
+    let current = owner216SmokeSeed()
+    let emptyHeader = beluga_core_adaptation_state_header_t()
+    let emptyAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(), count: 222)
+    let expectedMetadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: 501, scope: 1,
+        read_count: 0, invocation: 0xfedcba9876543210, revision: UInt64.max, peer: 10003, peer_present: 1,
+        bound: 0, route: 0, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+    let expectedOutcome = beluga_core_adaptation_owner_prepare_outcome_t(abi: 1, operation: 501,
+        invocation: 0xfedcba9876543210, prepared_present: 0, reserved: 0)
+    let emptyEdits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+    let emptyCoordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+    let emptyReads = Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15)
+    let expected = [owner105PODBytes(emptyHeader), owner105ArrayBytes(emptyAtoms), owner105PODBytes(expectedMetadata),
+        owner105PODBytes(expectedOutcome), owner105ArrayBytes(emptyEdits), owner105ArrayBytes(emptyCoordinates),
+        owner105ArrayBytes(emptyReads)]
+    for mode in 0..<5 {
+        var request = admitted
+        if mode == 0 { request.entry_flags &= ~UInt32(1) }
+        if mode == 1 { request.entry_flags &= ~UInt32(2) }
+        if mode == 2 { request.current_generation = 43 }
+        if mode == 3 { request.expected_revision = UInt64.max - 1 }
+        if mode == 4 { request.entry_flags &= ~UInt32(4) }
+        let actual = owner501RawCall(request, current)
+        assert(actual.0 == 1 && actual.3 == 0)
+        assert(actual.1 == expected) // seven complete output objects, including zero222
+    }
+    for mode in 0..<15 {
+        var request = admitted; request.entry_flags = 0
+        var atoms = current
+        var header = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 1, count: 179)
+        var report = beluga_core_adaptation_owner_report_t()
+        var observed = beluga_core_adaptation_time_coordinate_t()
+        var outputCount: UInt32 = 222
+        if mode == 0 { request.operation = 401 }
+        if mode == 1 { request.abi = 2 }
+        if mode == 2 { request.invocation = 0 }
+        if mode == 3 { request.entry_flags = 256 }
+        if mode == 4 { request.capacity_only = 2 }
+        if mode == 5 { request.allows_resume = 2 }
+        if mode == 6 { request.report_present = 2 }
+        if mode == 7 { report.peer = 42 }
+        if mode == 8 { request.report_present = 1; report.reserved = 1 }
+        if mode == 9 { atoms[178].kind = 99 }
+        if mode == 10 { outputCount = 221 }
+        if mode == 12 { observed.reserved = 1 }
+        if mode == 13 { request.entry_flags = 127 }
+        if mode == 14 { header.phase = 2 }
+        let denied = owner501RawCall(request, atoms, outputCount, header: header,
+            report: report, observed: observed, missingCallback: mode == 11)
+        assert(denied.0 == 2 && denied.3 == 0)
+        assert(denied.1 == denied.2) // all seven fresh sentinels remain untouched
+    }
+}
+adaptationOwnerPrepareSmokeV1()
+print("BelugaCore Swift adaptation Owner prepare PASS: layouts, full179 lazy None, fifteen untouched denials")
+
+// Additive public601 import/link smoke. Scalar Prepared222 inputs are synthetic,
+// not native seals, Optional/Instant/provider permissions, or actor adoption.
+private func owner601PreparedSeed(_ current: [beluga_core_adaptation_state_atom_t]) -> [beluga_core_adaptation_state_atom_t] {
+    let tail: [UInt32] = [
+        1,1,1,6,4,4,4,7,2,2,2,3,7,2,2,2,3,6,4,
+        1,4,4,4,4,2,1,1,1,1,1,3,3,1,2,2,6,6,6,6,1,6,4,
+        4,6,7,1,1,1,2,2,1,1,1,1
+    ]
+    assert(current.count == 179 && tail.count == 54)
+    var prepared = Array(current.prefix(168)) + tail.map {
+        beluga_core_adaptation_state_atom_t(kind: $0, present: 0, high: 0, low: 0)
+    }
+    for index in 168...174 { prepared[index].present = 1 }
+    for index in 180...186 { prepared[index].present = 1 }
+    prepared[210].present = 1
+    prepared[168].low = 42; prepared[169].low = UInt64.max
+    prepared[170].low = 99 // applying revision deliberately differs
+    prepared[180].low = 2; prepared[181].low = 333333
+    prepared[182].low = 444444; prepared[183].low = 30
+    prepared[184].low = 0x3ff0000000000000
+    prepared[0].low = 32123456
+    prepared[12].high = -1; prepared[12].low = UInt64.max - 9 // -10 attoseconds
+    return prepared
+}
+private func owner601RawCall(_ originalRequest: beluga_core_adaptation_owner_inactive_request_t,
+    _ originalCurrent: [beluga_core_adaptation_state_atom_t],
+    _ originalPrepared: [beluga_core_adaptation_state_atom_t], _ outputCount: UInt32 = 179,
+    currentHeader originalCurrentHeader: beluga_core_adaptation_state_header_t = .init(abi: 1, domain: 2, phase: 1, count: 179),
+    preparedHeader originalPreparedHeader: beluga_core_adaptation_state_header_t = .init(abi: 1, domain: 4, phase: 3, count: 222),
+    missingCallback: Bool = false
+) -> (UInt32, [[UInt8]], [[UInt8]], UInt32) {
+    // Owned scalar storage and uniqued input arrays; compare the exact buffers
+    // C borrowed before and after return, not re-materialized value parameters.
+    var request = originalRequest, currentHeader = originalCurrentHeader, preparedHeader = originalPreparedHeader
+    var current = originalCurrent.map { $0 }, prepared = originalPrepared.map { $0 }
+    var outputHeader = beluga_core_adaptation_state_header_t(abi: 161, domain: 162, phase: 163, count: 164)
+    var outputAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 777, present: 778, high: -779, low: 780), count: 179)
+    var metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 801, operation: 802, scope: 803,
+        read_count: 804, invocation: 805, revision: 806, peer: 807, peer_present: 808, bound: 809,
+        route: 810, sample: 811, enabled: 812, lease: 813, queue_fault: 814, rtt_fault: 815)
+    var outcome = beluga_core_adaptation_owner_inactive_outcome_t(abi: 821, operation: 822,
+        invocation: 823, disposition: 824, route: 825)
+    var edits = Array(repeating: beluga_core_adaptation_time_edit_t(action: 901, source: 902,
+        index: 903, ordinal: 904, high: -905, low: 906), count: 13)
+    var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(present: 1001,
+        reserved: 1002, high: -1003, low: 1004), count: 13)
+    var reads = Array(repeating: beluga_core_adaptation_clock_reply_t(abi: 1101, status: 1102,
+        site: 1103, ordinal: 1104, invocation: 1105, high: -1106, low: 1107, reserved: 1108), count: 15)
+    let before = [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        owner105PODBytes(outcome), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)]
+    var clock = Owner216ClockContext()
+    let status = withUnsafeMutablePointer(to: &clock) { clockPointer in
+        withUnsafePointer(to: &request) { requestPointer in
+            withUnsafePointer(to: &currentHeader) { currentHeaderPointer in
+                withUnsafePointer(to: &preparedHeader) { preparedHeaderPointer in
+                    current.withUnsafeMutableBufferPointer { currentPointer in
+                        prepared.withUnsafeMutableBufferPointer { preparedPointer in
+                            let borrowedBefore = [owner105PODBytes(requestPointer.pointee), owner105PODBytes(currentHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(currentPointer)), owner105PODBytes(preparedHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(preparedPointer))]
+                            let result = outputAtoms.withUnsafeMutableBufferPointer { outputPointer in
+                                edits.withUnsafeMutableBufferPointer { editPointer in
+                                    coordinates.withUnsafeMutableBufferPointer { coordinatePointer in
+                                        reads.withUnsafeMutableBufferPointer { readPointer in
+                                            beluga_core_network_adaptation_owner_adopt_inactive(requestPointer,
+                                                currentHeaderPointer, currentPointer.baseAddress!, 179,
+                                                preparedHeaderPointer, preparedPointer.baseAddress!, 222,
+                                                missingCallback ? nil : owner216Clock, UnsafeMutableRawPointer(clockPointer),
+                                                &outputHeader, outputPointer.baseAddress!, outputCount, &metadata, &outcome,
+                                                editPointer.baseAddress!, 13, coordinatePointer.baseAddress!, 13,
+                                                readPointer.baseAddress!, 15)
+                                        }
+                                    }
+                                }
+                            }
+                            assert([owner105PODBytes(requestPointer.pointee), owner105PODBytes(currentHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(currentPointer)), owner105PODBytes(preparedHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(preparedPointer))] == borrowedBefore)
+                            return result
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (status, [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        owner105PODBytes(outcome), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)], before, clock.calls)
+}
+private func adaptationOwnerInactiveSmokeV1() {
+    assert(MemoryLayout<beluga_core_adaptation_owner_inactive_request_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_inactive_request_t>.stride == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_inactive_request_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_request_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_request_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_request_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_request_t.current_generation, 16)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_request_t.exact_peer, 24)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_request_t.suspended, 28)
+    assert(MemoryLayout<beluga_core_adaptation_owner_inactive_outcome_t>.size == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_inactive_outcome_t>.stride == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_inactive_outcome_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_outcome_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_outcome_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_outcome_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_outcome_t.disposition, 16)
+    owner501Offset(\beluga_core_adaptation_owner_inactive_outcome_t.route, 20)
+    let admitted = beluga_core_adaptation_owner_inactive_request_t(abi: 1, operation: 601,
+        invocation: 0xfedcba9876543210, current_generation: 42, exact_peer: 1, suspended: 0)
+    let current = owner216SmokeSeed()
+    assert(current[41].low == 1 && current[140].low == 1) // sticky demand fault: exact zero-read typed cut
+    let resultHeader = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 2, count: 179)
+    let timeAtoms = [12,23,28,159,163,167,39,40,88]
+    for mode in 0..<4 {
+        var request = admitted
+        var prepared = owner601PreparedSeed(current)
+        if mode == 1 { request.exact_peer = 0 }
+        if mode == 2 { request.current_generation = 43 }
+        if mode == 3 { prepared[169].low = UInt64.max - 1 }
+        let actual = owner601RawCall(request, current, prepared)
+        assert(actual.0 == 1 && actual.3 == 0)
+        var expectedAtoms = current
+        if mode == 0 {
+            expectedAtoms.replaceSubrange(0..<168, with: prepared.prefix(168)); expectedAtoms[168].low = 0
+        }
+        let expectedMetadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: 601, scope: 2,
+            read_count: 0, invocation: 0xfedcba9876543210, revision: mode == 0 ? 0 : UInt64.max,
+            peer: 10003, peer_present: 1, bound: 0, route: 0, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+        let expectedOutcome = beluga_core_adaptation_owner_inactive_outcome_t(abi: 1, operation: 601,
+            invocation: 0xfedcba9876543210, disposition: mode == 0 ? 1 : 0, route: 0)
+        var expectedEdits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+        var expectedCoordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+        for (index, position) in timeAtoms.enumerated() {
+            let value = (mode == 0 ? prepared : current)[position]
+            expectedEdits[index] = beluga_core_adaptation_time_edit_t(action: mode == 0 ? 3 : 1,
+                source: mode == 0 ? 2 : 0, index: mode == 0 ? UInt32(index) : 0, ordinal: 0, high: 0, low: 0)
+            expectedCoordinates[index] = beluga_core_adaptation_time_coordinate_t(present: value.present,
+                reserved: 0, high: value.high, low: value.low)
+        }
+        let expectedReads = Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15)
+        assert(actual.1 == [owner105PODBytes(resultHeader), owner105ArrayBytes(expectedAtoms), owner105PODBytes(expectedMetadata),
+            owner105PODBytes(expectedOutcome), owner105ArrayBytes(expectedEdits), owner105ArrayBytes(expectedCoordinates),
+            owner105ArrayBytes(expectedReads)]) // seven complete output objects
+    }
+    for mode in 0..<12 {
+        var request = admitted, atoms = current
+        var prepared = owner601PreparedSeed(current)
+        var ch = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 1, count: 179)
+        var ph = beluga_core_adaptation_state_header_t(abi: 1, domain: 4, phase: 3, count: 222)
+        var outputCount: UInt32 = 179
+        if mode == 0 { request.operation = 501 }
+        if mode == 1 { request.abi = 2 }
+        if mode == 2 { request.invocation = 0 }
+        if mode == 3 { request.exact_peer = 2 }
+        if mode == 4 { request.suspended = 2 }
+        if mode == 5 { atoms[178].kind = 99 }
+        if mode == 6 { prepared[221].kind = 99 }
+        if mode == 7 { ch.phase = 2 }
+        if mode == 8 { ph.domain = 2 }
+        if mode == 9 { ph.phase = 2 }
+        if mode == 10 { outputCount = 178 }
+        let denied = owner601RawCall(request, atoms, prepared, outputCount,
+            currentHeader: ch, preparedHeader: ph, missingCallback: mode == 11)
+        assert(denied.0 == 2 && denied.3 == 0 && denied.1 == denied.2)
+    }
+}
+adaptationOwnerInactiveSmokeV1()
+print("BelugaCore Swift adaptation Owner inactive PASS: layouts, full179 adoption/stale, nine origins, twelve untouched denials")
+
+// Public701 import/link smoke. Synthetic POD does not seal native Prepared custody.
+private func owner701RawCall(_ originalRequest: beluga_core_adaptation_owner_begin_active_request_t,
+    _ originalCurrent: [beluga_core_adaptation_state_atom_t],
+    _ originalPrepared: [beluga_core_adaptation_state_atom_t], _ outputCount: UInt32 = 179,
+    currentHeader originalCurrentHeader: beluga_core_adaptation_state_header_t = .init(abi: 1, domain: 2, phase: 1, count: 179),
+    preparedHeader originalPreparedHeader: beluga_core_adaptation_state_header_t = .init(abi: 1, domain: 4, phase: 3, count: 222),
+    missingCallback: Bool = false, outputPreparedCount: UInt32 = 222, editCount: UInt32 = 13
+) -> (UInt32, [[UInt8]], [[UInt8]], UInt32) {
+    // Owned scalar storage and uniqued input arrays; compare the exact buffers
+    // C borrowed before and after return, not re-materialized value parameters.
+    var request = originalRequest, currentHeader = originalCurrentHeader, preparedHeader = originalPreparedHeader
+    var current = originalCurrent.map { $0 }, prepared = originalPrepared.map { $0 }
+    var outputHeader = beluga_core_adaptation_state_header_t(abi: 161, domain: 162, phase: 163, count: 164)
+    var outputAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 777, present: 778, high: -779, low: 780), count: 179)
+    var outputPreparedHeader = beluga_core_adaptation_state_header_t(abi: 171, domain: 172, phase: 173, count: 174)
+    var outputPreparedAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 787, present: 788, high: -789, low: 790), count: 222)
+    var metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 801, operation: 802, scope: 803,
+        read_count: 804, invocation: 805, revision: 806, peer: 807, peer_present: 808, bound: 809,
+        route: 810, sample: 811, enabled: 812, lease: 813, queue_fault: 814, rtt_fault: 815)
+    var outcome = beluga_core_adaptation_owner_begin_active_outcome_t(abi: 821, operation: 822,
+        invocation: 823, disposition: 824, route: 825, prepared_present: 826, reserved: 827)
+    var edits = Array(repeating: beluga_core_adaptation_time_edit_t(action: 901, source: 902,
+        index: 903, ordinal: 904, high: -905, low: 906), count: 13)
+    var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(present: 1001,
+        reserved: 1002, high: -1003, low: 1004), count: 13)
+    var reads = Array(repeating: beluga_core_adaptation_clock_reply_t(abi: 1101, status: 1102,
+        site: 1103, ordinal: 1104, invocation: 1105, high: -1106, low: 1107, reserved: 1108), count: 15)
+    let before = [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(outputPreparedHeader),
+        owner105ArrayBytes(outputPreparedAtoms), owner105PODBytes(metadata),
+        owner105PODBytes(outcome), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)]
+    var clock = Owner216ClockContext()
+    let status = withUnsafeMutablePointer(to: &clock) { clockPointer in
+        withUnsafePointer(to: &request) { requestPointer in
+            withUnsafePointer(to: &currentHeader) { currentHeaderPointer in
+                withUnsafePointer(to: &preparedHeader) { preparedHeaderPointer in
+                    current.withUnsafeMutableBufferPointer { currentPointer in
+                        prepared.withUnsafeMutableBufferPointer { preparedPointer in
+                            let borrowedBefore = [owner105PODBytes(requestPointer.pointee), owner105PODBytes(currentHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(currentPointer)), owner105PODBytes(preparedHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(preparedPointer))]
+                            let result = outputPreparedAtoms.withUnsafeMutableBufferPointer { outputPreparedPointer in
+                                outputAtoms.withUnsafeMutableBufferPointer { outputPointer in
+                                edits.withUnsafeMutableBufferPointer { editPointer in
+                                    coordinates.withUnsafeMutableBufferPointer { coordinatePointer in
+                                        reads.withUnsafeMutableBufferPointer { readPointer in
+                                            beluga_core_network_adaptation_owner_begin_active(requestPointer,
+                                                currentHeaderPointer, currentPointer.baseAddress!, 179,
+                                                preparedHeaderPointer, preparedPointer.baseAddress!, 222,
+                                                missingCallback ? nil : owner216Clock, UnsafeMutableRawPointer(clockPointer),
+                                                &outputHeader, outputPointer.baseAddress!, outputCount, &outputPreparedHeader,
+                                                outputPreparedPointer.baseAddress!, outputPreparedCount, &metadata, &outcome,
+                                                editPointer.baseAddress!, editCount, coordinatePointer.baseAddress!, 13,
+                                                readPointer.baseAddress!, 15)
+                                        }
+                                    }
+                                }
+                            }
+                            }
+                            assert([owner105PODBytes(requestPointer.pointee), owner105PODBytes(currentHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(currentPointer)), owner105PODBytes(preparedHeaderPointer.pointee),
+                                owner105ArrayBytes(Array(preparedPointer))] == borrowedBefore)
+                            return result
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (status, [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(outputPreparedHeader),
+        owner105ArrayBytes(outputPreparedAtoms), owner105PODBytes(metadata),
+        owner105PODBytes(outcome), owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)], before, clock.calls)
+}
+private func adaptationOwnerBeginActiveSmokeV1() {
+    assert(MemoryLayout<beluga_core_adaptation_owner_begin_active_request_t>.size == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_begin_active_request_t>.stride == 24)
+    assert(MemoryLayout<beluga_core_adaptation_owner_begin_active_request_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_request_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_request_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_request_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_request_t.resource_flags, 16)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_request_t.reserved, 20)
+    assert(MemoryLayout<beluga_core_adaptation_owner_begin_active_outcome_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_begin_active_outcome_t>.stride == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_begin_active_outcome_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.disposition, 16)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.route, 20)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.prepared_present, 24)
+    owner501Offset(\beluga_core_adaptation_owner_begin_active_outcome_t.reserved, 28)
+    let invocation: UInt64 = 0xfedcba9876543210
+    for mode in 0..<16 {
+        var request = beluga_core_adaptation_owner_begin_active_request_t(abi: 1, operation: 701,
+            invocation: invocation, resource_flags: 0, reserved: 0)
+        var current = owner216SmokeSeed(), prepared = owner601PreparedSeed(owner216SmokeSeed())
+        prepared[89].low = 0; prepared[140].low = 0
+        if mode == 1 {
+            current[173].low = 1; current[174].low = 2
+            current[175].low = 333333; current[176].low = 444444; current[177].low = 30
+            current[178].low = 0x3ff0000000000000
+        } else {
+            current[173].low = 0
+            for index in 174...178 { current[index].present = 0; current[index].high = 0; current[index].low = 0 }
+        }
+        var ch = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 1, count: 179)
+        var ph = beluga_core_adaptation_state_header_t(abi: 1, domain: 4, phase: 3, count: 222)
+        var outputCount: UInt32 = 179, outputPreparedCount: UInt32 = 222, editCount: UInt32 = 13
+        if mode == 2 { request.operation = 702 }
+        if mode == 3 { request.abi = 2 }
+        if mode == 4 { request.invocation = 0 }
+        if mode == 5 { request.resource_flags = 64 }
+        if mode == 6 { request.reserved = 1 }
+        if mode == 7 { current[178].kind = 99 }
+        if mode == 8 { prepared[221].kind = 99 }
+        if mode == 9 { ch.phase = 2 }
+        if mode == 10 { ph.domain = 2 }
+        if mode == 11 { ph.phase = 2 }
+        if mode == 12 { outputCount = 178 }
+        if mode == 13 { outputPreparedCount = 221 }
+        if mode == 15 { editCount = 12 }
+        let actual = owner701RawCall(request, current, prepared, outputCount, currentHeader: ch, preparedHeader: ph,
+            missingCallback: mode == 14, outputPreparedCount: outputPreparedCount, editCount: editCount)
+        assert(actual.3 == 0)
+        if mode >= 2 { assert(actual.0 == 2 && actual.1 == actual.2); continue }
+        assert(actual.0 == 1)
+        let resultHeader = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 2, count: 179)
+        let resultPreparedHeader = mode == 1 ? ph : beluga_core_adaptation_state_header_t()
+        let resultPrepared = mode == 1 ? prepared : Array(repeating: beluga_core_adaptation_state_atom_t(), count: 222)
+        let metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: 701, scope: 2,
+            read_count: 0, invocation: invocation, revision: UInt64.max, peer: 10003, peer_present: 1,
+            bound: 0, route: 0, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+        let outcome = beluga_core_adaptation_owner_begin_active_outcome_t(abi: 1, operation: 701,
+            invocation: invocation, disposition: UInt32(mode), route: 0, prepared_present: UInt32(mode), reserved: 0)
+        var edits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+        var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+        for (index, position) in [12,23,28,159,163,167,39,40,88].enumerated() {
+            let value = current[position]
+            edits[index] = beluga_core_adaptation_time_edit_t(action: 1, source: 0, index: 0, ordinal: 0, high: 0, low: 0)
+            coordinates[index] = beluga_core_adaptation_time_coordinate_t(present: value.present, reserved: 0, high: value.high, low: value.low)
+        }
+        assert(actual.1 == [owner105PODBytes(resultHeader), owner105ArrayBytes(current), owner105PODBytes(resultPreparedHeader),
+            owner105ArrayBytes(resultPrepared), owner105PODBytes(metadata), owner105PODBytes(outcome), owner105ArrayBytes(edits),
+            owner105ArrayBytes(coordinates), owner105ArrayBytes(Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15))])
+    }
+}
+adaptationOwnerBeginActiveSmokeV1()
+print("BelugaCore Swift adaptation Owner begin-active PASS: layouts, exact179/222 Return/NoNativeApply, fourteen untouched denials")
+
+// Public702/703/704 Swift import/link smoke; synthetic POD is not native custody.
+private struct OwnerCompletionEffect {
+    var calls: UInt32 = 0
+    var invocation: UInt64 = 0
+    var fps: Int64 = 0
+    var validationCalls: UInt32 = 0
+    var validationInvocation: UInt64 = 0
+    var validationCounts: [UInt32] = []
+    var draft: [[UInt8]] = []
+    var trace: [UInt32] = []
+    var reply: UInt32 = 1
+}
+private let ownerCompletionOutput: beluga_core_adaptation_owner_output_callback_t = { context, invocation, fps in
+    guard let context else { return }
+    let effect = context.assumingMemoryBound(to: OwnerCompletionEffect.self)
+    effect.pointee.trace.append(2)
+    effect.pointee.calls += 1
+    effect.pointee.invocation = invocation
+    effect.pointee.fps = fps
+}
+private let ownerCompletionValidate: beluga_core_adaptation_owner_validation_callback_t = {
+    context, invocation, header, atoms, atomCount, metadata, outcome, edits, editCount, coordinates, coordinateCount in
+    guard let context else { return 2 }
+    let effect = context.assumingMemoryBound(to: OwnerCompletionEffect.self)
+    effect.pointee.validationCalls += 1
+    effect.pointee.validationInvocation = invocation
+    effect.pointee.validationCounts = [atomCount, editCount, coordinateCount]
+    effect.pointee.trace.append(1)
+    guard let header, let atoms, let metadata, let outcome, let edits, let coordinates,
+        atomCount == 179, editCount == 13, coordinateCount == 13 else { return 2 }
+    effect.pointee.draft = [owner105PODBytes(header.pointee),
+        owner105ArrayBytes(Array(UnsafeBufferPointer(start: atoms, count: 179))),
+        owner105PODBytes(metadata.pointee), owner105PODBytes(outcome.pointee),
+        owner105ArrayBytes(Array(UnsafeBufferPointer(start: edits, count: 13))),
+        owner105ArrayBytes(Array(UnsafeBufferPointer(start: coordinates, count: 13)))]
+    return effect.pointee.reply
+}
+private func ownerCompletionRawCall(_ originalRequest: beluga_core_adaptation_owner_completion_request_t,
+    _ originalCurrent: [beluga_core_adaptation_state_atom_t],
+    _ originalPrepared: [beluga_core_adaptation_state_atom_t],
+    originalOperation: UInt32, currentHeader originalCurrentHeader: beluga_core_adaptation_state_header_t,
+    preparedHeader originalPreparedHeader: beluga_core_adaptation_state_header_t,
+    outputCount: UInt32 = 179, editCount: UInt32 = 13, coordinateCount: UInt32 = 13,
+    missingCallback: Bool = false, validated: Bool = false, missingValidator: Bool = false,
+    validatorReply: UInt32 = 1
+) -> (UInt32, [[UInt8]], [[UInt8]], UInt32, OwnerCompletionEffect) {
+    var request = originalRequest, currentHeader = originalCurrentHeader, preparedHeader = originalPreparedHeader
+    var current = originalCurrent.map { $0 }, prepared = originalPrepared.map { $0 }
+    var outputHeader = beluga_core_adaptation_state_header_t(abi: 161, domain: 162, phase: 163, count: 164)
+    var outputAtoms = Array(repeating: beluga_core_adaptation_state_atom_t(kind: 777, present: 778, high: -779, low: 780), count: 179)
+    var metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 801, operation: 802, scope: 803,
+        read_count: 804, invocation: 805, revision: 806, peer: 807, peer_present: 808, bound: 809,
+        route: 810, sample: 811, enabled: 812, lease: 813, queue_fault: 814, rtt_fault: 815)
+    var completion = beluga_core_adaptation_owner_completion_outcome_t(abi: 821, operation: 822,
+        invocation: 823, disposition: 824, route: 825, fps_changed: 826, reserved: 827)
+    var failure = beluga_core_adaptation_owner_failure_outcome_t(abi: 821, operation: 822,
+        invocation: 823, disposition: 824, route: 825, semantic_error: 826, attempted_reads: 827)
+    var edits = Array(repeating: beluga_core_adaptation_time_edit_t(action: 901, source: 902,
+        index: 903, ordinal: 904, high: -905, low: 906), count: 13)
+    var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(present: 1001,
+        reserved: 1002, high: -1003, low: 1004), count: 13)
+    var reads = Array(repeating: beluga_core_adaptation_clock_reply_t(abi: 1101, status: 1102,
+        site: 1103, ordinal: 1104, invocation: 1105, high: -1106, low: 1107, reserved: 1108), count: 15)
+    let before = [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        originalOperation == 703 ? owner105PODBytes(failure) : owner105PODBytes(completion),
+        owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)]
+    var clock = Owner216ClockContext(), effect = OwnerCompletionEffect()
+    effect.reply = validatorReply
+    let status = withUnsafeMutablePointer(to: &effect) { effectPointer in
+        withUnsafeMutablePointer(to: &clock) { clockPointer in
+            withUnsafePointer(to: &request) { requestPointer in
+                withUnsafePointer(to: &currentHeader) { ch in
+                    withUnsafePointer(to: &preparedHeader) { ph in
+                        current.withUnsafeMutableBufferPointer { ca in
+                            prepared.withUnsafeMutableBufferPointer { pa in
+                                let borrowedBefore = [owner105PODBytes(requestPointer.pointee), owner105PODBytes(ch.pointee),
+                                    owner105ArrayBytes(Array(ca)), owner105PODBytes(ph.pointee), owner105ArrayBytes(Array(pa))]
+                                let result = outputAtoms.withUnsafeMutableBufferPointer { oa in
+                                    edits.withUnsafeMutableBufferPointer { ep in
+                                        coordinates.withUnsafeMutableBufferPointer { cp in
+                                            reads.withUnsafeMutableBufferPointer { rp in
+                                                if originalOperation == 702 {
+                                                    if validated {
+                                                        return beluga_core_network_adaptation_owner_finish_success_validated(requestPointer,
+                                                            ch, ca.baseAddress!, 179, ph, pa.baseAddress!, 222,
+                                                            missingValidator ? nil : ownerCompletionValidate,
+                                                            missingCallback ? nil : ownerCompletionOutput, UnsafeMutableRawPointer(effectPointer),
+                                                            &outputHeader, oa.baseAddress!, outputCount, &metadata, &completion,
+                                                            ep.baseAddress!, editCount, cp.baseAddress!, coordinateCount)
+                                                    }
+                                                    return beluga_core_network_adaptation_owner_finish_success(requestPointer,
+                                                        ch, ca.baseAddress!, 179, ph, pa.baseAddress!, 222,
+                                                        missingCallback ? nil : ownerCompletionOutput, UnsafeMutableRawPointer(effectPointer),
+                                                        &outputHeader, oa.baseAddress!, outputCount, &metadata, &completion,
+                                                        ep.baseAddress!, editCount, cp.baseAddress!, coordinateCount)
+                                                }
+                                                if originalOperation == 703 {
+                                                    return beluga_core_network_adaptation_owner_finish_failure(requestPointer,
+                                                        ch, ca.baseAddress!, 179, ph, pa.baseAddress!, 222,
+                                                        missingCallback ? nil : owner216Clock, UnsafeMutableRawPointer(clockPointer),
+                                                        &outputHeader, oa.baseAddress!, outputCount, &metadata, &failure,
+                                                        ep.baseAddress!, editCount, cp.baseAddress!, coordinateCount, rp.baseAddress!, 15)
+                                                }
+                                                return beluga_core_network_adaptation_owner_final_adopt(requestPointer,
+                                                    ch, ca.baseAddress!, 179, ph, pa.baseAddress!, 222,
+                                                    &outputHeader, oa.baseAddress!, outputCount, &metadata, &completion,
+                                                    ep.baseAddress!, editCount, cp.baseAddress!, coordinateCount)
+                                            }
+                                        }
+                                    }
+                                }
+                                assert([owner105PODBytes(requestPointer.pointee), owner105PODBytes(ch.pointee),
+                                    owner105ArrayBytes(Array(ca)), owner105PODBytes(ph.pointee), owner105ArrayBytes(Array(pa))] == borrowedBefore)
+                                return result
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return (status, [owner105PODBytes(outputHeader), owner105ArrayBytes(outputAtoms), owner105PODBytes(metadata),
+        originalOperation == 703 ? owner105PODBytes(failure) : owner105PODBytes(completion),
+        owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), owner105ArrayBytes(reads)], before, clock.calls, effect)
+}
+private func adaptationOwnerCompletionSmokeV1() {
+    assert(MemoryLayout<beluga_core_adaptation_owner_completion_request_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_completion_request_t>.stride == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_completion_request_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_completion_request_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_completion_request_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_completion_request_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_completion_request_t.current_generation, 16)
+    owner501Offset(\beluga_core_adaptation_owner_completion_request_t.facts, 24)
+    owner501Offset(\beluga_core_adaptation_owner_completion_request_t.reserved, 28)
+    assert(MemoryLayout<beluga_core_adaptation_owner_failure_request_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_completion_outcome_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_completion_outcome_t>.stride == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_completion_outcome_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.disposition, 16)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.route, 20)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.fps_changed, 24)
+    owner501Offset(\beluga_core_adaptation_owner_completion_outcome_t.reserved, 28)
+    assert(MemoryLayout<beluga_core_adaptation_owner_failure_outcome_t>.size == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_failure_outcome_t>.stride == 32)
+    assert(MemoryLayout<beluga_core_adaptation_owner_failure_outcome_t>.alignment == 8)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.abi, 0)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.operation, 4)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.invocation, 8)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.disposition, 16)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.route, 20)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.semantic_error, 24)
+    owner501Offset(\beluga_core_adaptation_owner_failure_outcome_t.attempted_reads, 28)
+    let invocation: UInt64 = 0xfedcba9876543210
+    for operation: UInt32 in 702...704 {
+        for mode in 0..<15 {
+            var request = beluga_core_adaptation_owner_completion_request_t(abi: 1, operation: operation,
+                invocation: invocation, current_generation: 42, facts: mode == 0 ? 0 : (operation == 704 ? 1 : 511), reserved: 0)
+            var current = owner216SmokeSeed(), prepared = owner601PreparedSeed(owner216SmokeSeed())
+            prepared[170].low = UInt64.max; prepared[185].low = 2
+            prepared[151].low = 0; prepared[154].low = 0
+            if mode == 2 && operation == 702 { current[177].low = 30 }
+            var ch = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 1, count: 179)
+            var ph = beluga_core_adaptation_state_header_t(abi: 1, domain: 4, phase: 3, count: 222)
+            var outputCount: UInt32 = 179, editCount: UInt32 = 13, coordinateCount: UInt32 = 13
+            if mode == 3 { request.abi = 2 }
+            if mode == 4 { request.operation = 701 }
+            if mode == 5 { request.invocation = 0 }
+            if mode == 6 { request.facts = operation == 704 ? 2 : 512 }
+            if mode == 7 { request.reserved = 1 }
+            if mode == 8 { current[178].kind = 99 }
+            if mode == 9 { prepared[221].kind = 99 }
+            if mode == 10 { ch.phase = 2 }
+            if mode == 11 { ph.phase = 2 }
+            if mode == 12 { outputCount = 178 }
+            if mode == 13 { editCount = 12 }
+            if mode == 14 && operation == 704 { coordinateCount = 12 }
+            let actual = ownerCompletionRawCall(request, current, prepared, originalOperation: operation,
+                currentHeader: ch, preparedHeader: ph, outputCount: outputCount, editCount: editCount,
+                coordinateCount: coordinateCount, missingCallback: mode == 14)
+            assert(actual.3 == 0)
+            if operation == 702 {
+                for admission in 0..<5 {
+                    let replies: [UInt32] = [1, 0, 2, UInt32.max]
+                    let checked = ownerCompletionRawCall(request, current, prepared, originalOperation: 702,
+                        currentHeader: ch, preparedHeader: ph, outputCount: outputCount, editCount: editCount,
+                        coordinateCount: coordinateCount, missingCallback: mode == 14, validated: true,
+                        missingValidator: admission == 4, validatorReply: admission < 4 ? replies[admission] : 1)
+                    assert(checked.3 == 0)
+                    if mode >= 3 || admission == 4 {
+                        assert(checked.0 == 2 && checked.1 == checked.2)
+                        assert(checked.4.validationCalls == 0 && checked.4.calls == 0 && checked.4.trace.isEmpty)
+                    } else {
+                        assert(checked.4.validationCalls == 1 && checked.4.validationInvocation == invocation)
+                        assert(checked.4.validationCounts == [179, 13, 13])
+                        assert(checked.4.draft == Array(actual.1.prefix(6)))
+                        if admission == 0 {
+                            assert(checked.0 == 1 && checked.1 == actual.1 && checked.4.calls == actual.4.calls)
+                            assert(checked.4.trace == (actual.4.calls == 1 ? [1, 2] : [1]))
+                            if checked.4.calls == 1 { assert(checked.4.invocation == invocation && checked.4.fps == 30) }
+                        } else {
+                            assert(checked.0 == 3 && checked.1 == checked.2 && checked.4.calls == 0 && checked.4.trace == [1])
+                        }
+                    }
+                }
+            }
+            if mode >= 3 { assert(actual.0 == 2 && actual.1 == actual.2 && actual.4.calls == 0); continue }
+            assert(actual.0 == 1)
+            let accepted = mode != 0
+            var expected = current
+            if accepted && operation == 702 {
+                expected[173].low = 1
+                for index in 0..<5 { expected[174+index].low = prepared[180+index].low }
+            } else if accepted && operation == 703 { expected[168].low = 0 }
+            else if accepted && operation == 704 {
+                for index in 0..<168 { expected[index] = prepared[index] }
+                expected[168].low = 0
+            }
+            let route: UInt32 = accepted && operation == 704 ? 2 : 0
+            let fpsChanged: UInt32 = accepted && operation == 702 && mode != 2 ? 1 : 0
+            let header = beluga_core_adaptation_state_header_t(abi: 1, domain: 2, phase: 2, count: 179)
+            let metadata = beluga_core_adaptation_owner_event_metadata_t(abi: 1, operation: operation, scope: 2,
+                read_count: 0, invocation: invocation, revision: expected[168].low, peer: 10003, peer_present: 1,
+                bound: 0, route: route, sample: 0, enabled: 0, lease: 0, queue_fault: 1, rtt_fault: 0)
+            let completion = beluga_core_adaptation_owner_completion_outcome_t(abi: 1, operation: operation,
+                invocation: invocation, disposition: accepted ? 1 : 0, route: route, fps_changed: fpsChanged, reserved: 0)
+            let failure = beluga_core_adaptation_owner_failure_outcome_t(abi: 1, operation: 703,
+                invocation: invocation, disposition: accepted ? 1 : 0, route: 0, semantic_error: 0, attempted_reads: 0)
+            var edits = Array(repeating: beluga_core_adaptation_time_edit_t(), count: 13)
+            var coordinates = Array(repeating: beluga_core_adaptation_time_coordinate_t(), count: 13)
+            for (index, position) in [12,23,28,159,163,167,39,40,88].enumerated() {
+                let value = expected[position]
+                if accepted && operation == 704 {
+                    edits[index] = beluga_core_adaptation_time_edit_t(action: value.present == 1 ? 3 : 2,
+                        source: value.present == 1 ? 2 : 0, index: value.present == 1 ? UInt32(index) : 0, ordinal: 0, high: 0, low: 0)
+                } else { edits[index] = beluga_core_adaptation_time_edit_t(action: 1, source: 0, index: 0, ordinal: 0, high: 0, low: 0) }
+                coordinates[index] = beluga_core_adaptation_time_coordinate_t(present: value.present, reserved: 0, high: value.high, low: value.low)
+            }
+            let reads = operation == 703 ? owner105ArrayBytes(Array(repeating: beluga_core_adaptation_clock_reply_t(), count: 15)) : actual.2[6]
+            assert(actual.1 == [owner105PODBytes(header), owner105ArrayBytes(expected), owner105PODBytes(metadata),
+                operation == 703 ? owner105PODBytes(failure) : owner105PODBytes(completion),
+                owner105ArrayBytes(edits), owner105ArrayBytes(coordinates), reads])
+            assert(actual.4.calls == fpsChanged)
+            if fpsChanged == 1 { assert(actual.4.invocation == invocation && actual.4.fps == 30) }
+        }
+    }
+}
+adaptationOwnerCompletionSmokeV1()
+print("BelugaCore Swift adaptation Owner completion PASS: 702/703/704 layouts, exact179 results, untouched denials")
+print("BelugaCore Swift adaptation Owner validated702 PASS: actual private bundle, validator-before-effect, stale/sameFPS, strict denial and missing thunks")
+
+// Add at EOF of the existing BelugaCore import smoke. No native clock/device calls.
+private func micEvidenceBytes<T>(_ value: T) -> [UInt8] {
+    withUnsafeBytes(of: value) { Array($0) }
+}
+private func micEvidenceOffset<T, U>(_ key: KeyPath<T, U>, _ expected: Int) {
+    assert(MemoryLayout<T>.offset(of: key) == expected)
+}
+private func micEvidenceMark(_ values: [beluga_core_microphone_optional_u64_t]) -> beluga_core_microphone_watermark_t {
+    assert(values.count == 4)
+    return beluga_core_microphone_watermark_t(present: 1, reserved: 0,
+        fields: (values[0], values[1], values[2], values[3]))
+}
+private func microphoneForwardingEvidenceSmokeV1() {
+    assert(MemoryLayout<beluga_core_microphone_optional_u64_t>.size == 16)
+    assert(MemoryLayout<beluga_core_microphone_progress_t>.size == 40)
+    assert(MemoryLayout<beluga_core_microphone_readiness_facts_t>.size == 96)
+    assert(MemoryLayout<beluga_core_microphone_readiness_result_t>.size == 16)
+    assert(MemoryLayout<beluga_core_microphone_watermark_t>.size == 72)
+    assert(MemoryLayout<beluga_core_microphone_watermark_state_t>.size == 80)
+    assert(MemoryLayout<beluga_core_microphone_watermark_event_t>.size == 80)
+    assert(MemoryLayout<beluga_core_microphone_watermark_result_t>.size == 96)
+    assert(MemoryLayout<beluga_core_microphone_freshness_state_t>.size == 40)
+    assert(MemoryLayout<beluga_core_microphone_freshness_event_t>.size == 32)
+    assert(MemoryLayout<beluga_core_microphone_freshness_result_t>.size == 16)
+    assert(MemoryLayout<beluga_core_microphone_watermark_result_t>.alignment == 8)
+    micEvidenceOffset(\beluga_core_microphone_optional_u64_t.value, 8)
+    micEvidenceOffset(\beluga_core_microphone_progress_t.post_start_callback_count, 8)
+    micEvidenceOffset(\beluga_core_microphone_progress_t.successful_pull_count, 16)
+    micEvidenceOffset(\beluga_core_microphone_progress_t.successful_frame_count, 24)
+    micEvidenceOffset(\beluga_core_microphone_progress_t.enqueue_failure_count, 32)
+    micEvidenceOffset(\beluga_core_microphone_readiness_facts_t.current, 8)
+    micEvidenceOffset(\beluga_core_microphone_readiness_facts_t.previous_present, 48)
+    micEvidenceOffset(\beluga_core_microphone_readiness_facts_t.previous, 56)
+    micEvidenceOffset(\beluga_core_microphone_readiness_result_t.continuing, 12)
+    micEvidenceOffset(\beluga_core_microphone_watermark_t.fields, 8)
+    micEvidenceOffset(\beluga_core_microphone_watermark_state_t.retained, 8)
+    micEvidenceOffset(\beluga_core_microphone_watermark_event_t.current, 8)
+    micEvidenceOffset(\beluga_core_microphone_watermark_result_t.status, 80)
+    micEvidenceOffset(\beluga_core_microphone_watermark_result_t.continuous, 84)
+    micEvidenceOffset(\beluga_core_microphone_watermark_result_t.did_advance, 88)
+    micEvidenceOffset(\beluga_core_microphone_freshness_state_t.advancement_count, 8)
+    micEvidenceOffset(\beluga_core_microphone_freshness_state_t.consecutive_stale_samples, 16)
+    micEvidenceOffset(\beluga_core_microphone_freshness_state_t.deadline, 24)
+    micEvidenceOffset(\beluga_core_microphone_freshness_event_t.maximum_stale_samples, 8)
+    micEvidenceOffset(\beluga_core_microphone_freshness_event_t.now, 16)
+    micEvidenceOffset(\beluga_core_microphone_freshness_result_t.fresh, 8)
+
+    let previous = beluga_core_microphone_progress_t(queue_running: 1, reserved: 0,
+        post_start_callback_count: 1, successful_pull_count: 1, successful_frame_count: 479, enqueue_failure_count: 0)
+    let current = beluga_core_microphone_progress_t(queue_running: 1, reserved: 0,
+        post_start_callback_count: 2, successful_pull_count: 1, successful_frame_count: 480, enqueue_failure_count: 0)
+    let facts = beluga_core_microphone_readiness_facts_t(abi_version: 1, reserved: 0, current: current,
+        previous_present: 1, previous_reserved: 0, previous: previous)
+    let beforeFacts = micEvidenceBytes(facts)
+    let healthy = beluga_core_microphone_readiness_result_t(abi_version: 1, status: 1, ready: 1, continuing: 1)
+    let notContinuing = beluga_core_microphone_readiness_result_t(abi_version: 1, status: 1, ready: 1, continuing: 0)
+    let invalidHealth = beluga_core_microphone_readiness_result_t(abi_version: 1, status: 0, ready: 0, continuing: 0)
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_readiness_decide(facts)) == micEvidenceBytes(healthy))
+    assert(micEvidenceBytes(facts) == beforeFacts)
+    for mode in 0..<8 {
+        var bad = facts
+        if mode == 0 { bad.abi_version = 2 }; if mode == 1 { bad.reserved = 1 }
+        if mode == 2 { bad.current.queue_running = 2 }; if mode == 3 { bad.current.reserved = 1 }
+        if mode == 4 { bad.previous_present = 2 }; if mode == 5 { bad.previous_reserved = 1 }
+        if mode == 6 { bad.previous.queue_running = 2 }; if mode == 7 { bad.previous.reserved = 1 }
+        let before = micEvidenceBytes(bad)
+        assert(micEvidenceBytes(beluga_core_microphone_forwarding_readiness_decide(bad)) == micEvidenceBytes(invalidHealth))
+        assert(micEvidenceBytes(bad) == before)
+    }
+    var absent = facts; absent.previous_present = 0; absent.previous.queue_running = 9; absent.previous.reserved = 7
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_readiness_decide(absent)) == micEvidenceBytes(notContinuing))
+    for counter in 0..<2 {
+        var notGrowing = facts
+        if counter == 0 { notGrowing.current.post_start_callback_count = 1 } else { notGrowing.current.successful_frame_count = 479 }
+        assert(micEvidenceBytes(beluga_core_microphone_forwarding_readiness_decide(notGrowing)) == micEvidenceBytes(notContinuing))
+    }
+
+    let present = { (value: UInt64) in beluga_core_microphone_optional_u64_t(present: 1, reserved: 0, value: value) }
+    let gap = beluga_core_microphone_optional_u64_t(present: 0, reserved: 0, value: UInt64.max)
+    let state = beluga_core_microphone_watermark_state_t(abi_version: 1, reserved: 0,
+        retained: micEvidenceMark([present(10), present(100), present(20), present(200)]))
+    let event = beluga_core_microphone_watermark_event_t(abi_version: 1, reserved: 0,
+        current: micEvidenceMark([present(11), present(101), gap, gap]))
+    let beforeState = micEvidenceBytes(state), beforeEvent = micEvidenceBytes(event)
+    let expectedState = beluga_core_microphone_watermark_state_t(abi_version: 1, reserved: 0,
+        retained: micEvidenceMark([present(11), present(101), present(20), present(200)]))
+    let expected = beluga_core_microphone_watermark_result_t(state: expectedState, status: 1, continuous: 1, did_advance: 1, reserved: 0)
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_watermark_step(state, event)) == micEvidenceBytes(expected))
+    assert(micEvidenceBytes(state) == beforeState && micEvidenceBytes(event) == beforeEvent)
+    for mode in 0..<8 {
+        var badState = state, badEvent = event
+        if mode == 0 { badState.abi_version = 2 }; if mode == 1 { badState.reserved = 1 }
+        if mode == 2 { badState.retained.present = 2 }; if mode == 3 { badState.retained.fields.0.reserved = 1 }
+        if mode == 4 { badEvent.abi_version = 2 }; if mode == 5 { badEvent.reserved = 1 }
+        if mode == 6 { badEvent.current.present = 2 }; if mode == 7 { badEvent.current.fields.0.present = 2 }
+        let before = micEvidenceBytes(badState), beforeEvent = micEvidenceBytes(badEvent)
+        let refused = beluga_core_microphone_watermark_result_t(state: badState, status: 0, continuous: 0, did_advance: 0, reserved: 0)
+        assert(micEvidenceBytes(beluga_core_microphone_forwarding_watermark_step(badState, badEvent)) == micEvidenceBytes(refused))
+        assert(micEvidenceBytes(badState) == before && micEvidenceBytes(badEvent) == beforeEvent)
+    }
+    var regressed = event; regressed.current.fields.0.value = 9
+    let unchanged = beluga_core_microphone_watermark_result_t(state: state, status: 1, continuous: 0, did_advance: 0, reserved: 0)
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_watermark_step(state, regressed)) == micEvidenceBytes(unchanged))
+    var noSample = regressed; noSample.current.present = 0; noSample.current.fields.0.present = 9; noSample.current.fields.0.reserved = 7
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_watermark_step(state, noSample)) == micEvidenceBytes(unchanged))
+
+    let freshState = beluga_core_microphone_freshness_state_t(abi_version: 1, reserved: 0,
+        advancement_count: 1, consecutive_stale_samples: 0, deadline: present(100))
+    let freshEvent = beluga_core_microphone_freshness_event_t(abi_version: 1, reserved: 0,
+        maximum_stale_samples: 3, now: gap)
+    let needsNow = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 2, fresh: 0, reserved: 0)
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_freshness_decide(freshState, freshEvent)) == micEvidenceBytes(needsNow))
+    // Explicit numeric calls only; the smoke does not sample or authorize any native clock.
+    for now: UInt64 in [99, 100] {
+        var supplied = freshEvent; supplied.now = present(now)
+        let evaluated = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 1, fresh: now == 99 ? 1 : 0, reserved: 0)
+        assert(micEvidenceBytes(beluga_core_microphone_forwarding_freshness_decide(freshState, supplied)) == micEvidenceBytes(evaluated))
+    }
+    var noDeadline = freshState; noDeadline.deadline.present = 0
+    let notFresh = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 1, fresh: 0, reserved: 0)
+    assert(micEvidenceBytes(beluga_core_microphone_forwarding_freshness_decide(noDeadline, freshEvent)) == micEvidenceBytes(notFresh))
+    for mode in 0..<8 {
+        var badState = freshState, badEvent = freshEvent
+        if mode == 0 { badState.abi_version = 2 }; if mode == 1 { badState.reserved = 1 }
+        if mode == 2 { badState.deadline.present = 2 }; if mode == 3 { badState.deadline.reserved = 1 }
+        if mode == 4 { badEvent.abi_version = 2 }; if mode == 5 { badEvent.reserved = 1 }
+        if mode == 6 { badEvent.now.present = 2 }; if mode == 7 { badEvent.now.reserved = 1 }
+        let before = micEvidenceBytes(badState), beforeEvent = micEvidenceBytes(badEvent)
+        let refused = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 0, fresh: 0, reserved: 0)
+        assert(micEvidenceBytes(beluga_core_microphone_forwarding_freshness_decide(badState, badEvent)) == micEvidenceBytes(refused))
+        assert(micEvidenceBytes(badState) == before && micEvidenceBytes(badEvent) == beforeEvent)
+    }
+}
+microphoneForwardingEvidenceSmokeV1()
+print("BelugaCore Swift microphone evidence ABI PASS: copied layouts, whole results, refusal and conditional NeedsNow")
+
+// Reuse the existing copied-layout helpers. Explicit scalars only, not a native clock.
+private func microphoneForwardingResultCorrelationSmokeV1() {
+    let previous = beluga_core_microphone_progress_t(queue_running: 1, reserved: 0,
+        post_start_callback_count: 1, successful_pull_count: 1, successful_frame_count: 479, enqueue_failure_count: 0)
+    let current = beluga_core_microphone_progress_t(queue_running: 1, reserved: 0,
+        post_start_callback_count: 2, successful_pull_count: 1, successful_frame_count: 480, enqueue_failure_count: 0)
+    let facts = beluga_core_microphone_readiness_facts_t(abi_version: 1, reserved: 0, current: current,
+        previous_present: 1, previous_reserved: 0, previous: previous)
+    let ready = beluga_core_microphone_readiness_result_t(abi_version: 1, status: 1, ready: 1, continuing: 1)
+    let factsBytes = micEvidenceBytes(facts), readyBytes = micEvidenceBytes(ready)
+    assert(beluga_core_microphone_forwarding_readiness_result_is_valid(facts, ready) == 1)
+    let falseReady = beluga_core_microphone_readiness_result_t(abi_version: 1, status: 1, ready: 0, continuing: 0)
+    assert(beluga_core_microphone_forwarding_readiness_result_is_valid(facts, falseReady) == 0)
+    var unready = facts; unready.current.successful_pull_count = 0
+    assert(beluga_core_microphone_forwarding_readiness_result_is_valid(unready, falseReady) == 1)
+    var invalidFacts = facts; invalidFacts.abi_version = 2
+    let invalidReady = beluga_core_microphone_readiness_result_t(abi_version: 1, status: 0, ready: 0, continuing: 0)
+    assert(beluga_core_microphone_forwarding_readiness_result_is_valid(invalidFacts, invalidReady) == 0)
+    assert(micEvidenceBytes(facts) == factsBytes && micEvidenceBytes(ready) == readyBytes)
+
+    let present = { (value: UInt64) in beluga_core_microphone_optional_u64_t(present: 1, reserved: 0, value: value) }
+    let gap = beluga_core_microphone_optional_u64_t(present: 0, reserved: 0, value: 0)
+    let before = beluga_core_microphone_watermark_state_t(abi_version: 1, reserved: 0,
+        retained: micEvidenceMark([present(10), present(100), present(20), present(200)]))
+    let event = beluga_core_microphone_watermark_event_t(abi_version: 1, reserved: 0,
+        current: micEvidenceMark([present(11), present(101), gap, gap]))
+    let next = beluga_core_microphone_watermark_state_t(abi_version: 1, reserved: 0,
+        retained: micEvidenceMark([present(11), present(101), present(20), present(200)]))
+    let marked = beluga_core_microphone_watermark_result_t(state: next, status: 1, continuous: 1, did_advance: 1, reserved: 0)
+    let beforeBytes = micEvidenceBytes(before), eventBytes = micEvidenceBytes(event), markedBytes = micEvidenceBytes(marked)
+    assert(beluga_core_microphone_forwarding_watermark_result_is_valid(before, event, marked) == 1)
+    let unchanged = beluga_core_microphone_watermark_result_t(state: before, status: 1, continuous: 0, did_advance: 0, reserved: 0)
+    assert(beluga_core_microphone_forwarding_watermark_result_is_valid(before, event, unchanged) == 0)
+    var regressed = event; regressed.current.fields.0.value = 9
+    assert(beluga_core_microphone_forwarding_watermark_result_is_valid(before, regressed, unchanged) == 1)
+    var invalidEvent = event; invalidEvent.abi_version = 2
+    let invalidMarked = beluga_core_microphone_watermark_result_t(state: before, status: 0, continuous: 0, did_advance: 0, reserved: 0)
+    assert(beluga_core_microphone_forwarding_watermark_result_is_valid(before, invalidEvent, invalidMarked) == 0)
+    assert(micEvidenceBytes(before) == beforeBytes && micEvidenceBytes(event) == eventBytes && micEvidenceBytes(marked) == markedBytes)
+
+    let state = beluga_core_microphone_freshness_state_t(abi_version: 1, reserved: 0,
+        advancement_count: 1, consecutive_stale_samples: 0, deadline: present(100))
+    let sample = beluga_core_microphone_freshness_event_t(abi_version: 1, reserved: 0,
+        maximum_stale_samples: 3, now: beluga_core_microphone_optional_u64_t(present: 0, reserved: 0, value: UInt64.max))
+    let needsNow = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 2, fresh: 0, reserved: 0)
+    let stateBytes = micEvidenceBytes(state), sampleBytes = micEvidenceBytes(sample), resultBytes = micEvidenceBytes(needsNow)
+    assert(beluga_core_microphone_forwarding_freshness_result_is_valid(state, sample, needsNow) == 1)
+    let fresh = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 1, fresh: 1, reserved: 0)
+    assert(beluga_core_microphone_forwarding_freshness_result_is_valid(state, sample, fresh) == 0)
+    var supplied = sample; supplied.now = present(99)
+    assert(beluga_core_microphone_forwarding_freshness_result_is_valid(state, supplied, fresh) == 1)
+    supplied.now.value = 100
+    let notFresh = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 1, fresh: 0, reserved: 0)
+    assert(beluga_core_microphone_forwarding_freshness_result_is_valid(state, supplied, notFresh) == 1)
+    var invalidState = state; invalidState.abi_version = 2
+    let invalidFresh = beluga_core_microphone_freshness_result_t(abi_version: 1, status: 0, fresh: 0, reserved: 0)
+    assert(beluga_core_microphone_forwarding_freshness_result_is_valid(invalidState, sample, invalidFresh) == 0)
+    assert(micEvidenceBytes(state) == stateBytes && micEvidenceBytes(sample) == sampleBytes && micEvidenceBytes(needsNow) == resultBytes)
+}
+microphoneForwardingResultCorrelationSmokeV1()
+print("BelugaCore Swift microphone result correlation PASS: exact result, coherent corruption, refusal and NeedsNow")
+
+// Additive per-key retry ABI coverage; preserve all earlier import smokes.
+// Imported PODs and two genuine exports only; no facsimile product declarations.
+private typealias MicRetryConfig = beluga_core_microphone_forwarding_retry_config_t
+private typealias MicRetryState = beluga_core_microphone_forwarding_retry_state_t
+private typealias MicRetryEvent = beluga_core_microphone_forwarding_retry_event_t
+private typealias MicRetryResult = beluga_core_microphone_forwarding_retry_result_t
+
+private func micRetryStateEqual(_ a: MicRetryState, _ b: MicRetryState) -> Bool {
+    a.abi_version == b.abi_version && a.present == b.present &&
+        a.may_retry == b.may_retry && a.reserved == b.reserved && a.count == b.count
+}
+private func micRetryResultEqual(_ a: MicRetryResult, _ b: MicRetryResult) -> Bool {
+    micRetryStateEqual(a.state, b.state) && a.status == b.status &&
+        a.decision == b.decision && a.redrive_action == b.redrive_action &&
+        a.reserved == b.reserved
+}
+private func micRetryOffset<T, U>(_ key: KeyPath<T, U>, _ expected: Int) {
+    precondition(MemoryLayout<T>.offset(of: key) == expected)
+}
+private func micRetryState(_ count: Int64, _ permission: UInt32) -> MicRetryState {
+    MicRetryState(abi_version: 1, present: count == 0 ? 0 : 1,
+        may_retry: permission, reserved: 0, count: count)
+}
+private func micRetryResult(_ state: MicRetryState, _ decision: UInt32, _ redrive: UInt32) -> MicRetryResult {
+    MicRetryResult(state: state, status: 1, decision: decision, redrive_action: redrive, reserved: 0)
+}
+private func micRetryAssertRefused(_ config: MicRetryConfig, _ before: MicRetryState, _ event: MicRetryEvent) {
+    let expected = MicRetryResult(state: before, status: 0, decision: 0, redrive_action: 0, reserved: 0)
+    let actual = beluga_core_microphone_forwarding_retry_step(config, before, event)
+    precondition(micRetryResultEqual(actual, expected))
+    precondition(beluga_core_microphone_forwarding_retry_result_is_valid(config, before, event, expected) == 0)
+    var forged = expected; forged.status = 1
+    precondition(beluga_core_microphone_forwarding_retry_result_is_valid(config, before, event, forged) == 0)
+}
+
+private func microphoneForwardingRetrySmokeV1() {
+    precondition(MemoryLayout<MicRetryConfig>.size == 16 && MemoryLayout<MicRetryConfig>.alignment == 8)
+    precondition(MemoryLayout<MicRetryState>.size == 24 && MemoryLayout<MicRetryState>.alignment == 8)
+    precondition(MemoryLayout<MicRetryEvent>.size == 16 && MemoryLayout<MicRetryEvent>.alignment == 4)
+    precondition(MemoryLayout<MicRetryResult>.size == 40 && MemoryLayout<MicRetryResult>.alignment == 8)
+    micRetryOffset(\MicRetryConfig.abi_version, 0)
+    micRetryOffset(\MicRetryConfig.reserved, 4)
+    micRetryOffset(\MicRetryConfig.maximum_attempt_count, 8)
+    micRetryOffset(\MicRetryState.abi_version, 0)
+    micRetryOffset(\MicRetryState.present, 4)
+    micRetryOffset(\MicRetryState.may_retry, 8)
+    micRetryOffset(\MicRetryState.reserved, 12)
+    micRetryOffset(\MicRetryState.count, 16)
+    micRetryOffset(\MicRetryEvent.opcode, 0)
+    micRetryOffset(\MicRetryEvent.failure_category, 4)
+    micRetryOffset(\MicRetryEvent.bridge_faulted, 8)
+    micRetryOffset(\MicRetryEvent.reserved, 12)
+    micRetryOffset(\MicRetryResult.state, 0)
+    micRetryOffset(\MicRetryResult.status, 24)
+    micRetryOffset(\MicRetryResult.decision, 28)
+    micRetryOffset(\MicRetryResult.redrive_action, 32)
+    micRetryOffset(\MicRetryResult.reserved, 36)
+
+    let config = MicRetryConfig(abi_version: 1, reserved: 0, maximum_attempt_count: 3)
+    let maximum = MicRetryConfig(abi_version: 1, reserved: 0, maximum_attempt_count: Int64.max)
+    let eligible = MicRetryEvent(opcode: 1, failure_category: 0, bridge_faulted: 0, reserved: 0)
+    let record = MicRetryEvent(opcode: 2, failure_category: 0, bridge_faulted: 0, reserved: 0)
+    let failure = MicRetryEvent(opcode: 3, failure_category: 3, bridge_faulted: 0, reserved: 0)
+    let exhaust = MicRetryEvent(opcode: 4, failure_category: 0, bridge_faulted: 0, reserved: 0)
+    var faultedEligible = eligible; faultedEligible.bridge_faulted = 1
+    var admissionFailure = failure; admissionFailure.failure_category = 4
+    var faultedFailure = failure; faultedFailure.bridge_faulted = 1
+    // Handwritten scalar states; the candidate output never constructs an expectation.
+    let cases: [(MicRetryConfig, MicRetryState, MicRetryEvent, MicRetryResult)] = [
+        (config, micRetryState(0, 0), eligible, micRetryResult(micRetryState(0, 0), 1, 0)),
+        (config, micRetryState(1, 1), eligible, micRetryResult(micRetryState(1, 1), 1, 0)),
+        (config, micRetryState(3, 1), eligible, micRetryResult(micRetryState(3, 1), 0, 0)),
+        (config, micRetryState(0, 0), faultedEligible, micRetryResult(micRetryState(0, 0), 0, 0)),
+        (config, micRetryState(0, 0), record, micRetryResult(micRetryState(1, 0), 0, 0)),
+        (config, micRetryState(1, 1), record, micRetryResult(micRetryState(2, 0), 0, 0)),
+        (config, micRetryState(3, 1), record, micRetryResult(micRetryState(4, 0), 0, 0)),
+        (config, micRetryState(1, 0), failure, micRetryResult(micRetryState(1, 1), 1, 2)),
+        (config, micRetryState(1, 1), admissionFailure, micRetryResult(micRetryState(1, 1), 0, 1)),
+        (config, micRetryState(0, 0), failure, micRetryResult(micRetryState(0, 0), 0, 1)),
+        (config, micRetryState(3, 1), failure, micRetryResult(micRetryState(3, 1), 0, 1)),
+        (config, micRetryState(1, 1), faultedFailure, micRetryResult(micRetryState(1, 1), 0, 1)),
+        (config, micRetryState(0, 0), exhaust, micRetryResult(micRetryState(0, 0), 0, 0)),
+        (config, micRetryState(1, 1), exhaust, micRetryResult(micRetryState(1, 0), 0, 1)),
+        (maximum, micRetryState(Int64.max - 1, 1), record, micRetryResult(micRetryState(Int64.max, 0), 0, 0)),
+        (maximum, micRetryState(Int64.max, 1), eligible, micRetryResult(micRetryState(Int64.max, 1), 0, 0))
+    ]
+    for (config, before, event, expected) in cases {
+        let actual = beluga_core_microphone_forwarding_retry_step(config, before, event)
+        precondition(micRetryResultEqual(actual, expected))
+        precondition(beluga_core_microphone_forwarding_retry_result_is_valid(config, before, event, expected) == 1)
+        // Nine individually changed fields, status=2, and coherent replacement history.
+        for field in 0..<11 {
+            var corrupt = expected
+            switch field {
+            case 0: corrupt.state.abi_version = 2
+            case 1: corrupt.state.present ^= 1
+            case 2: corrupt.state.may_retry ^= 1
+            case 3: corrupt.state.reserved = 1
+            case 4: corrupt.state.count = 7
+            case 5: corrupt.status = 0
+            case 6: corrupt.decision ^= 1
+            case 7: corrupt.redrive_action = expected.redrive_action == 2 ? 1 : 2
+            case 8: corrupt.reserved = 1
+            case 9: corrupt.status = 2
+            case 10: corrupt.state = expected.state.present == 0 ? micRetryState(7, 0) : micRetryState(0, 0)
+            default: preconditionFailure("Unexpected retry corruption field")
+            }
+            precondition(!micRetryResultEqual(corrupt, expected))
+            precondition(beluga_core_microphone_forwarding_retry_result_is_valid(config, before, event, corrupt) == 0)
+            precondition(micRetryResultEqual(actual, expected))
+        }
+    }
+
+    let before = micRetryState(1, 1)
+    var badABI0 = config; badABI0.abi_version = 0
+    var badABI2 = config; badABI2.abi_version = 2
+    var badReserved = config; badReserved.reserved = 1
+    let badConfigs = [badABI0, badABI2, badReserved,
+        MicRetryConfig(abi_version: 1, reserved: 0, maximum_attempt_count: 0),
+        MicRetryConfig(abi_version: 1, reserved: 0, maximum_attempt_count: -1),
+        MicRetryConfig(abi_version: 1, reserved: 0, maximum_attempt_count: Int64.min)]
+    for bad in badConfigs { micRetryAssertRefused(bad, before, eligible) }
+    for field in 0..<10 {
+        var bad = before
+        switch field {
+        case 0: bad.abi_version = 0
+        case 1: bad.abi_version = 2
+        case 2: bad.present = 2
+        case 3: bad.may_retry = 2
+        case 4: bad.reserved = 1
+        case 5: bad.count = 0
+        case 6: bad.count = -1
+        case 7: bad.count = Int64.min
+        case 8: bad = MicRetryState(abi_version: 1, present: 0, may_retry: 0, reserved: 0, count: 1)
+        case 9: bad = MicRetryState(abi_version: 1, present: 0, may_retry: 1, reserved: 0, count: 0)
+        default: preconditionFailure("Unexpected retry malformed state")
+        }
+        micRetryAssertRefused(config, bad, eligible)
+    }
+    let badEvents = [
+        MicRetryEvent(opcode: 0, failure_category: 0, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 5, failure_category: 0, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: UInt32.max, failure_category: 0, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 1, failure_category: 0, bridge_faulted: 0, reserved: 1),
+        MicRetryEvent(opcode: 1, failure_category: 0, bridge_faulted: 2, reserved: 0),
+        MicRetryEvent(opcode: 1, failure_category: 1, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 2, failure_category: 3, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 2, failure_category: 0, bridge_faulted: 1, reserved: 0),
+        MicRetryEvent(opcode: 4, failure_category: 3, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 4, failure_category: 0, bridge_faulted: 1, reserved: 0),
+        MicRetryEvent(opcode: 3, failure_category: 0, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 3, failure_category: 12, bridge_faulted: 0, reserved: 0),
+        MicRetryEvent(opcode: 3, failure_category: UInt32.max, bridge_faulted: 1, reserved: 0),
+        MicRetryEvent(opcode: 3, failure_category: 3, bridge_faulted: 2, reserved: 0)
+    ]
+    for bad in badEvents { micRetryAssertRefused(config, before, bad) }
+    micRetryAssertRefused(maximum, micRetryState(Int64.max, 1), record)
+}
+microphoneForwardingRetrySmokeV1()
+print("BelugaCore Swift microphone retry ABI PASS: literal layouts/results, all-field correlation, refusal and signed overflow")
+
+typealias UpdateAdmissionRequest = beluga_core_update_admission_request_t
+typealias UpdateAdmissionResult = beluga_core_update_admission_result_t
+precondition(MemoryLayout<UpdateAdmissionRequest>.size == 8 && MemoryLayout<UpdateAdmissionRequest>.alignment == 4)
+precondition(MemoryLayout<UpdateAdmissionResult>.size == 24 && MemoryLayout<UpdateAdmissionResult>.alignment == 4)
+precondition([MemoryLayout<UpdateAdmissionRequest>.offset(of: \UpdateAdmissionRequest.abi_version),
+              MemoryLayout<UpdateAdmissionRequest>.offset(of: \UpdateAdmissionRequest.flags)] == [0, 4])
+precondition([MemoryLayout<UpdateAdmissionResult>.offset(of: \UpdateAdmissionResult.abi_version),
+              MemoryLayout<UpdateAdmissionResult>.offset(of: \UpdateAdmissionResult.status),
+              MemoryLayout<UpdateAdmissionResult>.offset(of: \UpdateAdmissionResult.permits_update),
+              MemoryLayout<UpdateAdmissionResult>.offset(of: \UpdateAdmissionResult.is_in_progress),
+              MemoryLayout<UpdateAdmissionResult>.offset(of: \UpdateAdmissionResult.can_check),
+              MemoryLayout<UpdateAdmissionResult>.offset(of: \UpdateAdmissionResult.status_kind)] == [0, 4, 8, 12, 16, 20])
+for flags: UInt32 in 0..<512 {
+    let request = UpdateAdmissionRequest(abi_version: 1, flags: flags)
+    let actual = beluga_core_update_admission_decide(request)
+    let permits = flags & 1 != 0 && flags & 16 != 0 && flags & 14 == 0
+    let release = flags & 32 != 0, busy = flags & 192 != 0, failed = flags & 256 != 0
+    let progress = release && (busy || failed)
+    let kind: UInt32 = !release ? 0 : failed ? 1 : busy ? 2 : permits ? 3 : 4
+    precondition(actual.abi_version == 1 && actual.status == 0 && actual.permits_update == (permits ? 1 : 0)
+        && actual.is_in_progress == (progress ? 1 : 0) && actual.can_check == (release && !progress && permits ? 1 : 0)
+        && actual.status_kind == kind)
+    precondition(beluga_core_update_admission_result_is_valid(request, actual) == 1)
+    for field in 0..<6 {
+        var corrupt = actual
+        switch field {
+        case 0: corrupt.abi_version = 2
+        case 1: corrupt.status = 1
+        case 2: corrupt.permits_update ^= 1
+        case 3: corrupt.is_in_progress ^= 1
+        case 4: corrupt.can_check ^= 1
+        default: corrupt.status_kind = (corrupt.status_kind + 1) % 5
+        }
+        precondition(beluga_core_update_admission_result_is_valid(request, corrupt) == 0)
+    }
+}
+for bit in 9..<32 {
+    let request = UpdateAdmissionRequest(abi_version: 1, flags: 49 | (UInt32(1) << bit))
+    let denied = beluga_core_update_admission_decide(request)
+    precondition(denied.status == 1 && denied.permits_update == 0 && denied.can_check == 0
+        && denied.is_in_progress == 1 && denied.status_kind == 1)
+    precondition(beluga_core_update_admission_result_is_valid(request, denied) == 0)
+}
+let invalidUpdateABI = UpdateAdmissionRequest(abi_version: 2, flags: 49)
+let invalidUpdateResult = beluga_core_update_admission_decide(invalidUpdateABI)
+precondition(invalidUpdateResult.status == 1 && beluga_core_update_admission_result_is_valid(invalidUpdateABI, invalidUpdateResult) == 0)
+print("BelugaCore Swift updater admission ABI PASS: exact layouts, 512 parity cases, all-field correlation and refusal")
+
+// Copied SDK admission smoke; never starts Sparkle or queries native authority.
+private func updateSparkleAdmissionSmokeV1() {
+    typealias Request = beluga_core_update_sparkle_admission_request_t
+    typealias Result = beluga_core_update_sparkle_admission_result_t
+    precondition(MemoryLayout<Request>.size == 12 && MemoryLayout<Request>.stride == 12
+        && MemoryLayout<Request>.alignment == 4)
+    precondition(MemoryLayout<Result>.size == 12 && MemoryLayout<Result>.stride == 12
+        && MemoryLayout<Result>.alignment == 4)
+    precondition([MemoryLayout<Request>.offset(of: \Request.abi_version),
+        MemoryLayout<Request>.offset(of: \Request.phase), MemoryLayout<Request>.offset(of: \Request.flags)] == [0, 4, 8])
+    precondition([MemoryLayout<Result>.offset(of: \Result.abi_version),
+        MemoryLayout<Result>.offset(of: \Result.status), MemoryLayout<Result>.offset(of: \Result.action)] == [0, 4, 8])
+    let actions: [UInt32] = [1, 2, 1, 3, 1, 2, 1, 5, 3, 4, 3, 6]
+    for phase: UInt32 in 1...2 {
+        let count: UInt32 = phase == 1 ? 8 : 4
+        for flags in 0..<count {
+            let request = Request(abi_version: 1, phase: phase, flags: flags)
+            let actual = beluga_core_update_sparkle_admission_decide(request)
+            precondition(actual.abi_version == 1 && actual.status == 0
+                && actual.action == actions[Int((phase == 1 ? 0 : 8) + flags)])
+            precondition(beluga_core_update_sparkle_admission_result_is_valid(request, actual) == 1)
+            for field in 0..<3 {
+                var corrupt = actual
+                if field == 0 { corrupt.abi_version = 2 }
+                else if field == 1 { corrupt.status = 1 }
+                else { corrupt.action = corrupt.action % 6 + 1 }
+                precondition(beluga_core_update_sparkle_admission_result_is_valid(request, corrupt) == 0)
+            }
+            for bit in (phase == 1 ? 3 : 2)..<32 {
+                let invalid = Request(abi_version: 1, phase: phase, flags: flags | UInt32(1) << bit)
+                let refused = beluga_core_update_sparkle_admission_decide(invalid)
+                precondition(refused.abi_version == 1 && refused.status == 1 && refused.action == 0)
+                precondition(beluga_core_update_sparkle_admission_result_is_valid(invalid, refused) == 0)
+            }
+        }
+    }
+    for invalid in [Request(abi_version: 0, phase: 1, flags: 7),
+        Request(abi_version: 2, phase: 2, flags: 3), Request(abi_version: 1, phase: 0, flags: 0),
+        Request(abi_version: 1, phase: 3, flags: 0), Request(abi_version: 1, phase: .max, flags: 0)] {
+        let refused = beluga_core_update_sparkle_admission_decide(invalid)
+        precondition(refused.abi_version == 1 && refused.status == 1 && refused.action == 0)
+        precondition(beluga_core_update_sparkle_admission_result_is_valid(invalid, refused) == 0)
+    }
+    print("BelugaCore Swift SDK admission ABI PASS: exact layouts, twelve phases, whole correlation and refusal")
+}
+updateSparkleAdmissionSmokeV1()
+
+// Copied inner selector only; no native SDK, identity or retirement effects.
+private func updateUnarmedCompletionSmokeV1() {
+    typealias Request = beluga_core_update_unarmed_completion_request_t
+    typealias Result = beluga_core_update_unarmed_completion_result_t
+    precondition(MemoryLayout<Request>.size == 12 && MemoryLayout<Request>.stride == 12
+        && MemoryLayout<Request>.alignment == 4)
+    precondition(MemoryLayout<Result>.size == 12 && MemoryLayout<Result>.stride == 12
+        && MemoryLayout<Result>.alignment == 4)
+    precondition([MemoryLayout<Request>.offset(of: \Request.abi_version),
+        MemoryLayout<Request>.offset(of: \Request.flags), MemoryLayout<Request>.offset(of: \Request.failure_kind)] == [0, 4, 8])
+    precondition([MemoryLayout<Result>.offset(of: \Result.abi_version),
+        MemoryLayout<Result>.offset(of: \Result.status), MemoryLayout<Result>.offset(of: \Result.reason)] == [0, 4, 8])
+    let goldens: [Request] = [.init(abi_version: 1, flags: 0, failure_kind: 0),
+        .init(abi_version: 1, flags: 3, failure_kind: 0), .init(abi_version: 1, flags: 960, failure_kind: 1),
+        .init(abi_version: 1, flags: 960, failure_kind: 2), .init(abi_version: 1, flags: 544, failure_kind: 0),
+        .init(abi_version: 1, flags: 491536, failure_kind: 0)]
+    for (index, request) in goldens.enumerated() {
+        let actual = beluga_core_update_unarmed_completion_decide(request)
+        precondition(actual.abi_version == 1 && actual.status == 0 && actual.reason == UInt32(index))
+        precondition(beluga_core_update_unarmed_completion_result_is_valid(request, actual) == 1)
+        for field in 0..<3 {
+            var corrupt = actual
+            if field == 0 { corrupt.abi_version = 2 }
+            else if field == 1 { corrupt.status = 1 }
+            else { corrupt.reason = (corrupt.reason + 1) % 6 }
+            precondition(beluga_core_update_unarmed_completion_result_is_valid(request, corrupt) == 0)
+        }
+        for (otherIndex, other) in goldens.enumerated() {
+            let copied = beluga_core_update_unarmed_completion_decide(other)
+            precondition(beluga_core_update_unarmed_completion_result_is_valid(request, copied) == (index == otherIndex ? 1 : 0))
+        }
+        for bit in 19..<32 {
+            var invalid = request; invalid.flags |= UInt32(1) << bit
+            let refusal = beluga_core_update_unarmed_completion_decide(invalid)
+            precondition(refusal.abi_version == 1 && refusal.status == 1 && refusal.reason == 0)
+            precondition(beluga_core_update_unarmed_completion_result_is_valid(invalid, refusal) == 0)
+        }
+    }
+    for invalid in [Request(abi_version: 0, flags: 3, failure_kind: 0),
+        Request(abi_version: 2, flags: 3, failure_kind: 0), Request(abi_version: 1, flags: 960, failure_kind: 3),
+        Request(abi_version: 1, flags: 960, failure_kind: .max)] {
+        let refusal = beluga_core_update_unarmed_completion_decide(invalid)
+        precondition(refusal.abi_version == 1 && refusal.status == 1 && refusal.reason == 0)
+        precondition(beluga_core_update_unarmed_completion_result_is_valid(invalid, refusal) == 0)
+    }
+    print("BelugaCore Swift unarmed completion ABI PASS: copied layouts, six reasons, whole correlation and refusal")
+}
+updateUnarmedCompletionSmokeV1()
+
+// Genuine imported records/exports; no native SDK object or callback enters Rust.
+private func updateAbortSmokeV1() {
+    typealias Request = beluga_core_update_abort_request_t
+    typealias Result = beluga_core_update_abort_result_t
+    precondition(MemoryLayout<Request>.size == 8 && MemoryLayout<Request>.stride == 8
+        && MemoryLayout<Request>.alignment == 4)
+    precondition(MemoryLayout<Result>.size == 12 && MemoryLayout<Result>.stride == 12
+        && MemoryLayout<Result>.alignment == 4)
+    precondition([MemoryLayout<Request>.offset(of: \Request.abi_version),
+        MemoryLayout<Request>.offset(of: \Request.flags)] == [0, 4])
+    precondition([MemoryLayout<Result>.offset(of: \Result.abi_version),
+        MemoryLayout<Result>.offset(of: \Result.status), MemoryLayout<Result>.offset(of: \Result.action)] == [0, 4, 8])
+    let literalAction: (UInt32) -> UInt32 = { flags in
+        if flags & 1 != 0 && flags & 2 != 0 && flags & 4 != 0
+            && flags & 8 == 0 && flags & 16 != 0 { return 1 }
+        return flags & 32 != 0 ? 2 : 3
+    }
+    for flags in UInt32(0)..<UInt32(64) {
+        let request = Request(abi_version: 1, flags: flags)
+        let expected = literalAction(flags)
+        let actual = beluga_core_update_abort_decide(request)
+        precondition(actual.abi_version == 1 && actual.status == 0 && actual.action == expected)
+        precondition(beluga_core_update_abort_result_is_valid(request, actual) == 1)
+        for value in [UInt32(0), 1, 2, 3, 4, .max] {
+            for field in 0..<3 {
+                var changed = actual
+                if field == 0 { changed.abi_version = value }
+                else if field == 1 { changed.status = value }
+                else { changed.action = value }
+                let same: UInt32 = changed.abi_version == 1 && changed.status == 0 && changed.action == expected ? 1 : 0
+                precondition(beluga_core_update_abort_result_is_valid(request, changed) == same)
+            }
+        }
+        for other in UInt32(0)..<UInt32(64) {
+            let copied = beluga_core_update_abort_decide(Request(abi_version: 1, flags: other))
+            precondition(copied.abi_version == 1 && copied.status == 0 && copied.action == literalAction(other))
+            precondition(beluga_core_update_abort_result_is_valid(request, copied) == (copied.action == expected ? 1 : 0))
+        }
+        for bit in 6..<32 {
+            let invalid = Request(abi_version: 1, flags: flags | (UInt32(1) << bit))
+            let denied = beluga_core_update_abort_decide(invalid)
+            precondition(denied.abi_version == 1 && denied.status == 1 && denied.action == 0)
+            precondition(beluga_core_update_abort_result_is_valid(invalid, denied) == 0)
+            for action in UInt32(1)...UInt32(3) {
+                precondition(beluga_core_update_abort_result_is_valid(invalid,
+                    Result(abi_version: 1, status: 0, action: action)) == 0)
+            }
+        }
+        for abi in [UInt32(0), 2, .max] {
+            let invalid = Request(abi_version: abi, flags: flags)
+            let denied = beluga_core_update_abort_decide(invalid)
+            precondition(denied.abi_version == 1 && denied.status == 1 && denied.action == 0)
+            precondition(beluga_core_update_abort_result_is_valid(invalid, denied) == 0)
+            for action in UInt32(1)...UInt32(3) {
+                precondition(beluga_core_update_abort_result_is_valid(invalid,
+                    Result(abi_version: 1, status: 0, action: action)) == 0)
+            }
+        }
+    }
+    print("BelugaCore Swift abort classifier ABI PASS: copied layouts, 64 carriers, whole correlation and refusal")
+}
+updateAbortSmokeV1()
+
+private func handoffSourceSmokeV1() {
+    typealias Prepare = beluga_core_handoff_source_prepare_facts_t
+    typealias Match = beluga_core_handoff_source_match_facts_t
+    typealias Result = beluga_core_handoff_source_result_t
+    precondition(MemoryLayout<Prepare>.size == 56 && MemoryLayout<Prepare>.stride == 56
+        && MemoryLayout<Prepare>.alignment == 8)
+    precondition([MemoryLayout<Prepare>.offset(of: \Prepare.abi_version),
+        MemoryLayout<Prepare>.offset(of: \Prepare.reserved), MemoryLayout<Prepare>.offset(of: \Prepare.flags),
+        MemoryLayout<Prepare>.offset(of: \Prepare.position), MemoryLayout<Prepare>.offset(of: \Prepare.duration),
+        MemoryLayout<Prepare>.offset(of: \Prepare.rate), MemoryLayout<Prepare>.offset(of: \Prepare.observed_at_page_ms),
+        MemoryLayout<Prepare>.offset(of: \Prepare.phone_position)] == [0, 4, 8, 16, 24, 32, 40, 48])
+    precondition(MemoryLayout<Match>.size == 88 && MemoryLayout<Match>.stride == 88
+        && MemoryLayout<Match>.alignment == 8)
+    precondition([MemoryLayout<Match>.offset(of: \Match.abi_version),
+        MemoryLayout<Match>.offset(of: \Match.reserved), MemoryLayout<Match>.offset(of: \Match.flags),
+        MemoryLayout<Match>.offset(of: \Match.anchor_position), MemoryLayout<Match>.offset(of: \Match.anchor_duration),
+        MemoryLayout<Match>.offset(of: \Match.anchor_rate), MemoryLayout<Match>.offset(of: \Match.anchor_observed_at_page_ms),
+        MemoryLayout<Match>.offset(of: \Match.phone_position), MemoryLayout<Match>.offset(of: \Match.current_position),
+        MemoryLayout<Match>.offset(of: \Match.current_duration), MemoryLayout<Match>.offset(of: \Match.current_rate),
+        MemoryLayout<Match>.offset(of: \Match.current_observed_at_page_ms)] == [0, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80])
+    precondition(MemoryLayout<Result>.size == 16 && MemoryLayout<Result>.alignment == 4)
+    precondition([MemoryLayout<Result>.offset(of: \Result.abi_version),
+        MemoryLayout<Result>.offset(of: \Result.status), MemoryLayout<Result>.offset(of: \Result.allowed),
+        MemoryLayout<Result>.offset(of: \Result.reserved)] == [0, 4, 8, 12])
+    var p = Prepare(abi_version: 1, reserved: 0, flags: 127, position: 15.0.bitPattern,
+        duration: 120.0.bitPattern, rate: 1.0.bitPattern, observed_at_page_ms: 50_000.0.bitPattern,
+        phone_position: 15.0.bitPattern)
+    var m = Match(abi_version: 1, reserved: 0, flags: 127, anchor_position: p.position,
+        anchor_duration: p.duration, anchor_rate: p.rate, anchor_observed_at_page_ms: p.observed_at_page_ms,
+        phone_position: p.phone_position, current_position: p.position, current_duration: p.duration,
+        current_rate: p.rate, current_observed_at_page_ms: p.observed_at_page_ms)
+    for flags in UInt64(0)..<128 {
+        p.flags = flags; m.flags = flags
+        let pr = beluga_core_handoff_source_prepare(p), mr = beluga_core_handoff_source_matches(m)
+        precondition(pr.abi_version == 1 && pr.status == 1 && pr.reserved == 0 && pr.allowed == (flags == 127 ? 1 : 0))
+        precondition(mr.abi_version == 1 && mr.status == 1 && mr.reserved == 0 && mr.allowed == (flags == 127 ? 1 : 0))
+        precondition(beluga_core_handoff_source_prepare_result_is_valid(p, pr) == 1)
+        precondition(beluga_core_handoff_source_matches_result_is_valid(m, mr) == 1)
+        var forged = pr; forged.allowed ^= 1
+        precondition(beluga_core_handoff_source_prepare_result_is_valid(p, forged) == 0)
+        forged = mr; forged.allowed ^= 1
+        precondition(beluga_core_handoff_source_matches_result_is_valid(m, forged) == 0)
+    }
+    p.flags = 128; m.flags = 128
+    let pr = beluga_core_handoff_source_prepare(p), mr = beluga_core_handoff_source_matches(m)
+    precondition(pr.status == 0 && pr.allowed == 0 && mr.status == 0 && mr.allowed == 0)
+    precondition(beluga_core_handoff_source_prepare_result_is_valid(p, pr) == 0)
+    precondition(beluga_core_handoff_source_matches_result_is_valid(m, mr) == 0)
+    print("BelugaCore Swift handoff source ABI PASS: exact layouts, timeline/phone boundaries, whole correlation and refusal")
+}
+handoffSourceSmokeV1()
+
+private func microphoneInputLeaseSmokeV1() {
+    typealias Facts = beluga_core_microphone_input_lease_facts_t
+    typealias Result = beluga_core_microphone_input_lease_result_t
+    precondition(MemoryLayout<Facts>.size == 32 && MemoryLayout<Facts>.stride == 32
+        && MemoryLayout<Facts>.alignment == 8)
+    precondition(MemoryLayout<Result>.size == 20 && MemoryLayout<Result>.stride == 20
+        && MemoryLayout<Result>.alignment == 4)
+    precondition([MemoryLayout<Facts>.offset(of: \Facts.abi_version),
+        MemoryLayout<Facts>.offset(of: \Facts.opcode), MemoryLayout<Facts>.offset(of: \Facts.disposition),
+        MemoryLayout<Facts>.offset(of: \Facts.reserved), MemoryLayout<Facts>.offset(of: \Facts.attempt_count),
+        MemoryLayout<Facts>.offset(of: \Facts.maximum_attempt_count)] == [0, 4, 8, 12, 16, 24])
+    precondition([MemoryLayout<Result>.offset(of: \Result.abi_version),
+        MemoryLayout<Result>.offset(of: \Result.status), MemoryLayout<Result>.offset(of: \Result.opcode),
+        MemoryLayout<Result>.offset(of: \Result.action), MemoryLayout<Result>.offset(of: \Result.reserved)] == [0, 4, 8, 12, 16])
+    let rows: [(UInt32, UInt32, Int64, Int64, UInt32)] = [
+        (1, 0, 0, 3, 1), (1, 0, 3, 3, 2), (1, 0, .max - 1, .max, 1), (1, 0, .max, .max, 2),
+        (2, 1, 0, 0, 3), (2, 2, 0, 0, 4), (2, 3, 0, 0, 5),
+        (3, 2, 1, 3, 6), (3, 2, 3, 3, 7), (3, 3, 1, 3, 7),
+        (4, 0, 0, 0, 8), (4, 1, 0, 0, 9), (4, 2, 0, 0, 10), (4, 3, 0, 0, 9)]
+    for (operation, disposition, count, maximum, expected) in rows {
+        let input = Facts(abi_version: 1, opcode: operation, disposition: disposition,
+            reserved: 0, attempt_count: count, maximum_attempt_count: maximum)
+        let actual = beluga_core_microphone_input_lease_decide(input)
+        precondition(actual.abi_version == 1 && actual.status == 1 && actual.opcode == operation
+            && actual.action == expected && actual.reserved == 0)
+        precondition(beluga_core_microphone_input_lease_result_is_valid(input, actual) == 1)
+        for value in [UInt32(0), 1, 2, 3, 4, 10, 11, .max] {
+            for field in 0..<5 {
+                var changed = actual
+                if field == 0 { changed.abi_version = value }
+                else if field == 1 { changed.status = value }
+                else if field == 2 { changed.opcode = value }
+                else if field == 3 { changed.action = value }
+                else { changed.reserved = value }
+                let same: UInt32 = changed.abi_version == 1 && changed.status == 1
+                    && changed.opcode == operation && changed.action == expected && changed.reserved == 0 ? 1 : 0
+                precondition(beluga_core_microphone_input_lease_result_is_valid(input, changed) == same)
+            }
+        }
+        for action in UInt32(1)...UInt32(10) {
+            var coherent = actual; coherent.action = action
+            precondition(beluga_core_microphone_input_lease_result_is_valid(input, coherent) == (action == expected ? 1 : 0))
+        }
+    }
+    let invalid: [(UInt32, UInt32, UInt32, UInt32, Int64, Int64)] = [
+        (0, 1, 0, 0, 0, 3), (2, 1, 0, 0, 0, 3), (1, 1, 0, 1, 0, 3),
+        (1, 0, 0, 0, 0, 3), (1, 5, 0, 0, 0, 3), (1, .max, 0, 0, 0, 3),
+        (1, 1, 1, 0, 0, 3), (1, 1, 0, 0, -1, 3), (1, 1, 0, 0, 0, 0),
+        (1, 2, 0, 0, 0, 0), (1, 2, 4, 0, 0, 0), (1, 2, 1, 0, 1, 0),
+        (1, 2, 1, 0, 0, 1), (1, 3, 4, 0, 1, 3), (1, 3, 2, 0, 0, 3),
+        (1, 3, 2, 0, 1, 0), (1, 4, 4, 0, 0, 0), (1, 4, 0, 0, 1, 0),
+        (1, 4, 0, 0, 0, 1)]
+    for (abi, operation, disposition, reserved, count, maximum) in invalid {
+        let input = Facts(abi_version: abi, opcode: operation, disposition: disposition,
+            reserved: reserved, attempt_count: count, maximum_attempt_count: maximum)
+        let denied = beluga_core_microphone_input_lease_decide(input)
+        precondition(denied.abi_version == 1 && denied.status == 0 && denied.opcode == 0
+            && denied.action == 0 && denied.reserved == 0)
+        precondition(beluga_core_microphone_input_lease_result_is_valid(input, denied) == 0)
+        precondition(beluga_core_microphone_input_lease_result_is_valid(input,
+            Result(abi_version: 1, status: 1, opcode: 1, action: 1, reserved: 0)) == 0)
+    }
+    print("BelugaCore Swift input lease ABI PASS: four copied operations, literal layouts, full-width counts and whole refusal")
+}
+microphoneInputLeaseSmokeV1()
+
+private func microphoneOutputFormatSmokeV1() {
+    typealias Facts = beluga_core_microphone_output_format_facts_t
+    typealias Observation = beluga_core_microphone_output_format_observation_t
+    typealias Result = beluga_core_microphone_output_format_result_t
+    precondition(MemoryLayout<Facts>.size == 80 && MemoryLayout<Facts>.stride == 80
+        && MemoryLayout<Facts>.alignment == 8)
+    precondition([MemoryLayout<Facts>.offset(of: \Facts.abi_version),
+        MemoryLayout<Facts>.offset(of: \Facts.wire_reserved),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_description_status),
+        MemoryLayout<Facts>.offset(of: \Facts.device_sample_rate_status),
+        MemoryLayout<Facts>.offset(of: \Facts.device_channel_count_status),
+        MemoryLayout<Facts>.offset(of: \Facts.converter_error_read_status),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_sample_rate_bits),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_format_id),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_format_flags),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_bytes_per_packet),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_frames_per_packet),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_bytes_per_frame),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_channels_per_frame),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_bits_per_channel),
+        MemoryLayout<Facts>.offset(of: \Facts.stream_reserved),
+        MemoryLayout<Facts>.offset(of: \Facts.device_sample_rate_bits),
+        MemoryLayout<Facts>.offset(of: \Facts.device_channel_count),
+        MemoryLayout<Facts>.offset(of: \Facts.converter_error)] == [0, 4, 8, 12, 16, 20, 24, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 76])
+    precondition(MemoryLayout<Observation>.size == 56 && MemoryLayout<Observation>.stride == 56
+        && MemoryLayout<Observation>.alignment == 8)
+    precondition([MemoryLayout<Observation>.offset(of: \Observation.sample_rate_bits),
+        MemoryLayout<Observation>.offset(of: \Observation.format_id),
+        MemoryLayout<Observation>.offset(of: \Observation.format_flags),
+        MemoryLayout<Observation>.offset(of: \Observation.bytes_per_packet),
+        MemoryLayout<Observation>.offset(of: \Observation.frames_per_packet),
+        MemoryLayout<Observation>.offset(of: \Observation.bytes_per_frame),
+        MemoryLayout<Observation>.offset(of: \Observation.channels_per_frame),
+        MemoryLayout<Observation>.offset(of: \Observation.bits_per_channel),
+        MemoryLayout<Observation>.offset(of: \Observation.stream_reserved),
+        MemoryLayout<Observation>.offset(of: \Observation.device_sample_rate_bits),
+        MemoryLayout<Observation>.offset(of: \Observation.device_channel_count),
+        MemoryLayout<Observation>.offset(of: \Observation.converter_error)] == [0, 8, 12, 16, 20, 24, 28, 32, 36, 40, 48, 52])
+    precondition(MemoryLayout<Result>.size == 96 && MemoryLayout<Result>.stride == 96
+        && MemoryLayout<Result>.alignment == 8)
+    precondition([MemoryLayout<Result>.offset(of: \Result.abi_version),
+        MemoryLayout<Result>.offset(of: \Result.status),
+        MemoryLayout<Result>.offset(of: \Result.accepted),
+        MemoryLayout<Result>.offset(of: \Result.reason),
+        MemoryLayout<Result>.offset(of: \Result.actual_core_audio_status),
+        MemoryLayout<Result>.offset(of: \Result.actual_u32),
+        MemoryLayout<Result>.offset(of: \Result.actual_rate_bits),
+        MemoryLayout<Result>.offset(of: \Result.observation),
+        MemoryLayout<Result>.offset(of: \Result.wire_reserved)] == [0, 4, 8, 12, 16, 20, 24, 32, 88])
+    let valid = Facts(abi_version: 1, wire_reserved: 0,
+        stream_description_status: 0, device_sample_rate_status: 0,
+        device_channel_count_status: 0, converter_error_read_status: 0,
+        stream_sample_rate_bits: 0x40e7_7000_0000_0000, stream_format_id: 0x6c70_636d,
+        stream_format_flags: 12, stream_bytes_per_packet: 2, stream_frames_per_packet: 1,
+        stream_bytes_per_frame: 2, stream_channels_per_frame: 1, stream_bits_per_channel: 16,
+        stream_reserved: 0, device_sample_rate_bits: 0x40e7_7000_0000_0000,
+        device_channel_count: 1, converter_error: 0)
+    let expectedSuccess = Result(abi_version: 1, status: 1, accepted: 1, reason: 0,
+        actual_core_audio_status: 0, actual_u32: 0, actual_rate_bits: 0,
+        observation: Observation(sample_rate_bits: 0x40e7_7000_0000_0000, format_id: 0x6c70_636d,
+            format_flags: 12, bytes_per_packet: 2, frames_per_packet: 1, bytes_per_frame: 2,
+            channels_per_frame: 1, bits_per_channel: 16, stream_reserved: 0,
+            device_sample_rate_bits: 0x40e7_7000_0000_0000, device_channel_count: 1,
+            converter_error: 0), wire_reserved: 0)
+    func expect(_ actual: Result, _ expected: Result) {
+        precondition(actual.abi_version == expected.abi_version)
+        precondition(actual.status == expected.status)
+        precondition(actual.accepted == expected.accepted)
+        precondition(actual.reason == expected.reason)
+        precondition(actual.actual_core_audio_status == expected.actual_core_audio_status)
+        precondition(actual.actual_u32 == expected.actual_u32)
+        precondition(actual.actual_rate_bits == expected.actual_rate_bits)
+        precondition(actual.observation.sample_rate_bits == expected.observation.sample_rate_bits)
+        precondition(actual.observation.format_id == expected.observation.format_id)
+        precondition(actual.observation.format_flags == expected.observation.format_flags)
+        precondition(actual.observation.bytes_per_packet == expected.observation.bytes_per_packet)
+        precondition(actual.observation.frames_per_packet == expected.observation.frames_per_packet)
+        precondition(actual.observation.bytes_per_frame == expected.observation.bytes_per_frame)
+        precondition(actual.observation.channels_per_frame == expected.observation.channels_per_frame)
+        precondition(actual.observation.bits_per_channel == expected.observation.bits_per_channel)
+        precondition(actual.observation.stream_reserved == expected.observation.stream_reserved)
+        precondition(actual.observation.device_sample_rate_bits == expected.observation.device_sample_rate_bits)
+        precondition(actual.observation.device_channel_count == expected.observation.device_channel_count)
+        precondition(actual.observation.converter_error == expected.observation.converter_error)
+        precondition(actual.wire_reserved == expected.wire_reserved)
+    }
+    func failGuard(_ facts: inout Facts, _ reason: UInt32) {
+        switch reason {
+        case 1: facts.stream_description_status = Int32.min + 1
+        case 2: facts.device_sample_rate_status = Int32.min + 2
+        case 3: facts.device_channel_count_status = Int32.min + 3
+        case 4: facts.converter_error_read_status = Int32.min + 4
+        case 5: facts.stream_sample_rate_bits = 0x7ff8_0000_0000_0042
+        case 6: facts.stream_format_id = UInt32.max
+        case 7: facts.stream_format_flags = UInt32.max
+        case 8: facts.stream_bytes_per_packet = UInt32.max
+        case 9: facts.stream_frames_per_packet = UInt32.max
+        case 10: facts.stream_bytes_per_frame = UInt32.max
+        case 11: facts.stream_channels_per_frame = UInt32.max
+        case 12: facts.stream_bits_per_channel = UInt32.max
+        case 13: facts.stream_reserved = UInt32.max
+        case 14: facts.device_sample_rate_bits = 0xfff8_0000_0000_005a
+        case 15: facts.device_channel_count = UInt32.max
+        case 16: facts.converter_error = UInt32.max
+        default: preconditionFailure("unknown output format reason")
+        }
+    }
+    func corruptionRefusal(_ facts: Facts, _ actual: Result) {
+        precondition(beluga_core_microphone_output_format_result_is_valid(facts, actual) == 1)
+        for field in 0..<20 {
+            var changed = actual
+            switch field {
+            case 0: changed.abi_version ^= 1
+            case 1: changed.status ^= 1
+            case 2: changed.accepted ^= 1
+            case 3: changed.reason ^= 1
+            case 4: changed.actual_core_audio_status ^= 1
+            case 5: changed.actual_u32 ^= 1
+            case 6: changed.actual_rate_bits ^= 1
+            case 7: changed.observation.sample_rate_bits ^= 1
+            case 8: changed.observation.format_id ^= 1
+            case 9: changed.observation.format_flags ^= 1
+            case 10: changed.observation.bytes_per_packet ^= 1
+            case 11: changed.observation.frames_per_packet ^= 1
+            case 12: changed.observation.bytes_per_frame ^= 1
+            case 13: changed.observation.channels_per_frame ^= 1
+            case 14: changed.observation.bits_per_channel ^= 1
+            case 15: changed.observation.stream_reserved ^= 1
+            case 16: changed.observation.device_sample_rate_bits ^= 1
+            case 17: changed.observation.device_channel_count ^= 1
+            case 18: changed.observation.converter_error ^= 1
+            case 19: changed.wire_reserved ^= 1
+            default: preconditionFailure("unknown output format result field")
+            }
+            precondition(beluga_core_microphone_output_format_result_is_valid(facts, changed) == 0)
+        }
+    }
+    let success = beluga_core_microphone_output_format_decide(valid)
+    expect(success, expectedSuccess)
+    corruptionRefusal(valid, success)
+    for reason in UInt32(1)...UInt32(16) {
+        var facts = valid
+        failGuard(&facts, reason)
+        var expected = Result()
+        expected.abi_version = 1; expected.status = 1; expected.reason = reason
+        if reason <= 4 { expected.actual_core_audio_status = Int32.min + Int32(reason) }
+        else if reason == 5 { expected.actual_rate_bits = 0x7ff8_0000_0000_0042 }
+        else if reason == 14 { expected.actual_rate_bits = 0xfff8_0000_0000_005a }
+        else { expected.actual_u32 = .max }
+        let actual = beluga_core_microphone_output_format_decide(facts)
+        expect(actual, expected)
+        corruptionRefusal(facts, actual)
+        precondition(beluga_core_microphone_output_format_result_is_valid(facts, success) == 0)
+        precondition(beluga_core_microphone_output_format_result_is_valid(valid, actual) == 0)
+        if reason < 16 {
+            for later in (reason + 1)...UInt32(16) {
+                failGuard(&facts, later)
+                let ordered = beluga_core_microphone_output_format_decide(facts)
+                expect(ordered, expected)
+                precondition(beluga_core_microphone_output_format_result_is_valid(facts, ordered) == 1)
+            }
+        }
+    }
+    // Raw words are never normalized, including signed/signaling NaN payloads.
+    let rejectedRates: [UInt64] = [
+        0, 0x8000_0000_0000_0000, 0x7ff0_0000_0000_0000, 0xfff0_0000_0000_0000,
+        0x7ff8_0000_0000_0042, 0xfff8_0000_0000_005a, 0x7ff0_0000_0000_0001,
+        1, 0x8000_0000_0000_0001, 0x40e7_6fff_ffff_ffff, 0x40e7_7000_0000_0001]
+    for rate in rejectedRates {
+        for device in [false, true] {
+            var facts = valid
+            if device { facts.device_sample_rate_bits = rate }
+            else { facts.stream_sample_rate_bits = rate }
+            var expected = Result()
+            expected.abi_version = 1; expected.status = 1
+            expected.reason = device ? 14 : 5; expected.actual_rate_bits = rate
+            let actual = beluga_core_microphone_output_format_decide(facts)
+            expect(actual, expected)
+            corruptionRefusal(facts, actual)
+        }
+    }
+    var expectedInvalid = Result(); expectedInvalid.abi_version = 1
+    for abi in [UInt32(0), 2, .max] {
+        var invalid = valid; invalid.abi_version = abi
+        let denied = beluga_core_microphone_output_format_decide(invalid)
+        expect(denied, expectedInvalid)
+        precondition(beluga_core_microphone_output_format_result_is_valid(invalid, denied) == 0)
+        precondition(beluga_core_microphone_output_format_result_is_valid(invalid, success) == 0)
+    }
+    for reserved in [UInt32(1), .max] {
+        var invalid = valid; invalid.wire_reserved = reserved
+        let denied = beluga_core_microphone_output_format_decide(invalid)
+        expect(denied, expectedInvalid)
+        precondition(beluga_core_microphone_output_format_result_is_valid(invalid, denied) == 0)
+        precondition(beluga_core_microphone_output_format_result_is_valid(invalid, success) == 0)
+    }
+    print("BelugaCore Swift output format ABI PASS: literal layouts, sixteen ordered guards, exact observations and whole refusal")
+}
+microphoneOutputFormatSmokeV1()

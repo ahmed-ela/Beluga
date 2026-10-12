@@ -53,6 +53,70 @@ final class WorldwidePreparedMediaMenuIntegrationTests: XCTestCase {
         XCTAssertEqual(h.media.count, 1)
     }
 
+    func testDirectReadyBRetainsPreparedAUntilAuthenticatedReconnectReplacesIt() async throws {
+        let replacementStart = PreparedMediaGate()
+        defer { replacementStart.open() }
+        let first = PreparedMediaServiceProbe()
+        let second = PreparedMediaServiceProbe(startGate: replacementStart)
+        let h = try await harness(media: [first, second])
+        let original = try await connectMedia(h), model = startedMenu(h, target: nil)
+        model.apply(try XCTUnwrap(h.presentations.latest))
+        let originalRevision = try XCTUnwrap(h.presentations.latest).revision
+        let before = try h.savedHost(), responseCount = h.client.responses.count
+
+        // Deliberately omit peerLeft and a transport failure. A fresh availability
+        // exchange is not itself an authenticated request to replace media A.
+        h.client.emit(.ready(role: .host, exchangeID: h.exchangeB))
+        try await waitUntil { h.presentations.latest?.phase == .preparingSession &&
+            (h.presentations.latest?.revision ?? 0) > originalRevision }
+        model.apply(try XCTUnwrap(h.presentations.latest))
+        XCTAssertEqual(model.presentation.connectedMediaTarget, original)
+        XCTAssertTrue(model.mediaHandoffControl.visible)
+        XCTAssertTrue(model.canMoveMedia)
+        XCTAssertEqual(first.stopCount, 0, "Availability readiness must not retire an authenticated media owner")
+        XCTAssertEqual(h.media.count, 1)
+        XCTAssertEqual(h.client.responses.count, responseCount)
+        XCTAssertEqual(try h.savedHost(), before, "Readiness alone cannot burn a signed reconnect sequence")
+        let moveA = model.moveMedia(to: original)
+        XCTAssertNotNil(moveA)
+        await moveA?.value
+        XCTAssertEqual(first.moveCount, 1)
+
+        // The genuine signed request is the replacement boundary. Hold B's native
+        // startup to observe revoked A admission before B can publish readiness.
+        let request = try h.nextReconnect()
+        h.client.emit(.signal(.reconnectRequest(request.request)))
+        try await waitUntil { second.startCount == 1 }
+        model.apply(try XCTUnwrap(h.presentations.latest))
+        XCTAssertNil(model.presentation.connectedMediaTarget)
+        XCTAssertTrue(model.mediaHandoffControl.visible)
+        XCTAssertFalse(model.canMoveMedia)
+        XCTAssertNil(model.moveMedia(to: original))
+        await assertStale(h.coordinator, original)
+        XCTAssertEqual(first.stopCount, 1)
+        XCTAssertEqual(h.media.count, 2)
+        XCTAssertEqual(h.client.responses.count, responseCount)
+        XCTAssertEqual(try h.savedHost().highestAcceptedReconnectSequence, request.request.sequence)
+
+        replacementStart.open()
+        let replacement = try await preparedTarget(h)
+        model.apply(try XCTUnwrap(h.presentations.latest))
+        XCTAssertEqual(replacement.phoneID, original.phoneID)
+        XCTAssertEqual(replacement.selectionEpoch, original.selectionEpoch)
+        XCTAssertEqual(replacement.exchangeID, h.exchangeB.wireValue)
+        XCTAssertNotEqual(replacement.mediaOwnerID, original.mediaOwnerID)
+        XCTAssertTrue(model.canMoveMedia)
+        XCTAssertEqual(first.stopCount, 1)
+        XCTAssertEqual(second.startCount, 1)
+        XCTAssertEqual(try request.complete(with: try XCTUnwrap(h.client.responses.last)),
+            try XCTUnwrap(h.media.credentials.last))
+        await assertStale(h.coordinator, original)
+        let offer = try await h.coordinator.moveMediaToConnectedPhone(target: replacement)
+        XCTAssertEqual(offer, second.offerID)
+        XCTAssertEqual(first.moveCount, 1)
+        XCTAssertEqual(second.moveCount, 1)
+    }
+
     func testTransportRetryAndReadyBRetainAWithoutStartingOrStoppingMedia() async throws {
         let service = PreparedMediaServiceProbe()
         let retry = PreparedMediaGate()

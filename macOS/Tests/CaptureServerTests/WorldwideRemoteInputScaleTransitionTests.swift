@@ -173,11 +173,15 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             before: "        case .statistics(\n            let snapshot,"
         )
 
-        XCTAssertTrue(
-            routeHandler.contains(
-                "screenVideoAdaptationPolicy.invalidateSelectedRoute()"
-            )
+        let routeTokens = sourceTokens(routeHandler)
+        let revisionPublication = try XCTUnwrap(
+            routeTokens.range(of: ownerPublicationTokens(revision: "screenVideoAdaptationPolicyRevision &+ 1"))
         )
+        let invalidationPublication = try XCTUnwrap(
+            routeTokens.range(of: policyTransactionTokens("invalidateSelectedRoute()"),
+                range: revisionPublication.upperBound..<routeTokens.endIndex)
+        )
+        XCTAssertLessThan(revisionPublication.upperBound, invalidationPublication.lowerBound)
         XCTAssertFalse(routeHandler.contains("if route.kind"))
     }
 
@@ -240,7 +244,42 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
                 ".expireApplicationLimitedProbeWithoutReport("
             )
         )
-        XCTAssertTrue(adaptation.contains("guard changedRecommendation != nil else { return }"))
+        let expiry = try XCTUnwrap(
+            adaptation.range(of: ".expireApplicationLimitedProbeWithoutReport(")
+        )
+        let admission = try XCTUnwrap(
+            adaptation.range(
+                of: "guard changedRecommendation != nil",
+                range: expiry.upperBound..<adaptation.endIndex
+            )
+        )
+        let admissionEnd = try XCTUnwrap(
+            adaptation.range(
+                of: "else { return }",
+                range: admission.upperBound..<adaptation.endIndex
+            )
+        )
+        let recommendation = try XCTUnwrap(
+            adaptation.range(
+                of: "let recommendation = changedRecommendation",
+                range: admissionEnd.upperBound..<adaptation.endIndex
+            )
+        )
+        // No-report ticks may retire a probe, retry an unapplied restrictive limit, or
+        // retain a newly sticky native fault. Unchanged, already-applied ticks must stop.
+        let admissionTokens = adaptation[admission.lowerBound..<admissionEnd.upperBound]
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        XCTAssertEqual(
+            admissionTokens,
+            "guard changedRecommendation != nil"
+                + " || appliedScreenVideoRecommendation != proposedPolicy.currentRecommendation"
+                + " || (proposedPolicy.hasNativeAdaptationPolicyFault"
+                + " && !screenVideoAdaptationPolicy.hasNativeAdaptationPolicyFault) else { return }"
+        )
+        XCTAssertLessThan(expiry.lowerBound, admission.lowerBound)
+        XCTAssertLessThan(admission.lowerBound, recommendation.lowerBound)
     }
 
     func testSuspensionInvalidationRequiresFreshOrderedShowWithoutLocalReactivation() throws {
@@ -511,11 +550,36 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
         // Behavioral report/reducer tests cover the value semantics; guard the actual service
         // wiring too, so cached diagnostic route enrichment cannot become policy evidence.
         XCTAssertTrue(sampler.contains("case let snapshot = report.nativeSnapshot"))
-        XCTAssertTrue(
-            sampler.contains(
-                "screenVideoAdaptationFastStatisticsAreAvailable = false"
-            )
+        let samplerTokens = sourceTokens(sampler)
+        let unavailablePublication = ownerPublicationTokens(fast: "false")
+        XCTAssertEqual(samplerTokens.components(separatedBy: unavailablePublication).count - 1, 2)
+        let missingCaptureGate = try XCTUnwrap(
+            samplerTokens.range(of: "guard captureSource != nil else {")
         )
+        let missingCapturePublication = try XCTUnwrap(
+            samplerTokens.range(of: unavailablePublication,
+                range: missingCaptureGate.upperBound..<samplerTokens.endIndex)
+        )
+        let missingCaptureContinue = try XCTUnwrap(
+            samplerTokens.range(of: "continue",
+                range: missingCapturePublication.upperBound..<samplerTokens.endIndex)
+        )
+        let reportRequest = try XCTUnwrap(
+            samplerTokens.range(of: "await sourcePeer.screenVideoStatisticsSnapshot(",
+                range: missingCaptureContinue.upperBound..<samplerTokens.endIndex)
+        )
+        let fallbackPublication = try XCTUnwrap(
+            samplerTokens.range(of: unavailablePublication,
+                range: reportRequest.upperBound..<samplerTokens.endIndex)
+        )
+        let fallbackExpiry = try XCTUnwrap(
+            samplerTokens.range(of: "await adaptScreenVideoForNetworkConditions( nil,",
+                range: fallbackPublication.upperBound..<samplerTokens.endIndex)
+        )
+        XCTAssertLessThan(missingCaptureGate.upperBound, missingCapturePublication.lowerBound)
+        XCTAssertLessThan(missingCapturePublication.upperBound, missingCaptureContinue.lowerBound)
+        XCTAssertLessThan(reportRequest.upperBound, fallbackPublication.lowerBound)
+        XCTAssertLessThan(fallbackPublication.upperBound, fallbackExpiry.lowerBound)
         XCTAssertTrue(sampler.contains("allowsAutomaticResume: false"))
         XCTAssertFalse(sampler.contains("updateInboundMediaFreshness"))
         XCTAssertFalse(sampler.contains("maintainWorldwideSafeOutputInvariant"))
@@ -814,21 +878,53 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             ).count - 1,
             2
         )
-        XCTAssertTrue(
-            adaptation.contains("screenVideoAdaptationPolicyRevision &+= 1")
+        let adaptationTokens = sourceTokens(adaptation)
+        let nativeApplyTokens = try XCTUnwrap(
+            adaptationTokens.range(of: "await sourcePeer.applyScreenVideoEncodingLimits(")
         )
+        for (copy, mutation, policy) in [
+            ("var faultRetention = screenVideoAdaptationPolicy",
+             "faultRetention.retainNativeAdaptationPolicyFault(from: proposedPolicy)", "faultRetention"),
+            ("var attemptConsumption = screenVideoAdaptationPolicy",
+             "attemptConsumption.retainFloorRecoveryAttemptConsumption(from: proposedPolicy)", "attemptConsumption"),
+        ] {
+            let copyRange = try XCTUnwrap(adaptationTokens.range(of: copy))
+            let mutationRange = try XCTUnwrap(
+                adaptationTokens.range(of: mutation,
+                    range: copyRange.upperBound..<nativeApplyTokens.lowerBound)
+            )
+            let policyPublication = try XCTUnwrap(
+                adaptationTokens.range(of: ownerPublicationTokens(policy: policy),
+                    range: mutationRange.upperBound..<nativeApplyTokens.lowerBound)
+            )
+            let revisionPublication = try XCTUnwrap(
+                adaptationTokens.range(of: ownerPublicationTokens(revision: "screenVideoAdaptationPolicyRevision &+ 1"),
+                    range: policyPublication.upperBound..<nativeApplyTokens.lowerBound)
+            )
+            let consumption = try XCTUnwrap(
+                adaptationTokens.range(of: "applyingPolicyRevision = screenVideoAdaptationPolicyRevision",
+                    range: revisionPublication.upperBound..<nativeApplyTokens.lowerBound)
+            )
+            XCTAssertLessThan(copyRange.upperBound, mutationRange.lowerBound)
+            XCTAssertLessThan(mutationRange.upperBound, policyPublication.lowerBound)
+            XCTAssertLessThan(policyPublication.upperBound, revisionPublication.lowerBound)
+            XCTAssertLessThan(revisionPublication.upperBound, consumption.lowerBound)
+            XCTAssertLessThan(consumption.upperBound, nativeApplyTokens.lowerBound)
+        }
 
         let routeEvent = try serviceSlice(
             after: "        case .routeChanged(let route):",
             before: "        case .statistics(\n            let snapshot,"
         )
+        let routeTokens = sourceTokens(routeEvent)
         let revision = try XCTUnwrap(
-            routeEvent.range(of: "screenVideoAdaptationPolicyRevision &+= 1")
+            routeTokens.range(of: ownerPublicationTokens(revision: "screenVideoAdaptationPolicyRevision &+ 1"))
         )
         let invalidation = try XCTUnwrap(
-            routeEvent.range(of: "invalidateSelectedRoute()")
+            routeTokens.range(of: policyTransactionTokens("invalidateSelectedRoute()"),
+                range: revision.upperBound..<routeTokens.endIndex)
         )
-        XCTAssertLessThan(revision.lowerBound, invalidation.lowerBound)
+        XCTAssertLessThan(revision.upperBound, invalidation.lowerBound)
 
         let fastPeerSnapshot = try peerSlice(
             after: "    public func screenVideoStatisticsSnapshot(\n",
@@ -876,16 +972,16 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             nativeStatisticsRequest.lowerBound
         )
 
-        let finalization = try serviceSlice(
+        let finalization = sourceTokens(try serviceSlice(
             after: "    private func handleAutomaticScreenMediaResumeRequest(",
             before: "    // MARK: - Screen control protocol"
-        )
+        ))
         let senderRestore = try XCTUnwrap(
             finalization.range(of: "applyScreenVideoEncodingLimits(")
         )
         let appliedRecommendation = try XCTUnwrap(
             finalization.range(
-                of: "appliedScreenVideoRecommendation = recommendation",
+                of: ownerPublicationTokens(applied: "recommendation"),
                 range: senderRestore.upperBound..<finalization.endIndex
             )
         )
@@ -1175,6 +1271,34 @@ final class WorldwideRemoteInputScaleTransitionTests: XCTestCase {
             )
         )
         XCTAssertTrue(arm.contains("initialFrameGeometry: initialFrameGeometry"))
+    }
+
+
+    private func sourceTokens(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func ownerPublicationTokens(
+        policy: String = "screenVideoAdaptationPolicy",
+        revision: String = "screenVideoAdaptationPolicyRevision",
+        fast: String = "screenVideoAdaptationFastStatisticsAreAvailable",
+        lane: String = "screenVideoAdaptationOwner.lane",
+        evidence: String = "screenVideoAdaptationLastEvidenceTime",
+        minimum: String = "screenVideoAdaptationOwner.minimumCollectionSequence",
+        applied: String = "appliedScreenVideoRecommendation"
+    ) -> String {
+        sourceTokens("""
+        screenVideoAdaptationOwner = .init(policy: \(policy),
+            revision: \(revision), fastStatisticsAvailable: \(fast),
+            lane: \(lane), evidenceTime: \(evidence),
+            minimumCollectionSequence: \(minimum), applied: \(applied))
+        """)
+    }
+
+    private func policyTransactionTokens(_ mutation: String) -> String {
+        sourceTokens("var updatedPolicy = screenVideoAdaptationPolicy updatedPolicy.\(mutation)")
+            + " " + ownerPublicationTokens(policy: "updatedPolicy")
     }
 
     private func serviceSlice(after startMarker: String, before endMarker: String) throws -> String {

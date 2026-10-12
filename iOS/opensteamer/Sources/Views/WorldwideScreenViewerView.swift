@@ -255,7 +255,8 @@ struct WorldwideScreenViewerView: View {
                                             "worldwideScreenClientPipelineStatus"
                                         )
 
-                                    if viewModel.screenLivenessDiagnosticSnapshot.state
+                                    if viewModel.screenLivenessBridgeError == nil,
+                                       viewModel.screenLivenessDiagnosticSnapshot.state
                                         == .presentationStalled,
                                        !requiresLocalPrivacyCover {
                                         Text(
@@ -451,7 +452,10 @@ struct WorldwideScreenViewerView: View {
     }
 
     private var screenPipelineFailureText: String? {
-        switch viewModel.screenLivenessDiagnosticSnapshot.state {
+        if viewModel.screenLivenessBridgeError != nil {
+            return viewModel.screenLivenessStatusText
+        }
+        return switch viewModel.screenLivenessDiagnosticSnapshot.state {
         case .inboundRTPStalled, .decodeStalled, .presentationStalled:
             viewModel.screenLivenessStatusText
         case .intentionallyCovered, .covered, .trackMissing,

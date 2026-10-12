@@ -78,7 +78,6 @@ package struct BelugaUpdateAdmission: Equatable, Sendable {
     }
 
     package var permitsUpdate: Bool {
-        isInteractiveApplication && teardownComplete &&
-            !hasActiveMedia && !hasPendingPairing && !hasAudioShares
+        BelugaRustUpdateAvailability.evaluate(self)?.permitsUpdate == true
     }
 }

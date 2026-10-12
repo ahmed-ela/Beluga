@@ -135,6 +135,7 @@ struct WorldwidePhoneCatalogAction: Equatable, Sendable {
 
 enum WorldwidePhoneCatalogRuntimeError: Error, Equatable {
     case invalidCheckpointBridge
+    case invalidRuntimeCatalogBridge
     case staleAttempt
     case notQuiet
     case ownerNotAuthorized

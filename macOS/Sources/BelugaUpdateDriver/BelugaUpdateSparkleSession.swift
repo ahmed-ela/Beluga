@@ -63,6 +63,7 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
     package enum SessionError: Error, Equatable {
         case alreadyStarted, startupBodyNotInvoked, duplicateStartupBody
         case authorityNotRetained, foreignUpdater, nonManualCheck, checkNotRequested
+        case admissionPolicyRefused
         case feedDoesNotMatchVerifiedTarget
         case candidateChanged, candidateBindingInProgress, candidateNotBound, candidateNotFresh
     }
@@ -99,6 +100,7 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
     private let authority: Authority
     private let observe: @MainActor (Observation) -> Void
     private let factory: Factory
+    private let admissionResultMutation: BelugaRustSparkleAdmission.ResultMutation?
     private var state = State.idle
     private var engine: (any Engine)?
     private var callbackIdentity: AnyObject?
@@ -157,12 +159,14 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
 
     init(targetBundle: Bundle, operationID: UUID, authority: Authority,
          verifiedFeedURLString: String, factory: Factory,
+         admissionResultMutation: BelugaRustSparkleAdmission.ResultMutation? = nil,
          observe: @escaping @MainActor (Observation) -> Void) {
         self.targetBundle = targetBundle
         self.verifiedFeedURLString = verifiedFeedURLString
         self.operationID = operationID
         self.authority = authority
         self.factory = factory
+        self.admissionResultMutation = admissionResultMutation
         self.observe = observe
         super.init()
     }
@@ -311,12 +315,28 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
     }
 
     func admitCheck(from identity: AnyObject, check: SPUUpdateCheck) throws {
-        guard matches(identity) else { throw SessionError.foreignUpdater }
-        guard check == .updates else { throw SessionError.nonManualCheck }
-        guard state == .running, authority.isRetained(operationID) else {
-            throw SessionError.authorityNotRetained
+        guard let prefix = BelugaRustSparkleAdmission.prefix(exactCallback: matches(identity),
+            manualCheck: check == .updates, running: state == .running,
+            resultMutation: admissionResultMutation) else { throw SessionError.admissionPolicyRefused }
+        switch prefix {
+        case .foreignUpdater: throw SessionError.foreignUpdater
+        case .nonManualCheck: throw SessionError.nonManualCheck
+        case .authorityNotRetained: throw SessionError.authorityNotRetained
+        case .queryAuthority: break
+        case .checkNotRequested, .consumeAndAdmit: throw SessionError.admissionPolicyRefused
         }
-        guard manualCheckRequested else { throw SessionError.checkNotRequested }
+        // Native authority can synchronously reenter and consume the pending request.
+        // Read that request only afterwards, and do not undo a nested admitted cycle.
+        let retained = authority.isRetained(operationID)
+        guard let finish = BelugaRustSparkleAdmission.finish(retained: retained,
+            freshRequest: retained ? manualCheckRequested : false,
+            resultMutation: admissionResultMutation) else { throw SessionError.admissionPolicyRefused }
+        switch finish {
+        case .authorityNotRetained: throw SessionError.authorityNotRetained
+        case .checkNotRequested: throw SessionError.checkNotRequested
+        case .consumeAndAdmit: break
+        case .foreignUpdater, .nonManualCheck, .queryAuthority: throw SessionError.admissionPolicyRefused
+        }
         manualCheckRequested = false
         manualCycleAdmitted = true
     }
@@ -460,11 +480,22 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
         // Pinned SDK calls this after error-UI acknowledgement and downloader cleanup,
         // immediately before didFinish. Require exact object identity, not a code alone.
         let native = error as NSError
-        if var failure = initialCheckFailure, cleanUnarmedCycle, failure.acknowledged,
-           !failure.observedAbort, failure.error === native {
-            failure.observedAbort = true
-            initialCheckFailure = failure
-        } else if noUpdateError !== native { cleanUnarmedCycle = false }
+        let failure = initialCheckFailure
+        let action = BelugaRustUpdateAbort.classify(
+            failurePresent: failure != nil, cleanUnarmedCycle: cleanUnarmedCycle,
+            acknowledged: failure?.acknowledged ?? false,
+            observedAbort: failure?.observedAbort ?? false,
+            sameFailureError: failure?.error === native,
+            sameNoUpdateError: noUpdateError === native)
+        switch action {
+        case .some(.markAbort):
+            if var failure {
+                failure.observedAbort = true
+                initialCheckFailure = failure
+            } else { cleanUnarmedCycle = false }
+        case .some(.preserve): break
+        case .some(.poison), .none: cleanUnarmedCycle = false
+        }
         emit(.aborted(error))
     }
 
@@ -475,28 +506,51 @@ package final class BelugaUpdateSparkleSession: NSObject, SPUUpdaterDelegate {
         if state == .running, startupSucceeded, manualCycleAdmitted, check == .updates,
            cleanUnarmedCycle, !installationAuthorized, engine?.sessionInProgress == false,
            authority.isRetained(operationID) {
-            if noUpdateError != nil, noUpdateError === finishedError,
-               boundCandidate == nil, admittedItem == nil, decline == nil,
-               initialCheckFailure == nil, !cancelledInitialCheck {
-                reason = .noUpdate
-            } else if let failure = initialCheckFailure, failure.acknowledged,
-                      failure.observedAbort, failure.error === finishedError,
-                      initialCheckPresentation != nil, !candidateAdmissionAttempted,
-                      !candidatePresentationObserved,
-                      !candidateBindingInProgress, admittedItem == nil, foundItem == nil,
-                      boundCandidate == nil, noUpdateError == nil, decline == nil,
-                      !cancelledInitialCheck {
-                reason = .failedInitialCheck(failure.reason)
-            } else if finishedError == nil, noUpdateError == nil, cancelledInitialCheck,
-                      initialCheckPresentation != nil, boundCandidate == nil,
-                      admittedItem == nil, decline == nil, initialCheckFailure == nil {
-                reason = .cancelledCheck
-            } else if finishedError == nil, noUpdateError == nil, !cancelledInitialCheck,
-                      initialCheckFailure == nil,
-                      let decline, decline.observedSDKChoice, boundCandidate == decline.candidate,
-                      admittedItem === decline.item, foundItem === decline.item {
-                reason = .declinedCandidate(decline.candidate)
-            } else { reason = nil }
+            // Native authority may synchronously reenter. Copy these current fields
+            // only after that unchanged callback; no SDK/proof call is made by Rust.
+            let failure = initialCheckFailure
+            let currentDecline = decline
+            let failureKind: BelugaRustUnarmedCompletion.FailureKind
+            switch failure?.reason {
+            case .none: failureKind = .absent
+            case .some(.feedFetch): failureKind = .feedFetch
+            case .some(.feedParseOrSignature): failureKind = .feedParseOrSignature
+            }
+            let selection = BelugaRustUnarmedCompletion.classify(
+                noUpdatePresent: noUpdateError != nil,
+                noUpdateIsFinished: noUpdateError === finishedError,
+                boundCandidatePresent: boundCandidate != nil,
+                admittedItemPresent: admittedItem != nil,
+                declinePresent: currentDecline != nil,
+                cancelledInitialCheck: cancelledInitialCheck,
+                failureAcknowledged: failure?.acknowledged ?? false,
+                failureAbortObserved: failure?.observedAbort ?? false,
+                failureIsFinished: failure?.error === finishedError,
+                initialPresentationPresent: initialCheckPresentation != nil,
+                candidateAdmissionAttempted: candidateAdmissionAttempted,
+                candidatePresentationObserved: candidatePresentationObserved,
+                candidateBindingInProgress: candidateBindingInProgress,
+                foundItemPresent: foundItem != nil,
+                finishedErrorPresent: finishedError != nil,
+                declineSDKChoiceObserved: currentDecline?.observedSDKChoice ?? false,
+                boundMatchesDecline: currentDecline.map { boundCandidate == $0.candidate } ?? false,
+                admittedMatchesDecline: currentDecline.map { admittedItem === $0.item } ?? false,
+                foundMatchesDecline: currentDecline.map { foundItem === $0.item } ?? false,
+                failureKind: failureKind)
+            switch selection {
+            case .some(.noCompletion): reason = nil
+            case .some(.noUpdate): reason = .noUpdate
+            case .some(.feedFetchFailure): reason = .failedInitialCheck(.feedFetch)
+            case .some(.feedParseFailure): reason = .failedInitialCheck(.feedParseOrSignature)
+            case .some(.cancelledCheck): reason = .cancelledCheck
+            case .some(.declinedCandidate):
+                if let currentDecline { reason = .declinedCandidate(currentDecline.candidate) }
+                else { cleanUnarmedCycle = false; reason = nil }
+            case .none:
+                // Invalid/unsupported/copied-corrupt output cannot mint a completion.
+                cleanUnarmedCycle = false
+                reason = nil
+            }
         } else { reason = nil }
         manualCheckRequested = false
         manualCycleAdmitted = false

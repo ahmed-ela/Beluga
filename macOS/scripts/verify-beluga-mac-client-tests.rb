@@ -8,11 +8,19 @@ require_relative 'build-beluga-mac-client-contract'
 require_relative 'retained-beluga-mac-client-tests'
 require_relative 'update-trial-artifact-tests'
 require_relative 'update-trial-package-tests'
+require_relative 'artifact-owner-symbol-tests'
+require_relative 'microphone-retry-mutation-tests'
+require_relative 'update-admission-mutation-tests'
+require_relative 'update-sparkle-admission-mutation-tests'
 
 class BelugaMacClientContractTests < Minitest::Test
   include BelugaMacClientRetainedTests
   include BelugaMacClientUpdateTrialTests
   include BelugaMacClientUpdateTrialPackageTests
+  include BelugaCoreOwnerSymbolArtifactTests
+  include BelugaCoreMicrophoneRetryArtifactTests
+  include BelugaCoreUpdateAdmissionArtifactTests
+  include BelugaCoreUpdateSparkleAdmissionArtifactTests
   C = BelugaMacClient
   def setup
     @directory = File.realpath(Dir.mktmpdir('beluga-mac-client-policy.'))

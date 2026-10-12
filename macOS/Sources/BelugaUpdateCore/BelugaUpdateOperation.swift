@@ -140,6 +140,9 @@ package struct BelugaUpdateOperation: Equatable, Sendable {
         var readiness: MenuReadiness?
     }
 
+    private typealias Policy = BelugaRustUpdateOperationBridge
+    private let policyProducer: BelugaRustUpdateOperationProducer
+    private var policyUnavailable = false
     private var record: Record
     // These cannot be restored from disk; a serialized terminal record is not fresh proof.
     private var installedCompletionIsFresh = false
@@ -152,20 +155,40 @@ package struct BelugaUpdateOperation: Equatable, Sendable {
     package var brokerBinding: BrokerBinding? { record.broker }
     package var candidate: ArtifactIdentity? { record.candidate }
     package var stage: Stage { record.stage }
-    package var installerMayRemainArmed: Bool { stage != .prepared }
+    package var installerMayRemainArmed: Bool {
+        policyQuery(.queryInstallerMayRemainArmed) ?? true
+    }
 
     /// Authorizes only the caller's exact durable-fence clearance, not native installation.
     package var permitsFenceRelease: Bool {
-        record.broker != nil && stage == .readyToRelease &&
-            installedCompletionIsFresh && readinessIsFresh
+        policyQuery(.queryPermitsFenceRelease) ?? false
     }
 
     /// An extant operation never grants host activation. The caller must clear its exact
     /// durable fence and independently acquire the ordinary shared runtime lock afterward.
-    package var permitsRuntimeActivation: Bool { false }
+    package var permitsRuntimeActivation: Bool {
+        policyQuery(.queryPermitsRuntimeActivation) ?? false
+    }
+
+    /// The injected producer is not persisted or compared as authority. Fault state is
+    /// an ephemeral value field; a nonmutating query cannot poison another value copy.
+    package static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.record == rhs.record &&
+            lhs.installedCompletionIsFresh == rhs.installedCompletionIsFresh &&
+            lhs.readinessIsFresh == rhs.readinessIsFresh && lhs.challenge == rhs.challenge &&
+            lhs.policyUnavailable == rhs.policyUnavailable
+    }
 
     package init(operationID: UUID, target: Target, predecessor: ArtifactIdentity,
          predecessorMenuInstanceID: UUID) throws {
+        try self.init(operationID: operationID, target: target, predecessor: predecessor,
+                      predecessorMenuInstanceID: predecessorMenuInstanceID, policyProducer: .actual)
+    }
+
+    /// Internal per-value copied-result seam used by focused boundary-custody tests.
+    init(operationID: UUID, target: Target, predecessor: ArtifactIdentity,
+         predecessorMenuInstanceID: UUID, policyProducer: BelugaRustUpdateOperationProducer) throws {
+        self.policyProducer = policyProducer
         guard target.isValid else { throw PolicyError.invalidTarget }
         guard predecessor.isValid else { throw PolicyError.invalidArtifact }
         guard Self.isNonce(operationID), Self.isNonce(predecessorMenuInstanceID),
@@ -179,6 +202,13 @@ package struct BelugaUpdateOperation: Equatable, Sendable {
     /// equality rejects unknown/duplicate keys, aliases, explicit nulls and trailing bytes.
     package static func restoring(from data: Data, expectedTarget: Target,
                           expectedOperationID: UUID? = nil) throws -> Self {
+        try restoring(from: data, expectedTarget: expectedTarget,
+                      expectedOperationID: expectedOperationID, policyProducer: .actual)
+    }
+
+    static func restoring(from data: Data, expectedTarget: Target,
+                          expectedOperationID: UUID? = nil,
+                          policyProducer: BelugaRustUpdateOperationProducer) throws -> Self {
         guard !data.isEmpty, data.count <= maximumRecordBytes else { throw PolicyError.oversizedRecord }
         let record: Record
         do { record = try JSONDecoder().decode(Record.self, from: data) }
@@ -191,7 +221,8 @@ package struct BelugaUpdateOperation: Equatable, Sendable {
         guard try encode(record) == data else { throw PolicyError.noncanonicalRecord }
         var restored = try Self(operationID: record.operationID, target: record.target,
                                 predecessor: record.predecessor,
-                                predecessorMenuInstanceID: record.predecessorMenuInstanceID)
+                                predecessorMenuInstanceID: record.predecessorMenuInstanceID,
+                                policyProducer: policyProducer)
         restored.record = record
         return restored
     }
@@ -208,88 +239,204 @@ package struct BelugaUpdateOperation: Equatable, Sendable {
     @discardableResult
     package mutating func bindBroker(_ broker: BrokerBinding, operationID: UUID,
                                     target: Target) -> Bool {
-        guard matches(operationID, target), stage == .prepared, record.broker == nil,
-              broker.isValid, broker.artifact.version == predecessor.version,
-              broker.artifact.build == predecessor.build else { return false }
-        record.broker = broker
-        return true
+        let before = self
+        let event = Policy.Event(.bindBroker, matches(operationID, target), broker.isValid,
+                                 broker.artifact.version == predecessor.version,
+                                 broker.artifact.build == predecessor.build)
+        guard let expected = plan(before: before, event: event, action: .publishBroker) else {
+            return false
+        }
+        var next = before
+        next.record.broker = broker
+        return publish(next, expected: expected)
     }
 
     @discardableResult
     package mutating func bindCandidate(_ candidate: ArtifactIdentity, operationID: UUID,
                                 target: Target) -> Bool {
-        guard matches(operationID, target), record.candidate == nil,
-              stage == .prepared || stage == .possiblyArmed,
-              candidate.isValid, candidate.build > predecessor.build,
-              candidate.executableSHA256 != predecessor.executableSHA256 else { return false }
-        record.candidate = candidate
-        return true
+        let before = self
+        let event = Policy.Event(.bindCandidate, matches(operationID, target), candidate.isValid,
+                                 candidate.build > predecessor.build,
+                                 candidate.executableSHA256 != predecessor.executableSHA256)
+        guard let expected = plan(before: before, event: event, action: .publishCandidate) else {
+            return false
+        }
+        var next = before
+        next.record.candidate = candidate
+        return publish(next, expected: expected)
     }
 
     @discardableResult
     package mutating func markPossiblyArmed(operationID: UUID, target: Target) -> Bool {
-        guard matches(operationID, target), stage == .prepared, record.broker != nil else { return false }
-        record.stage = .possiblyArmed
-        return true
+        let before = self
+        guard let expected = plan(before: before,
+                                  event: Policy.Event(.markPossiblyArmed, matches(operationID, target)),
+                                  action: .markPossiblyArmed) else { return false }
+        var next = before
+        next.record.stage = .possiblyArmed
+        return publish(next, expected: expected)
     }
 
     /// Caller supplies this only from the supported positive installation callback plus
     /// fresh exact installed-artifact readback. The value itself authenticates nothing.
     @discardableResult
     package mutating func acceptInstalledCompletion(_ completion: InstalledCompletion) -> Bool {
-        guard matches(completion.operationID, completion.target), installerMayRemainArmed,
-              record.broker != nil, !installedCompletionIsFresh, let candidate,
-              completion.candidate == candidate else { return false }
-        if stage == .possiblyArmed { record.stage = .installedVerified }
-        installedCompletionIsFresh = true
-        readinessIsFresh = false
-        challenge = nil
-        return true
+        let before = self
+        let event = Policy.Event(.installedCompletion,
+                                 matches(completion.operationID, completion.target),
+                                 completion.candidate == record.candidate)
+        guard let expected = plan(before: before, event: event, action: .acceptInstalledCompletion) else {
+            return false
+        }
+        var next = before
+        // Assignment projection, not a second admission guard. Restored ready stage stays ready.
+        if next.stage == .possiblyArmed { next.record.stage = .installedVerified }
+        next.installedCompletionIsFresh = true
+        next.readinessIsFresh = false
+        next.challenge = nil
+        return publish(next, expected: expected)
     }
 
     /// The owner generates the nonce after authenticating a newly launched menu process.
     /// Previously persisted readiness cannot satisfy a new owner's recovery challenge.
     package mutating func issueReadinessChallenge(menuInstanceID: UUID, nonce: UUID) -> ReadinessChallenge? {
-        guard installedCompletionIsFresh, !readinessIsFresh, challenge == nil, let candidate,
-              Self.isNonce(menuInstanceID), Self.isNonce(nonce),
-              menuInstanceID != record.predecessorMenuInstanceID,
-              nonce != operationID, nonce != record.predecessorMenuInstanceID,
-              nonce != record.readiness?.challengeNonce else { return nil }
-        let issued = ReadinessChallenge(operationID: operationID, target: target,
+        let before = self
+        let event = Policy.Event(.issueChallenge, Self.isNonce(menuInstanceID), Self.isNonce(nonce),
+                                 menuInstanceID != record.predecessorMenuInstanceID,
+                                 nonce != operationID, nonce != record.predecessorMenuInstanceID,
+                                 nonce != record.readiness?.challengeNonce)
+        guard let expected = plan(before: before, event: event, action: .publishChallenge) else {
+            return nil
+        }
+        // The action must copy the existing native candidate, never invent a payload.
+        guard let candidate = before.candidate else { policyUnavailable = true; return nil }
+        let issued = ReadinessChallenge(operationID: before.operationID, target: before.target,
                                         candidate: candidate, menuInstanceID: menuInstanceID,
                                         nonce: nonce)
-        challenge = issued
-        return issued
+        var next = before
+        next.challenge = issued
+        return publish(next, expected: expected) ? issued : nil
     }
 
     @discardableResult
     package mutating func acceptMenuReadiness(_ readiness: MenuReadiness) -> Bool {
-        guard installedCompletionIsFresh, let challenge, readiness.isReady,
-              readiness.operationID == challenge.operationID,
-              readiness.target == challenge.target, readiness.candidate == challenge.candidate,
-              readiness.menuInstanceID == challenge.menuInstanceID,
-              readiness.challengeNonce == challenge.nonce else { return false }
-        var next = record
-        next.readiness = readiness
-        next.stage = .readyToRelease
-        guard let encoded = try? Self.encode(next), encoded.count <= Self.maximumRecordBytes else {
+        acceptMenuReadiness(readiness, encodingProbe: nil)
+    }
+
+    /// Internal per-call instrumentation only. The probe cannot supply encoded bytes,
+    /// a policy decision, or a successor; it is never stored or compared as authority.
+    struct ReadinessEncodingBoundaryProbe: Sendable {
+        let before: @Sendable () throws -> Void
+        let completed: @Sendable (Int) -> Void
+    }
+
+    @discardableResult
+    mutating func acceptMenuReadiness(_ readiness: MenuReadiness,
+                                     encodingProbe: ReadinessEncodingBoundaryProbe?) -> Bool {
+        let before = self
+        let preflight = before.readinessEvent(.prepareReadinessEncoding, readiness: readiness)
+        guard let prepared = plan(before: before, event: preflight,
+                                  action: .prepareReadinessEncoding) else { return false }
+        guard prepared == before.policySnapshot else { policyUnavailable = true; return false }
+
+        // Preserve original Foundation encoding order: no encode on denied preflight,
+        // one local record encode, then a commit decision on the original snapshot.
+        var nextRecord = before.record
+        nextRecord.readiness = readiness
+        nextRecord.stage = .readyToRelease
+        let encoded: Data?
+        do {
+            // A throwing probe is a pre-encoder boundary failure, not evidence that
+            // Foundation naturally threw. Production passes nil and always uses encode.
+            try encodingProbe?.before()
+            let data = try Self.encode(nextRecord)
+            encodingProbe?.completed(data.count)
+            encoded = data
+        } catch {
+            encoded = nil
+        }
+        let withinBound = encoded.map { $0.count <= Self.maximumRecordBytes } ?? false
+        let commit = before.readinessEvent(.acceptReadiness, readiness: readiness,
+                                          encodedWithinBound: withinBound)
+        guard let expected = plan(before: before, event: commit, action: .acceptReadiness) else {
             return false
         }
-        self.challenge = nil
-        record = next
-        readinessIsFresh = true
-        return true
+        var next = before
+        next.record = nextRecord
+        next.challenge = nil
+        next.readinessIsFresh = true
+        return publish(next, expected: expected)
     }
 
     package mutating func observe(_ observation: NonTerminalObservation) {
+        let before = self
+        let opcode: Policy.Opcode
+        let action: Policy.Action
         switch observation {
-        case .sessionBecameIdle, .cancelled:
-            break
-        case .updaterFailed, .brokerExited:
-            installedCompletionIsFresh = false
-            readinessIsFresh = false
-            challenge = nil
+        case .sessionBecameIdle: opcode = .idle; action = .none
+        case .cancelled: opcode = .cancelled; action = .none
+        case .updaterFailed: opcode = .updaterFailed; action = .invalidateFreshness
+        case .brokerExited: opcode = .brokerExited; action = .invalidateFreshness
         }
+        guard let expected = plan(before: before, event: Policy.Event(opcode), action: action) else {
+            return
+        }
+        var next = before
+        if action == .invalidateFreshness {
+            next.installedCompletionIsFresh = false
+            next.readinessIsFresh = false
+            next.challenge = nil
+        }
+        _ = publish(next, expected: expected)
+    }
+
+    private var policySnapshot: Policy.Snapshot {
+        let stageWord: UInt32
+        switch record.stage {
+        case .prepared: stageWord = 0
+        case .possiblyArmed: stageWord = 1
+        case .installedVerified: stageWord = 2
+        case .readyToRelease: stageWord = 3
+        }
+        return .init(stage: stageWord, brokerPresent: record.broker != nil,
+                     candidatePresent: record.candidate != nil,
+                     recordedReadinessPresent: record.readiness != nil,
+                     installedFresh: installedCompletionIsFresh, readinessFresh: readinessIsFresh,
+                     challengePresent: challenge != nil)
+    }
+
+    private func readinessEvent(_ opcode: Policy.Opcode, readiness: MenuReadiness,
+                                encodedWithinBound: Bool = false) -> Policy.Event {
+        Policy.Event(opcode, readiness.isReady,
+                     challenge.map { readiness.operationID == $0.operationID } ?? false,
+                     challenge.map { readiness.target == $0.target } ?? false,
+                     challenge.map { readiness.candidate == $0.candidate } ?? false,
+                     challenge.map { readiness.menuInstanceID == $0.menuInstanceID } ?? false,
+                     challenge.map { readiness.challengeNonce == $0.nonce } ?? false,
+                     encodedWithinBound)
+    }
+
+    private func policyQuery(_ opcode: Policy.Opcode) -> Bool? {
+        guard !policyUnavailable else { return nil }
+        return Policy.query(before: policySnapshot, opcode: opcode, producer: policyProducer)
+    }
+
+    private mutating func plan(before: Self, event: Policy.Event,
+                               action: Policy.Action) -> Policy.Snapshot? {
+        guard !policyUnavailable else { return nil }
+        switch Policy.plan(before: before.policySnapshot, event: event,
+                           expectedAction: action, producer: policyProducer) {
+        case let .accepted(expected): return expected
+        case .denied: return nil
+        case .unavailable: policyUnavailable = true; return nil
+        }
+    }
+
+    private mutating func publish(_ next: Self, expected: Policy.Snapshot) -> Bool {
+        guard !policyUnavailable else { return false }
+        guard next.policySnapshot == expected else { policyUnavailable = true; return false }
+        self = next
+        return true
     }
 
     private func matches(_ operationID: UUID, _ target: Target) -> Bool {

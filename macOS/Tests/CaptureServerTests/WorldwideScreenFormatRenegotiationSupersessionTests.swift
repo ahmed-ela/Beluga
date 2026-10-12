@@ -126,17 +126,17 @@ final class WorldwideScreenFormatRenegotiationSupersessionTests: XCTestCase {
 
     func testCommittedResumeGeometrySupersessionConsumesPolicyRestoration() throws {
         let source = try serviceSource()
-        let method = try sourceSlice(
+        let method = sourceTokens(try sourceSlice(
             in: source,
             after: "    private func renegotiateScreenCaptureFormat(",
             before: "    /// A newer visibility command, peer, recovery epoch, or completed service owns any failure"
-        )
+        ))
         let committedBranch = try XCTUnwrap(
             method.range(of: "if context.finalAcknowledgementCommit.isCommitted {")
         )
         let successConsumption = try XCTUnwrap(
             method.range(
-                of: "screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()",
+                of: policyTransactionTokens("automaticResumeAttemptSucceeded()"),
                 range: committedBranch.upperBound..<method.endIndex
             )
         )
@@ -147,7 +147,13 @@ final class WorldwideScreenFormatRenegotiationSupersessionTests: XCTestCase {
             )
         )
 
+        let freshnessEpoch = try XCTUnwrap(
+            method.range(of: "beginPostResumeScreenVideoAdaptationEpoch()",
+                range: successConsumption.upperBound..<contextClear.lowerBound)
+        )
         XCTAssertLessThan(committedBranch.lowerBound, successConsumption.lowerBound)
+        XCTAssertLessThan(successConsumption.upperBound, freshnessEpoch.lowerBound)
+        XCTAssertLessThan(freshnessEpoch.upperBound, contextClear.lowerBound)
         XCTAssertLessThan(successConsumption.lowerBound, contextClear.lowerBound)
     }
 
@@ -169,6 +175,34 @@ final class WorldwideScreenFormatRenegotiationSupersessionTests: XCTestCase {
             currentRecoveryEpoch: currentRecoveryEpoch,
             serviceIsStopped: serviceIsStopped
         )
+    }
+
+
+    private func sourceTokens(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func ownerPublicationTokens(
+        policy: String = "screenVideoAdaptationPolicy",
+        revision: String = "screenVideoAdaptationPolicyRevision",
+        fast: String = "screenVideoAdaptationFastStatisticsAreAvailable",
+        lane: String = "screenVideoAdaptationOwner.lane",
+        evidence: String = "screenVideoAdaptationLastEvidenceTime",
+        minimum: String = "screenVideoAdaptationOwner.minimumCollectionSequence",
+        applied: String = "appliedScreenVideoRecommendation"
+    ) -> String {
+        sourceTokens("""
+        screenVideoAdaptationOwner = .init(policy: \(policy),
+            revision: \(revision), fastStatisticsAvailable: \(fast),
+            lane: \(lane), evidenceTime: \(evidence),
+            minimumCollectionSequence: \(minimum), applied: \(applied))
+        """)
+    }
+
+    private func policyTransactionTokens(_ mutation: String) -> String {
+        sourceTokens("var updatedPolicy = screenVideoAdaptationPolicy updatedPolicy.\(mutation)")
+            + " " + ownerPublicationTokens(policy: "updatedPolicy")
     }
 
     private func serviceSource() throws -> String {

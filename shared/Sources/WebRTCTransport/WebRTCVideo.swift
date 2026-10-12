@@ -173,6 +173,15 @@ public final class MacExternalVideoCapturer: @unchecked Sendable {
     private let source: LKRTCVideoSource
     private let capturer: LKRTCVideoCapturer
 
+    #if DEBUG
+    private let outputAdaptInvocationLockForTesting = NSLock()
+    private var outputAdaptInvocationsForTesting: UInt64 = 0
+
+    func outputAdaptInvocationCountForTesting() -> UInt64 {
+        outputAdaptInvocationLockForTesting.withLock { outputAdaptInvocationsForTesting }
+    }
+    #endif
+
     init(source: LKRTCVideoSource) {
         self.source = source
         capturer = LKRTCVideoCapturer(delegate: source)
@@ -180,6 +189,11 @@ public final class MacExternalVideoCapturer: @unchecked Sendable {
 
     /// Updates the native source's encoder-facing dimensions and frame-rate target.
     public func adaptOutput(width: Int32, height: Int32, framesPerSecond: Int32) {
+        #if DEBUG
+        outputAdaptInvocationLockForTesting.withLock {
+            outputAdaptInvocationsForTesting &+= 1
+        }
+        #endif
         source.adaptOutputFormat(toWidth: width, height: height, fps: framesPerSecond)
     }
 

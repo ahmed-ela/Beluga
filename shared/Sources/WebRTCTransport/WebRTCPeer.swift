@@ -8298,6 +8298,9 @@ public actor WebRTCPeer {
     public func applyScreenVideoEncodingLimits(
         _ limits: WebRTCScreenVideoEncodingLimits
     ) throws -> WebRTCScreenVideoEncodingUpdate {
+        #if DEBUG
+        screenVideoEncodingApplyInvocationsForTesting &+= 1
+        #endif
         try ensureOpen()
         guard role == .host, let localVideoSender else {
             throw WebRTCTransportError.invalidRole
@@ -8644,6 +8647,16 @@ public actor WebRTCPeer {
     }
 
     #if DEBUG
+    private var screenVideoEncodingApplyInvocationsForTesting: UInt64 = 0
+
+    func screenVideoEncodingApplyInvocationCountForTesting() -> UInt64 {
+        screenVideoEncodingApplyInvocationsForTesting
+    }
+
+    func screenVideoEncodingMutationGenerationForTesting() -> UInt64 {
+        screenVideoEncodingUpdateGeneration
+    }
+
     func screenVideoEncodingLimitsForTesting()
         -> WebRTCScreenVideoEncodingLimits? {
         localVideoSender.flatMap(Self.screenVideoEncodingLimits)

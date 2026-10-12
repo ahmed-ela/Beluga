@@ -2721,9 +2721,56 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
                 "automaticSuspensionDecision(\n            isCaptureActive: true"
             )
         )
-        XCTAssertTrue(
-            adaptationMethod.contains("screenVideoAdaptationPolicy = proposedPolicy")
+        let tokens = sourceTokens(adaptationMethod)
+        let proposalCopy = try XCTUnwrap(
+            tokens.range(of: "var proposedPolicy = screenVideoAdaptationPolicy")
         )
+        let regularMutation = try XCTUnwrap(
+            tokens.range(of: "changedRecommendation = proposedPolicy.update(",
+                range: proposalCopy.upperBound..<tokens.endIndex)
+        )
+        let finalFence = try XCTUnwrap(
+            tokens.range(
+                of: "guard peer === sourcePeer, peerGeneration == sourcePeerGeneration, "
+                    + "screenVideoAdaptationPolicyRevision == applyingPolicyRevision else { return }",
+                options: .backwards
+            )
+        )
+        let policyPublication = try XCTUnwrap(
+            tokens.range(of: ownerPublicationTokens(policy: "proposedPolicy"),
+                range: finalFence.upperBound..<tokens.endIndex)
+        )
+        let revisionPublication = try XCTUnwrap(
+            tokens.range(of: ownerPublicationTokens(revision: "screenVideoAdaptationPolicyRevision &+ 1"),
+                range: policyPublication.upperBound..<tokens.endIndex)
+        )
+        XCTAssertLessThan(proposalCopy.upperBound, regularMutation.lowerBound)
+        XCTAssertLessThan(regularMutation.upperBound, finalFence.lowerBound)
+        XCTAssertLessThan(finalFence.upperBound, policyPublication.lowerBound)
+        XCTAssertLessThan(policyPublication.upperBound, revisionPublication.lowerBound)
+    }
+
+
+    private func sourceTokens(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func ownerPublicationTokens(
+        policy: String = "screenVideoAdaptationPolicy",
+        revision: String = "screenVideoAdaptationPolicyRevision",
+        fast: String = "screenVideoAdaptationFastStatisticsAreAvailable",
+        lane: String = "screenVideoAdaptationOwner.lane",
+        evidence: String = "screenVideoAdaptationLastEvidenceTime",
+        minimum: String = "screenVideoAdaptationOwner.minimumCollectionSequence",
+        applied: String = "appliedScreenVideoRecommendation"
+    ) -> String {
+        sourceTokens("""
+        screenVideoAdaptationOwner = .init(policy: \(policy),
+            revision: \(revision), fastStatisticsAvailable: \(fast),
+            lane: \(lane), evidenceTime: \(evidence),
+            minimumCollectionSequence: \(minimum), applied: \(applied))
+        """)
     }
 
     func testSenderLimitedFloorEstimateProbesUpWithoutBlackoutWhenCapacityExpands() {

@@ -485,6 +485,13 @@ private func startupClarityMilliseconds(_ duration: Duration) -> Double {
         + Double(components.attoseconds) / 1_000_000_000_000_000
 }
 
+private func startupClarityEmitDiagnostic(_ message: String) throws {
+    // Finish the complete record before XCTest emits its completion on stderr.
+    // Buffered print can leave the tail of a large trace until after the test returns,
+    // embedding that completion in a diagnostic line and invalidating strict evidence.
+    try FileHandle.standardOutput.write(contentsOf: Data((message + "\n").utf8))
+}
+
 private func startupClarityJSONNumber(_ value: Double?) -> String {
     guard let value, value.isFinite else { return "null" }
     return String(
@@ -630,7 +637,7 @@ final class WebRTCStartupClarityExperimentTests: XCTestCase {
             XCTAssertEqual(evidence.errorCount, 0)
             let errors = await state.relayErrors
             XCTAssertEqual(errors, [])
-            print("STARTUP_NETWORK_BLACKOUT \(evidence)")
+            try startupClarityEmitDiagnostic("STARTUP_NETWORK_BLACKOUT \(evidence)")
         } catch {
             await startupClarityClose(host: host, viewer: viewer, relays: relays,
                 pump: nil, track: nil, renderer: renderer, networkRelay: networkRelay)
@@ -945,7 +952,7 @@ final class WebRTCStartupClarityExperimentTests: XCTestCase {
             let finalDecodedFPS = Double(observations.filter {
                 $0.receivedAt >= lastWindowStart && $0.receivedAt < deadline
             }.count) / 2
-            print(
+            try startupClarityEmitDiagnostic(
                 "STARTUP_POLICY_NATIVE_LOOPBACK {denseContent:true,contentMotion:cursorOnly,"
                     + "followsPolicyFPS:\(followsPolicyFPS),"
                     + "oneWayDelayMs:\(oneWayDelayMilliseconds ?? 0),"
@@ -978,7 +985,7 @@ final class WebRTCStartupClarityExperimentTests: XCTestCase {
             }
             if let networkRelay {
                 let evidence = networkRelay.snapshot()
-                print("STARTUP_NETWORK_RELAY \(evidence)")
+                try startupClarityEmitDiagnostic("STARTUP_NETWORK_RELAY \(evidence)")
                 XCTAssertEqual(evidence.mappedSideCount, 2)
                 XCTAssertGreaterThan(evidence.hostToViewer.forwardedDatagrams, 0)
                 XCTAssertGreaterThan(evidence.viewerToHost.forwardedDatagrams, 0)
@@ -1182,7 +1189,7 @@ final class WebRTCStartupClarityExperimentTests: XCTestCase {
             let decodedPixelsPerSource4 = Double(variant.expectedWidth) * 4 / 1_080
             let decodedPixelsPerSource8 = Double(variant.expectedWidth) * 8 / 1_080
 
-            print(
+            try startupClarityEmitDiagnostic(
                 "STARTUP_CLARITY {"
                     + "\"variant\":\"\(variant.name)\","
                     + "\"contentMode\":\"\(variant.denseContent ? "dense" : "scalar")\","

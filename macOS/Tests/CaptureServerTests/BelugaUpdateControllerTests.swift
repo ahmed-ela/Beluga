@@ -99,4 +99,71 @@ final class BelugaUpdateControllerTests: XCTestCase {
         }
         XCTAssertEqual(calls.snapshot, [])
     }
+
+    @MainActor func testActualRustMenuPolicyKeepsCorruptedPlanBlockedAndNeverStartsWorker() async throws {
+        let (bundle, root) = try bundle(); defer { try? FileManager.default.removeItem(at: root) }
+        let calls = Calls()
+        let controller = BelugaUpdateController(bundle: bundle, operations: .init(
+            hasFence: { _ in false }, begin: { _, _ in calls.add("unexpected-check") },
+            ready: { _, _ in calls.add("unexpected-ready") }),
+            availabilityResultMutation: { _, actual in
+                var forged = actual
+                forged.can_check ^= 1
+                return forged
+            })
+        controller.updateAdmission(idle)
+        controller.checkForUpdates(); controller.menuDidBecomeReady()
+        await controller.waitForCurrentOperation()
+        XCTAssertFalse(controller.canCheckForUpdates)
+        XCTAssertTrue(controller.isUpdateInProgress)
+        XCTAssertTrue(controller.statusText.hasPrefix("Update verification needs recovery."))
+        XCTAssertEqual(calls.snapshot, [])
+    }
+
+    @MainActor func testEveryNativeAdmissionCombinationUsesRustWithoutDispatching() async throws {
+        let (bundle, root) = try bundle(); defer { try? FileManager.default.removeItem(at: root) }
+        let calls = Calls()
+        let controller = BelugaUpdateController(bundle: bundle, operations: .init(
+            hasFence: { _ in false }, begin: { _, _ in calls.add("unexpected") }, ready: { _, _ in }))
+        for flags in 0..<32 {
+            let state = BelugaUpdateAdmission(isInteractiveApplication: flags & 1 != 0,
+                hasActiveMedia: flags & 2 != 0, hasPendingPairing: flags & 4 != 0,
+                hasAudioShares: flags & 8 != 0, teardownComplete: flags & 16 != 0)
+            controller.updateAdmission(state)
+            let expected = flags == 17
+            XCTAssertEqual(controller.canCheckForUpdates, expected)
+            XCTAssertFalse(controller.isUpdateInProgress)
+            XCTAssertEqual(controller.statusText, expected
+                ? "Updates are signed and verified before installation."
+                : "To update, finish sharing, quit Beluga, then reopen it before starting a stream.")
+        }
+        XCTAssertEqual(calls.snapshot, [])
+    }
+
+    @MainActor func testBusyPlanRefusalAfterTaskCreationNeverEntersCheckOrReadinessWorker() async throws {
+        for pending in [false, true] {
+            let (bundle, root) = try bundle(); defer { try? FileManager.default.removeItem(at: root) }
+            let calls = Calls()
+            let controller = BelugaUpdateController(bundle: bundle, operations: .init(
+                hasFence: { _ in pending }, begin: { _, _ in calls.add("unexpected-check") },
+                ready: { _, _ in calls.add("unexpected-ready") }),
+                availabilityResultMutation: { request, actual in
+                    guard request.flags & 64 != 0 else { return actual }
+                    var corrupt = actual
+                    corrupt.can_check ^= 1
+                    return corrupt
+                })
+            controller.updateAdmission(idle)
+            XCTAssertEqual(controller.canCheckForUpdates, !pending)
+            if pending { controller.menuDidBecomeReady() } else { controller.checkForUpdates() }
+            await controller.waitForCurrentOperation()
+            controller.updateAdmission(idle)
+            controller.checkForUpdates(); controller.menuDidBecomeReady()
+            await controller.waitForCurrentOperation()
+            XCTAssertEqual(calls.snapshot, [])
+            XCTAssertFalse(controller.canCheckForUpdates)
+            XCTAssertTrue(controller.isUpdateInProgress)
+            XCTAssertTrue(controller.statusText.hasPrefix("Update verification needs recovery."))
+        }
+    }
 }

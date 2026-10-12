@@ -866,8 +866,39 @@ actor WorldwideScreenService {
     private let framesPerSecond: Int
     private let maximumVideoBitrate: Int
     private let featureProfile: WorldwideScreenServiceFeatureProfile
-    private var screenVideoAdaptationPolicy:
-        WorldwideScreenVideoAdaptationPolicy
+    // Sole writable adaptation tuple. Resource/dispatch owners stay in this actor.
+    private var screenVideoAdaptationOwner: BelugaNetworkAdaptationOwnerValue
+    // One synchronous publication scope per actor; never a second Owner store.
+    private let screenVideoAdaptationOwnerBoundary = BelugaNetworkAdaptationOwnerBoundary()
+    private static let allNetworkAdaptationOwnerWritersAreEnrolled = false
+    private static let ownedStopPublicationIsEnrolled = false
+    private var activeNativeAdaptationDispatch: BelugaNetworkAdaptationNativeAttempt?
+    private var nativeAdaptationDispatchPhase: NativeDispatchPhase?
+    private var unresolvedNativeAdaptationDispatch: NativeDispatchUnresolvedRecord?
+    #if DEBUG
+    // Only the fixed inert fixture below constructs/arms this one bounded use.
+    private var nativeDispatchPostEffectFixtureRefusal: BelugaNetworkAdaptationPostEffectFixtureRefusal?
+    private var nativeDispatchReturnFixtureUse: NativeDispatchReturnFixtureUse?
+    #endif
+    private enum NativeOwnerStopPublicationStage { case endShow, stopSampling, finished }
+    private var nativeOwnerStopPublicationStage = NativeOwnerStopPublicationStage.endShow
+    private var pendingNativeOwnerStopEntry: BelugaNetworkAdaptationActualStopEntry?
+    private var pendingNativeOwnerEpochEntry: BelugaNetworkAdaptationActualEpochEntry?
+    private var pendingNativeOwnerResetEntry: BelugaNetworkAdaptationActualResetEntry?
+    #if DEBUG
+    // Real Stop activation remains inert-test-only until every writer is enrolled.
+    private var nativeOwnerStopPublicationEnabled = false
+    private var nativeOwnerStopPublicationCuts: [NativeOwnerStopPublicationCut] = []
+    private var nativeOwnerStopPublicationAttempts: [UInt32] = []
+    private var nativeOwnerEpochPublicationEnabled = false
+    private var nativeOwnerResetPublicationEnabled = false
+    private var nativeOwnerResetFault = NativeOwnerResetPublicationFault.none
+    private var nativeOwnerResetAttemptedOperations: [UInt32] = []
+    private var nativeOwnerResetAfterPrimary: NativeOwnerPublicationSnapshotObservation?
+    #endif
+    private var screenVideoAdaptationPolicy: WorldwideScreenVideoAdaptationPolicy {
+        screenVideoAdaptationOwner.policy
+    }
     private let remoteInputController: MacRemoteInputController
     private let remoteInputOwnerToken = MacRemoteInputOwnerToken()
     private let remoteMediaController: any MacRemoteMediaControlling
@@ -909,14 +940,30 @@ actor WorldwideScreenService {
     private let audioClientDiagnosticsReportWriter:
         WorldwideAudioClientDiagnosticsReportWriter?
     private var screenVideoAdaptationTask: Task<Void, Never>?
-    private var screenVideoAdaptationFastStatisticsAreAvailable = false
-    private var screenVideoAdaptationPolicyRevision: UInt64 = 0
-    private var screenVideoAdaptationEvidenceLane:
-        ScreenVideoAdaptationEvidenceLane?
-    private var screenVideoAdaptationLastEvidenceTime:
-        ContinuousClock.Instant?
-    private var screenVideoAdaptationFreshnessFence =
-        WorldwideScreenVideoAdaptationFreshnessFence()
+    private var screenVideoAdaptationFastStatisticsAreAvailable: Bool {
+        screenVideoAdaptationOwner.fastStatisticsAvailable
+    }
+    private var screenVideoAdaptationPolicyRevision: UInt64 {
+        screenVideoAdaptationOwner.revision
+    }
+    private var screenVideoAdaptationEvidenceLane: ScreenVideoAdaptationEvidenceLane? {
+        switch screenVideoAdaptationOwner.lane {
+        case .fastSender: return .fastSender
+        case .ordinaryFallback: return .ordinaryFallback
+        case nil: return nil
+        }
+    }
+    private var screenVideoAdaptationLastEvidenceTime: ContinuousClock.Instant? {
+        screenVideoAdaptationOwner.evidenceTime
+    }
+    private var screenVideoAdaptationFreshnessFence: WorldwideScreenVideoAdaptationFreshnessFence {
+        // Read-only one-field projection, never another stored freshness owner.
+        var fence = WorldwideScreenVideoAdaptationFreshnessFence()
+        if let minimum = screenVideoAdaptationOwner.minimumCollectionSequence {
+            fence.beginPostResumeEpoch(minimumCollectionSequence: minimum)
+        }
+        return fence
+    }
     private var screenStartupDiagnostics = WorldwideScreenStartupDiagnostics()
     private var keyFrameControlTask: Task<Void, Never>?
     private var remoteMediaCommandTask: Task<Void, Never>?
@@ -969,6 +1016,9 @@ actor WorldwideScreenService {
     private var screenClientDiagnosticsExpectedScreenRequestID: UInt64?
     private var screenClientDiagnosticsExpectationStartedUptime: TimeInterval?
     private var screenClientDiagnosticsSilenceWasReported = false
+    private enum ResumeOwnerCompletionClaim: Equatable, Sendable {
+        case unclaimed, admitted, refused, published, terminalClaimed
+    }
     private struct AutomaticScreenMediaResumeContext: Sendable {
         let binding: WorldwideScreenMediaSuspensionCoordinator.Binding
         let notice: WebRTCScreenMediaSuspensionNotice
@@ -981,6 +1031,9 @@ actor WorldwideScreenService {
         var boundary: WorldwideScreenSampleSink.ResumeMarkerBoundary?
         var markerReady: WebRTCScreenMediaMarkerReady?
         var markerPresentation: WebRTCScreenMediaMarkerPresentation?
+        var ownerCompletionClaim: ResumeOwnerCompletionClaim = .unclaimed
+        var ownerCompletionEntryID: ObjectIdentifier? = nil
+        var ownerResetEntryID: ObjectIdentifier? = nil
     }
     private var automaticScreenMediaResumeContext:
         AutomaticScreenMediaResumeContext?
@@ -999,8 +1052,9 @@ actor WorldwideScreenService {
     private var captureDisplayID: UInt32?
     private var captureAuthoritativeDisplayBounds: CGRect?
     private var captureVideoBaseDimensions: ScreenVideoPixelDimensions?
-    private var appliedScreenVideoRecommendation:
-        WorldwideScreenVideoEncodingRecommendation?
+    private var appliedScreenVideoRecommendation: WorldwideScreenVideoEncodingRecommendation? {
+        screenVideoAdaptationOwner.applied
+    }
     private var audioSource: SystemAudioCaptureSource?
     private var audioSink: WorldwideSystemAudioSampleSink?
     private var audioAuthorization: WebRTCAudioAuthorization?
@@ -1235,10 +1289,13 @@ actor WorldwideScreenService {
             .allowsAudioClientDiagnostics
                 ? audioRouting.makeDiagnosticsWriter()
                 : nil
-        screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
-            configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
-            baseFramesPerSecond: framesPerSecond
-        )
+        screenVideoAdaptationOwner = .init(policy: WorldwideScreenVideoAdaptationPolicy(
+                configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
+                baseFramesPerSecond: framesPerSecond
+            ),
+            revision: 0, fastStatisticsAvailable: false,
+            lane: nil, evidenceTime: nil,
+            minimumCollectionSequence: nil, applied: nil)
         self.remoteInputController = remoteInputController
         self.remoteMediaController = remoteMediaController
         self.captureLifetime = captureLifetime
@@ -1315,10 +1372,13 @@ actor WorldwideScreenService {
             .allowsAudioClientDiagnostics
                 ? audioRouting.makeDiagnosticsWriter()
                 : nil
-        screenVideoAdaptationPolicy = WorldwideScreenVideoAdaptationPolicy(
-            configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
-            baseFramesPerSecond: framesPerSecond
-        )
+        screenVideoAdaptationOwner = .init(policy: WorldwideScreenVideoAdaptationPolicy(
+                configuredTotalRTPBitrateBps: effectiveMaximumVideoBitrate,
+                baseFramesPerSecond: framesPerSecond
+            ),
+            revision: 0, fastStatisticsAvailable: false,
+            lane: nil, evidenceTime: nil,
+            minimumCollectionSequence: nil, applied: nil)
         self.remoteInputController = remoteInputController
         self.remoteMediaController = remoteMediaController
         self.captureLifetime = captureLifetime
@@ -1409,11 +1469,34 @@ actor WorldwideScreenService {
             }
             return
         }
+        let plan = beginStop()
+        await finishStop(consume plan)
+    }
+
+    /// Only the actor's synchronous shutdown claim can create this one-use plan.
+    /// Native sources and the current peer stay owned by the actor, not a snapshot.
+    private struct ServiceStopPlan: ~Copyable {
+        let coordinator: ICERecoveryCoordinator?
+        let teardownWatchdog: Task<Void, Never>?
+    }
+
+    /// Claims teardown and closes every callback gate without yielding the actor.
+    /// Every caller must immediately pass the plan to the mandatory awaited tail.
+    private func beginStop() -> ServiceStopPlan {
         let teardownWatchdog = makeServiceTeardownWatchdog()
         isStopped = true
         stopIsInProgress = true
-        screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-        defer { finishStopping() }
+        let ownerStopOrigin = networkAdaptationActualStopPublicationOrigin()
+        let usesActualOwnerStop = ownerStopOrigin != nil
+        if let ownerStopOrigin { applyNativeOwnerStopPublication(.endShow, origin: ownerStopOrigin) }
+        if !usesActualOwnerStop {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.endFloorRecoveryVisibility()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
         safeOutputInvariantNeedsRedrive = false
         safeOutputInvariantVerificationWasFailing = false
         _ = resetSafeOutputRetryPolicy(context: "service stop")
@@ -1442,11 +1525,33 @@ actor WorldwideScreenService {
         }
         screenVideoAdaptationTask?.cancel()
         screenVideoAdaptationTask = nil
-        screenVideoAdaptationFastStatisticsAreAvailable = false
-        screenVideoAdaptationEvidenceLane = nil
-        screenVideoAdaptationLastEvidenceTime = nil
-        screenVideoAdaptationFreshnessFence.reset()
-        screenVideoAdaptationPolicyRevision &+= 1
+        if let ownerStopOrigin { applyNativeOwnerStopPublication(.stopSampling, origin: ownerStopOrigin) }
+        if !usesActualOwnerStop {
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: false,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: nil, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: nil,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            do {
+                var updatedFreshnessFence = screenVideoAdaptationFreshnessFence
+                updatedFreshnessFence.reset()
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: updatedFreshnessFence.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
         keyFrameControlTask?.cancel()
         keyFrameControlTask = nil
         resetRemoteMediaCommandQueue()
@@ -1480,7 +1585,13 @@ actor WorldwideScreenService {
         revokeSystemAudioAuthorization()
         captureSink?.stopForwarding()
         audioSink?.stopForwarding()
-        await coordinator?.cancel()
+        return ServiceStopPlan(coordinator: coordinator, teardownWatchdog: teardownWatchdog)
+    }
+
+    /// Consuming the plan forbids a second tail; waiters join through watchdog exit.
+    private func finishStop(_ plan: consuming ServiceStopPlan) async {
+        defer { finishStopping() }
+        await plan.coordinator?.cancel()
         var nativeScreenStopNeedsRetry = false
         do {
             try await stopScreenCapture()
@@ -1520,8 +1631,8 @@ actor WorldwideScreenService {
         await signaling.close()
         completionContinuation.yield(())
         completionContinuation.finish()
-        teardownWatchdog?.cancel()
-        await teardownWatchdog?.value
+        plan.teardownWatchdog?.cancel()
+        await plan.teardownWatchdog?.value
     }
 
     /// Joins the actor invocation that owns complete peer, audio, screen, and signaling teardown.
@@ -1545,7 +1656,23 @@ actor WorldwideScreenService {
     /// The coordinator uses this terminal ownership signal to quarantine the whole host instead
     /// of advertising a new media rendezvous while the exact retained `SCStream` may still run.
     func hasUnconfirmedNativeCaptureStop() -> Bool {
-        isStopped && (captureSource != nil || audioSource != nil)
+        // A detached unresolved completion remains owned even when the current
+        // capture slot is nil or belongs to a newer Show. Never clear this from
+        // generic stop without separately proven detached lifetime disposal.
+        if nativeDispatchHasUnconfirmedBaseStop() { return true }
+        guard let active = activeNativeAdaptationDispatch else {
+            // A malformed unmatched phase is uncertainty, not disposal proof.
+            return nativeAdaptationDispatchPhase != nil
+        }
+        if case let .ownStopTail(completion)? = nativeAdaptationDispatchPhase,
+           completion.attempt === active,
+           nativeDispatchOwnsExactClaimedStopTail(completion) {
+            // This exact claimant already settled its SDK completion. Native
+            // source uncertainty remains in the base predicate; no later
+            // sender/FPS/rollback can be authorized after this owned tail.
+            return false
+        }
+        return true // Waiting SDK/settlement/rollback custody is still owned.
     }
 
     // MARK: - Rendezvous signaling
@@ -1687,13 +1814,42 @@ actor WorldwideScreenService {
         let generation = peerGeneration
         resetAutomaticScreenMediaSuspensionState()
         resetScreenClientDiagnosticsFreshness()
-        screenVideoAdaptationPolicy.bind(toPeerGeneration: generation)
-        screenVideoAdaptationPolicyRevision &+= 1
-        screenVideoAdaptationFastStatisticsAreAvailable = false
-        screenVideoAdaptationEvidenceLane = nil
-        screenVideoAdaptationLastEvidenceTime = nil
-        screenVideoAdaptationFreshnessFence.reset()
-        appliedScreenVideoRecommendation = nil
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.bind(toPeerGeneration: generation)
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: false,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: nil, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: nil,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        do {
+            var updatedFreshnessFence = screenVideoAdaptationFreshnessFence
+            updatedFreshnessFence.reset()
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: updatedFreshnessFence.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: nil)
         highestRestartRequestID = nil
         peerIsConnected = false
         iceIsConnected = false
@@ -1719,16 +1875,14 @@ actor WorldwideScreenService {
             throw WorldwideScreenServiceError.nativeSystemAudioStopUnconfirmed
         }
 
-        let coordinator = ICERecoveryCoordinator(
+        let coordinator = makeICERecoveryCoordinator(
+            peerGeneration: generation,
             restart: { [weak self] in
                 guard let self else { throw CancellationError() }
                 try await self.beginICERestart(
                     peer: peer,
                     peerGeneration: generation
                 )
-            },
-            exhausted: { [weak self] in
-                await self?.recoveryDidExhaust(peerGeneration: generation)
             }
         )
         self.peer = peer
@@ -1787,7 +1941,10 @@ actor WorldwideScreenService {
             interval: Self.screenVideoAdaptationFallbackStatisticsInterval
         )
         try await peer.start()
-        screenVideoAdaptationFastStatisticsAreAvailable = false
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: false,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         screenVideoAdaptationTask = Task { [weak self] in
             await self?.sampleScreenVideoAdaptationStatistics(
                 sourcePeer: peer,
@@ -2607,10 +2764,26 @@ actor WorldwideScreenService {
         case .routeChanged(let route):
             logger.info("Worldwide WebRTC route: \(route.kind.rawValue)")
             let policyBeforeRouteEvent = screenVideoAdaptationPolicy
-            screenVideoAdaptationPolicyRevision &+= 1
-            screenVideoAdaptationPolicy.invalidateSelectedRoute()
-            screenVideoAdaptationEvidenceLane = nil
-            screenVideoAdaptationLastEvidenceTime = nil
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            do {
+                var updatedPolicy = screenVideoAdaptationPolicy
+                updatedPolicy.invalidateSelectedRoute()
+                screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: nil, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: nil,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
             logger.debug(
                 "Worldwide screen startup boundary event=routeChanged "
                     + "peerGeneration=\(sourcePeerGeneration) showEpoch=\(screenVisibilityCommandEpoch) "
@@ -2924,11 +3097,27 @@ actor WorldwideScreenService {
         } ?? false
         if let previousLane = screenVideoAdaptationEvidenceLane,
            previousLane != lane || exceededMaximumGap {
-            screenVideoAdaptationPolicy.resetIncompleteEvidenceWindow()
-            screenVideoAdaptationPolicyRevision &+= 1
+            do {
+                var updatedPolicy = screenVideoAdaptationPolicy
+                updatedPolicy.resetIncompleteEvidenceWindow()
+                screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         }
-        screenVideoAdaptationEvidenceLane = lane
-        screenVideoAdaptationLastEvidenceTime = now
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: lane == .fastSender ? .fastSender : .ordinaryFallback, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: now,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         return screenVideoAdaptationPolicyRevision
     }
 
@@ -2967,7 +3156,10 @@ actor WorldwideScreenService {
             }
             logNativeScreenProbeDiagnostics()
             guard captureSource != nil else {
-                screenVideoAdaptationFastStatisticsAreAvailable = false
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: false,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 continue
             }
             guard automaticScreenMediaResumeContext == nil else {
@@ -3015,7 +3207,10 @@ actor WorldwideScreenService {
                screenVideoAdaptationPolicyRevision
                 == expectedPolicyRevision {
                 if !capacityProbeOnly {
-                    screenVideoAdaptationFastStatisticsAreAvailable = true
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: true,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 }
                 let adaptationRevision = capacityProbeOnly
                     ? expectedPolicyRevision
@@ -3034,7 +3229,10 @@ actor WorldwideScreenService {
                 // makes the ordinary one-second event the authoritative fallback until a fresh
                 // sender-scoped sample succeeds.
                 if !capacityProbeOnly {
-                    screenVideoAdaptationFastStatisticsAreAvailable = false
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: false,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 }
                 // A missing report cannot extend a temporary ceiling indefinitely, even if the
                 // ordinary statistics lane is also stalled. Expiry never supplies health proof.
@@ -3147,7 +3345,12 @@ actor WorldwideScreenService {
                     peerGeneration: sourcePeerGeneration,
                     isCaptureActive: isCaptureActive
                 )
-            guard changedRecommendation != nil else { return }
+            // A terminal native fault must survive a no-op recommendation. Retry restrictive
+            // limits only until the applied sender matches; never reapply every faulted tick.
+            guard changedRecommendation != nil
+                || appliedScreenVideoRecommendation != proposedPolicy.currentRecommendation
+                || (proposedPolicy.hasNativeAdaptationPolicyFault
+                    && !screenVideoAdaptationPolicy.hasNativeAdaptationPolicyFault) else { return }
         }
         let recommendation = changedRecommendation
             ?? proposedPolicy.currentRecommendation
@@ -3271,8 +3474,14 @@ actor WorldwideScreenService {
                     isAutomaticallySuspended:
                         screenMediaSuspension.isAutomaticallySuspended
                 )
-                screenVideoAdaptationPolicy = proposedPolicy
-                screenVideoAdaptationPolicyRevision &+= 1
+                screenVideoAdaptationOwner = .init(policy: proposedPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 if decision == .resume {
                     await beginAutomaticScreenMediaResumeIfPossible(
                         peer: sourcePeer,
@@ -3283,6 +3492,23 @@ actor WorldwideScreenService {
             return
         }
         var applyingPolicyRevision = expectedPolicyRevision
+        if proposedPolicy.hasNativeAdaptationPolicyFault {
+            var faultRetention = screenVideoAdaptationPolicy
+            // This actor's peer/revision gate authorizes the first bound lifetime as well.
+            faultRetention.bind(toPeerGeneration: sourcePeerGeneration)
+            faultRetention.retainNativeAdaptationPolicyFault(from: proposedPolicy)
+            if faultRetention != screenVideoAdaptationPolicy {
+                screenVideoAdaptationOwner = .init(policy: faultRetention,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                applyingPolicyRevision = screenVideoAdaptationPolicyRevision
+            }
+        }
         if changedRecommendation != nil
             || appliedScreenVideoRecommendation != recommendation {
             guard let source = captureSource,
@@ -3298,8 +3524,14 @@ actor WorldwideScreenService {
             attemptConsumption.retainFloorRecoveryAttemptConsumption(from: proposedPolicy)
             if attemptConsumption != screenVideoAdaptationPolicy {
                 // The attempt belongs to this Show even if native apply is later superseded.
-                screenVideoAdaptationPolicy = attemptConsumption
-                screenVideoAdaptationPolicyRevision &+= 1
+                screenVideoAdaptationOwner = .init(policy: attemptConsumption,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 applyingPolicyRevision = screenVideoAdaptationPolicyRevision
             }
             do {
@@ -3348,7 +3580,10 @@ actor WorldwideScreenService {
                         )
                     )
                 }
-                appliedScreenVideoRecommendation = recommendation
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: recommendation)
                 logger.debug(
                     "Worldwide screen capacity nativeApply=accepted "
                         + "peerGeneration=\(sourcePeerGeneration) policyRevision=\(applyingPolicyRevision) "
@@ -3390,25 +3625,58 @@ actor WorldwideScreenService {
                 let cancelledFloorRecoveryProbe =
                     screenVideoAdaptationPolicy.floorRecoveryProbeIsActive
                         && proposedPolicy.floorRecoveryProbeWasCancelled
-                screenVideoAdaptationPolicy
-                    .retainStartupSpatialModeTerminalState(from: proposedPolicy)
-                screenVideoAdaptationPolicy.retainFloorRecoveryAttemptConsumption(
-                    from: proposedPolicy
-                )
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy
+                        .retainStartupSpatialModeTerminalState(from: proposedPolicy)
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy.retainFloorRecoveryAttemptConsumption(
+                        from: proposedPolicy
+                    )
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
                 if cancelledFloorRecoveryProbe
                     || (capacityProbeOnly
                         && screenVideoAdaptationPolicy.applicationLimitedProbeOriginTier != nil
                         && proposedPolicy.applicationLimitedProbeOriginTier == nil) {
                     // A failed cap reduction must not erase a terminal floor or fast negative.
-                    screenVideoAdaptationPolicy = proposedPolicy
-                    screenVideoAdaptationPolicyRevision &+= 1
+                    screenVideoAdaptationOwner = .init(policy: proposedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 } else if capacityProbeOnly {
-                    screenVideoAdaptationPolicy.retainCapacityProbeObservationIdentity(
-                        from: proposedPolicy
-                    )
-                    screenVideoAdaptationPolicyRevision &+= 1
+                    do {
+                        var updatedPolicy = screenVideoAdaptationPolicy
+                        updatedPolicy.retainCapacityProbeObservationIdentity(
+                            from: proposedPolicy
+                        )
+                        screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                    }
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 } else {
-                    screenVideoAdaptationPolicyRevision &+= 1
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 }
                 return
             }
@@ -3420,8 +3688,14 @@ actor WorldwideScreenService {
                 == applyingPolicyRevision else {
             return
         }
-        screenVideoAdaptationPolicy = proposedPolicy
-        screenVideoAdaptationPolicyRevision &+= 1
+        screenVideoAdaptationOwner = .init(policy: proposedPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
     }
 
     private func beginAutomaticScreenMediaResumeIfPossible(
@@ -3445,8 +3719,18 @@ actor WorldwideScreenService {
         ) else {
             return
         }
-        screenVideoAdaptationPolicy.automaticResumeAttemptBegan()
-        screenVideoAdaptationPolicyRevision &+= 1
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.automaticResumeAttemptBegan()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         automaticScreenMediaResumeContext = AutomaticScreenMediaResumeContext(
             binding: binding,
             notice: notice,
@@ -3517,7 +3801,10 @@ actor WorldwideScreenService {
                     framesPerSecond: Int32(probeFramesPerSecond)
                 )
                 // The probe ceiling is temporary and must be restored after final presentation.
-                appliedScreenVideoRecommendation = nil
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: nil)
             }
 
             let boundary = try await source.performSampleDeliveryBarrier {
@@ -3627,17 +3914,47 @@ actor WorldwideScreenService {
     /// evidence from the preceding encoder/visibility epoch.
     private func beginPostResumeScreenVideoAdaptationEpoch() {
         if let peer {
-            screenVideoAdaptationFreshnessFence.beginPostResumeEpoch(
-                minimumCollectionSequence:
-                    peer.minimumNextStatisticsCollectionSequence()
-            )
+            do {
+                var updatedFreshnessFence = screenVideoAdaptationFreshnessFence
+                updatedFreshnessFence.beginPostResumeEpoch(
+                    minimumCollectionSequence:
+                        peer.minimumNextStatisticsCollectionSequence()
+                )
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: updatedFreshnessFence.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
         } else {
-            screenVideoAdaptationFreshnessFence.reset()
+            do {
+                var updatedFreshnessFence = screenVideoAdaptationFreshnessFence
+                updatedFreshnessFence.reset()
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: updatedFreshnessFence.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
         }
-        screenVideoAdaptationPolicy.resetIncompleteEvidenceWindow()
-        screenVideoAdaptationEvidenceLane = nil
-        screenVideoAdaptationLastEvidenceTime = nil
-        screenVideoAdaptationPolicyRevision &+= 1
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.resetIncompleteEvidenceWindow()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: nil, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: nil,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
     }
 
     private func automaticScreenMediaResumeTimedOut(
@@ -3671,7 +3988,14 @@ actor WorldwideScreenService {
             // The irreversible send won the same latch. The viewer can already uncover, so a
             // concurrent display/route lifecycle owns any subsequent capture transition.
             cancelAutomaticScreenMediaResumeTimeout()
-            screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+            do {
+                var updatedPolicy = screenVideoAdaptationPolicy
+                updatedPolicy.automaticResumeAttemptSucceeded()
+                screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
             beginPostResumeScreenVideoAdaptationEpoch()
             automaticScreenMediaResumeContext = nil
             return
@@ -3706,8 +4030,18 @@ actor WorldwideScreenService {
             logicalScreenIsStillRequested: logicalScreenIsStillRequested
         )
         let failureDiagnostic = screenMediaSuspension.diagnosticSnapshot
-        screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
-        screenVideoAdaptationPolicyRevision &+= 1
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.automaticResumeAttemptFailed()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         await sourcePeer.cancelScreenMediaResumeProbe(
             attemptID: attemptID,
             reason: reason
@@ -4122,8 +4456,6 @@ actor WorldwideScreenService {
                 activeInputCapability = nil
                 activeInputAuthorization = nil
             }
-            screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
-            screenVideoAdaptationPolicyRevision &+= 1
         } catch {
             await failAutomaticScreenMediaResume(
                 peer: sourcePeer,
@@ -4136,16 +4468,53 @@ actor WorldwideScreenService {
         // The ACK is irreversible and already atomically bound to this sink generation. A newer
         // lifecycle may nevertheless have taken ownership immediately afterward; in that case its
         // cleanup remains authoritative and this completed older task must not mutate it.
-        guard peer === sourcePeer,
+        guard !isStopped,
+              let currentPeer = peer,
+              currentPeer === sourcePeer,
               peerGeneration == sourcePeerGeneration,
-              captureSink === sink,
-              captureForwardingAuthorization === forwardingAuthorization,
+              context.binding.peerGeneration == sourcePeerGeneration,
+              screenVisibilityCommandEpoch == context.binding.visibilityCommandEpoch,
+              recoveryProofEpoch == context.binding.recoveryEpoch,
+              let activeScreenRequestID = screenMediaSuspension.activeScreenRequestID,
+              activeScreenRequestID == context.notice.screenRequestID,
+              let currentSink = captureSink,
+              currentSink === sink,
+              let currentForwarding = captureForwardingAuthorization,
+              currentForwarding === forwardingAuthorization,
               let completed = automaticScreenMediaResumeContext,
               completed.attemptID == context.attemptID,
               completed.binding == context.binding,
+              completed.notice == context.notice,
+              completed.finalAcknowledgementCommit === context.finalAcknowledgementCommit,
+              completed.finalAcknowledgementCommit.isCommitted,
+              let completedBoundary = completed.boundary,
+              completedBoundary == boundary,
+              completed.markerReady == context.markerReady,
+              completed.markerPresentation == context.markerPresentation,
+              let completedProbe = completed.probeAuthorization,
+              completedProbe === probeAuthorization,
+              let completedForwarding = completed.forwardingAuthorization,
+              completedForwarding === forwardingAuthorization,
               screenMediaSuspension.owns(context.binding) else {
             return
         }
+
+        // Consume success only after the original committed attempt is still owned. Use the
+        // current tuple: a route event during the ACK await may have advanced its revision and
+        // cleared evidence. Probe revocation is expected after ACK; forwarding can also be
+        // retired by a display callback before its actor-owned rebuild runs.
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.automaticResumeAttemptSucceeded()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
 
         let recommendation = screenVideoAdaptationPolicy.currentRecommendation
         guard let source = captureSource,
@@ -4154,7 +4523,10 @@ actor WorldwideScreenService {
               let baseDimensions = captureVideoBaseDimensions else {
             beginPostResumeScreenVideoAdaptationEpoch()
             automaticScreenMediaResumeContext = nil
-            appliedScreenVideoRecommendation = nil
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: nil)
             logger.info("Worldwide screen video resumed after exact receiver presentation")
             return
         }
@@ -4194,7 +4566,10 @@ actor WorldwideScreenService {
                     recommendation.maximumFramesPerSecond
                 )
             )
-            appliedScreenVideoRecommendation = recommendation
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: recommendation)
             beginPostResumeScreenVideoAdaptationEpoch()
             automaticScreenMediaResumeContext = nil
         } catch {
@@ -4206,7 +4581,10 @@ actor WorldwideScreenService {
                 beginPostResumeScreenVideoAdaptationEpoch()
                 automaticScreenMediaResumeContext = nil
             }
-            appliedScreenVideoRecommendation = nil
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: nil)
             logger.error(
                 "Worldwide screen resumed with its probe ceiling: "
                     + error.localizedDescription
@@ -4230,13 +4608,34 @@ actor WorldwideScreenService {
         cancelAutomaticScreenMediaResumeTimeout()
         if let context = automaticScreenMediaResumeContext {
             if context.finalAcknowledgementCommit.claimFailure() {
-                screenVideoAdaptationPolicy.automaticResumeAttemptFailed()
-                screenVideoAdaptationPolicyRevision &+= 1
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy.automaticResumeAttemptFailed()
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
             } else {
-                screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy.automaticResumeAttemptSucceeded()
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
                 beginPostResumeScreenVideoAdaptationEpoch()
             }
         }
+        retireAutomaticScreenMediaResumeNativeContext()
+    }
+
+    private func retireAutomaticScreenMediaResumeNativeContext() {
         automaticScreenMediaResumeContext?.probeAuthorization?.revoke()
         automaticScreenMediaResumeContext?.forwardingAuthorization?.revoke()
         automaticScreenMediaResumeContext = nil
@@ -4267,8 +4666,18 @@ actor WorldwideScreenService {
     /// is acknowledged only after native stop succeeds; every uncertainty path revokes media.
     private func handleControlRequest(_ request: WebRTCControlRequest) async {
         guard let peer else {
-            screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-            screenVideoAdaptationPolicyRevision &+= 1
+            do {
+                var updatedPolicy = screenVideoAdaptationPolicy
+                updatedPolicy.endFloorRecoveryVisibility()
+                screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
             _ = await stopScreenCaptureOrCloseSession(
                 context: "a control request arrived without a peer"
             )
@@ -4292,14 +4701,31 @@ actor WorldwideScreenService {
                 screenVisibilityCommandEpoch = 1
             }
             if request.command == .showScreen {
-                screenVideoAdaptationPolicy.beginFloorRecoveryVisibility(
-                    peerGeneration: peerGeneration,
-                    showEpoch: screenVisibilityCommandEpoch
-                )
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy.beginFloorRecoveryVisibility(
+                        peerGeneration: peerGeneration,
+                        showEpoch: screenVisibilityCommandEpoch
+                    )
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
             } else {
-                screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy.endFloorRecoveryVisibility()
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
             }
-            screenVideoAdaptationPolicyRevision &+= 1
+            screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
             // Visibility commands own the serial control lane immediately. A deferred key-frame
             // acknowledgement must yield before Hide stops capture or Show starts a new generation.
             keyFrameControlTask?.cancel()
@@ -4410,8 +4836,18 @@ actor WorldwideScreenService {
                     if self.peer === peer,
                        peerGeneration == visibilityPeerGeneration,
                        screenVisibilityCommandEpoch == visibilityCommandEpoch {
-                        screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-                        screenVideoAdaptationPolicyRevision &+= 1
+                        do {
+                            var updatedPolicy = screenVideoAdaptationPolicy
+                            updatedPolicy.endFloorRecoveryVisibility()
+                            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                        }
+                        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                     }
                     _ = await stopScreenCaptureOrCloseSession(
                         context: "screen authorization changed during Active acknowledgement"
@@ -4423,11 +4859,21 @@ actor WorldwideScreenService {
                 if self.peer === peer,
                    peerGeneration == visibilityPeerGeneration,
                    screenVisibilityCommandEpoch == visibilityCommandEpoch {
-                    screenVideoAdaptationPolicy.activateFloorRecoveryVisibility(
-                        peerGeneration: visibilityPeerGeneration,
-                        showEpoch: visibilityCommandEpoch
-                    )
-                    screenVideoAdaptationPolicyRevision &+= 1
+                    do {
+                        var updatedPolicy = screenVideoAdaptationPolicy
+                        updatedPolicy.activateFloorRecoveryVisibility(
+                            peerGeneration: visibilityPeerGeneration,
+                            showEpoch: visibilityCommandEpoch
+                        )
+                        screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                    }
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 }
                 activateAutomaticScreenMediaSuspensionOwnership(
                     screenRequestID: request.id
@@ -4436,8 +4882,18 @@ actor WorldwideScreenService {
                 if self.peer === peer,
                    peerGeneration == visibilityPeerGeneration,
                    screenVisibilityCommandEpoch == visibilityCommandEpoch {
-                    screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-                    screenVideoAdaptationPolicyRevision &+= 1
+                    do {
+                        var updatedPolicy = screenVideoAdaptationPolicy
+                        updatedPolicy.endFloorRecoveryVisibility()
+                        screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                            revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                    }
+                    screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                        revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
                 }
                 screenMediaSuspension.retire()
                 if isNativeScreenStopFailure(error) {
@@ -4464,7 +4920,14 @@ actor WorldwideScreenService {
             )
             // Hide and a new Show can complete between statistics polls. Retire old RTT health
             // and in-flight reports synchronously, without resetting the native watermark.
-            screenVideoAdaptationPolicy.invalidateRoundTripTimeObservation()
+            do {
+                var updatedPolicy = screenVideoAdaptationPolicy
+                updatedPolicy.invalidateRoundTripTimeObservation()
+                screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+            }
             beginPostResumeScreenVideoAdaptationEpoch()
             if recoveryProofRequired {
                 let proofRequest = PendingRecoveryProofRequest(
@@ -5309,8 +5772,18 @@ actor WorldwideScreenService {
     /// Revokes both media gates before asynchronously stopping their native sources.
     private func stopCaptureForTransportUncertainty(_ reason: String) async {
         // Revoke both media gates before either asynchronous ScreenCaptureKit stop begins.
-        screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-        screenVideoAdaptationPolicyRevision &+= 1
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.endFloorRecoveryVisibility()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         revokeCaptureAuthorization()
         pauseSystemAudioForTransportUncertainty()
         captureSink?.stopForwarding()
@@ -5360,8 +5833,18 @@ actor WorldwideScreenService {
     /// Enters fail-closed recovery and invalidates any pre-uncertainty authorization.
     private func enterRecovery(reason: String) async {
         isRecovering = true
-        screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-        screenVideoAdaptationPolicyRevision &+= 1
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.endFloorRecoveryVisibility()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         resetRemoteMediaCommandQueue()
         resetAutomaticScreenMediaSuspensionState()
         revokeCaptureAuthorization()
@@ -5387,8 +5870,18 @@ actor WorldwideScreenService {
     /// Creates a fresh epoch that requires answer installation plus a Hide/Inactive proof.
     @discardableResult
     private func installRecoveryProofBoundary(awaitingAnswer: Bool) -> UInt64 {
-        screenVideoAdaptationPolicy.endFloorRecoveryVisibility()
-        screenVideoAdaptationPolicyRevision &+= 1
+        do {
+            var updatedPolicy = screenVideoAdaptationPolicy
+            updatedPolicy.endFloorRecoveryVisibility()
+            screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+        }
+        screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+            revision: screenVideoAdaptationPolicyRevision &+ 1, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+            lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+            minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
         resetRemoteMediaCommandQueue()
         resetAutomaticScreenMediaSuspensionState()
         revokeCaptureAuthorization()
@@ -5597,6 +6090,344 @@ actor WorldwideScreenService {
                      && captureSource == nil && captureSink == nil)
     }
 
+    /// DEBUG observation only: the actual getter stays inside this actor. No
+    /// mutable Owner setter, producer query, native read, clock or second storage.
+    /// Checked Sendable is required at this exact cross-actor test boundary.
+    struct NativeOwnerStorageInertObservation: Equatable, Sendable {
+        let policy: WorldwideScreenVideoAdaptationPolicy
+        let revision: UInt64
+        let fastStatisticsAvailable: Bool
+        let laneRawValue: UInt64?
+        let evidenceTime: ContinuousClock.Instant?
+        let minimumCollectionSequence: UInt64?
+        let applied: WorldwideScreenVideoEncodingRecommendation?
+    }
+
+    func nativeOwnerStorageInertObservationForTesting()
+        -> NativeOwnerStorageInertObservation {
+        requireInertBatchAPolicyFixture()
+        let value = networkAdaptationOwnerCopiedValue()
+        return .init(policy: value.policy, revision: value.revision,
+            fastStatisticsAvailable: value.fastStatisticsAvailable,
+            laneRawValue: value.lane?.rawValue, evidenceTime: value.evidenceTime,
+            minimumCollectionSequence: value.minimumCollectionSequence,
+            applied: value.applied)
+    }
+
+    struct NativeOwnerPublicationAtomObservation: Equatable, Sendable {
+        let kind: UInt32
+        let present: UInt32
+        let high: Int64
+        let low: UInt64
+    }
+
+    struct NativeOwnerPublicationSnapshotObservation: Equatable, Sendable {
+        let atoms: [NativeOwnerPublicationAtomObservation]
+        let times: [ContinuousClock.Instant?]
+        let anchor: ContinuousClock.Instant?
+        let route: WebRTCICERouteDiagnostics?
+    }
+
+    struct NativeOwnerStopPublicationFault: Sendable {
+        enum Kind: Sendable { case refused, malformed, swallowedReentry }
+        let operation: UInt32
+        let kind: Kind
+    }
+    struct NativeOwnerStopPublicationCut: Equatable, Sendable {
+        enum Disposition: Equatable, Sendable { case accepted, refused, malformed, reentry }
+        let operation: UInt32
+        let before: NativeOwnerPublicationSnapshotObservation
+        let after: NativeOwnerPublicationSnapshotObservation
+        let disposition: Disposition
+    }
+    struct NativeOwnerStopPublicationObservation: Equatable, Sendable {
+        let current: NativeOwnerPublicationSnapshotObservation
+        let cuts: [NativeOwnerStopPublicationCut]
+        let attemptedOperations: [UInt32]
+    }
+    func enableNativeOwnerStopPublicationForTesting(faults: [NativeOwnerStopPublicationFault]) throws {
+        requireInertBatchAPolicyFixture()
+        guard !isStarted, !isStopped, !nativeOwnerStopPublicationEnabled else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        try screenVideoAdaptationOwnerBoundary.configureActualStopFaults(faults)
+        nativeOwnerStopPublicationEnabled = true
+    }
+
+    private func nativeOwnerStopSnapshotObservation(retainingAnchor: ContinuousClock.Instant? = nil)
+        throws -> NativeOwnerPublicationSnapshotObservation {
+        let snapshot = try BelugaNetworkAdaptationOwnerSnapshot.capture(
+            screenVideoAdaptationOwner, retainingAnchor: retainingAnchor)
+        return .init(atoms: snapshot.atoms.map {
+            .init(kind: $0.kind, present: $0.present, high: $0.high, low: $0.low)
+        }, times: snapshot.times, anchor: snapshot.anchor, route: snapshot.route)
+    }
+
+    func nativeOwnerStopPublicationObservationForTesting() throws -> NativeOwnerStopPublicationObservation {
+        requireInertBatchAPolicyFixture()
+        return .init(current: try nativeOwnerStopSnapshotObservation(),
+            cuts: nativeOwnerStopPublicationCuts, attemptedOperations: nativeOwnerStopPublicationAttempts)
+    }
+
+    enum NativeOwnerEpochPublicationFault: CaseIterable, Sendable {
+        case none, refused, malformed, swallowedReentry, invocationExhausted, outerReentry, wrongBoundary
+    }
+    struct NativeOwnerEpochPublicationObservation: Sendable {
+        let before: NativeOwnerPublicationSnapshotObservation
+        let after: NativeOwnerPublicationSnapshotObservation
+        let afterReplay: NativeOwnerPublicationSnapshotObservation
+        let afterFresh: NativeOwnerPublicationSnapshotObservation?
+        let disposition: String
+        let operation: UInt32?
+        let invocation: UInt64?
+        let minimumResolutions: Int
+        let peerGetterCalls: Int
+        let rawCalls: Int
+        let clockReads: Int
+        let stores: Int
+        let consumedBeforeReplay: Bool
+        let pendingCleared: Bool
+        let replayAccepted: Bool
+        let replayDidWork: Bool
+    }
+
+    // One bounded same-actor assay. No capability, caller minimum, producer,
+    // mutable Owner or native resources can cross this DEBUG fixture boundary.
+    func nativeOwnerEpochPublicationInertObservationForTesting(fault: NativeOwnerEpochPublicationFault)
+        throws -> NativeOwnerEpochPublicationObservation {
+        requireInertBatchAPolicyFixture()
+        guard !isStarted, !isStopped, !nativeOwnerEpochPublicationEnabled,
+              pendingNativeOwnerEpochEntry == nil else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        nativeOwnerEpochPublicationEnabled = true
+        defer { nativeOwnerEpochPublicationEnabled = false }
+        let kind: NativeOwnerStopPublicationFault.Kind?
+        switch fault {
+        case .refused: kind = .refused
+        case .malformed: kind = .malformed
+        case .swallowedReentry: kind = .swallowedReentry
+        default: kind = nil
+        }
+        try screenVideoAdaptationOwnerBoundary.configureActualEpochFault(kind,
+            exhaustInvocation: fault == .invocationExhausted)
+        let before = try nativeOwnerStopSnapshotObservation()
+        let entry = try networkAdaptationActualEpochEntry()
+        defer { networkAdaptationActualEpochRetire(entry) }
+        var disposition = "refused"
+        var operation: UInt32?, invocation: UInt64?
+        do {
+            if fault == .outerReentry {
+                try screenVideoAdaptationOwnerBoundary.testSwallowedActualEpochOuterReentry(entry, on: self)
+                throw BelugaNetworkAdaptationOwnerError.invalidResult
+            } else {
+                let boundary = fault == .wrongBoundary ? BelugaNetworkAdaptationOwnerBoundary()
+                    : screenVideoAdaptationOwnerBoundary
+                switch try boundary.publishActualEpoch(entry, on: self) {
+                case let .accepted(receipt):
+                    disposition = "accepted"; operation = receipt.operation; invocation = receipt.invocation
+                case .refused: disposition = "refused"
+                case .superseded: disposition = "superseded"
+                }
+            }
+        } catch BelugaNetworkAdaptationOwnerError.refused { disposition = "refused"
+        } catch BelugaNetworkAdaptationOwnerError.reentry { disposition = "reentry"
+        } catch BelugaNetworkAdaptationOwnerError.invocationExhausted { disposition = "exhausted"
+        } catch BelugaNetworkAdaptationOwnerError.invalidResult { disposition = "malformed" }
+        let after = try nativeOwnerStopSnapshotObservation(retainingAnchor: before.anchor)
+        let consumed = entry.phase == .published || entry.phase == .retired
+        let cleared = pendingNativeOwnerEpochEntry == nil
+        let counts = screenVideoAdaptationOwnerBoundary.actualEpochDiagnosticsForTesting()
+        let resolutions = entry.minimumResolutionCount, peerReads = entry.peerGetterCount, stores = entry.storeCount
+        var replayAccepted = false
+        do {
+            if case .accepted = try screenVideoAdaptationOwnerBoundary.publishActualEpoch(entry, on: self) {
+                replayAccepted = true
+            }
+        } catch BelugaNetworkAdaptationOwnerError.invocationExhausted { }
+        let afterReplay = try nativeOwnerStopSnapshotObservation(retainingAnchor: before.anchor)
+        let replayCounts = screenVideoAdaptationOwnerBoundary.actualEpochDiagnosticsForTesting()
+        let replayDidWork = entry.minimumResolutionCount != resolutions || entry.peerGetterCount != peerReads
+            || entry.storeCount != stores || replayCounts.rawCalls != counts.rawCalls
+            || replayCounts.clockReads != counts.clockReads
+        var afterFresh: NativeOwnerPublicationSnapshotObservation?
+        if fault != .invocationExhausted {
+            try screenVideoAdaptationOwnerBoundary.configureActualEpochFault(nil)
+            let fresh = try networkAdaptationActualEpochEntry()
+            defer { networkAdaptationActualEpochRetire(fresh) }
+            guard case .accepted = try screenVideoAdaptationOwnerBoundary.publishActualEpoch(fresh, on: self) else {
+                throw BelugaNetworkAdaptationOwnerError.refused
+            }
+            afterFresh = try nativeOwnerStopSnapshotObservation(retainingAnchor: before.anchor)
+        }
+        return .init(before: before, after: after, afterReplay: afterReplay, afterFresh: afterFresh,
+            disposition: disposition, operation: operation, invocation: invocation,
+            minimumResolutions: resolutions, peerGetterCalls: peerReads, rawCalls: counts.rawCalls,
+            clockReads: counts.clockReads, stores: stores, consumedBeforeReplay: consumed,
+            pendingCleared: cleared && pendingNativeOwnerEpochEntry == nil,
+            replayAccepted: replayAccepted, replayDidWork: replayDidWork)
+    }
+
+    enum NativeOwnerResetInitialContext: CaseIterable, Sendable {
+        case absent, pending, committed, failureClaimed
+    }
+    enum NativeOwnerResetPublicationFault: CaseIterable, Sendable {
+        case none, refused, malformed, swallowedReentry, invocationExhausted, outerReentry, wrongBoundary, epochRefused
+    }
+    struct NativeOwnerResetPublicationObservation: Sendable {
+        let before: NativeOwnerPublicationSnapshotObservation
+        let afterPrimary: NativeOwnerPublicationSnapshotObservation?
+        let after: NativeOwnerPublicationSnapshotObservation
+        let disposition: String
+        let operations: [UInt32]
+        let cancelledOnce: Bool
+        let contextCleared: Bool
+        let pendingCleared: Bool
+        let latchCommitted: Bool
+        let repeatClaim: Bool
+        let bindingWasOlder: Bool
+        let rawCalls: Int
+        let clockReads: Int
+    }
+
+    // Truthful native-latch classification on the existing nil-resource actor.
+    // Synthetic context/notice is NOT a real ACK, live peer or capture proof.
+    func nativeOwnerResetPublicationInertObservationForTesting(initial: NativeOwnerResetInitialContext,
+        fault: NativeOwnerResetPublicationFault) throws -> NativeOwnerResetPublicationObservation {
+        requireInertBatchAPolicyFixture()
+        guard !isStarted, !isStopped, !nativeOwnerResetPublicationEnabled,
+              pendingNativeOwnerResetEntry == nil, automaticScreenMediaResumeContext == nil else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        let latch = WorldwideScreenAutomaticResumeCommitLatch()
+        switch initial {
+        case .committed: try latch.commit { }
+        case .failureClaimed: precondition(latch.claimFailure())
+        case .absent, .pending: break
+        }
+        let olderBinding = currentScreenMediaSuspensionBinding
+        // Models the original Stop/startPeer generation advance before reset.
+        peerGeneration &+= 1
+        if initial != .absent {
+            automaticScreenMediaResumeContext = .init(binding: olderBinding,
+                notice: .init(screenRequestID: 1, suspensionGeneration: 1), attemptID: UUID(),
+                finalAcknowledgementCommit: latch, inputOwnershipClaim: nil,
+                probeAuthorization: nil, forwardingAuthorization: nil, boundary: nil,
+                markerReady: nil, markerPresentation: nil)
+        }
+        let fixtureContext = automaticScreenMediaResumeContext
+        let fixtureSuspension = screenMediaSuspension.snapshot
+        defer {
+            if let fixtureContext {
+                retireOriginalResumeResetContext(fixtureContext, suspension: fixtureSuspension)
+            }
+        }
+        nativeOwnerResetPublicationEnabled = true
+        nativeOwnerEpochPublicationEnabled = true
+        nativeOwnerResetFault = fault
+        nativeOwnerResetAttemptedOperations = []
+        nativeOwnerResetAfterPrimary = nil
+        defer {
+            nativeOwnerResetPublicationEnabled = false
+            nativeOwnerEpochPublicationEnabled = false
+            nativeOwnerResetFault = .none
+            nativeOwnerResetAfterPrimary = nil
+        }
+        let kind: NativeOwnerStopPublicationFault.Kind?
+        switch fault {
+        case .refused: kind = .refused
+        case .malformed: kind = .malformed
+        case .swallowedReentry: kind = .swallowedReentry
+        default: kind = nil
+        }
+        try screenVideoAdaptationOwnerBoundary.configureActualResetFault(kind,
+            exhaustInvocation: fault == .invocationExhausted)
+        try screenVideoAdaptationOwnerBoundary.configureActualEpochFault(fault == .epochRefused ? .refused : nil)
+        let before = try nativeOwnerStopSnapshotObservation()
+        let timeoutGeneration = automaticScreenMediaResumeTimeoutGeneration
+        var disposition = "accepted"
+        do { try publishActualResetOwner()
+        } catch BelugaNetworkAdaptationOwnerError.refused { disposition = "refused"
+        } catch BelugaNetworkAdaptationOwnerError.invalidResult { disposition = "malformed"
+        } catch BelugaNetworkAdaptationOwnerError.reentry { disposition = "reentry"
+        } catch BelugaNetworkAdaptationOwnerError.invocationExhausted { disposition = "exhausted" }
+        let diagnostics = screenVideoAdaptationOwnerBoundary.actualResetDiagnosticsForTesting()
+        return .init(before: before, afterPrimary: nativeOwnerResetAfterPrimary,
+            after: try nativeOwnerStopSnapshotObservation(retainingAnchor: before.anchor),
+            disposition: disposition, operations: nativeOwnerResetAttemptedOperations,
+            cancelledOnce: automaticScreenMediaResumeTimeoutGeneration == timeoutGeneration &+ 1
+                && automaticScreenMediaResumeTimeoutTask == nil,
+            contextCleared: automaticScreenMediaResumeContext == nil,
+            pendingCleared: pendingNativeOwnerResetEntry == nil && pendingNativeOwnerEpochEntry == nil,
+            latchCommitted: latch.isCommitted,
+            repeatClaim: initial == .absent ? false : latch.claimFailure(),
+            bindingWasOlder: olderBinding.peerGeneration != peerGeneration,
+            rawCalls: diagnostics.rawCalls, clockReads: diagnostics.clockReads)
+    }
+
+    struct NativeOwnerPublicationInertObservation: Sendable {
+        let actualBefore: NativeOwnerPublicationSnapshotObservation
+        let actualAfter: NativeOwnerPublicationSnapshotObservation
+        let rejected: NativeOwnerPublicationSnapshotObservation
+        let accepted: NativeOwnerPublicationSnapshotObservation
+        let nestedReentryRejected: Bool
+        let outerReentryRejected: Bool
+        let rejectedPublications: Int
+        let acceptedPublications: Int
+        let operation: UInt32
+        let invocation: UInt64
+        let collectorEnabled: Bool
+        let rawInvocations: [UInt64]
+        let trace: [String]
+    }
+
+    /// Synchronous DEBUG-only isolation assay. Boundary and simulated slot are
+    /// constructed and retired on this actor; only checked-Sendable copies leave.
+    /// The actual Owner is observed, never replaced by this simulated publication.
+    func nativeOwnerPublicationIsolatedInertObservationForTesting() throws
+        -> NativeOwnerPublicationInertObservation {
+        requireInertBatchAPolicyFixture()
+        func observe(_ value: BelugaNetworkAdaptationOwnerValue) throws
+            -> NativeOwnerPublicationSnapshotObservation {
+            let s = try BelugaNetworkAdaptationOwnerSnapshot.capture(value)
+            return .init(atoms: s.atoms.map {
+                .init(kind: $0.kind, present: $0.present, high: $0.high, low: $0.low)
+            }, times: s.times, anchor: s.anchor, route: s.route)
+        }
+        let seed = networkAdaptationOwnerCopiedValue()
+        let before = try observe(seed)
+        var rawInvocations: [UInt64] = []
+        let boundary = BelugaNetworkAdaptationOwnerBoundary(testProducer: { request, source in
+            rawInvocations.append(request.invocation)
+            return try BelugaNetworkAdaptationOwnerBoundary.actual(request, source)
+        })
+        let slot = BelugaNetworkAdaptationOwnerPublicationFixture(
+            boundary: boundary, value: seed, event: .stopSampling)
+        var nestedReentryRejected = false
+        slot.testHook = { stage in
+            guard stage == .precommit else { return }
+            do { _ = try boundary.propose(seed, event: .stopSampling) }
+            catch BelugaNetworkAdaptationOwnerError.reentry { nestedReentryRejected = true }
+        }
+        var outerReentryRejected = false
+        do { _ = try boundary.testPublishIsolated(slot, event: .stopSampling, on: self) }
+        catch BelugaNetworkAdaptationOwnerError.reentry { outerReentryRejected = true }
+        let rejected = try observe(slot.acceptedValue)
+        let rejectedPublications = slot.publications
+        slot.testHook = nil
+        guard case let .accepted(receipt) = try boundary.testPublishIsolated(
+            slot, event: .stopSampling, on: self) else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return .init(actualBefore: before, actualAfter: try observe(networkAdaptationOwnerCopiedValue()),
+            rejected: rejected, accepted: try observe(slot.acceptedValue),
+            nestedReentryRejected: nestedReentryRejected, outerReentryRejected: outerReentryRejected,
+            rejectedPublications: rejectedPublications, acceptedPublications: slot.publications,
+            operation: receipt.operation, invocation: receipt.invocation,
+            collectorEnabled: receipt.collectorEnabled, rawInvocations: rawInvocations,
+            trace: slot.trace.map(\.rawValue))
+    }
+
     func batchAStartOnlyInertRoutingMonitorForTesting() async {
         requireInertBatchAPolicyFixture()
         await startIPhoneMicrophoneDeviceMonitoringIfNeeded()
@@ -5630,6 +6461,76 @@ actor WorldwideScreenService {
         isRecovering = false
         peerGeneration = 1
         safeOutputInvariantNeedsRedrive = needsRedrive
+    }
+
+    private var debugCheckingICERecoveryFaultInjection:
+        ICERecoveryCoordinator.CheckingFaultInjectionForTesting?
+
+    /// Builds and installs through the SAME constructor helper as createPeer, but only in
+    /// the existing explicitly inert fixture. Caller retains the old handle when swapping.
+    func batchAInstallActualICERecoveryCoordinatorForTesting(
+        peerGeneration generation: UInt64,
+        checkingFaultInjection: ICERecoveryCoordinator.CheckingFaultInjectionForTesting? = nil,
+        restart: @escaping ICERecoveryCoordinator.RestartAction
+    ) -> ICERecoveryCoordinator {
+        requireInertBatchAPolicyFixture()
+        precondition(!isStarted && !isStopped && !captureLifetimeIsRequired)
+        precondition(batchAInertRoutingObserverJoin?.snapshot().retainedHandleCount == 0)
+        precondition(debugCheckingICERecoveryFaultInjection == nil)
+        debugCheckingICERecoveryFaultInjection = checkingFaultInjection
+        defer { debugCheckingICERecoveryFaultInjection = nil }
+        let coordinator = makeICERecoveryCoordinator(peerGeneration: generation, restart: restart)
+        peerGeneration = generation
+        recoveryCoordinator = coordinator
+        return coordinator
+    }
+
+    func batchAICERecoveryCoordinatorIsForTesting(_ candidate: ICERecoveryCoordinator) -> Bool {
+        requireInertBatchAPolicyFixture()
+        return recoveryCoordinator === candidate
+    }
+
+    /// Receiver-level test state only; it never grants a native media or input resource.
+    struct ICERecoveryPolicyReceiverFixtureSnapshot: Sendable, Equatable {
+        let peerGeneration: UInt64
+        let stopped: Bool
+        let stopInProgress: Bool
+        let peerIsConnected: Bool
+        let iceIsConnected: Bool
+        let controlChannelIsOpen: Bool
+        let isRecovering: Bool
+        let recoveryProofRequired: Bool
+        let peerIsPresent: Bool
+        let coordinatorIsPresent: Bool
+        let captureAuthorizationIsValid: Bool
+        let audioAuthorizationIsValid: Bool
+    }
+
+    /// Exact synthetic generation custody is available only to the existing inert harness.
+    func batchASetICERecoveryReceiverGenerationForTesting(_ generation: UInt64) {
+        requireInertBatchAPolicyFixture()
+        precondition(!isStarted && !isStopped && !captureLifetimeIsRequired)
+        precondition(recoveryCoordinator == nil)
+        precondition(batchAInertRoutingObserverJoin?.snapshot().retainedHandleCount == 0)
+        peerGeneration = generation
+    }
+
+    func batchAICERecoveryPolicyReceiverSnapshotForTesting()
+        -> ICERecoveryPolicyReceiverFixtureSnapshot {
+        requireInertBatchAPolicyFixture()
+        return .init(peerGeneration: peerGeneration, stopped: isStopped,
+            stopInProgress: stopIsInProgress, peerIsConnected: peerIsConnected,
+            iceIsConnected: iceIsConnected, controlChannelIsOpen: controlChannelIsOpen,
+            isRecovering: isRecovering, recoveryProofRequired: recoveryProofRequired,
+            peerIsPresent: peer != nil, coordinatorIsPresent: recoveryCoordinator != nil,
+            captureAuthorizationIsValid: captureAuthorization?.isValid == true,
+            audioAuthorizationIsValid: audioAuthorization?.isValid == true)
+    }
+
+    /// Delivers the captured generation through the actual production receiver, not exhaustion.
+    func batchADeliverICERecoveryPolicyFaultForTesting(peerGeneration generation: UInt64) async {
+        requireInertBatchAPolicyFixture()
+        await recoveryPolicyDidFail(peerGeneration: generation)
     }
 
     func batchAAdmitForTesting() -> Bool {
@@ -7261,6 +8162,33 @@ actor WorldwideScreenService {
         await recoveryCoordinator?.iceStateChanged(.failed)
     }
 
+    /// A malformed core result is not an exhausted attempt or a recovered media route.
+    /// One constructor site owns the unchanged production generation-capturing callbacks.
+    private func makeICERecoveryCoordinator(
+        peerGeneration generation: UInt64,
+        restart: @escaping ICERecoveryCoordinator.RestartAction
+    ) -> ICERecoveryCoordinator {
+        let exhausted: ICERecoveryCoordinator.ExhaustedAction = { [weak self] in
+            await self?.recoveryDidExhaust(peerGeneration: generation)
+        }
+        let policyFailed: ICERecoveryCoordinator.PolicyFailureAction = { [weak self] _ in
+            await self?.recoveryPolicyDidFail(peerGeneration: generation)
+        }
+        #if DEBUG
+        if let injection = debugCheckingICERecoveryFaultInjection {
+            return ICERecoveryCoordinator(restart: restart, exhausted: exhausted,
+                policyFailed: policyFailed, checkingFaultInjectionForTesting: injection)
+        }
+        #endif
+        return ICERecoveryCoordinator(restart: restart, exhausted: exhausted, policyFailed: policyFailed)
+    }
+
+    private func recoveryPolicyDidFail(peerGeneration generation: UInt64) async {
+        guard generation == peerGeneration, !isStopped else { return }
+        logger.error("Worldwide ICE recovery policy evidence is unavailable")
+        await stop()
+    }
+
     /// Closes the current peer generation when bounded recovery cannot restore all gates.
     private func recoveryDidExhaust(peerGeneration generation: UInt64) async {
         guard generation == peerGeneration, !isStopped else {
@@ -7558,7 +8486,10 @@ actor WorldwideScreenService {
                 throw WorldwideScreenServiceError.transportUnavailable
             }
             if senderUpdate != nil {
-                appliedScreenVideoRecommendation = encodingRecommendation
+                screenVideoAdaptationOwner = .init(policy: screenVideoAdaptationPolicy,
+                    revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                    lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                    minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: encodingRecommendation)
             }
             captureDisplayID = format.displayID
             captureAuthoritativeDisplayBounds = format.authoritativeDisplayBounds
@@ -7736,7 +8667,14 @@ actor WorldwideScreenService {
                 // ordinary post-resume display rebuild even if the service continuation has not
                 // yet cleared its bookkeeping context.
                 cancelAutomaticScreenMediaResumeTimeout()
-                screenVideoAdaptationPolicy.automaticResumeAttemptSucceeded()
+                do {
+                    var updatedPolicy = screenVideoAdaptationPolicy
+                    updatedPolicy.automaticResumeAttemptSucceeded()
+                    screenVideoAdaptationOwner = .init(policy: updatedPolicy,
+                        revision: screenVideoAdaptationPolicyRevision, fastStatisticsAvailable: screenVideoAdaptationFastStatisticsAreAvailable,
+                        lane: screenVideoAdaptationOwner.lane, evidenceTime: screenVideoAdaptationLastEvidenceTime,
+                        minimumCollectionSequence: screenVideoAdaptationOwner.minimumCollectionSequence, applied: appliedScreenVideoRecommendation)
+                }
                 beginPostResumeScreenVideoAdaptationEpoch()
                 automaticScreenMediaResumeContext = nil
             } else {
@@ -9763,6 +10701,218 @@ private enum WorldwideScreenServiceError: LocalizedError {
     }
 }
 
+// Read-only authoritative actor value. No parallel storage, publication, async
+// suspension, producer query or clock read; returned by value without rehydration.
+extension WorldwideScreenService {
+    func networkAdaptationOwnerCopiedValue() -> BelugaNetworkAdaptationOwnerValue {
+        screenVideoAdaptationOwner
+    }
+}
+
+// Release-shaped capability, not yet minted by the production ACK handler.
+// Only this actor file can construct it from the original committed attempt.
+final class BelugaNetworkAdaptationCommittedResumeEntry {
+    fileprivate enum Phase { case fresh, admitted, published, retired }
+    let boundary: BelugaNetworkAdaptationOwnerBoundary
+    let generation: UInt64
+    fileprivate let owner: WorldwideScreenService
+    fileprivate let sourcePeer: WebRTCPeer
+    fileprivate let sink: WorldwideScreenSampleSink
+    fileprivate let probeAuthorization: WebRTCControlAuthorization
+    fileprivate let forwardingAuthorization: WebRTCControlAuthorization
+    fileprivate let binding: WorldwideScreenMediaSuspensionCoordinator.Binding
+    fileprivate let notice: WebRTCScreenMediaSuspensionNotice
+    fileprivate let attemptID: UUID
+    fileprivate let latch: WorldwideScreenAutomaticResumeCommitLatch
+    fileprivate let markerBoundary: WorldwideScreenSampleSink.ResumeMarkerBoundary
+    fileprivate let markerReady: WebRTCScreenMediaMarkerReady?
+    fileprivate let markerPresentation: WebRTCScreenMediaMarkerPresentation?
+    fileprivate var phase: Phase = .fresh
+
+    fileprivate init(owner: WorldwideScreenService, boundary: BelugaNetworkAdaptationOwnerBoundary,
+        generation: UInt64, sourcePeer: WebRTCPeer, sink: WorldwideScreenSampleSink,
+        probeAuthorization: WebRTCControlAuthorization,
+        forwardingAuthorization: WebRTCControlAuthorization,
+        binding: WorldwideScreenMediaSuspensionCoordinator.Binding,
+        notice: WebRTCScreenMediaSuspensionNotice, attemptID: UUID,
+        latch: WorldwideScreenAutomaticResumeCommitLatch,
+        markerBoundary: WorldwideScreenSampleSink.ResumeMarkerBoundary,
+        markerReady: WebRTCScreenMediaMarkerReady?,
+        markerPresentation: WebRTCScreenMediaMarkerPresentation?) {
+        self.owner = owner
+        self.boundary = boundary
+        self.generation = generation
+        self.sourcePeer = sourcePeer
+        self.sink = sink
+        self.probeAuthorization = probeAuthorization
+        self.forwardingAuthorization = forwardingAuthorization
+        self.binding = binding
+        self.notice = notice
+        self.attemptID = attemptID
+        self.latch = latch
+        self.markerBoundary = markerBoundary
+        self.markerReady = markerReady
+        self.markerPresentation = markerPresentation
+    }
+}
+
+extension WorldwideScreenService {
+    private func networkAdaptationCommittedResumeEntry(
+        context: AutomaticScreenMediaResumeContext, sourcePeer: WebRTCPeer,
+        generation: UInt64, sink: WorldwideScreenSampleSink,
+        probeAuthorization: WebRTCControlAuthorization,
+        forwardingAuthorization: WebRTCControlAuthorization,
+        markerBoundary: WorldwideScreenSampleSink.ResumeMarkerBoundary
+    ) -> BelugaNetworkAdaptationCommittedResumeEntry? {
+        guard Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+              Self.ownedStopPublicationIsEnrolled,
+              let current = automaticScreenMediaResumeContext,
+              current.attemptID == context.attemptID,
+              current.finalAcknowledgementCommit === context.finalAcknowledgementCommit,
+              current.ownerCompletionClaim == .unclaimed,
+              current.ownerCompletionEntryID == nil else { return nil }
+        let entry = BelugaNetworkAdaptationCommittedResumeEntry(
+            owner: self, boundary: screenVideoAdaptationOwnerBoundary,
+            generation: generation, sourcePeer: sourcePeer, sink: sink,
+            probeAuthorization: probeAuthorization,
+            forwardingAuthorization: forwardingAuthorization,
+            binding: context.binding, notice: context.notice, attemptID: context.attemptID,
+            latch: context.finalAcknowledgementCommit, markerBoundary: markerBoundary,
+            markerReady: context.markerReady, markerPresentation: context.markerPresentation)
+        automaticScreenMediaResumeContext?.ownerCompletionEntryID = ObjectIdentifier(entry)
+        return entry
+    }
+
+    private func networkAdaptationCommittedResumeNativeWitnessIsCurrent(
+        _ entry: BelugaNetworkAdaptationCommittedResumeEntry
+    ) -> Bool {
+        guard entry.owner === self,
+              entry.boundary === screenVideoAdaptationOwnerBoundary,
+              !isStopped, let currentPeer = peer,
+              currentPeer === entry.sourcePeer,
+              peerGeneration == entry.generation,
+              entry.binding.peerGeneration == entry.generation,
+              screenVisibilityCommandEpoch == entry.binding.visibilityCommandEpoch,
+              recoveryProofEpoch == entry.binding.recoveryEpoch,
+              let activeScreenRequestID = screenMediaSuspension.activeScreenRequestID,
+              activeScreenRequestID == entry.notice.screenRequestID,
+              let currentSink = captureSink, currentSink === entry.sink,
+              let currentForwarding = captureForwardingAuthorization,
+              currentForwarding === entry.forwardingAuthorization,
+              let completed = automaticScreenMediaResumeContext,
+              completed.ownerCompletionEntryID == ObjectIdentifier(entry),
+              completed.attemptID == entry.attemptID,
+              completed.binding == entry.binding, completed.notice == entry.notice,
+              completed.finalAcknowledgementCommit === entry.latch,
+              completed.finalAcknowledgementCommit.isCommitted,
+              let completedBoundary = completed.boundary,
+              completedBoundary == entry.markerBoundary,
+              completed.markerReady == entry.markerReady,
+              completed.markerPresentation == entry.markerPresentation,
+              let completedProbe = completed.probeAuthorization,
+              completedProbe === entry.probeAuthorization,
+              let completedForwarding = completed.forwardingAuthorization,
+              completedForwarding === entry.forwardingAuthorization,
+              screenMediaSuspension.owns(entry.binding) else { return false }
+        return true
+    }
+
+    func networkAdaptationCommittedResumeAdmit(_ entry: BelugaNetworkAdaptationCommittedResumeEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary, key: [UInt64]) -> Bool {
+        let fresh = entry.phase == .fresh
+        entry.phase = .retired
+        guard fresh, Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+              Self.ownedStopPublicationIsEnrolled,
+              entry.boundary === boundary, key == [108, 0, 0, 0, 0],
+              networkAdaptationCommittedResumeNativeWitnessIsCurrent(entry),
+              automaticScreenMediaResumeContext?.ownerCompletionClaim == .unclaimed else { return false }
+        automaticScreenMediaResumeContext?.ownerCompletionClaim = .admitted
+        entry.phase = .admitted
+        return true
+    }
+
+    func networkAdaptationCommittedResumeIsCurrent(_ entry: BelugaNetworkAdaptationCommittedResumeEntry) -> Bool {
+        entry.phase == .admitted
+            && automaticScreenMediaResumeContext?.ownerCompletionClaim == .admitted
+            && networkAdaptationCommittedResumeNativeWitnessIsCurrent(entry)
+    }
+
+    func networkAdaptationCommittedResumeMatches(_ entry: BelugaNetworkAdaptationCommittedResumeEntry,
+        slot: ObjectIdentifier, key: [UInt64], generation: UInt64) -> Bool {
+        slot == ObjectIdentifier(entry) && key == [108, 0, 0, 0, 0]
+            && generation == entry.generation && networkAdaptationCommittedResumeIsCurrent(entry)
+    }
+
+    func networkAdaptationCommittedResumeCapture(_ entry: BelugaNetworkAdaptationCommittedResumeEntry,
+        retainingAnchor: ContinuousClock.Instant?) throws -> BelugaNetworkAdaptationOwnerSnapshot {
+        guard networkAdaptationCommittedResumeIsCurrent(entry) else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        return try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: retainingAnchor)
+    }
+
+    // Pure claim bookkeeping, including rejection of a poisoned nested frame.
+    func networkAdaptationCommittedResumeRetire(_ entry: BelugaNetworkAdaptationCommittedResumeEntry) {
+        guard entry.phase != .published else { return }
+        entry.phase = .retired
+        guard entry.owner === self, entry.boundary === screenVideoAdaptationOwnerBoundary,
+              let completed = automaticScreenMediaResumeContext,
+              completed.ownerCompletionEntryID == ObjectIdentifier(entry),
+              completed.attemptID == entry.attemptID,
+              completed.binding == entry.binding, completed.notice == entry.notice,
+              completed.finalAcknowledgementCommit === entry.latch,
+              let claim = automaticScreenMediaResumeContext?.ownerCompletionClaim,
+              claim == .unclaimed || claim == .admitted else { return }
+        automaticScreenMediaResumeContext?.ownerCompletionClaim = .refused
+    }
+
+    func networkAdaptationCommittedResumeCommit(_ packet: BelugaNetworkAdaptationCommittedResumeCommit) {
+        packet.entry.phase = .published
+        automaticScreenMediaResumeContext?.ownerCompletionClaim = .published
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+
+    private func claimCommittedResumeRefusalStop(
+        _ entry: BelugaNetworkAdaptationCommittedResumeEntry
+    ) -> ServiceStopPlan? {
+        guard Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+              Self.ownedStopPublicationIsEnrolled,
+              networkAdaptationCommittedResumeNativeWitnessIsCurrent(entry),
+              let claim = automaticScreenMediaResumeContext?.ownerCompletionClaim,
+              claim != .published, claim != .terminalClaimed else { return nil }
+        automaticScreenMediaResumeContext?.ownerCompletionClaim = .terminalClaimed
+        entry.phase = .retired
+        cancelAutomaticScreenMediaResumeTimeout()
+        retireAutomaticScreenMediaResumeNativeContext()
+        return beginStop()
+    }
+
+    private func stopAfterCommittedResumeRefusal(
+        _ entry: BelugaNetworkAdaptationCommittedResumeEntry
+    ) async {
+        guard let plan = claimCommittedResumeRefusalStop(entry) else { return }
+        await finishStop(consume plan)
+    }
+
+    private func publishCommittedResumeOwner(
+        _ entry: BelugaNetworkAdaptationCommittedResumeEntry
+    ) async -> Bool {
+        do {
+            switch try screenVideoAdaptationOwnerBoundary.publishCommittedResume(entry, on: self) {
+            case .accepted: return true
+            case .superseded:
+                guard networkAdaptationCommittedResumeNativeWitnessIsCurrent(entry) else { return false }
+            case .refused: break
+            }
+        } catch {
+            logger.error("Committed screen resume owner publication failed: \(error.localizedDescription)")
+        }
+        await stopAfterCommittedResumeRefusal(entry)
+        return false
+    }
+}
+
 private extension NSLock {
     /// Runs a synchronous critical section and always releases the lock.
     func withLock<T>(_ body: () throws -> T) rethrows -> T {
@@ -9771,3 +10921,3215 @@ private extension NSLock {
         return try body()
     }
 }
+
+/// Constructor sealed to the actor's original Stop cuts. Strong exact references
+/// are custody, not active-media authority: nil resources and revoked tokens are
+/// valid during cleanup. No caller-supplied state, votes, callback or setter.
+final class BelugaNetworkAdaptationActualStopEntry {
+    fileprivate enum Origin {
+        case nativeShutdown
+        #if DEBUG
+        case inertFixture
+        #endif
+    }
+    enum Cut {
+        case endShow, stopSampling
+        var operation: UInt32 { self == .endShow ? 202 : 105 }
+        var key: [UInt64] { self == .endShow ? [202, 0, 0, 0, 0, 0] : [105, 0, 0, 0, 0] }
+    }
+    fileprivate enum Phase { case fresh, admitted, retired }
+    let owner: WorldwideScreenService
+    let boundary: BelugaNetworkAdaptationOwnerBoundary
+    let cut: Cut
+    let generation: UInt64
+    fileprivate let origin: Origin
+    var operation: UInt32 { cut.operation }
+    var permitsInertNegativeControls: Bool {
+        #if DEBUG
+        origin == .inertFixture
+        #else
+        false
+        #endif
+    }
+    fileprivate var phase: Phase = .fresh
+    fileprivate let sourcePeer: WebRTCPeer?
+    fileprivate let coordinator: ICERecoveryCoordinator?
+    fileprivate let source: ScreenVideoCaptureSource?
+    fileprivate let sink: WorldwideScreenSampleSink?
+    fileprivate let authorization: WebRTCControlAuthorization?
+    fileprivate let forwarding: WebRTCControlAuthorization?
+    fileprivate let audioSource: SystemAudioCaptureSource?
+    fileprivate let audioSink: WorldwideSystemAudioSampleSink?
+    fileprivate let audioAuthorization: WebRTCAudioAuthorization?
+    fileprivate let visibilityEpoch: UInt64
+    fileprivate let recoveryEpoch: UInt64
+
+    fileprivate init(owner: WorldwideScreenService, boundary: BelugaNetworkAdaptationOwnerBoundary,
+        cut: Cut, origin: Origin, generation: UInt64, sourcePeer: WebRTCPeer?, coordinator: ICERecoveryCoordinator?,
+        source: ScreenVideoCaptureSource?, sink: WorldwideScreenSampleSink?,
+        authorization: WebRTCControlAuthorization?, forwarding: WebRTCControlAuthorization?,
+        audioSource: SystemAudioCaptureSource?, audioSink: WorldwideSystemAudioSampleSink?,
+        audioAuthorization: WebRTCAudioAuthorization?, visibilityEpoch: UInt64, recoveryEpoch: UInt64) {
+        self.owner = owner; self.boundary = boundary; self.cut = cut; self.origin = origin; self.generation = generation
+        self.sourcePeer = sourcePeer; self.coordinator = coordinator; self.source = source; self.sink = sink
+        self.authorization = authorization; self.forwarding = forwarding
+        self.audioSource = audioSource; self.audioSink = audioSink; self.audioAuthorization = audioAuthorization
+        self.visibilityEpoch = visibilityEpoch; self.recoveryEpoch = recoveryEpoch
+    }
+}
+
+extension WorldwideScreenService {
+    // One constructor-sealed origin is selected before the original two cuts.
+    // Neither Release nor a DEBUG native origin can borrow fixture fault authority.
+    private func networkAdaptationActualStopPublicationOrigin() -> BelugaNetworkAdaptationActualStopEntry.Origin? {
+        if Self.allNetworkAdaptationOwnerWritersAreEnrolled && Self.ownedStopPublicationIsEnrolled {
+            return .nativeShutdown
+        }
+        #if DEBUG
+        if nativeOwnerStopPublicationEnabled { return .inertFixture }
+        #endif
+        return nil
+    }
+
+    // Rejection never abandons teardown or falls back to a Swift replacement.
+    // Each cut creates fresh custody; diagnostic reads cannot admit a publication.
+    private func applyNativeOwnerStopPublication(_ cut: BelugaNetworkAdaptationActualStopEntry.Cut,
+        origin: BelugaNetworkAdaptationActualStopEntry.Origin) {
+        guard pendingNativeOwnerStopEntry == nil else { return }
+        let entry = networkAdaptationActualStopEntry(cut, origin: origin)
+        pendingNativeOwnerStopEntry = entry
+        defer {
+            entry.phase = .retired
+            pendingNativeOwnerStopEntry = nil
+            switch cut {
+            case .endShow: nativeOwnerStopPublicationStage = .stopSampling
+            case .stopSampling: nativeOwnerStopPublicationStage = .finished
+            }
+        }
+        #if DEBUG
+        var before: NativeOwnerPublicationSnapshotObservation?
+        var disposition = NativeOwnerStopPublicationCut.Disposition.refused
+        if entry.permitsInertNegativeControls {
+            nativeOwnerStopPublicationAttempts.append(cut.operation)
+            do { before = try nativeOwnerStopSnapshotObservation() }
+            catch { logger.error("Inert native Owner Stop observation failed; native teardown continues") }
+        }
+        #endif
+        do {
+            switch try screenVideoAdaptationOwnerBoundary.publishActualStop(entry, on: self) {
+            case .accepted:
+                #if DEBUG
+                disposition = .accepted
+                #endif
+                break
+            case .refused, .superseded: break
+            }
+        } catch BelugaNetworkAdaptationOwnerError.reentry {
+            #if DEBUG
+            disposition = .reentry
+            #endif
+            logger.error("Native Owner Stop publication reentered; native teardown continues")
+        } catch BelugaNetworkAdaptationOwnerError.refused {
+            logger.error("Native Owner Stop publication refused; native teardown continues")
+        } catch {
+            #if DEBUG
+            disposition = .malformed
+            #endif
+            logger.error("Native Owner Stop publication failed; native teardown continues")
+        }
+        #if DEBUG
+        if entry.permitsInertNegativeControls, let before {
+            do {
+                // Diagnostic recapture is outside the held frame, never a Release read.
+                nativeOwnerStopPublicationCuts.append(.init(operation: cut.operation, before: before,
+                    after: try nativeOwnerStopSnapshotObservation(retainingAnchor: before.anchor),
+                    disposition: disposition))
+            } catch { logger.error("Inert native Owner Stop observation failed; native teardown continues") }
+        }
+        #endif
+    }
+
+    private func networkAdaptationActualStopEntry(_ cut: BelugaNetworkAdaptationActualStopEntry.Cut,
+        origin: BelugaNetworkAdaptationActualStopEntry.Origin)
+        -> BelugaNetworkAdaptationActualStopEntry {
+        .init(owner: self, boundary: screenVideoAdaptationOwnerBoundary, cut: cut, origin: origin,
+            generation: peerGeneration, sourcePeer: peer, coordinator: recoveryCoordinator,
+            source: captureSource, sink: captureSink, authorization: captureAuthorization,
+            forwarding: captureForwardingAuthorization, audioSource: audioSource, audioSink: audioSink,
+            audioAuthorization: audioAuthorization, visibilityEpoch: screenVisibilityCommandEpoch,
+            recoveryEpoch: recoveryProofEpoch)
+    }
+
+    func networkAdaptationActualStopAdmit(_ entry: BelugaNetworkAdaptationActualStopEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary, key: [UInt64]) -> Bool {
+        let fresh = entry.phase == .fresh
+        // Consume even a wrong-boundary attempt; a failed capability cannot replay.
+        entry.phase = .retired
+        guard fresh, entry.owner === self, entry.boundary === boundary,
+              boundary === screenVideoAdaptationOwnerBoundary, key == entry.cut.key,
+              networkAdaptationActualStopNativeWitnessIsCurrent(entry) else { return false }
+        entry.phase = .admitted
+        return true
+    }
+
+    private func networkAdaptationActualStopNativeWitnessIsCurrent(_ entry: BelugaNetworkAdaptationActualStopEntry) -> Bool {
+        switch entry.origin {
+        case .nativeShutdown:
+            guard Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+                  Self.ownedStopPublicationIsEnrolled else { return false }
+        #if DEBUG
+        case .inertFixture:
+            // An opt-in cannot survive a later start into partially migrated media.
+            guard audioRoutingIsInertPolicyFixture, !isStarted,
+                  peer == nil, captureSource == nil, captureSink == nil,
+                  audioSource == nil, audioSink == nil,
+                  nativeOwnerStopPublicationEnabled else { return false }
+        #endif
+        }
+        guard isStopped, stopIsInProgress,
+              pendingNativeOwnerStopEntry === entry,
+              entry.owner === self, entry.boundary === screenVideoAdaptationOwnerBoundary,
+              entry.generation == peerGeneration, entry.sourcePeer === peer,
+              entry.coordinator === recoveryCoordinator, entry.source === captureSource,
+              entry.sink === captureSink, entry.authorization === captureAuthorization,
+              entry.forwarding === captureForwardingAuthorization, entry.audioSource === audioSource,
+              entry.audioSink === audioSink, entry.audioAuthorization === audioAuthorization,
+              entry.visibilityEpoch == screenVisibilityCommandEpoch,
+              entry.recoveryEpoch == recoveryProofEpoch else { return false }
+        switch entry.cut {
+        case .endShow: return nativeOwnerStopPublicationStage == .endShow
+        case .stopSampling:
+            return nativeOwnerStopPublicationStage == .stopSampling && screenVideoAdaptationTask == nil
+        }
+    }
+
+    func networkAdaptationActualStopIsCurrent(_ entry: BelugaNetworkAdaptationActualStopEntry) -> Bool {
+        entry.phase == .admitted && networkAdaptationActualStopNativeWitnessIsCurrent(entry)
+    }
+
+    func networkAdaptationActualStopMatches(_ entry: BelugaNetworkAdaptationActualStopEntry,
+        slot: ObjectIdentifier, key: [UInt64], generation: UInt64) -> Bool {
+        slot == ObjectIdentifier(entry) && key == entry.cut.key && generation == entry.generation
+            && networkAdaptationActualStopIsCurrent(entry)
+    }
+
+    func networkAdaptationActualStopCapture(_ entry: BelugaNetworkAdaptationActualStopEntry,
+        retainingAnchor: ContinuousClock.Instant?) throws -> BelugaNetworkAdaptationOwnerSnapshot {
+        guard networkAdaptationActualStopIsCurrent(entry) else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        return try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: retainingAnchor)
+    }
+
+    // Only the held codec can construct this packet. Retire before the sole fixed
+    // assignment; no callback, clock, recapture, await or throwing work follows it.
+    func networkAdaptationActualStopCommit(_ packet: BelugaNetworkAdaptationActualStopCommit) {
+        packet.entry.phase = .retired
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+
+// Constructor custody is separate from the resolved optional minimum. In
+// particular unread, nil and Some(0) are three different states.
+final class BelugaNetworkAdaptationActualEpochEntry {
+    fileprivate enum Origin {
+        case nativeEpoch
+        #if DEBUG
+        case inertFixture
+        #endif
+    }
+    fileprivate enum Phase { case fresh, admitted, sealed, published, retired }
+    fileprivate enum Payload { case unread, sealed(UInt64?) }
+    let owner: WorldwideScreenService
+    let boundary: BelugaNetworkAdaptationOwnerBoundary
+    let generation: UInt64
+    fileprivate let origin: Origin
+    fileprivate var phase: Phase = .fresh
+    fileprivate var payload: Payload = .unread
+    fileprivate let sourcePeer: WebRTCPeer?
+    fileprivate let coordinator: ICERecoveryCoordinator?
+    fileprivate let source: ScreenVideoCaptureSource?
+    fileprivate let sink: WorldwideScreenSampleSink?
+    fileprivate let authorization: WebRTCControlAuthorization?
+    fileprivate let forwarding: WebRTCControlAuthorization?
+    fileprivate let audioSource: SystemAudioCaptureSource?
+    fileprivate let audioSink: WorldwideSystemAudioSampleSink?
+    fileprivate let audioAuthorization: WebRTCAudioAuthorization?
+    fileprivate let visibilityEpoch: UInt64
+    fileprivate let recoveryEpoch: UInt64
+    #if DEBUG
+    fileprivate var minimumResolutionCount = 0
+    fileprivate var peerGetterCount = 0
+    fileprivate var storeCount = 0
+    #endif
+    var permitsInertNegativeControls: Bool {
+        #if DEBUG
+        origin == .inertFixture
+        #else
+        false
+        #endif
+    }
+    fileprivate init(owner: WorldwideScreenService, boundary: BelugaNetworkAdaptationOwnerBoundary,
+        origin: Origin, generation: UInt64, sourcePeer: WebRTCPeer?, coordinator: ICERecoveryCoordinator?,
+        source: ScreenVideoCaptureSource?, sink: WorldwideScreenSampleSink?,
+        authorization: WebRTCControlAuthorization?, forwarding: WebRTCControlAuthorization?,
+        audioSource: SystemAudioCaptureSource?, audioSink: WorldwideSystemAudioSampleSink?,
+        audioAuthorization: WebRTCAudioAuthorization?, visibilityEpoch: UInt64, recoveryEpoch: UInt64) {
+        self.owner = owner; self.boundary = boundary; self.origin = origin; self.generation = generation
+        self.sourcePeer = sourcePeer; self.coordinator = coordinator; self.source = source; self.sink = sink
+        self.authorization = authorization; self.forwarding = forwarding
+        self.audioSource = audioSource; self.audioSink = audioSink; self.audioAuthorization = audioAuthorization
+        self.visibilityEpoch = visibilityEpoch; self.recoveryEpoch = recoveryEpoch
+    }
+}
+
+extension WorldwideScreenService {
+    private func networkAdaptationActualEpochPublicationOrigin() -> BelugaNetworkAdaptationActualEpochEntry.Origin? {
+        if Self.allNetworkAdaptationOwnerWritersAreEnrolled && Self.ownedStopPublicationIsEnrolled {
+            return .nativeEpoch
+        }
+        #if DEBUG
+        if nativeOwnerEpochPublicationEnabled { return .inertFixture }
+        #endif
+        return nil
+    }
+
+    private func networkAdaptationActualEpochEntry() throws -> BelugaNetworkAdaptationActualEpochEntry {
+        guard pendingNativeOwnerEpochEntry == nil,
+              let origin = networkAdaptationActualEpochPublicationOrigin() else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let entry = BelugaNetworkAdaptationActualEpochEntry(owner: self,
+            boundary: screenVideoAdaptationOwnerBoundary, origin: origin,
+            generation: peerGeneration, sourcePeer: peer, coordinator: recoveryCoordinator,
+            source: captureSource, sink: captureSink, authorization: captureAuthorization,
+            forwarding: captureForwardingAuthorization, audioSource: audioSource, audioSink: audioSink,
+            audioAuthorization: audioAuthorization, visibilityEpoch: screenVisibilityCommandEpoch,
+            recoveryEpoch: recoveryProofEpoch)
+        pendingNativeOwnerEpochEntry = entry
+        return entry
+    }
+
+    func networkAdaptationActualEpochAdmit(_ entry: BelugaNetworkAdaptationActualEpochEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) -> Bool {
+        let fresh = entry.phase == .fresh
+        entry.phase = .retired
+        guard fresh, entry.owner === self, entry.boundary === boundary,
+              boundary === screenVideoAdaptationOwnerBoundary,
+              networkAdaptationActualEpochNativeWitnessIsCurrent(entry) else { return false }
+        entry.phase = .admitted
+        return true
+    }
+
+    private func networkAdaptationActualEpochNativeWitnessIsCurrent(_ entry: BelugaNetworkAdaptationActualEpochEntry) -> Bool {
+        switch entry.origin {
+        case .nativeEpoch:
+            guard Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+                  Self.ownedStopPublicationIsEnrolled else { return false }
+        #if DEBUG
+        case .inertFixture:
+            guard audioRoutingIsInertPolicyFixture, !isStarted,
+                  peer == nil, captureSource == nil, captureSink == nil,
+                  audioSource == nil, audioSink == nil,
+                  nativeOwnerEpochPublicationEnabled else { return false }
+        #endif
+        }
+        // Hide, cleanup and post-ACK need custody, not active-media health votes.
+        guard pendingNativeOwnerEpochEntry === entry,
+              entry.owner === self, entry.boundary === screenVideoAdaptationOwnerBoundary,
+              entry.generation == peerGeneration, entry.sourcePeer === peer,
+              entry.coordinator === recoveryCoordinator, entry.source === captureSource,
+              entry.sink === captureSink, entry.authorization === captureAuthorization,
+              entry.forwarding === captureForwardingAuthorization, entry.audioSource === audioSource,
+              entry.audioSink === audioSink, entry.audioAuthorization === audioAuthorization,
+              entry.visibilityEpoch == screenVisibilityCommandEpoch,
+              entry.recoveryEpoch == recoveryProofEpoch else { return false }
+        return true
+    }
+
+    func networkAdaptationActualEpochSealMinimum(_ entry: BelugaNetworkAdaptationActualEpochEntry) throws -> UInt64? {
+        guard entry.phase == .admitted, case .unread = entry.payload,
+              networkAdaptationActualEpochNativeWitnessIsCurrent(entry) else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        #if DEBUG
+        if entry.permitsInertNegativeControls {
+            entry.minimumResolutionCount += 1
+            if entry.sourcePeer != nil { entry.peerGetterCount += 1 }
+        }
+        #endif
+        let minimum = entry.sourcePeer?.minimumNextStatisticsCollectionSequence()
+        guard networkAdaptationActualEpochNativeWitnessIsCurrent(entry) else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        entry.payload = .sealed(minimum)
+        entry.phase = .sealed
+        return minimum
+    }
+
+    func networkAdaptationActualEpochIsCurrent(_ entry: BelugaNetworkAdaptationActualEpochEntry) -> Bool {
+        guard entry.phase == .sealed, case .sealed = entry.payload else { return false }
+        return networkAdaptationActualEpochNativeWitnessIsCurrent(entry)
+    }
+
+    func networkAdaptationActualEpochMatches(_ entry: BelugaNetworkAdaptationActualEpochEntry,
+        slot: ObjectIdentifier, key: [UInt64], generation: UInt64) -> Bool {
+        guard case let .sealed(minimum) = entry.payload else { return false }
+        return slot == ObjectIdentifier(entry) && generation == entry.generation
+            && key == [216, 0, 0, minimum ?? 0, 0, minimum == nil ? 0 : 1]
+            && networkAdaptationActualEpochIsCurrent(entry)
+    }
+
+    func networkAdaptationActualEpochCapture(_ entry: BelugaNetworkAdaptationActualEpochEntry,
+        retainingAnchor: ContinuousClock.Instant?) throws -> BelugaNetworkAdaptationOwnerSnapshot {
+        guard networkAdaptationActualEpochIsCurrent(entry) else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        return try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: retainingAnchor)
+    }
+
+    func networkAdaptationActualEpochRetire(_ entry: BelugaNetworkAdaptationActualEpochEntry) {
+        if entry.phase != .published { entry.phase = .retired }
+        guard entry.owner === self, entry.boundary === screenVideoAdaptationOwnerBoundary,
+              pendingNativeOwnerEpochEntry === entry else { return }
+        pendingNativeOwnerEpochEntry = nil
+    }
+
+    func networkAdaptationActualEpochCommit(_ packet: BelugaNetworkAdaptationActualEpochCommit) {
+        precondition(pendingNativeOwnerEpochEntry === packet.entry)
+        packet.entry.phase = .published
+        pendingNativeOwnerEpochEntry = nil
+        #if DEBUG
+        if packet.entry.permitsInertNegativeControls { packet.entry.storeCount += 1 }
+        #endif
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+
+// Append to WorldwideScreenService.swift. No production event calls this seam yet.
+/// Reset cleanup owns the original latch classification, not a caller vote.
+/// Current resource custody deliberately does not equate the older binding's
+/// generation with the actor generation already advanced by Stop/startPeer.
+final class BelugaNetworkAdaptationActualResetEntry {
+    fileprivate enum Origin {
+        case nativeReset
+        #if DEBUG
+        case inertFixture
+        #endif
+    }
+    fileprivate enum Outcome { case claimedFailure, alreadyCommitted, alreadyFailureClaimed }
+    fileprivate enum Phase { case fresh, admitted, published, retired }
+    let boundary: BelugaNetworkAdaptationOwnerBoundary
+    let generation: UInt64
+    fileprivate let owner: WorldwideScreenService
+    fileprivate let origin: Origin
+    fileprivate let outcome: Outcome
+    fileprivate let native: BelugaNetworkAdaptationActualEpochEntry
+    fileprivate let binding: WorldwideScreenMediaSuspensionCoordinator.Binding
+    fileprivate let notice: WebRTCScreenMediaSuspensionNotice
+    fileprivate let attemptID: UUID
+    fileprivate let latch: WorldwideScreenAutomaticResumeCommitLatch
+    fileprivate let probe: WebRTCControlAuthorization?
+    fileprivate let forwarding: WebRTCControlAuthorization?
+    fileprivate let markerBoundary: WorldwideScreenSampleSink.ResumeMarkerBoundary?
+    fileprivate let markerReady: WebRTCScreenMediaMarkerReady?
+    fileprivate let markerPresentation: WebRTCScreenMediaMarkerPresentation?
+    fileprivate let suspension: WorldwideScreenMediaSuspensionCoordinator.Snapshot
+    fileprivate var phase = Phase.fresh
+    var operation: UInt32 { outcome == .claimedFailure ? 218 : 107 }
+    var key: [UInt64] { operation == 218 ? [218, 0, 0, 0, 0, 0] : [107, 0, 0, 0, 0] }
+    var permitsInertNegativeControls: Bool {
+        #if DEBUG
+        origin == .inertFixture
+        #else
+        false
+        #endif
+    }
+    fileprivate init(owner: WorldwideScreenService, origin: Origin, outcome: Outcome,
+        native: BelugaNetworkAdaptationActualEpochEntry,
+        binding: WorldwideScreenMediaSuspensionCoordinator.Binding,
+        notice: WebRTCScreenMediaSuspensionNotice, attemptID: UUID,
+        latch: WorldwideScreenAutomaticResumeCommitLatch,
+        probe: WebRTCControlAuthorization?, forwarding: WebRTCControlAuthorization?,
+        markerBoundary: WorldwideScreenSampleSink.ResumeMarkerBoundary?,
+        markerReady: WebRTCScreenMediaMarkerReady?, markerPresentation: WebRTCScreenMediaMarkerPresentation?,
+        suspension: WorldwideScreenMediaSuspensionCoordinator.Snapshot) {
+        self.owner = owner; self.origin = origin; self.outcome = outcome; self.native = native
+        boundary = native.boundary; generation = native.generation
+        self.binding = binding; self.notice = notice; self.attemptID = attemptID; self.latch = latch
+        self.probe = probe; self.forwarding = forwarding; self.markerBoundary = markerBoundary
+        self.markerReady = markerReady; self.markerPresentation = markerPresentation; self.suspension = suspension
+    }
+}
+
+extension WorldwideScreenService {
+    private func networkAdaptationActualResetOrigin() -> BelugaNetworkAdaptationActualResetEntry.Origin? {
+        if Self.allNetworkAdaptationOwnerWritersAreEnrolled && Self.ownedStopPublicationIsEnrolled {
+            return .nativeReset
+        }
+        #if DEBUG
+        if nativeOwnerResetPublicationEnabled { return .inertFixture }
+        #endif
+        return nil
+    }
+
+    // The cancellation and latch claim are original native cleanup effects. They
+    // precede guarded policy admission even when that admission is busy/exhausted.
+    // No production reset caller selects this wrapper yet.
+    private func publishActualResetOwner() throws {
+        guard let origin = networkAdaptationActualResetOrigin() else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let original = automaticScreenMediaResumeContext
+        let suspension = screenMediaSuspension.snapshot
+        defer { retireOriginalResumeResetContext(original, suspension: suspension) }
+        cancelAutomaticScreenMediaResumeTimeout()
+        guard let context = original else { return }
+        guard pendingNativeOwnerResetEntry == nil, context.ownerResetEntryID == nil else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let claimed = context.finalAcknowledgementCommit.claimFailure()
+        let outcome: BelugaNetworkAdaptationActualResetEntry.Outcome = claimed ? .claimedFailure
+            : (context.finalAcknowledgementCommit.isCommitted ? .alreadyCommitted : .alreadyFailureClaimed)
+        let nativeOrigin: BelugaNetworkAdaptationActualEpochEntry.Origin
+        switch origin {
+        case .nativeReset: nativeOrigin = .nativeEpoch
+        #if DEBUG
+        case .inertFixture: nativeOrigin = .inertFixture
+        #endif
+        }
+        // Reuse only the sealed resource-custody carrier, not its epoch payload,
+        // admission or pending slot. No epoch getter is resolved by this reset.
+        let native = BelugaNetworkAdaptationActualEpochEntry(owner: self,
+            boundary: screenVideoAdaptationOwnerBoundary,
+            origin: nativeOrigin,
+            generation: peerGeneration, sourcePeer: peer, coordinator: recoveryCoordinator,
+            source: captureSource, sink: captureSink, authorization: captureAuthorization,
+            forwarding: captureForwardingAuthorization, audioSource: audioSource, audioSink: audioSink,
+            audioAuthorization: audioAuthorization, visibilityEpoch: screenVisibilityCommandEpoch,
+            recoveryEpoch: recoveryProofEpoch)
+        let entry = BelugaNetworkAdaptationActualResetEntry(owner: self, origin: origin, outcome: outcome,
+            native: native, binding: context.binding, notice: context.notice, attemptID: context.attemptID,
+            latch: context.finalAcknowledgementCommit, probe: context.probeAuthorization,
+            forwarding: context.forwardingAuthorization, markerBoundary: context.boundary,
+            markerReady: context.markerReady, markerPresentation: context.markerPresentation, suspension: suspension)
+        automaticScreenMediaResumeContext?.ownerResetEntryID = ObjectIdentifier(entry)
+        pendingNativeOwnerResetEntry = entry
+        defer { networkAdaptationActualResetRetire(entry) }
+        #if DEBUG
+        nativeOwnerResetAttemptedOperations.append(entry.operation)
+        let boundary = nativeOwnerResetFault == .wrongBoundary ? BelugaNetworkAdaptationOwnerBoundary()
+            : screenVideoAdaptationOwnerBoundary
+        if nativeOwnerResetFault == .outerReentry {
+            try boundary.testSwallowedActualResetOuterReentry(entry, on: self)
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        #else
+        let boundary = screenVideoAdaptationOwnerBoundary
+        #endif
+        guard case .accepted = try boundary.publishActualReset(entry, on: self) else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        #if DEBUG
+        nativeOwnerResetAfterPrimary = try nativeOwnerStopSnapshotObservation()
+        #endif
+        if entry.operation == 107 {
+            let epoch = try networkAdaptationActualEpochEntry()
+            defer { networkAdaptationActualEpochRetire(epoch) }
+            #if DEBUG
+            nativeOwnerResetAttemptedOperations.append(216)
+            #endif
+            guard case .accepted = try screenVideoAdaptationOwnerBoundary.publishActualEpoch(epoch, on: self) else {
+                throw BelugaNetworkAdaptationOwnerError.refused
+            }
+        }
+    }
+
+    private func retireOriginalResumeResetContext(_ original: AutomaticScreenMediaResumeContext?,
+        suspension: WorldwideScreenMediaSuspensionCoordinator.Snapshot) {
+        guard screenMediaSuspension.snapshot == suspension else { return }
+        if let original {
+            guard let current = automaticScreenMediaResumeContext,
+                  current.attemptID == original.attemptID, current.binding == original.binding,
+                  current.notice == original.notice,
+                  current.finalAcknowledgementCommit === original.finalAcknowledgementCommit,
+                  current.probeAuthorization === original.probeAuthorization,
+                  current.forwardingAuthorization === original.forwardingAuthorization,
+                  current.boundary == original.boundary, current.markerReady == original.markerReady,
+                  current.markerPresentation == original.markerPresentation else { return }
+            original.probeAuthorization?.revoke()
+            original.forwardingAuthorization?.revoke()
+        } else {
+            guard automaticScreenMediaResumeContext == nil else { return }
+        }
+        automaticScreenMediaResumeContext = nil
+        screenMediaSuspension.retire()
+    }
+
+    private func networkAdaptationActualResetWitness(_ entry: BelugaNetworkAdaptationActualResetEntry) -> Bool {
+        switch entry.origin {
+        case .nativeReset:
+            guard Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+                  Self.ownedStopPublicationIsEnrolled else { return false }
+        #if DEBUG
+        case .inertFixture:
+            guard audioRoutingIsInertPolicyFixture, !isStarted,
+                  peer == nil, captureSource == nil, captureSink == nil, audioSource == nil, audioSink == nil,
+                  nativeOwnerResetPublicationEnabled else { return false }
+        #endif
+        }
+        let n = entry.native
+        guard pendingNativeOwnerResetEntry === entry, entry.owner === self,
+              entry.boundary === screenVideoAdaptationOwnerBoundary,
+              entry.generation == peerGeneration, n.sourcePeer === peer,
+              n.coordinator === recoveryCoordinator, n.source === captureSource, n.sink === captureSink,
+              n.authorization === captureAuthorization, n.forwarding === captureForwardingAuthorization,
+              n.audioSource === audioSource, n.audioSink === audioSink, n.audioAuthorization === audioAuthorization,
+              n.visibilityEpoch == screenVisibilityCommandEpoch, n.recoveryEpoch == recoveryProofEpoch,
+              screenMediaSuspension.snapshot == entry.suspension,
+              let context = automaticScreenMediaResumeContext,
+              context.ownerResetEntryID == ObjectIdentifier(entry),
+              context.attemptID == entry.attemptID, context.binding == entry.binding, context.notice == entry.notice,
+              context.finalAcknowledgementCommit === entry.latch,
+              context.probeAuthorization === entry.probe, context.forwardingAuthorization === entry.forwarding,
+              context.boundary == entry.markerBoundary, context.markerReady == entry.markerReady,
+              context.markerPresentation == entry.markerPresentation else { return false }
+        return true
+    }
+
+    func networkAdaptationActualResetAdmit(_ entry: BelugaNetworkAdaptationActualResetEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary, key: [UInt64]) -> Bool {
+        let fresh = entry.phase == .fresh
+        entry.phase = .retired
+        guard fresh, entry.boundary === boundary, key == entry.key,
+              networkAdaptationActualResetWitness(entry) else { return false }
+        entry.phase = .admitted
+        return true
+    }
+    func networkAdaptationActualResetIsCurrent(_ entry: BelugaNetworkAdaptationActualResetEntry) -> Bool {
+        entry.phase == .admitted && networkAdaptationActualResetWitness(entry)
+    }
+    func networkAdaptationActualResetMatches(_ entry: BelugaNetworkAdaptationActualResetEntry,
+        slot: ObjectIdentifier, key: [UInt64], generation: UInt64) -> Bool {
+        slot == ObjectIdentifier(entry) && key == entry.key
+            && generation == entry.generation && networkAdaptationActualResetIsCurrent(entry)
+    }
+    func networkAdaptationActualResetCapture(_ entry: BelugaNetworkAdaptationActualResetEntry,
+        retainingAnchor: ContinuousClock.Instant?) throws -> BelugaNetworkAdaptationOwnerSnapshot {
+        guard networkAdaptationActualResetIsCurrent(entry) else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+        return try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner, retainingAnchor: retainingAnchor)
+    }
+    func networkAdaptationActualResetRetire(_ entry: BelugaNetworkAdaptationActualResetEntry) {
+        if entry.phase != .published { entry.phase = .retired }
+        guard entry.owner === self, pendingNativeOwnerResetEntry === entry else { return }
+        pendingNativeOwnerResetEntry = nil
+    }
+    func networkAdaptationActualResetCommit(_ packet: BelugaNetworkAdaptationActualResetCommit) {
+        precondition(pendingNativeOwnerResetEntry === packet.entry)
+        packet.entry.phase = .published
+        pendingNativeOwnerResetEntry = nil
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+
+// Append to WorldwideScreenService.swift. No production event calls this seam yet.
+// Construction is sealed to this actor file; no caller can supply entry wire votes.
+final class BelugaNetworkAdaptationNativePrepareEntry {
+    let owner: WorldwideScreenService
+    let boundary: BelugaNetworkAdaptationOwnerBoundary
+    let value: BelugaNetworkAdaptationOwnerValue
+    let report: WebRTCScreenVideoStatisticsReport
+    let generation: UInt64
+    let revision: UInt64
+    let flags: UInt32
+    let active: Bool
+    let allowsResume: Bool
+    fileprivate let sourcePeer: WebRTCPeer
+    fileprivate let source: ScreenVideoCaptureSource?
+    fileprivate let sink: WorldwideScreenSampleSink?
+    fileprivate let captureAuthorization: WebRTCControlAuthorization?
+    fileprivate let forwardingAuthorization: WebRTCControlAuthorization?
+    fileprivate let visibilityEpoch: UInt64
+
+    fileprivate init(owner: WorldwideScreenService, boundary: BelugaNetworkAdaptationOwnerBoundary,
+        value: BelugaNetworkAdaptationOwnerValue,
+        report: WebRTCScreenVideoStatisticsReport, generation: UInt64, revision: UInt64,
+        flags: UInt32, active: Bool, allowsResume: Bool, sourcePeer: WebRTCPeer,
+        source: ScreenVideoCaptureSource?, sink: WorldwideScreenSampleSink?,
+        captureAuthorization: WebRTCControlAuthorization?, forwardingAuthorization: WebRTCControlAuthorization?,
+        visibilityEpoch: UInt64) {
+        self.owner = owner; self.boundary = boundary; self.value = value; self.report = report
+        self.generation = generation; self.revision = revision; self.flags = flags
+        self.active = active; self.allowsResume = allowsResume; self.sourcePeer = sourcePeer
+        self.source = source; self.sink = sink; self.captureAuthorization = captureAuthorization
+        self.forwardingAuthorization = forwardingAuthorization; self.visibilityEpoch = visibilityEpoch
+    }
+}
+
+extension WorldwideScreenService {
+    // Called ONLY by Boundary while its guard is held on this actor's executor.
+    // The report is telemetry, not authority. Future collector wiring must keep
+    // the original post-await cancellation/freshness/visibility/resource gates.
+    func networkAdaptationTerminalPrepareEntry(boundary: BelugaNetworkAdaptationOwnerBoundary,
+        report: WebRTCScreenVideoStatisticsReport,
+        sourcePeer: WebRTCPeer, generation: UInt64, revision: UInt64,
+        allowsResume: Bool) -> BelugaNetworkAdaptationNativePrepareEntry? {
+        guard screenVideoAdaptationOwnerBoundary === boundary,
+              automaticScreenMediaResumeContext == nil,
+              peer === sourcePeer, peerGeneration == generation,
+              screenVideoAdaptationOwner.revision == revision else { return nil }
+        // Same short-circuit order as the original adaptation entry. Retain the
+        // actual objects even when an earlier vote skips a later validity query.
+        let source = captureSource, sink = captureSink
+        let authorization = captureAuthorization
+        let forwarding = captureForwardingAuthorization
+        var flags: UInt32 = 1 | 2
+        if sink != nil { flags |= 8 }
+        let active: Bool
+        if source != nil {
+            flags |= 4
+            if sink != nil {
+                if authorization?.isValid == true {
+                    flags |= 16
+                    if forwarding?.isValid == true {
+                        flags |= 32
+                        if forwarding.map({ sink?.allowsActiveUse(authorizedBy: $0) == true }) == true {
+                            flags |= 64
+                        }
+                    }
+                }
+            }
+        }
+        active = flags & 0x7c == 0x7c
+        guard active || allowsResume else { return nil }
+        if screenMediaSuspension.isAutomaticallySuspended { flags |= 128 }
+        return .init(owner: self, boundary: boundary, value: screenVideoAdaptationOwner, report: report,
+            generation: generation, revision: revision, flags: flags, active: active,
+            allowsResume: allowsResume, sourcePeer: sourcePeer, source: source, sink: sink,
+            captureAuthorization: authorization, forwardingAuthorization: forwarding,
+            visibilityEpoch: screenVisibilityCommandEpoch)
+    }
+
+    // Rebuild from the actual current actor state, never from Prepared.policy.
+    // Strong references are custody, not authorization; revoked tokens and a
+    // closed sink generation still refuse. No native effect or clock is invoked.
+    func networkAdaptationTerminalPrepareIsCurrent(_ entry: BelugaNetworkAdaptationNativePrepareEntry,
+        original: BelugaNetworkAdaptationOwnerSnapshot) throws -> Bool {
+        guard entry.owner === self, screenVideoAdaptationOwnerBoundary === entry.boundary,
+              captureSource === entry.source,
+              captureSink === entry.sink, captureAuthorization === entry.captureAuthorization,
+              captureForwardingAuthorization === entry.forwardingAuthorization,
+              screenVisibilityCommandEpoch == entry.visibilityEpoch,
+              let current = networkAdaptationTerminalPrepareEntry(boundary: entry.boundary, report: entry.report,
+                sourcePeer: entry.sourcePeer, generation: entry.generation,
+                revision: entry.revision, allowsResume: entry.allowsResume),
+              current.flags == entry.flags, current.active == entry.active else { return false }
+        let captured = try BelugaNetworkAdaptationOwnerSnapshot.capture(
+            screenVideoAdaptationOwner, retainingAnchor: original.anchor)
+        return BelugaNetworkAdaptationOwnerSnapshot.equalAtoms(captured.atoms, original.atoms)
+            && captured.times == original.times && captured.anchor == original.anchor
+            && captured.route == original.route
+    }
+
+    // Capture ACTUAL storage again; Prepared.value is not a current-state witness.
+    func networkAdaptationTerminalInactiveCapture(_ entry: BelugaNetworkAdaptationNativePrepareEntry,
+        original: BelugaNetworkAdaptationOwnerSnapshot) throws -> BelugaNetworkAdaptationOwnerSnapshot? {
+        guard !entry.active, entry.allowsResume,
+              try networkAdaptationTerminalPrepareIsCurrent(entry, original: original) else { return nil }
+        return try .capture(screenVideoAdaptationOwner, retainingAnchor: original.anchor)
+    }
+
+    // Codec-file sealed packet, synchronous final store only. No callbacks,
+    // fallible import, native resume effect or new permission follows this write.
+    func networkAdaptationTerminalInactiveCommit(_ packet: BelugaNetworkAdaptationTerminalInactiveCommit) {
+        precondition(packet.entry.owner === self)
+        precondition(screenVideoAdaptationOwnerBoundary === packet.entry.boundary)
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+
+// General501 retains actual native origin separately from telemetry. No
+// production collector selects this seam until every owner writer is enrolled.
+final class BelugaNetworkAdaptationNativeGeneralPrepareEntry {
+    let owner: WorldwideScreenService
+    let boundary: BelugaNetworkAdaptationOwnerBoundary
+    let value: BelugaNetworkAdaptationOwnerValue
+    let snapshot: WebRTCStatisticsSnapshot?
+    let timestamp: Double?
+    let generation: UInt64
+    let revision: UInt64
+    let capacityOnly: Bool
+    let flags: UInt32
+    let active: Bool
+    let allowsResume: Bool
+    fileprivate let peer: WebRTCPeer
+    fileprivate let source: ScreenVideoCaptureSource?
+    fileprivate let sink: WorldwideScreenSampleSink?
+    fileprivate let captureAuthorization: WebRTCControlAuthorization?
+    fileprivate let forwardingAuthorization: WebRTCControlAuthorization?
+    fileprivate let visibilityEpoch: UInt64
+    fileprivate init(owner: WorldwideScreenService, boundary: BelugaNetworkAdaptationOwnerBoundary,
+        value: BelugaNetworkAdaptationOwnerValue, snapshot: WebRTCStatisticsSnapshot?, timestamp: Double?,
+        generation: UInt64, revision: UInt64, capacityOnly: Bool, flags: UInt32, active: Bool,
+        allowsResume: Bool, peer: WebRTCPeer, source: ScreenVideoCaptureSource?, sink: WorldwideScreenSampleSink?,
+        captureAuthorization: WebRTCControlAuthorization?, forwardingAuthorization: WebRTCControlAuthorization?,
+        visibilityEpoch: UInt64) {
+        self.owner = owner; self.boundary = boundary; self.value = value
+        self.snapshot = snapshot; self.timestamp = timestamp; self.generation = generation; self.revision = revision
+        self.capacityOnly = capacityOnly; self.flags = flags; self.active = active; self.allowsResume = allowsResume
+        self.peer = peer; self.source = source; self.sink = sink; self.captureAuthorization = captureAuthorization
+        self.forwardingAuthorization = forwardingAuthorization; self.visibilityEpoch = visibilityEpoch
+    }
+}
+
+extension WorldwideScreenService {
+    func networkAdaptationGeneralPrepareEntry(boundary: BelugaNetworkAdaptationOwnerBoundary,
+        snapshot: WebRTCStatisticsSnapshot?, timestamp: Double?, sourcePeer: WebRTCPeer,
+        generation: UInt64, revision: UInt64, capacityOnly: Bool,
+        allowsResume: Bool) -> BelugaNetworkAdaptationNativeGeneralPrepareEntry? {
+        guard screenVideoAdaptationOwnerBoundary === boundary,
+              automaticScreenMediaResumeContext == nil, peer === sourcePeer,
+              peerGeneration == generation, screenVideoAdaptationOwner.revision == revision else { return nil }
+        let source = captureSource, sink = captureSink
+        let authorization = captureAuthorization, forwarding = captureForwardingAuthorization
+        var flags: UInt32 = 1 | 2
+        if sink != nil { flags |= 8 }
+        // Original left-to-right active-use short circuit; a retained reference
+        // alone does not authorize a revoked token or closed sink generation.
+        if source != nil {
+            flags |= 4
+            if sink != nil {
+                if authorization?.isValid == true {
+                    flags |= 16
+                    if forwarding?.isValid == true {
+                        flags |= 32
+                        if forwarding.map({ sink?.allowsActiveUse(authorizedBy: $0) == true }) == true { flags |= 64 }
+                    }
+                }
+            }
+        }
+        let active = flags & 0x7c == 0x7c
+        guard active || allowsResume else { return nil }
+        if screenMediaSuspension.isAutomaticallySuspended { flags |= 128 }
+        return .init(owner: self, boundary: boundary, value: screenVideoAdaptationOwner,
+            snapshot: snapshot, timestamp: timestamp, generation: generation, revision: revision,
+            capacityOnly: capacityOnly, flags: flags, active: active, allowsResume: allowsResume,
+            peer: sourcePeer, source: source, sink: sink, captureAuthorization: authorization,
+            forwardingAuthorization: forwarding, visibilityEpoch: screenVisibilityCommandEpoch)
+    }
+
+    func networkAdaptationGeneralPrepareIsCurrent(_ entry: BelugaNetworkAdaptationNativeGeneralPrepareEntry,
+        original: BelugaNetworkAdaptationOwnerSnapshot) throws -> Bool {
+        guard entry.owner === self, screenVideoAdaptationOwnerBoundary === entry.boundary,
+              captureSource === entry.source, captureSink === entry.sink,
+              captureAuthorization === entry.captureAuthorization,
+              captureForwardingAuthorization === entry.forwardingAuthorization,
+              screenVisibilityCommandEpoch == entry.visibilityEpoch,
+              let current = networkAdaptationGeneralPrepareEntry(boundary: entry.boundary,
+                snapshot: entry.snapshot, timestamp: entry.timestamp, sourcePeer: entry.peer,
+                generation: entry.generation, revision: entry.revision,
+                capacityOnly: entry.capacityOnly, allowsResume: entry.allowsResume),
+              current.flags == entry.flags, current.active == entry.active else { return false }
+        let captured = try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: original.anchor)
+        return BelugaNetworkAdaptationOwnerSnapshot.equalAtoms(captured.atoms, original.atoms)
+            && captured.times == original.times && captured.anchor == original.anchor && captured.route == original.route
+    }
+}
+
+// Constructor-sealed actual701 custody. No public scalar resource flags can
+// manufacture any of these native references or authorize a sender await.
+final class BelugaNetworkAdaptationNativeBeginActiveEntry {
+    let value: BelugaNetworkAdaptationOwnerValue
+    let resourceFlags: UInt32
+    fileprivate let preparation: BelugaNetworkAdaptationNativeGeneralPrepareEntry
+    fileprivate let source: ScreenVideoCaptureSource?
+    fileprivate let sink: WorldwideScreenSampleSink?
+    fileprivate let captureAuthorization: WebRTCControlAuthorization?
+    fileprivate let forwardingAuthorization: WebRTCControlAuthorization?
+    fileprivate let baseDimensions: ScreenVideoPixelDimensions?
+    fileprivate let capturer: MacExternalVideoCapturer?
+    fileprivate init(preparation: BelugaNetworkAdaptationNativeGeneralPrepareEntry,
+        value: BelugaNetworkAdaptationOwnerValue, source: ScreenVideoCaptureSource?, sink: WorldwideScreenSampleSink?,
+        captureAuthorization: WebRTCControlAuthorization?, forwardingAuthorization: WebRTCControlAuthorization?,
+        baseDimensions: ScreenVideoPixelDimensions?, capturer: MacExternalVideoCapturer?) {
+        self.preparation = preparation; self.value = value; self.source = source; self.sink = sink
+        self.captureAuthorization = captureAuthorization; self.forwardingAuthorization = forwardingAuthorization
+        self.baseDimensions = baseDimensions; self.capturer = capturer
+        resourceFlags = (source == nil ? 0 : 1) | (sink == nil ? 0 : 2)
+            | (captureAuthorization == nil ? 0 : 4) | (forwardingAuthorization == nil ? 0 : 8)
+            | (baseDimensions == nil ? 0 : 16) | (capturer == nil ? 0 : 32)
+    }
+}
+
+extension WorldwideScreenService {
+    func networkAdaptationBeginActiveEntry(_ preparation: BelugaNetworkAdaptationNativeGeneralPrepareEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) -> BelugaNetworkAdaptationNativeBeginActiveEntry? {
+        // These are issuer/custody checks, NOT a replacement of the original
+        // synchronous continuation with another peer/revision/active-use vote.
+        guard preparation.owner === self, preparation.boundary === boundary,
+              screenVideoAdaptationOwnerBoundary === boundary else { return nil }
+        return .init(preparation: preparation, value: screenVideoAdaptationOwner,
+            source: captureSource, sink: captureSink, captureAuthorization: captureAuthorization,
+            forwardingAuthorization: captureForwardingAuthorization, baseDimensions: captureVideoBaseDimensions,
+            capturer: preparation.peer.externalVideoCapturer)
+    }
+
+    func networkAdaptationBeginActiveRecapture(_ entry: BelugaNetworkAdaptationNativeBeginActiveEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary,
+        retainingAnchor: ContinuousClock.Instant?) throws -> BelugaNetworkAdaptationOwnerSnapshot {
+        guard entry.preparation.owner === self, entry.preparation.boundary === boundary,
+              screenVideoAdaptationOwnerBoundary === boundary,
+              captureSource === entry.source, captureSink === entry.sink,
+              captureAuthorization === entry.captureAuthorization,
+              captureForwardingAuthorization === entry.forwardingAuthorization,
+              captureVideoBaseDimensions == entry.baseDimensions,
+              entry.preparation.peer.externalVideoCapturer === entry.capturer else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: retainingAnchor)
+    }
+
+    // Constructor-sealed packet from the same held codec call. No callback,
+    // recapture, clock, native effect, await or throwing work follows the store.
+    func networkAdaptationBeginActiveCommit(_ packet: BelugaNetworkAdaptationActualBeginActiveCommit) {
+        precondition(packet.entry.preparation.owner === self
+            && packet.entry.preparation.boundary === packet.boundary
+            && screenVideoAdaptationOwnerBoundary === packet.boundary)
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+
+/// Non-Sendable, actor-file-sealed continuation. The retained seed includes
+/// original report/route/13 native Instants/anchor and all actual701 custody.
+/// Applying resources cannot be constructed from resourceFlags or scalar IDs.
+final class BelugaNetworkAdaptationNativeAttempt {
+    fileprivate struct ApplyResources {
+        let source: ScreenVideoCaptureSource
+        let sink: WorldwideScreenSampleSink
+        let captureAuthorization: WebRTCControlAuthorization
+        let forwardingAuthorization: WebRTCControlAuthorization
+        let baseDimensions: ScreenVideoPixelDimensions
+        let capturer: MacExternalVideoCapturer
+    }
+    fileprivate enum Phase { case ready, running, settled }
+    fileprivate let owner: WorldwideScreenService
+    fileprivate let seed: BelugaNetworkAdaptationNativeAttemptSeed
+    fileprivate let sourcePeer: WebRTCPeer
+    fileprivate let resources: ApplyResources?
+    fileprivate var phase: Phase = .ready
+    var intent: BelugaNetworkAdaptationNativeAttemptSeed.Intent { seed.intent }
+    var beginActiveInvocation: UInt64 { seed.beginActiveInvocation }
+    var consumerInvocation: UInt64 { seed.consumerInvocation }
+    fileprivate init(owner: WorldwideScreenService,
+        seed: BelugaNetworkAdaptationNativeAttemptSeed, resources: ApplyResources?) {
+        self.owner = owner; self.seed = seed
+        sourcePeer = seed.entry.preparation.peer; self.resources = resources
+    }
+    fileprivate func claim(by owner: WorldwideScreenService,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws {
+        guard case .ready = phase else { throw BelugaNetworkAdaptationOwnerError.refused }
+        phase = .running // A rejected wrong actor/boundary also spends this use.
+        guard self.owner === owner, seed.boundary === boundary else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+    }
+}
+
+/// A NEW completion owns the exact original attempt and actual SDK settlement.
+/// Success never discards a stale token; failure has no fabricated rollback
+/// token. The handle/error are not exported, writable, or caller-supplied.
+/// A future codec completion adapter must enter through an actor-file factory
+/// that calls spend; no public scalar facts can manufacture that adapter entry.
+final class BelugaNetworkAdaptationNativeCompletion {
+    enum Kind { case finalAdoptionOnly, senderSucceeded, senderFailed }
+    fileprivate enum Settlement {
+        case finalAdoptionOnly
+        case senderSucceeded(WebRTCScreenVideoEncodingUpdate)
+        case senderFailed(any Error)
+    }
+    let kind: Kind
+    fileprivate let attempt: BelugaNetworkAdaptationNativeAttempt
+    fileprivate let settlement: Settlement
+    #if DEBUG
+    fileprivate var successDispatchTrace: NativeSuccessDispatchTrace?
+    #endif
+    private var spent = false
+    fileprivate init(attempt: BelugaNetworkAdaptationNativeAttempt, settlement: Settlement) {
+        self.attempt = attempt; self.settlement = settlement
+        switch settlement {
+        case .finalAdoptionOnly: kind = .finalAdoptionOnly
+        case .senderSucceeded: kind = .senderSucceeded
+        case .senderFailed: kind = .senderFailed
+        }
+    }
+    fileprivate func spend(by owner: WorldwideScreenService,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws {
+        guard !spent else { throw BelugaNetworkAdaptationOwnerError.refused }
+        spent = true // Future wrong-origin completion admission also burns.
+        guard attempt.owner === owner, attempt.seed.boundary === boundary,
+              case .settled = attempt.phase else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+    }
+}
+
+extension WorldwideScreenService {
+    /// Only the codec's sealed seed reaches this synchronous factory. The codec
+    /// already compared all current Owner atoms/native sidecars to the actual701
+    /// published replacement; this is native custody, not repeat501 admission.
+    func networkAdaptationNativeAttempt(_ seed: BelugaNetworkAdaptationNativeAttemptSeed)
+        throws -> BelugaNetworkAdaptationNativeAttempt {
+        guard seed.entry.preparation.owner === self,
+              seed.entry.preparation.boundary === seed.boundary,
+              screenVideoAdaptationOwnerBoundary === seed.boundary else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let resources: BelugaNetworkAdaptationNativeAttempt.ApplyResources?
+        switch seed.intent {
+        case .finalAdoptionOnly:
+            // The real no-native-apply path does not require the six resources.
+            // Do not unwrap them or mint sender/FPS permission on this path.
+            resources = nil
+        case .senderApply:
+            guard let source = seed.entry.source, let sink = seed.entry.sink,
+                  let captureAuthorization = seed.entry.captureAuthorization,
+                  let forwardingAuthorization = seed.entry.forwardingAuthorization,
+                  let baseDimensions = seed.entry.baseDimensions,
+                  let capturer = seed.entry.capturer else {
+                throw BelugaNetworkAdaptationOwnerError.refused
+            }
+            resources = .init(source: source, sink: sink,
+                captureAuthorization: captureAuthorization,
+                forwardingAuthorization: forwardingAuthorization,
+                baseDimensions: baseDimensions, capturer: capturer)
+        }
+        return .init(owner: self, seed: seed, resources: resources)
+    }
+
+    /// UNWIRED: this method performs the actual sender await but deliberately
+    /// has no caller until success702/failure703/fresh704 adapters are complete.
+    /// Both production selection gates stay false. No Boundary guard/frame is
+    /// retained across await. No fallback, FPS call, rollback, or Owner store.
+    func networkAdaptationRunNativeAttempt(_ attempt: BelugaNetworkAdaptationNativeAttempt)
+        async throws -> BelugaNetworkAdaptationNativeCompletion {
+        try attempt.claim(by: self, boundary: screenVideoAdaptationOwnerBoundary)
+        guard automaticScreenMediaResumeContext == nil,
+              peer === attempt.sourcePeer,
+              peerGeneration == attempt.seed.entry.preparation.generation,
+              screenVideoAdaptationOwner.revision == attempt.seed.prepared.tail.applyingRevision else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        // An exported attempt must not be delayed across a newer Owner/resource
+        // cut and then mutate the sender. This is exact701 custody recapture,
+        // not a recomputed policy vote. Rejection remains rejection, not 703.
+        let current = try networkAdaptationBeginActiveRecapture(attempt.seed.entry,
+            boundary: attempt.seed.boundary, retainingAnchor: attempt.seed.published.anchor)
+        let published = attempt.seed.published
+        guard BelugaNetworkAdaptationOwnerSnapshot.equalAtoms(current.atoms, published.atoms),
+              current.times == published.times, current.anchor == published.anchor,
+              current.route == published.route else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let settlement: BelugaNetworkAdaptationNativeCompletion.Settlement
+        switch attempt.seed.intent {
+        case .finalAdoptionOnly:
+            precondition(attempt.resources == nil)
+            settlement = .finalAdoptionOnly
+        case .senderApply:
+            precondition(attempt.resources != nil)
+            // Only this actual return can create senderSucceeded. Capture the
+            // exact original-peer token even when actor state changed at await.
+            // DO NOT put custody refusal/currentness work inside this SDK catch.
+            do {
+                let update = try await attempt.sourcePeer.applyScreenVideoEncodingLimits(
+                    attempt.seed.prepared.tail.recommendation.webRTCLimits)
+                settlement = .senderSucceeded(update)
+            } catch {
+                settlement = .senderFailed(error)
+            }
+        }
+        attempt.phase = .settled
+        let completion = BelugaNetworkAdaptationNativeCompletion(attempt: attempt, settlement: settlement)
+        #if DEBUG
+        if let use = nativeDispatchReturnFixtureUse {
+            // AFTER the real SDK-only catch and completion construction. No
+            // C frame/Boundary guard or manufactured settlement crosses await.
+            precondition(use.attempt === attempt && use.boundary === screenVideoAdaptationOwnerBoundary
+                && activeNativeAdaptationDispatch === attempt && use.completion == nil)
+            use.completion = completion
+            await use.gate.holdActualReturn()
+        }
+        #endif
+        return completion
+    }
+}
+// Test-only genuine native resources; require the owned fresh-process controller.
+// No live refs or receipts leave this actor. Capture and transport never start.
+#if DEBUG
+extension WorldwideScreenService {
+    struct NativeAdaptationFixturePeerReadback: Equatable, Sendable {
+        let topology: WebRTCTransportMediaTopology
+        let externalAudioIsAbsent: Bool
+        let encodingGeneration: UInt64
+        let limits: WebRTCScreenVideoEncodingLimits?
+        let totalCeiling: Int?
+        let encodingActivity: [Bool]?
+    }
+
+    enum NativeAdaptationResourceFixtureCase: String, CaseIterable, Sendable {
+        case apply, noNativeApply, wrongBoundaryConsume
+        case sourceAbsentAfterPrepare, sinkAbsentAfterPrepare
+        case captureAuthorizationAbsentAfterPrepare
+        case forwardingAuthorizationAbsentAfterPrepare
+        case dimensionsAbsentAfterPrepare
+        case peerAbsentBeforeRun, generationAdvancedBeforeRun
+        case revisionAdvancedBeforeRun, dimensionsChangedBeforeRun
+        case resumeOccupancyBeforeRun
+    }
+
+    struct NativeAdaptationResourceFixtureObservation: Sendable {
+        let selectedCase: NativeAdaptationResourceFixtureCase
+        let prepared: Bool
+        let beginReturned: Bool
+        let resourceCustodyIsExact: Bool
+        let intentIsSenderApply: Bool
+        let beginInvocation: UInt64?
+        let consumerInvocation: UInt64?
+        let preparedReplayRefused: Bool
+        let beginReplayRefused: Bool
+        let wrongBoundaryRefused: Bool
+        let wrongBoundaryBurnedOriginalUse: Bool
+        let runRefused: Bool
+        let runReplayRefused: Bool
+        let completionIsSenderSucceeded: Bool
+        let completionIsFinalAdoptionOnly: Bool
+        let actualSDKTokenWasRetained: Bool
+        let actualSDKTokenRollbackSucceeded: Bool
+        let requestedLimits: WebRTCScreenVideoEncodingLimits?
+        let nativeBefore: NativeAdaptationFixturePeerReadback
+        let nativeAfter: NativeAdaptationFixturePeerReadback
+        let nativeAfterTokenRollback: NativeAdaptationFixturePeerReadback?
+        let ownerAfterBegin: NativeOwnerPublicationSnapshotObservation
+        let ownerAfterConsume: NativeOwnerPublicationSnapshotObservation
+        let ownerBeforeRun: NativeOwnerPublicationSnapshotObservation
+        let ownerAfterRun: NativeOwnerPublicationSnapshotObservation
+        let cleanupSourceStopped: Bool
+        let cleanupPeerClosed: Bool
+        let cleanupFieldsAreAbsent: Bool
+        let cleanupAuthorizationsAreRevoked: Bool
+    }
+
+    private enum NativeAdaptationFixtureError: Error {
+        case unsafeSetup, missingCapturer, sinkDidNotOpen, reportUnavailable
+        case noPrepared, noBeginReceipt, wrongIntent, missingResources
+        case badActualOrigin, unexpectedSDKFailure, unexpectedCompletion
+    }
+
+    // A closed constructor holds the original resources for cleanup even after
+    // a negative case removes one from actual actor storage.
+    private final class NativeAdaptationFixtureResources {
+        let peer: WebRTCPeer
+        let source: ScreenVideoCaptureSource
+        let sink: WorldwideScreenSampleSink
+        let captureAuthorization: WebRTCControlAuthorization
+        let forwardingAuthorization: WebRTCControlAuthorization
+        let dimensions: ScreenVideoPixelDimensions
+        let capturer: MacExternalVideoCapturer
+        var resumeOccupancyID: UUID?
+        init(peer: WebRTCPeer, source: ScreenVideoCaptureSource,
+            sink: WorldwideScreenSampleSink,
+            captureAuthorization: WebRTCControlAuthorization,
+            forwardingAuthorization: WebRTCControlAuthorization,
+            dimensions: ScreenVideoPixelDimensions, capturer: MacExternalVideoCapturer) {
+            self.peer = peer; self.source = source; self.sink = sink
+            self.captureAuthorization = captureAuthorization
+            self.forwardingAuthorization = forwardingAuthorization
+            self.dimensions = dimensions; self.capturer = capturer
+        }
+    }
+
+    private func makeNativeAdaptationFixtureResources() async throws
+        -> NativeAdaptationFixtureResources {
+        requireInertBatchAPolicyFixture()
+        guard !isStarted, !isStopped, !captureLifetimeIsRequired,
+              !Self.allNetworkAdaptationOwnerWritersAreEnrolled,
+              !Self.ownedStopPublicationIsEnrolled,
+              !nativeOwnerStopPublicationEnabled,
+              !nativeOwnerEpochPublicationEnabled, !nativeOwnerResetPublicationEnabled,
+              pendingNativeOwnerStopEntry == nil, pendingNativeOwnerEpochEntry == nil,
+              pendingNativeOwnerResetEntry == nil,
+              batchAInertRoutingObserverJoin?.snapshot().retainedHandleCount == 0,
+              peer == nil, peerGeneration == 0,
+              captureSource == nil, captureSink == nil,
+              captureAuthorization == nil, captureForwardingAuthorization == nil,
+              captureVideoBaseDimensions == nil, automaticScreenMediaResumeContext == nil,
+              audioSource == nil, audioSink == nil, audioAuthorization == nil else {
+            throw NativeAdaptationFixtureError.unsafeSetup
+        }
+        let nativePeer = try WebRTCPeer(configuration: .init(role: .host,
+            iceServers: [], icePolicy: .directPreferred,
+            maximumVideoBitrate: maximumVideoBitrate,
+            mediaTopology: .videoControlOnly,
+            supportsRemoteMediaControls: false, supportsMediaHandoff: false,
+            supportsAudioClientDiagnostics: false))
+        do {
+            guard let capturer = nativePeer.externalVideoCapturer,
+                  nativePeer.externalAudioCapturer == nil else {
+                throw NativeAdaptationFixtureError.missingCapturer
+            }
+            let sink = WorldwideScreenSampleSink(capturer: capturer,
+                remoteInputController: remoteInputController,
+                didRequireCaptureFormatRenegotiation: { _ in
+                    preconditionFailure("Unstarted fixture scheduled format renegotiation")
+                }, scheduleFormatRenegotiationFallback: { _, _ in
+                    preconditionFailure("Unstarted fixture scheduled a fallback")
+                }, didStop: { _, _ in
+                    preconditionFailure("Unstarted fixture delivered a native stop")
+                })
+            guard let forwarding = sink.beginForwarding(expectedFrameDimensions: nil),
+                  sink.commitForwardingStartup(authorizedBy: forwarding),
+                  sink.allowsActiveUse(authorizedBy: forwarding) else {
+                sink.stopForwarding()
+                throw NativeAdaptationFixtureError.sinkDidNotOpen
+            }
+            // No source.start, sample delivery, pixel injection, peer.start or SDP.
+            let source = ScreenVideoCaptureSource(displayID: nil,
+                maximumWidth: maximumWidth, framesPerSecond: framesPerSecond,
+                consumer: sink, logger: logger)
+            let capture = WebRTCControlAuthorization()
+            let dimensions = ScreenVideoPixelDimensions(width: 320, height: 180)
+            let resources = NativeAdaptationFixtureResources(peer: nativePeer,
+                source: source, sink: sink, captureAuthorization: capture,
+                forwardingAuthorization: forwarding, dimensions: dimensions,
+                capturer: capturer)
+            peer = nativePeer; peerGeneration = 1
+            captureSource = source; captureSink = sink
+            captureAuthorization = capture; captureForwardingAuthorization = forwarding
+            captureVideoBaseDimensions = dimensions
+            return resources
+        } catch {
+            _ = await nativePeer.close(reason: .normal)
+            throw error
+        }
+    }
+
+    private func closeNativeAdaptationFixture(_ f: NativeAdaptationFixtureResources) async
+        -> (sourceStopped: Bool, peerClosed: Bool, absent: Bool, revoked: Bool) {
+        f.captureAuthorization.revoke(); f.forwardingAuthorization.revoke()
+        f.sink.stopForwarding()
+        if captureSource === f.source { captureSource = nil }
+        if captureSink === f.sink { captureSink = nil }
+        if captureAuthorization === f.captureAuthorization { captureAuthorization = nil }
+        if captureForwardingAuthorization === f.forwardingAuthorization {
+            captureForwardingAuthorization = nil
+        }
+        // Only this fixture owns the existing peer slot; negative cases may
+        // already have removed it. No replacement peer is constructed.
+        if peer === f.peer { peer = nil }
+        captureVideoBaseDimensions = nil
+        if let id = f.resumeOccupancyID,
+           automaticScreenMediaResumeContext?.attemptID == id {
+            automaticScreenMediaResumeContext = nil
+        }
+        let stopped: Bool
+        do { try await f.source.stop(); stopped = true }
+        catch { stopped = false }
+        let closed = await f.peer.close(reason: .normal)
+        return (stopped, closed,
+            peer == nil && captureSource == nil && captureSink == nil
+                && captureAuthorization == nil && captureForwardingAuthorization == nil
+                && captureVideoBaseDimensions == nil && automaticScreenMediaResumeContext == nil,
+            !f.captureAuthorization.isValid && !f.forwardingAuthorization.isValid)
+    }
+
+    private func nativeAdaptationFixtureReport(_ f: NativeAdaptationFixtureResources)
+        async throws -> WebRTCScreenVideoStatisticsReport {
+        guard let report = await f.peer.screenVideoStatisticsSnapshot(timeout: .seconds(1)) else {
+            throw NativeAdaptationFixtureError.reportUnavailable
+        }
+        return report
+    }
+
+    // The callback is fixed by the XCTest source and reads real peer fields
+    // through @testable WebRTCTransport. It is never called under a Boundary
+    // guard and cannot manufacture a receipt, resource or SDK update handle.
+    func nativeAdaptationResourceFixtureObservationForTesting(
+        selectedCase: NativeAdaptationResourceFixtureCase,
+        readNative: @Sendable (WebRTCPeer) async -> NativeAdaptationFixturePeerReadback
+    ) async throws -> NativeAdaptationResourceFixtureObservation {
+        let f = try await makeNativeAdaptationFixtureResources()
+        do {
+            if selectedCase == .noNativeApply {
+                // Genuine original-path setup only. No seeded/applied Owner or
+                // copied proposal substitutes for this native sender operation.
+                let report = try await nativeAdaptationFixtureReport(f)
+                await adaptScreenVideoForNetworkConditions(report.nativeSnapshot,
+                    sourcePeer: f.peer, sourcePeerGeneration: peerGeneration,
+                    expectedPolicyRevision: screenVideoAdaptationOwner.revision,
+                    allowsAutomaticResume: false,
+                    nativeReportTimestampMicroseconds: report.nativeReportTimestampMicroseconds)
+                guard appliedScreenVideoRecommendation != nil else {
+                    throw NativeAdaptationFixtureError.wrongIntent
+                }
+            }
+            let nativeBefore = await readNative(f.peer)
+            let report = try await nativeAdaptationFixtureReport(f)
+            guard let prepared = try screenVideoAdaptationOwnerBoundary.prepareGeneral(on: self,
+                snapshot: report.nativeSnapshot,
+                nativeTimestamp: report.nativeReportTimestampMicroseconds,
+                sourcePeer: f.peer, generation: peerGeneration,
+                expectedRevision: screenVideoAdaptationOwner.revision,
+                capacityOnly: false, allowsResume: false) else {
+                throw NativeAdaptationFixtureError.noPrepared
+            }
+            switch selectedCase {
+            case .sourceAbsentAfterPrepare: captureSource = nil
+            case .sinkAbsentAfterPrepare: captureSink = nil
+            case .captureAuthorizationAbsentAfterPrepare: captureAuthorization = nil
+            case .forwardingAuthorizationAbsentAfterPrepare: captureForwardingAuthorization = nil
+            case .dimensionsAbsentAfterPrepare: captureVideoBaseDimensions = nil
+            default: break
+            }
+            let begin = try screenVideoAdaptationOwnerBoundary.beginActive(prepared, on: self)
+            let ownerAfterBegin = try nativeOwnerStopSnapshotObservation()
+            var preparedReplayRefused = false
+            do { _ = try screenVideoAdaptationOwnerBoundary.beginActive(prepared, on: self) }
+            catch BelugaNetworkAdaptationOwnerError.refused { preparedReplayRefused = true }
+            var exact = false, senderIntent = false, wrongBoundaryRefused = false
+            var originalBurned = false, beginReplayRefused = false, runRefused = false
+            var runReplayRefused = false, senderSucceeded = false, finalAdoptionOnly = false
+            var tokenRetained = false
+            var SDKUpdate: WebRTCScreenVideoEncodingUpdate?
+            var beginInvocation: UInt64?, consumerInvocation: UInt64?
+            var requested: WebRTCScreenVideoEncodingLimits?
+            var ownerAfterConsume = ownerAfterBegin
+            var ownerBeforeRun = ownerAfterBegin
+            if let begin {
+                if selectedCase == .wrongBoundaryConsume {
+                    let foreignBoundary = BelugaNetworkAdaptationOwnerBoundary()
+                    do { _ = try foreignBoundary.consumeBeginActive(begin, on: self) }
+                    catch BelugaNetworkAdaptationOwnerError.refused { wrongBoundaryRefused = true }
+                    do { _ = try screenVideoAdaptationOwnerBoundary.consumeBeginActive(begin, on: self) }
+                    catch BelugaNetworkAdaptationOwnerError.refused { originalBurned = true }
+                    ownerAfterConsume = try nativeOwnerStopSnapshotObservation()
+                    ownerBeforeRun = ownerAfterConsume
+                } else {
+                    let attempt = try screenVideoAdaptationOwnerBoundary.consumeBeginActive(begin, on: self)
+                    beginInvocation = attempt.beginActiveInvocation
+                    consumerInvocation = attempt.consumerInvocation
+                    senderIntent = attempt.intent == .senderApply
+                    requested = attempt.seed.prepared.tail.recommendation.webRTCLimits
+                    let issuerIsExact = attempt.owner === self
+                        && attempt.seed.boundary === screenVideoAdaptationOwnerBoundary
+                        && attempt.sourcePeer === f.peer
+                    if senderIntent {
+                        guard let resources = attempt.resources else {
+                            throw NativeAdaptationFixtureError.missingResources
+                        }
+                        exact = issuerIsExact && resources.source === f.source && resources.sink === f.sink
+                            && resources.captureAuthorization === f.captureAuthorization
+                            && resources.forwardingAuthorization === f.forwardingAuthorization
+                            && resources.baseDimensions == f.dimensions
+                            && resources.capturer === f.capturer
+                    } else { exact = issuerIsExact && attempt.resources == nil }
+                    guard exact else { throw NativeAdaptationFixtureError.badActualOrigin }
+                    ownerAfterConsume = try nativeOwnerStopSnapshotObservation()
+                    do { _ = try screenVideoAdaptationOwnerBoundary.consumeBeginActive(begin, on: self) }
+                    catch BelugaNetworkAdaptationOwnerError.refused { beginReplayRefused = true }
+                    switch selectedCase {
+                    case .peerAbsentBeforeRun: peer = nil
+                    case .generationAdvancedBeforeRun: peerGeneration &+= 1
+                    case .revisionAdvancedBeforeRun:
+                        // Exercise the EXISTING actor writer, not a new Owner setter.
+                        _ = prepareScreenVideoAdaptationEvidence(from: .fastSender)
+                        _ = prepareScreenVideoAdaptationEvidence(from: .ordinaryFallback)
+                    case .dimensionsChangedBeforeRun:
+                        captureVideoBaseDimensions = .init(width: f.dimensions.width + 1,
+                            height: f.dimensions.height)
+                    case .resumeOccupancyBeforeRun:
+                        // A non-authorizing occupancy blocker only, matching the
+                        // existing inert reset fixture. No real resume/ACK claim.
+                        let id = UUID(); f.resumeOccupancyID = id
+                        automaticScreenMediaResumeContext = .init(
+                            binding: currentScreenMediaSuspensionBinding,
+                            notice: .init(screenRequestID: 1, suspensionGeneration: 1),
+                            attemptID: id,
+                            finalAcknowledgementCommit: WorldwideScreenAutomaticResumeCommitLatch(),
+                            inputOwnershipClaim: nil, probeAuthorization: nil,
+                            forwardingAuthorization: nil, boundary: nil,
+                            markerReady: nil, markerPresentation: nil)
+                    default: break
+                    }
+                    ownerBeforeRun = try nativeOwnerStopSnapshotObservation()
+                    do {
+                        let completion = try await networkAdaptationRunNativeAttempt(attempt)
+                        switch completion.settlement {
+                        case let .senderSucceeded(update):
+                            senderSucceeded = completion.kind == .senderSucceeded
+                            tokenRetained = completion.attempt === attempt
+                            SDKUpdate = update
+                        case .finalAdoptionOnly:
+                            finalAdoptionOnly = completion.kind == .finalAdoptionOnly
+                        case .senderFailed:
+                            throw NativeAdaptationFixtureError.unexpectedSDKFailure
+                        }
+                    } catch BelugaNetworkAdaptationOwnerError.refused { runRefused = true }
+                    do { _ = try await networkAdaptationRunNativeAttempt(attempt) }
+                    catch BelugaNetworkAdaptationOwnerError.refused { runReplayRefused = true }
+                }
+            }
+            let ownerAfterRun = try nativeOwnerStopSnapshotObservation()
+            let nativeAfter = await readNative(f.peer)
+            let tokenRollbackSucceeded: Bool
+            let nativeAfterTokenRollback: NativeAdaptationFixturePeerReadback?
+            if let SDKUpdate {
+                // Use the stored opaque SDK token against its original peer.
+                // No synthetic handle is created, and this is not a702 adapter.
+                tokenRollbackSucceeded = try await f.peer.rollbackScreenVideoEncodingUpdateIfCurrent(SDKUpdate)
+                nativeAfterTokenRollback = await readNative(f.peer)
+            } else {
+                tokenRollbackSucceeded = false
+                nativeAfterTokenRollback = nil
+            }
+            let cleanup = await closeNativeAdaptationFixture(f)
+            return .init(selectedCase: selectedCase, prepared: true, beginReturned: begin == nil,
+                resourceCustodyIsExact: exact, intentIsSenderApply: senderIntent,
+                beginInvocation: beginInvocation, consumerInvocation: consumerInvocation,
+                preparedReplayRefused: preparedReplayRefused, beginReplayRefused: beginReplayRefused,
+                wrongBoundaryRefused: wrongBoundaryRefused, wrongBoundaryBurnedOriginalUse: originalBurned,
+                runRefused: runRefused, runReplayRefused: runReplayRefused,
+                completionIsSenderSucceeded: senderSucceeded, completionIsFinalAdoptionOnly: finalAdoptionOnly,
+                actualSDKTokenWasRetained: tokenRetained,
+                actualSDKTokenRollbackSucceeded: tokenRollbackSucceeded, requestedLimits: requested,
+                nativeBefore: nativeBefore, nativeAfter: nativeAfter,
+                nativeAfterTokenRollback: nativeAfterTokenRollback,
+                ownerAfterBegin: ownerAfterBegin, ownerAfterConsume: ownerAfterConsume,
+                ownerBeforeRun: ownerBeforeRun,
+                ownerAfterRun: ownerAfterRun,
+                cleanupSourceStopped: cleanup.sourceStopped, cleanupPeerClosed: cleanup.peerClosed,
+                cleanupFieldsAreAbsent: cleanup.absent, cleanupAuthorizationsAreRevoked: cleanup.revoked)
+        } catch {
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeAdaptationFixtureError.unsafeSetup
+            }
+            throw error
+        }
+    }
+}
+#endif
+
+
+struct BelugaNetworkAdaptationNativeFailureObservation {
+    let source: BelugaNetworkAdaptationOwnerSnapshot
+    let generation: UInt64
+    let facts: UInt32
+    fileprivate init(source: BelugaNetworkAdaptationOwnerSnapshot, generation: UInt64, facts: UInt32) {
+        self.source = source; self.generation = generation; self.facts = facts
+    }
+}
+final class BelugaNetworkAdaptationNativeFailureEntry {
+    enum Admission { case ready(BelugaNetworkAdaptationNativeFailureObservation), refused(any Error) }
+    let admission: Admission
+    let senderError: any Error // EXACT caught SDK error, not a new bridge substitute.
+    var seed: BelugaNetworkAdaptationNativeAttemptSeed { completion.attempt.seed }
+    fileprivate let completion: BelugaNetworkAdaptationNativeCompletion
+    fileprivate init(completion: BelugaNetworkAdaptationNativeCompletion, senderError: any Error,
+        admission: Admission) {
+        self.completion = completion; self.senderError = senderError; self.admission = admission
+    }
+}
+extension BelugaNetworkAdaptationNativeCompletion {
+    fileprivate func claimForFailure(by owner: WorldwideScreenService,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> (error: any Error, exactOrigin: Bool) {
+        guard !spent else { throw BelugaNetworkAdaptationOwnerError.refused }
+        spent = true // Wrong kind/actor/boundary also burns the completion.
+        guard case .settled = attempt.phase, let _ = attempt.resources,
+              case let .senderFailed(error) = settlement else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return (error, attempt.owner === owner && attempt.seed.boundary === boundary)
+    }
+}
+extension WorldwideScreenService {
+    func networkAdaptationFailureCompletionEntry(_ completion: BelugaNetworkAdaptationNativeCompletion,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> BelugaNetworkAdaptationNativeFailureEntry {
+        let claimed = try completion.claimForFailure(by: self, boundary: boundary)
+        let admission: BelugaNetworkAdaptationNativeFailureEntry.Admission
+        if claimed.exactOrigin && boundary === screenVideoAdaptationOwnerBoundary {
+            do { admission = .ready(try networkAdaptationReadFailure(completion)) }
+            catch { admission = .refused(error) }
+        } else { admission = .refused(BelugaNetworkAdaptationOwnerError.refused) }
+        return .init(completion: completion, senderError: claimed.error, admission: admission)
+    }
+    private func networkAdaptationReadFailure(_ completion: BelugaNetworkAdaptationNativeCompletion)
+        throws -> BelugaNetworkAdaptationNativeFailureObservation {
+        let attempt = completion.attempt
+        guard attempt.owner === self, attempt.seed.boundary === screenVideoAdaptationOwnerBoundary,
+              let r = attempt.resources, case .senderFailed = completion.settlement else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let source = try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: attempt.seed.published.anchor)
+        // Literal original catch short-circuit order. No stopped/resume/cancellation vote.
+        var facts: UInt32 = 0
+        if peer === attempt.sourcePeer {
+            facts |= 1
+            if peerGeneration == attempt.seed.prepared.tail.generation,
+               screenVideoAdaptationOwner.revision == attempt.seed.prepared.tail.applyingRevision {
+                if captureSource === r.source { facts |= 2
+                    if captureSink === r.sink { facts |= 4
+                        if captureAuthorization === r.captureAuthorization { facts |= 8
+                            if captureForwardingAuthorization === r.forwardingAuthorization { facts |= 16
+                                if r.captureAuthorization.isValid { facts |= 32
+                                    if r.forwardingAuthorization.isValid { facts |= 64
+                                        if r.sink.allowsActiveUse(authorizedBy: r.forwardingAuthorization) { facts |= 128
+                                            if captureVideoBaseDimensions == r.baseDimensions { facts |= 256 }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return .init(source: source, generation: peerGeneration, facts: facts)
+    }
+    func networkAdaptationFailureRecapture(_ entry: BelugaNetworkAdaptationNativeFailureEntry)
+        throws -> BelugaNetworkAdaptationNativeFailureObservation {
+        try networkAdaptationReadFailure(entry.completion)
+    }
+    // Fixed store only. The valid semantic-denial prefix is committed BEFORE
+    // its diagnostic result is returned. No sender/FPS/rollback/fallback here.
+    func networkAdaptationFailureCommit(_ packet: BelugaNetworkAdaptationFailureCommit) {
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+// Actual702 prerequisites only: production selection stays closed. Constructors
+// are actor-file sealed; no caller-supplied settlement, token or resource flags.
+final class BelugaNetworkAdaptationSuccessCleanupReceipt {
+    fileprivate enum State { case available, spent, retired }
+    fileprivate let completion: BelugaNetworkAdaptationNativeCompletion
+    fileprivate var state: State = .available
+    fileprivate init(_ completion: BelugaNetworkAdaptationNativeCompletion) { self.completion = completion }
+    fileprivate func claim(by owner: WorldwideScreenService,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> WebRTCScreenVideoEncodingUpdate {
+        guard case .available = state else { throw BelugaNetworkAdaptationOwnerError.refused }
+        state = .spent
+        guard completion.attempt.owner === owner,
+              completion.attempt.seed.boundary === boundary,
+              case let .senderSucceeded(update) = completion.settlement else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return update
+    }
+}
+
+// The future704 adapter uses this same entry shape for actual702 acceptance or
+// a separately consumed noNativeApply completion. It never grants FPS authority.
+final class BelugaNetworkAdaptationNativeFinalAdoptionEntry {
+    fileprivate enum State { case pendingSuccess, availableSuccess, availableNoApply, spent, retired }
+    private enum Origin { case success, noApply }
+    let seed: BelugaNetworkAdaptationNativeAttemptSeed
+    fileprivate let completion: BelugaNetworkAdaptationNativeCompletion
+    private let origin: Origin
+    private var actualSuccessWasPublished = false
+    private var useWasSpent = false
+    private var finalStoreRetired = false
+    // There is no state setter. Neither fixed publication mark clears either
+    // monotonic latch, so a late702 store can NEVER reopen a refused native use.
+    fileprivate var state: State {
+        if finalStoreRetired { return .retired }
+        if useWasSpent { return .spent }
+        switch origin {
+        case .noApply: return .availableNoApply
+        case .success: return actualSuccessWasPublished ? .availableSuccess : .pendingSuccess
+        }
+    }
+    fileprivate init(_ completion: BelugaNetworkAdaptationNativeCompletion) {
+        self.completion = completion; seed = completion.attempt.seed; origin = .success
+    }
+    fileprivate init(noApplyCompletion completion: BelugaNetworkAdaptationNativeCompletion) {
+        self.completion = completion; seed = completion.attempt.seed; origin = .noApply
+    }
+
+    fileprivate func claim(by owner: isolated WorldwideScreenService,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws {
+        let previous = state
+        // Consume only this non-Sendable capability record before all refusal.
+        // No native SDK, resource, or actor Owner is read or written here.
+        useWasSpent = true
+        let wasSuccess: Bool
+        switch previous {
+        case .availableSuccess: wasSuccess = true
+        case .availableNoApply: wasSuccess = false
+        default: throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        guard completion.attempt.owner === owner, seed.boundary === boundary,
+              case .settled = completion.attempt.phase else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        if wasSuccess {
+            guard case .senderSucceeded = completion.settlement,
+                  case .senderApply = seed.intent, completion.attempt.resources != nil else {
+                throw BelugaNetworkAdaptationOwnerError.refused
+            }
+        } else {
+            guard case .finalAdoptionOnly = completion.settlement,
+                  case .finalAdoptionOnly = seed.intent, completion.attempt.resources == nil else {
+                throw BelugaNetworkAdaptationOwnerError.refused
+            }
+        }
+    }
+
+    // Disposal only, including wrong issuer/owner. This non-Sendable record's
+    // latch is not native resource/actor state; no retry or effect grant exists.
+    fileprivate func retireUse() { useWasSpent = true }
+    // Fixed actual702 publication only; BEFORE its existing Owner assignment.
+    // No branch/check/throw after native FPS and no latch/state reopening.
+    fileprivate func markActualSuccessPublished() { actualSuccessWasPublished = true }
+    // Fixed actual704 store only. Does not clear the spent latch.
+    fileprivate func markFinalStoreRetired() { finalStoreRetired = true }
+}
+
+
+struct BelugaNetworkAdaptationNativeFinalAdoptionObservation {
+    let source: BelugaNetworkAdaptationOwnerSnapshot
+    let exactPeer: Bool
+    // Nil means the preceding exact-peer guard failed and generation was NOT
+    // read. The ABI's ignored generation carrier is0 when facts0; not an invented
+    // successful generation or a cached702 sample.
+    let generation: UInt64?
+    fileprivate init(source: BelugaNetworkAdaptationOwnerSnapshot,
+        exactPeer: Bool, generation: UInt64?) {
+        self.source = source; self.exactPeer = exactPeer; self.generation = generation
+    }
+}
+
+extension WorldwideScreenService {
+    func networkAdaptationFinalOnlyCompletionEntry(_ completion: BelugaNetworkAdaptationNativeCompletion,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> BelugaNetworkAdaptationNativeFinalAdoptionEntry {
+        // Existing real completion spend burns wrong-kind/origin before refusal.
+        // A succeeded completion already spent by702 cannot issue a second path.
+        try completion.spend(by: self, boundary: boundary)
+        guard boundary === screenVideoAdaptationOwnerBoundary,
+              case .finalAdoptionOnly = completion.settlement,
+              case .finalAdoptionOnly = completion.attempt.seed.intent,
+              completion.attempt.resources == nil else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return .init(noApplyCompletion: completion)
+    }
+
+    func networkAdaptationFinalAdoptionEntry(_ entry: BelugaNetworkAdaptationNativeFinalAdoptionEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> BelugaNetworkAdaptationNativeFinalAdoptionObservation {
+        try entry.claim(by: self, boundary: boundary)
+        guard boundary === screenVideoAdaptationOwnerBoundary else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return try networkAdaptationReadFinalAdoption(entry, boundary: boundary)
+    }
+
+    private func networkAdaptationReadFinalAdoption(_ entry: BelugaNetworkAdaptationNativeFinalAdoptionEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> BelugaNetworkAdaptationNativeFinalAdoptionObservation {
+        guard case .spent = entry.state,
+              entry.completion.attempt.owner === self,
+              entry.seed.boundary === boundary,
+              boundary === screenVideoAdaptationOwnerBoundary else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        // ORIGINAL final fence order: exact peer, then generation, then current
+        // applying revision. Do not add capture/auth/sink/dimensions/stopped/
+        // cancellation/resume checks or reuse702's resource facts. Owner capture
+        // is still needed for the exact stale-return image, not a new policy vote.
+        let exactPeer = peer === entry.completion.attempt.sourcePeer
+        let generation: UInt64?
+        if exactPeer { generation = peerGeneration } else { generation = nil }
+        let source = try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: entry.seed.published.anchor)
+        return .init(source: source, exactPeer: exactPeer, generation: generation)
+    }
+
+    func networkAdaptationFinalAdoptionRecapture(_ entry: BelugaNetworkAdaptationNativeFinalAdoptionEntry,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> BelugaNetworkAdaptationNativeFinalAdoptionObservation {
+        try networkAdaptationReadFinalAdoption(entry, boundary: boundary)
+    }
+
+    // Fixed synchronous receiver; every fallible operation/currentness check
+    // and all result construction completed before this call. No sender/FPS,
+    // rollback, clock, callback, dependency producer, await or fallible work.
+    func networkAdaptationFinalAdoptionCommit(_ packet: BelugaNetworkAdaptationFinalAdoptionCommit) {
+        packet.entry.markFinalStoreRetired()
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+}
+
+
+extension WorldwideScreenService {
+    // Narrow synchronous disposal receiver. Unconditionally consumes only the
+    // non-Sendable entry latch; no native/Owner read, effect, hop or new grant.
+    func networkAdaptationRetireFinalAdoption(_ entry: BelugaNetworkAdaptationNativeFinalAdoptionEntry) {
+        entry.retireUse()
+    }
+}
+
+struct BelugaNetworkAdaptationNativeSuccessObservation {
+    let source: BelugaNetworkAdaptationOwnerSnapshot
+    let generation: UInt64
+    let facts: UInt32
+    fileprivate init(source: BelugaNetworkAdaptationOwnerSnapshot, generation: UInt64, facts: UInt32) {
+        self.source = source; self.generation = generation; self.facts = facts
+    }
+}
+
+final class BelugaNetworkAdaptationNativeSuccessEntry {
+    enum Admission { case ready(BelugaNetworkAdaptationNativeSuccessObservation), refused(any Error) }
+    let admission: Admission
+    let cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt
+    let finalEntry: BelugaNetworkAdaptationNativeFinalAdoptionEntry
+    var seed: BelugaNetworkAdaptationNativeAttemptSeed { completion.attempt.seed }
+    fileprivate let completion: BelugaNetworkAdaptationNativeCompletion
+    #if DEBUG
+    let postEffectFixtureRefusal: BelugaNetworkAdaptationPostEffectFixtureRefusal?
+    fileprivate init(completion: BelugaNetworkAdaptationNativeCompletion, admission: Admission,
+        cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt,
+        finalEntry: BelugaNetworkAdaptationNativeFinalAdoptionEntry,
+        postEffectFixtureRefusal: BelugaNetworkAdaptationPostEffectFixtureRefusal?) {
+        self.completion = completion; self.admission = admission
+        self.cleanup = cleanup; self.finalEntry = finalEntry
+        self.postEffectFixtureRefusal = postEffectFixtureRefusal
+    }
+    #else
+    fileprivate init(completion: BelugaNetworkAdaptationNativeCompletion, admission: Admission,
+        cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt,
+        finalEntry: BelugaNetworkAdaptationNativeFinalAdoptionEntry) {
+        self.completion = completion; self.admission = admission
+        self.cleanup = cleanup; self.finalEntry = finalEntry
+    }
+    #endif
+}
+
+// Issued before validator acceptance, after exact native currentness and all
+// Int32 conversions. The effect thunk uses this command, never arbitrary FPS.
+final class BelugaNetworkAdaptationNativeSuccessOutput {
+    fileprivate let capturer: MacExternalVideoCapturer
+    fileprivate let width: Int32, height: Int32, fps: Int32
+    #if DEBUG
+    fileprivate var dispatchTrace: NativeSuccessDispatchTrace?
+    #endif
+    fileprivate init(capturer: MacExternalVideoCapturer, width: Int32, height: Int32, fps: Int32) {
+        self.capturer = capturer; self.width = width; self.height = height; self.fps = fps
+    }
+    func perform() {
+        capturer.adaptOutput(width: width, height: height, framesPerSecond: fps)
+        #if DEBUG
+        // Preallocated scalar trace only, after the real void SDK dispatch.
+        // It does not establish libwebrtc format acceptance or rendered frames.
+        dispatchTrace?.record(width: width, height: height, fps: fps)
+        #endif
+    }
+}
+
+extension BelugaNetworkAdaptationNativeCompletion {
+    fileprivate func claimForSuccess(by owner: WorldwideScreenService,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> Bool {
+        guard !spent else { throw BelugaNetworkAdaptationOwnerError.refused }
+        spent = true // Also burns wrong kind/issuer/boundary. No replay permit.
+        guard case .settled = attempt.phase,
+              case .senderSucceeded = settlement, attempt.resources != nil else {
+            // No actual returned SDK token exists on either other completion.
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        return attempt.owner === owner && attempt.seed.boundary === boundary
+    }
+}
+
+extension WorldwideScreenService {
+    func networkAdaptationSuccessCompletionEntry(_ completion: BelugaNetworkAdaptationNativeCompletion,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) throws -> BelugaNetworkAdaptationNativeSuccessEntry {
+        let originIsExact = try completion.claimForSuccess(by: self, boundary: boundary)
+        // Construct native cleanup custody BEFORE origin/capture/guard refusal.
+        // Wrong-origin cleanup remains bound to the ORIGINAL actual actor only.
+        let cleanup = BelugaNetworkAdaptationSuccessCleanupReceipt(completion)
+        let finalEntry = BelugaNetworkAdaptationNativeFinalAdoptionEntry(completion)
+        let admission: BelugaNetworkAdaptationNativeSuccessEntry.Admission
+        if originIsExact && screenVideoAdaptationOwnerBoundary === boundary {
+            do { admission = .ready(try networkAdaptationReadSuccess(completion)) }
+            catch { admission = .refused(error) }
+        } else { admission = .refused(BelugaNetworkAdaptationOwnerError.refused) }
+        #if DEBUG
+        // All fault admission/custody/latch work precedes C and native FPS.
+        let fixtureRefusal = try bindNativeDispatchPostEffectFixtureRefusal(
+            completion, boundary: boundary, admission: admission, cleanup: cleanup)
+        let entry = BelugaNetworkAdaptationNativeSuccessEntry(completion: completion,
+            admission: admission, cleanup: cleanup, finalEntry: finalEntry,
+            postEffectFixtureRefusal: fixtureRefusal)
+        #else
+        let entry = BelugaNetworkAdaptationNativeSuccessEntry(completion: completion,
+            admission: admission, cleanup: cleanup, finalEntry: finalEntry)
+        #endif
+        #if DEBUG
+        // Only a sealed actual entry can construct the preallocated trace.
+        // Replay throws before entry construction, so cannot create/reset it.
+        completion.successDispatchTrace = NativeSuccessDispatchTrace(entry)
+        #endif
+        return entry
+    }
+
+    private func networkAdaptationReadSuccess(_ completion: BelugaNetworkAdaptationNativeCompletion)
+        throws -> BelugaNetworkAdaptationNativeSuccessObservation {
+        let attempt = completion.attempt
+        guard attempt.owner === self, attempt.seed.boundary === screenVideoAdaptationOwnerBoundary,
+              let r = attempt.resources, case .senderSucceeded = completion.settlement else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        let source = try BelugaNetworkAdaptationOwnerSnapshot.capture(screenVideoAdaptationOwner,
+            retainingAnchor: attempt.seed.published.anchor)
+        // Exactly the original left-to-right guard: later getters are NOT read
+        // after an earlier failure. Cleared fact bits mean permission unproven.
+        var facts: UInt32 = 0
+        if peer === attempt.sourcePeer {
+            facts |= 1
+            if peerGeneration == attempt.seed.prepared.tail.generation,
+               screenVideoAdaptationOwner.revision == attempt.seed.prepared.tail.applyingRevision {
+                if captureSource === r.source { facts |= 2
+                    if captureSink === r.sink { facts |= 4
+                        if captureAuthorization === r.captureAuthorization { facts |= 8
+                            if captureForwardingAuthorization === r.forwardingAuthorization { facts |= 16
+                                if r.captureAuthorization.isValid { facts |= 32
+                                    if r.forwardingAuthorization.isValid { facts |= 64
+                                        if r.sink.allowsActiveUse(authorizedBy: r.forwardingAuthorization) { facts |= 128
+                                            if captureVideoBaseDimensions == r.baseDimensions { facts |= 256 }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return .init(source: source, generation: peerGeneration, facts: facts)
+    }
+
+    func networkAdaptationSuccessRecapture(_ entry: BelugaNetworkAdaptationNativeSuccessEntry)
+        throws -> BelugaNetworkAdaptationNativeSuccessObservation {
+        try networkAdaptationReadSuccess(entry.completion)
+    }
+
+    func networkAdaptationPrepareSuccessOutput(_ packet: BelugaNetworkAdaptationSuccessCommit)
+        throws -> BelugaNetworkAdaptationNativeSuccessOutput? {
+        guard packet.entry.completion.attempt.owner === self,
+              packet.boundary === screenVideoAdaptationOwnerBoundary,
+              packet.entry.seed.boundary === packet.boundary else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        guard let fps = packet.outputFPS else { return nil }
+        guard let r = packet.entry.completion.attempt.resources,
+              packet.entry.completion.attempt.sourcePeer.externalVideoCapturer === r.capturer,
+              let width = Int32(exactly: r.baseDimensions.width),
+              let height = Int32(exactly: r.baseDimensions.height),
+              let nativeFPS = Int32(exactly: fps) else {
+            throw BelugaNetworkAdaptationOwnerError.invalidResult
+        }
+        let output = BelugaNetworkAdaptationNativeSuccessOutput(capturer: r.capturer,
+            width: width, height: height, fps: nativeFPS)
+        #if DEBUG
+        output.dispatchTrace = packet.entry.completion.successDispatchTrace
+        #endif
+        return output
+    }
+
+    // Mandatory isolated fixed receiver. Every check/allocation/conversion is
+    // complete before C validator acceptance. No callback/check/throw/await here.
+    func networkAdaptationSuccessCommit(_ packet: BelugaNetworkAdaptationSuccessCommit) {
+        packet.entry.cleanup.state = .retired
+        packet.entry.finalEntry.markActualSuccessPublished()
+        #if DEBUG
+        packet.entry.completion.successDispatchTrace?.recordStore()
+        #endif
+        screenVideoAdaptationOwner = packet.replacement.value
+    }
+
+    // Call only AFTER finishSuccess returns and its synchronous guard retires.
+    // This reverts exactly the retained token on the ORIGINAL peer once. If a
+    // result requires guarded recovery, this does NOT claim FPS/full recovery.
+    func networkAdaptationRollbackSuccessCleanup(_ receipt: BelugaNetworkAdaptationSuccessCleanupReceipt)
+        async throws -> Bool {
+        let update = try receipt.claim(by: self, boundary: screenVideoAdaptationOwnerBoundary)
+        #if DEBUG
+        if let use = nativeDispatchReturnFixtureUse {
+            precondition(use.completion === receipt.completion && use.cleanup == nil)
+            use.cleanup = receipt // The actual spent receipt; no copied token.
+        }
+        receipt.completion.successDispatchTrace?.recordRollbackDispatch()
+        #endif
+        return try await receipt.completion.attempt.sourcePeer.rollbackScreenVideoEncodingUpdateIfCurrent(update)
+    }
+}
+
+#if DEBUG
+fileprivate final class NativeSuccessDispatchTrace {
+    private(set) var calls: UInt64 = 0
+    private(set) var stores: UInt64 = 0, rollbackDispatches: UInt64 = 0
+    private(set) var width: Int32?, height: Int32?, fps: Int32?
+    fileprivate init(_ entry: BelugaNetworkAdaptationNativeSuccessEntry) {
+        let completion = entry.completion
+        precondition(completion.kind == .senderSucceeded)
+        guard case .senderSucceeded = completion.settlement else {
+            preconditionFailure("Trace requires actual returned SDK completion custody")
+        }
+        precondition(completion.attempt.resources != nil)
+    }
+    fileprivate func record(width: Int32, height: Int32, fps: Int32) {
+        // Called by the same-executor checked output command only. Scalar
+        // stores allocate nothing, throw nothing and invoke no callback.
+        calls &+= 1; self.width = width; self.height = height; self.fps = fps
+    }
+    fileprivate var observation: WorldwideScreenService.Native702DispatchObservation {
+        .init(calls: calls, stores: stores, rollbackDispatches: rollbackDispatches,
+            width: width, height: height, fps: fps)
+    }
+    fileprivate func recordStore() { stores &+= 1 }
+    fileprivate func recordRollbackDispatch() { rollbackDispatches &+= 1 }
+}
+
+extension WorldwideScreenService {
+    enum Native702FixtureCase: String, CaseIterable, Sendable {
+        case absentApplied, sameFPS, stalePeer, wrongBoundary, completionReplay
+    }
+    enum Native702FixtureResult: String, Equatable, Sendable { case accepted, rollback, refused }
+    struct Native702DispatchObservation: Equatable, Sendable {
+        let calls: UInt64
+        let stores: UInt64, rollbackDispatches: UInt64
+        let width: Int32?, height: Int32?, fps: Int32?
+    }
+    struct Native702FixtureObservation: Sendable {
+        let selectedCase: Native702FixtureCase
+        let primaryResult: Native702FixtureResult
+        let secondaryResult: Native702FixtureResult?
+        let expectedPrimaryAppliedTail: [NativeOwnerPublicationAtomObservation]
+        let expectedSecondaryAppliedTail: [NativeOwnerPublicationAtomObservation]?
+        let beforePrimary: NativeOwnerPublicationSnapshotObservation
+        let afterPrimary: NativeOwnerPublicationSnapshotObservation
+        let beforeSecondary: NativeOwnerPublicationSnapshotObservation?
+        let afterSecondary: NativeOwnerPublicationSnapshotObservation?
+        let afterReplay: NativeOwnerPublicationSnapshotObservation
+        let ownerAfterCleanup: NativeOwnerPublicationSnapshotObservation?
+        let ownerAfterCleanupReplay: NativeOwnerPublicationSnapshotObservation?
+        let completionReplayRefused: Bool
+        let originalUseBurnedAfterWrongBoundary: Bool
+        let cleanupSucceeded: Bool?
+        let cleanupReplayRefused: Bool?
+        let primaryDispatch: Native702DispatchObservation
+        let primaryDispatchAfterReplay: Native702DispatchObservation
+        let primaryDispatchAfterCleanupReplay: Native702DispatchObservation
+        let primaryTraceIdentityRetained: Bool
+        let secondaryDispatch: Native702DispatchObservation?
+        let finalReceiptCount: Int
+        let finalReceiptsWereDistinct: Bool?
+        let nativeBeforeSDK: NativeAdaptationFixturePeerReadback
+        let nativeAfterSDK: NativeAdaptationFixturePeerReadback
+        let nativeAfter702: NativeAdaptationFixturePeerReadback
+        let nativeAfterReplay: NativeAdaptationFixturePeerReadback
+        let nativeAfterCleanup: NativeAdaptationFixturePeerReadback?
+        let nativeAfterCleanupReplay: NativeAdaptationFixturePeerReadback?
+        let requestedLimits: WebRTCScreenVideoEncodingLimits
+        let cleanupSourceStopped: Bool
+        let cleanupPeerClosed: Bool
+        let cleanupFieldsAreAbsent: Bool
+        let cleanupAuthorizationsAreRevoked: Bool
+    }
+    private enum Native702FixtureError: Error {
+        case noApplyAttempt, noSuccessfulCompletion, incompatibleSameFPSSetup
+        case badActualOrigin
+        case missingDispatchTrace, unexpectedResult, wrongRefusalReason, guardedRecoveryRequired
+    }
+
+    private func native702FixtureAttempt(_ f: NativeAdaptationFixtureResources)
+        async throws -> BelugaNetworkAdaptationNativeAttempt {
+        let report = try await nativeAdaptationFixtureReport(f)
+        guard let prepared = try screenVideoAdaptationOwnerBoundary.prepareGeneral(on: self,
+            snapshot: report.nativeSnapshot, nativeTimestamp: report.nativeReportTimestampMicroseconds,
+            sourcePeer: f.peer, generation: peerGeneration,
+            expectedRevision: screenVideoAdaptationOwner.revision,
+            capacityOnly: false, allowsResume: false),
+              let begin = try screenVideoAdaptationOwnerBoundary.beginActive(prepared, on: self) else {
+            throw Native702FixtureError.noApplyAttempt
+        }
+        let attempt = try screenVideoAdaptationOwnerBoundary.consumeBeginActive(begin, on: self)
+        guard attempt.intent == .senderApply else { throw Native702FixtureError.noApplyAttempt }
+        guard let resources = attempt.resources,
+              attempt.owner === self,
+              attempt.seed.boundary === screenVideoAdaptationOwnerBoundary,
+              attempt.sourcePeer === f.peer,
+              resources.source === f.source, resources.sink === f.sink,
+              resources.captureAuthorization === f.captureAuthorization,
+              resources.forwardingAuthorization === f.forwardingAuthorization,
+              resources.baseDimensions == f.dimensions, resources.capturer === f.capturer else {
+            throw Native702FixtureError.badActualOrigin
+        }
+        return attempt
+    }
+
+    // Manual six-atom expected tail, independent of the production702 importer.
+    private func native702ExpectedTail(_ r: WorldwideScreenVideoEncodingRecommendation)
+        -> [NativeOwnerPublicationAtomObservation] {
+        [.init(kind: 4, present: 1, high: 0, low: 1),
+         .init(kind: 7, present: 1, high: 0, low: UInt64(r.tier.rawValue)),
+         .init(kind: 2, present: 1, high: 0, low: UInt64(bitPattern: Int64(r.maximumBitrateBps))),
+         .init(kind: 2, present: 1, high: 0, low: UInt64(bitPattern: Int64(r.maximumTotalRTPBitrateBps))),
+         .init(kind: 2, present: 1, high: 0, low: UInt64(bitPattern: Int64(r.maximumFramesPerSecond))),
+         .init(kind: 3, present: 1, high: 0, low: r.scaleResolutionDownBy.bitPattern)]
+    }
+    private func native702Trace(_ completion: BelugaNetworkAdaptationNativeCompletion)
+        throws -> Native702DispatchObservation {
+        guard let trace = completion.successDispatchTrace else {
+            throw Native702FixtureError.missingDispatchTrace
+        }
+        return trace.observation
+    }
+
+    func native702FixtureObservationForTesting(selectedCase: Native702FixtureCase,
+        readNative: @Sendable (WebRTCPeer) async -> NativeAdaptationFixturePeerReadback)
+        async throws -> Native702FixtureObservation {
+        // Existing constructor proves exact fresh inert actor, no real HAL,
+        // no capture/transport start, videoControlOnly and both false gates.
+        let f = try await makeNativeAdaptationFixtureResources()
+        do {
+            let nativeBefore = await readNative(f.peer)
+            let firstAttempt = try await native702FixtureAttempt(f)
+            let firstCompletion = try await networkAdaptationRunNativeAttempt(firstAttempt)
+            guard firstCompletion.kind == .senderSucceeded,
+                  firstCompletion.attempt === firstAttempt,
+                  case .senderSucceeded = firstCompletion.settlement else {
+                throw Native702FixtureError.noSuccessfulCompletion
+            }
+            var secondAttempt: BelugaNetworkAdaptationNativeAttempt?
+            var secondCompletion: BelugaNetworkAdaptationNativeCompletion?
+            if selectedCase == .sameFPS {
+                // Build TWO genuine pending completions before the first702
+                // records applied. No seeded Owner/applied state or fake token.
+                let attempt = try await native702FixtureAttempt(f)
+                guard attempt.seed.prepared.tail.applyingRevision == firstAttempt.seed.prepared.tail.applyingRevision,
+                      screenVideoAdaptationOwner.revision == firstAttempt.seed.prepared.tail.applyingRevision,
+                      attempt.seed.prepared.tail.recommendation.maximumFramesPerSecond
+                        == firstAttempt.seed.prepared.tail.recommendation.maximumFramesPerSecond else {
+                    throw Native702FixtureError.incompatibleSameFPSSetup
+                }
+                let completion = try await networkAdaptationRunNativeAttempt(attempt)
+                guard completion.kind == .senderSucceeded,
+                      completion.attempt === attempt,
+                      case .senderSucceeded = completion.settlement else {
+                    throw Native702FixtureError.noSuccessfulCompletion
+                }
+                secondAttempt = attempt; secondCompletion = completion
+            }
+            let nativeAfterSDK = await readNative(f.peer)
+            if selectedCase == .stalePeer { peer = nil }
+            let anchor = firstAttempt.seed.published.anchor
+            let before = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            let result: BelugaNetworkAdaptationSuccessResult
+            if selectedCase == .wrongBoundary {
+                result = try BelugaNetworkAdaptationOwnerBoundary().finishSuccess(firstCompletion, on: self)
+            } else { result = try screenVideoAdaptationOwnerBoundary.finishSuccess(firstCompletion, on: self) }
+            var firstFinal: BelugaNetworkAdaptationFinalAdoptionReceipt?
+            var secondFinal: BelugaNetworkAdaptationFinalAdoptionReceipt?
+            var cleanupReceipt: BelugaNetworkAdaptationSuccessCleanupReceipt?
+            let primaryKind: Native702FixtureResult
+            switch result {
+            case let .accepted(final): primaryKind = .accepted; firstFinal = final
+            case let .rollback(cleanup): primaryKind = .rollback; cleanupReceipt = cleanup
+            case let .refused(cleanup, error):
+                guard let error = error as? BelugaNetworkAdaptationOwnerError,
+                      case .refused = error else { throw Native702FixtureError.wrongRefusalReason }
+                primaryKind = .refused; cleanupReceipt = cleanup
+            case .requiresGuardedRecovery: throw Native702FixtureError.guardedRecoveryRequired
+            }
+            let after = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            guard let primaryTraceObject = firstCompletion.successDispatchTrace else {
+                throw Native702FixtureError.missingDispatchTrace
+            }
+            let primaryTrace = try native702Trace(firstCompletion)
+            var beforeSecond: NativeOwnerPublicationSnapshotObservation?
+            var afterSecond: NativeOwnerPublicationSnapshotObservation?
+            var secondaryKind: Native702FixtureResult?
+            var secondaryTrace: Native702DispatchObservation?
+            if let secondCompletion {
+                beforeSecond = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+                guard case let .accepted(final) = try screenVideoAdaptationOwnerBoundary.finishSuccess(secondCompletion, on: self) else {
+                    throw Native702FixtureError.unexpectedResult
+                }
+                secondFinal = final; secondaryKind = .accepted
+                afterSecond = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+                secondaryTrace = try native702Trace(secondCompletion)
+            }
+            let nativeAfter702 = await readNative(f.peer)
+            var replayRefused = false
+            do { _ = try screenVideoAdaptationOwnerBoundary.finishSuccess(firstCompletion, on: self) }
+            catch BelugaNetworkAdaptationOwnerError.refused { replayRefused = true }
+            let afterReplay = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            let primaryTraceAfterReplay = primaryTraceObject.observation
+            let traceIdentityRetained = firstCompletion.successDispatchTrace === primaryTraceObject
+            let nativeAfterReplay = await readNative(f.peer)
+            var cleanupSucceeded: Bool?, cleanupReplayRefused: Bool?
+            var nativeAfterCleanup: NativeAdaptationFixturePeerReadback?
+            var nativeAfterCleanupReplay: NativeAdaptationFixturePeerReadback?
+            var ownerAfterCleanup: NativeOwnerPublicationSnapshotObservation?
+            var ownerAfterCleanupReplay: NativeOwnerPublicationSnapshotObservation?
+            if let cleanupReceipt {
+                // Guard has returned/retired. This receipt carries the ACTUAL
+                // original token, and acts on f.peer even when actor.peer=nil.
+                cleanupSucceeded = try await networkAdaptationRollbackSuccessCleanup(cleanupReceipt)
+                nativeAfterCleanup = await readNative(f.peer)
+                ownerAfterCleanup = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+                do { _ = try await networkAdaptationRollbackSuccessCleanup(cleanupReceipt); cleanupReplayRefused = false }
+                catch BelugaNetworkAdaptationOwnerError.refused { cleanupReplayRefused = true }
+                nativeAfterCleanupReplay = await readNative(f.peer)
+                ownerAfterCleanupReplay = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            }
+            let finalCount = (firstFinal == nil ? 0 : 1) + (secondFinal == nil ? 0 : 1)
+            let distinct: Bool?
+            if let firstFinal, let secondFinal { distinct = firstFinal !== secondFinal }
+            else { distinct = nil }
+            let secondaryTail = secondAttempt.map { native702ExpectedTail($0.seed.prepared.tail.recommendation) }
+            let cleanup = await closeNativeAdaptationFixture(f)
+            return .init(selectedCase: selectedCase, primaryResult: primaryKind, secondaryResult: secondaryKind,
+                expectedPrimaryAppliedTail: native702ExpectedTail(firstAttempt.seed.prepared.tail.recommendation),
+                expectedSecondaryAppliedTail: secondaryTail,
+                beforePrimary: before, afterPrimary: after, beforeSecondary: beforeSecond, afterSecondary: afterSecond,
+                afterReplay: afterReplay,
+                ownerAfterCleanup: ownerAfterCleanup, ownerAfterCleanupReplay: ownerAfterCleanupReplay,
+                completionReplayRefused: replayRefused,
+                originalUseBurnedAfterWrongBoundary: selectedCase == .wrongBoundary && replayRefused,
+                cleanupSucceeded: cleanupSucceeded, cleanupReplayRefused: cleanupReplayRefused,
+                primaryDispatch: primaryTrace,
+                primaryDispatchAfterReplay: primaryTraceAfterReplay,
+                primaryDispatchAfterCleanupReplay: primaryTraceObject.observation,
+                primaryTraceIdentityRetained: traceIdentityRetained,
+                secondaryDispatch: secondaryTrace,
+                finalReceiptCount: finalCount, finalReceiptsWereDistinct: distinct,
+                nativeBeforeSDK: nativeBefore, nativeAfterSDK: nativeAfterSDK, nativeAfter702: nativeAfter702,
+                nativeAfterReplay: nativeAfterReplay, nativeAfterCleanup: nativeAfterCleanup,
+                nativeAfterCleanupReplay: nativeAfterCleanupReplay,
+                requestedLimits: firstAttempt.seed.prepared.tail.recommendation.webRTCLimits,
+                cleanupSourceStopped: cleanup.sourceStopped, cleanupPeerClosed: cleanup.peerClosed,
+                cleanupFieldsAreAbsent: cleanup.absent, cleanupAuthorizationsAreRevoked: cleanup.revoked)
+        } catch {
+            // Owned inert peer closure retires all actual sender configurations.
+            // No guesses at FPS restoration and no effect on any external peer.
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeAdaptationFixtureError.unsafeSetup
+            }
+            throw error
+        }
+    }
+}
+#endif
+
+#if DEBUG
+extension WorldwideScreenService {
+    enum ClosedPeer703FixtureCase: Sendable {
+        case current, wrongBoundary, peerAbsent, generationAdvanced, revisionAdvanced
+        case forwardingAuthorizationRevoked, dimensionsChanged
+    }
+    struct ClosedPeer703FixtureObservation: Sendable {
+        let normalOwnedPeerCloseSucceeded: Bool
+        let actualReturnedErrorIsTransportClosed: Bool
+        let returnedFailureErrorKindIsTransportClosed: Bool
+        let recoveryRetainsOriginalCompletion: Bool?
+        let actualFactsBefore703: UInt32
+        let resultWasRetained: Bool
+        let resultWasGuardedRecovery: Bool
+        let staleDisposition: Bool
+        let semanticStatus: UInt32?
+        let acceptedReads: UInt32?
+        let attemptedReads: UInt32?
+        let ownerBeforeRun: NativeOwnerPublicationSnapshotObservation
+        let ownerAfterSDKFailure: NativeOwnerPublicationSnapshotObservation
+        let ownerBefore703: NativeOwnerPublicationSnapshotObservation
+        let ownerAfter703: NativeOwnerPublicationSnapshotObservation
+        let ownerAfterReplay: NativeOwnerPublicationSnapshotObservation
+        let completionReplayRefused: Bool
+        let cleanupSourceStopped: Bool
+        let cleanupPeerClosed: Bool
+        let cleanupFieldsAreAbsent: Bool
+        let cleanupAuthorizationsAreRevoked: Bool
+    }
+    func closedPeer703FixtureObservationForTesting(_ selected: ClosedPeer703FixtureCase)
+        async throws -> ClosedPeer703FixtureObservation {
+        guard ProcessInfo.processInfo.environment["BELUGA_RUN_NATIVE_ADAPTATION_RESOURCE_FIXTURE"] == "1" else {
+            throw NativeAdaptationFixtureError.unsafeSetup
+        }
+        // Existing constructor itself enforces inert HAL/service, empty native
+        // fields, no retained controls, unstarted capture and both false gates.
+        let f = try await makeNativeAdaptationFixtureResources()
+        do {
+            let report = try await nativeAdaptationFixtureReport(f)
+            guard let general = try screenVideoAdaptationOwnerBoundary.prepareGeneral(on: self,
+                snapshot: report.nativeSnapshot, nativeTimestamp: report.nativeReportTimestampMicroseconds,
+                sourcePeer: f.peer, generation: peerGeneration,
+                expectedRevision: screenVideoAdaptationOwner.revision,
+                capacityOnly: false, allowsResume: false),
+                let begin = try screenVideoAdaptationOwnerBoundary.beginActive(general, on: self) else {
+                throw NativeAdaptationFixtureError.noPrepared
+            }
+            let attempt = try screenVideoAdaptationOwnerBoundary.consumeBeginActive(begin, on: self)
+            guard case .senderApply = attempt.intent else { throw NativeAdaptationFixtureError.wrongIntent }
+            // Normal actual lifecycle on ONLY this owned disposable peer.
+            // Do not nil the actor peer/resources or revoke fixture authorizations.
+            // The unstarted fixture installed no live service event consumer.
+            let closed = await f.peer.close(reason: .normal)
+            guard closed, peer === f.peer,
+                  captureSource === f.source, captureSink === f.sink,
+                  captureAuthorization === f.captureAuthorization,
+                  captureForwardingAuthorization === f.forwardingAuthorization,
+                  f.captureAuthorization.isValid, f.forwardingAuthorization.isValid,
+                  f.sink.allowsActiveUse(authorizedBy: f.forwardingAuthorization),
+                  captureVideoBaseDimensions == f.dimensions,
+                  f.peer.externalVideoCapturer === f.capturer else {
+                throw NativeAdaptationFixtureError.unsafeSetup
+            }
+            let beforeRun = try nativeOwnerStopSnapshotObservation()
+            // No hook/error injection between guards and SDK catch. Returning a
+            // sealed completion proves the unchanged runner passed its pre-SDK
+            // guards and actually reached the peer method's caught throw.
+            let completion = try await networkAdaptationRunNativeAttempt(attempt)
+            guard case let .senderFailed(error) = completion.settlement,
+                  let transport = error as? WebRTCTransportError,
+                  case .transportClosed = transport else {
+                throw NativeAdaptationFixtureError.unexpectedSDKFailure
+            }
+            let afterSDK = try nativeOwnerStopSnapshotObservation()
+            // Genuine stale native changes only AFTER the actual failed call.
+            switch selected {
+            case .current, .wrongBoundary: break
+            case .peerAbsent: peer = nil
+            case .generationAdvanced: peerGeneration &+= 1
+            case .revisionAdvanced:
+                let v = screenVideoAdaptationOwner
+                screenVideoAdaptationOwner = .init(policy: v.policy, revision: v.revision &+ 1,
+                    fastStatisticsAvailable: v.fastStatisticsAvailable, lane: v.lane,
+                    evidenceTime: v.evidenceTime, minimumCollectionSequence: v.minimumCollectionSequence,
+                    applied: v.applied)
+            case .forwardingAuthorizationRevoked: f.forwardingAuthorization.revoke()
+            case .dimensionsChanged:
+                captureVideoBaseDimensions = .init(width: f.dimensions.width + 1, height: f.dimensions.height)
+            }
+            // Read-only actual facts, never passed into/publicly supplied to703.
+            // This does not spend the completion or construct an entry/result.
+            let observed = try networkAdaptationReadFailure(completion)
+            let before703 = try nativeOwnerStopSnapshotObservation()
+            let result: BelugaNetworkAdaptationFailureResult
+            switch selected {
+            case .wrongBoundary:
+                let wrongBoundary = BelugaNetworkAdaptationOwnerBoundary()
+                result = try wrongBoundary.finishFailure(completion, on: self)
+            default:
+                result = try screenVideoAdaptationOwnerBoundary.finishFailure(completion, on: self)
+            }
+            var retained = false, recovery = false, stale = false, errorKindRetained = false
+            var recoveryRetainsCompletion: Bool?
+            var status: UInt32?, accepted: UInt32?, attempted: UInt32?
+            switch result {
+            case let .retained(receipt):
+                retained = true
+                if case .stale = receipt.disposition { stale = true }
+                status = receipt.semanticStatus; accepted = receipt.acceptedReads; attempted = receipt.attemptedReads
+                if let returned = receipt.actualSenderError as? WebRTCTransportError,
+                   case .transportClosed = returned { errorKindRetained = true }
+            case let .requiresGuardedRecovery(entry, _):
+                recovery = true
+                // Actor-file entry retains the actual settled completion itself.
+                recoveryRetainsCompletion = entry.completion === completion
+                if let returned = entry.senderError as? WebRTCTransportError,
+                   case .transportClosed = returned { errorKindRetained = true }
+            }
+            let after703 = try nativeOwnerStopSnapshotObservation()
+            var replayRefused = false
+            do { _ = try screenVideoAdaptationOwnerBoundary.finishFailure(completion, on: self) }
+            catch BelugaNetworkAdaptationOwnerError.refused { replayRefused = true }
+            let afterReplay = try nativeOwnerStopSnapshotObservation()
+            let cleanup = await closeNativeAdaptationFixture(f)
+            return .init(normalOwnedPeerCloseSucceeded: closed, actualReturnedErrorIsTransportClosed: true,
+                returnedFailureErrorKindIsTransportClosed: errorKindRetained,
+                recoveryRetainsOriginalCompletion: recoveryRetainsCompletion,
+                actualFactsBefore703: observed.facts, resultWasRetained: retained,
+                resultWasGuardedRecovery: recovery, staleDisposition: stale, semanticStatus: status,
+                acceptedReads: accepted, attemptedReads: attempted,
+                ownerBeforeRun: beforeRun, ownerAfterSDKFailure: afterSDK,
+                ownerBefore703: before703, ownerAfter703: after703, ownerAfterReplay: afterReplay,
+                completionReplayRefused: replayRefused,
+                cleanupSourceStopped: cleanup.sourceStopped, cleanupPeerClosed: cleanup.peerClosed,
+                cleanupFieldsAreAbsent: cleanup.absent, cleanupAuthorizationsAreRevoked: cleanup.revoked)
+        } catch {
+            _ = await closeNativeAdaptationFixture(f)
+            throw error
+        }
+    }
+}
+#endif
+
+// SOURCE-ONLY append in SAME WorldwideScreenService.swift DEBUG scope.
+// Requires reviewed actual704 API/custody design and SDK_CALL_COUNTERS.md.
+// Does not construct anything until the explicit owned controller flag is set.
+#if DEBUG
+extension WorldwideScreenService {
+    enum Native704FixturePath: Equatable, Sendable { case success, noApply }
+    enum Native704FixtureCut: Equatable, Sendable { case current, peerAbsent, generationAdvanced, revisionAdvanced, wrongBoundary }
+    enum Native704FixtureResult: Equatable, Sendable { case adopted, superseded, refused }
+    enum Native704FixtureRouteAction: Equatable, Sendable { case retain, clear, copyIncoming }
+    struct Native704SDKReadback: Equatable, Sendable {
+        let peer: NativeAdaptationFixturePeerReadback
+        let senderApplyInvocations: UInt64
+        let outputAdaptInvocations: UInt64?
+    }
+    struct Native704FixtureObservation: Sendable {
+        let path: Native704FixturePath
+        let cut: Native704FixtureCut
+        let result: Native704FixtureResult
+        let preparedPolicyAtoms: [NativeOwnerPublicationAtomObservation]
+        let preparedNativeTimes: [ContinuousClock.Instant?]
+        let preparedRouteAction: Native704FixtureRouteAction
+        let preparedIncomingRoute: WebRTCICERouteDiagnostics?
+        let preparedApplyingRevision: UInt64
+        let ownerBeforeStaleCut: NativeOwnerPublicationSnapshotObservation
+        let beforeFinal: NativeOwnerPublicationSnapshotObservation
+        let afterFinal: NativeOwnerPublicationSnapshotObservation
+        let afterReplay: NativeOwnerPublicationSnapshotObservation
+        let nativeBeforeRun: Native704SDKReadback
+        let nativeAfterRun: Native704SDKReadback
+        let nativeBeforeFinal: Native704SDKReadback
+        let nativeAfterFinal: Native704SDKReadback
+        let nativeAfterReplay: Native704SDKReadback
+        let successDispatchBeforeFinal: Native702DispatchObservation?
+        let successDispatchAfterFinal: Native702DispatchObservation?
+        let successDispatchAfterReplay: Native702DispatchObservation?
+        let codecUseSpentBeforeFinal: Bool
+        let nativeEntryAvailableBeforeFinal: Bool
+        let codecUseSpentAfterFinal: Bool
+        let nativeEntryUnavailableAfterFinal: Bool
+        let codecUseSpentAfterReplay: Bool
+        let nativeEntryUnavailableAfterReplay: Bool
+        let replayRefused: Bool
+        let noApplyCompletionReplayRefused: Bool?
+        let cleanupSourceStopped: Bool
+        let cleanupPeerClosed: Bool
+        let cleanupFieldsAreAbsent: Bool
+        let cleanupAuthorizationsAreRevoked: Bool
+    }
+    private enum Native704FixtureError: Error {
+        case wrongIntent, noPrepared, notSuccessful, noFinalReceipt
+        case unexpectedResult, wrongRefusal, badCustody, unsafeCleanup
+    }
+
+    private func native704NoApplyAttempt(_ f: NativeAdaptationFixtureResources)
+        async throws -> BelugaNetworkAdaptationNativeAttempt {
+        // EXACT existing native701 noApply setup path: one genuine original
+        // policy/sender warmup, then one fresh real statistics preparation.
+        // No loop, seeded Applied/Owner, forged telemetry or forcing fallback.
+        let warm = try await nativeAdaptationFixtureReport(f)
+        await adaptScreenVideoForNetworkConditions(warm.nativeSnapshot,
+            sourcePeer: f.peer, sourcePeerGeneration: peerGeneration,
+            expectedPolicyRevision: screenVideoAdaptationOwner.revision,
+            allowsAutomaticResume: false,
+            nativeReportTimestampMicroseconds: warm.nativeReportTimestampMicroseconds)
+        guard appliedScreenVideoRecommendation != nil else { throw Native704FixtureError.wrongIntent }
+        let report = try await nativeAdaptationFixtureReport(f)
+        guard let p = try screenVideoAdaptationOwnerBoundary.prepareGeneral(on: self,
+            snapshot: report.nativeSnapshot, nativeTimestamp: report.nativeReportTimestampMicroseconds,
+            sourcePeer: f.peer, generation: peerGeneration,
+            expectedRevision: screenVideoAdaptationOwner.revision,
+            capacityOnly: false, allowsResume: false),
+              let begin = try screenVideoAdaptationOwnerBoundary.beginActive(p, on: self) else {
+            throw Native704FixtureError.noPrepared
+        }
+        let attempt = try screenVideoAdaptationOwnerBoundary.consumeBeginActive(begin, on: self)
+        guard attempt.intent == .finalAdoptionOnly, attempt.resources == nil,
+              attempt.owner === self, attempt.sourcePeer === f.peer,
+              attempt.seed.boundary === screenVideoAdaptationOwnerBoundary else {
+            throw Native704FixtureError.wrongIntent
+        }
+        return attempt
+    }
+    private func native704EntryUnavailable(_ entry: BelugaNetworkAdaptationNativeFinalAdoptionEntry) -> Bool {
+        switch entry.state {
+        case .spent, .retired: return true
+        default: return false
+        }
+    }
+
+    func native704FixtureObservationForTesting(path: Native704FixturePath, cut: Native704FixtureCut,
+        readNative: @Sendable (WebRTCPeer) async -> Native704SDKReadback)
+        async throws -> Native704FixtureObservation {
+        guard ProcessInfo.processInfo.environment["BELUGA_RUN_NATIVE_ADAPTATION_RESOURCE_FIXTURE"] == "1" else {
+            throw NativeAdaptationFixtureError.unsafeSetup
+        }
+        let f = try await makeNativeAdaptationFixtureResources()
+        do {
+            let attempt: BelugaNetworkAdaptationNativeAttempt
+            switch path {
+            case .success: attempt = try await native702FixtureAttempt(f)
+            case .noApply: attempt = try await native704NoApplyAttempt(f)
+            }
+            let nativeBeforeRun = await readNative(f.peer)
+            let completion = try await networkAdaptationRunNativeAttempt(attempt)
+            guard completion.attempt === attempt else { throw Native704FixtureError.badCustody }
+            let nativeAfterRun = await readNative(f.peer)
+            let final: BelugaNetworkAdaptationFinalAdoptionReceipt
+            var noApplyReplayRefused: Bool?
+            switch path {
+            case .success:
+                guard completion.kind == .senderSucceeded,
+                      case .senderSucceeded = completion.settlement,
+                      case let .accepted(receipt) = try screenVideoAdaptationOwnerBoundary.finishSuccess(completion, on: self) else {
+                    throw Native704FixtureError.notSuccessful
+                }
+                final = receipt
+            case .noApply:
+                guard completion.kind == .finalAdoptionOnly,
+                      case .finalAdoptionOnly = completion.settlement else {
+                    throw Native704FixtureError.wrongIntent
+                }
+                final = try screenVideoAdaptationOwnerBoundary.consumeFinalAdoptionOnly(completion, on: self)
+                do {
+                    _ = try screenVideoAdaptationOwnerBoundary.consumeFinalAdoptionOnly(completion, on: self)
+                    noApplyReplayRefused = false
+                } catch BelugaNetworkAdaptationOwnerError.refused { noApplyReplayRefused = true }
+            }
+            let actualEntry = try screenVideoAdaptationOwnerBoundary.finalAdoptionEntryForTesting(final)
+            guard actualEntry.completion === completion,
+                  actualEntry.seed.boundary === screenVideoAdaptationOwnerBoundary else {
+                throw Native704FixtureError.badCustody
+            }
+            let prepared = attempt.seed.prepared, anchor = attempt.seed.published.anchor
+            let beforeStale = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            switch cut {
+            case .current, .wrongBoundary: break
+            case .peerAbsent: peer = nil
+            case .generationAdvanced: peerGeneration &+= 1
+            case .revisionAdvanced:
+                let v = screenVideoAdaptationOwner
+                screenVideoAdaptationOwner = .init(policy: v.policy, revision: v.revision &+ 1,
+                    fastStatisticsAvailable: v.fastStatisticsAvailable, lane: v.lane,
+                    evidenceTime: v.evidenceTime, minimumCollectionSequence: v.minimumCollectionSequence, applied: v.applied)
+            }
+            let beforeFinal = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            let nativeBeforeFinal = await readNative(f.peer)
+            let trace = completion.successDispatchTrace
+            let dispatchBefore = trace?.observation
+            let useBefore = try screenVideoAdaptationOwnerBoundary.finalAdoptionReceiptWasSpentForTesting(final)
+            let entryBefore: Bool
+            switch actualEntry.state {
+            case .availableSuccess, .availableNoApply: entryBefore = true
+            default: entryBefore = false
+            }
+            let result: BelugaNetworkAdaptationFinalAdoptionResult
+            if cut == .wrongBoundary {
+                result = try BelugaNetworkAdaptationOwnerBoundary().finalAdopt(final, on: self)
+            } else { result = try screenVideoAdaptationOwnerBoundary.finalAdopt(final, on: self) }
+            let primaryKind: Native704FixtureResult
+            switch result {
+            case .adopted: primaryKind = .adopted
+            case .superseded: primaryKind = .superseded
+            case let .refused(entry, error):
+                guard entry === actualEntry,
+                      let error = error as? BelugaNetworkAdaptationOwnerError,
+                      case .refused = error else { throw Native704FixtureError.wrongRefusal }
+                primaryKind = .refused
+            }
+            let afterFinal = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            let useAfter = try screenVideoAdaptationOwnerBoundary.finalAdoptionReceiptWasSpentForTesting(final)
+            let entryAfter = native704EntryUnavailable(actualEntry)
+            let dispatchAfter = trace?.observation
+            let nativeAfterFinal = await readNative(f.peer)
+            var replayRefused = false
+            do {
+                let replay = try screenVideoAdaptationOwnerBoundary.finalAdopt(final, on: self)
+                if case let .refused(entry, error) = replay,
+                   entry === actualEntry,
+                   let error = error as? BelugaNetworkAdaptationOwnerError,
+                   case .refused = error { replayRefused = true }
+            } catch BelugaNetworkAdaptationOwnerError.refused { replayRefused = true }
+            let afterReplay = try nativeOwnerStopSnapshotObservation(retainingAnchor: anchor)
+            let useAfterReplay = try screenVideoAdaptationOwnerBoundary.finalAdoptionReceiptWasSpentForTesting(final)
+            let entryAfterReplay = native704EntryUnavailable(actualEntry)
+            let nativeAfterReplay = await readNative(f.peer)
+            let routeAction: Native704FixtureRouteAction
+            switch prepared.tail.routeAction {
+            case .retain: routeAction = .retain
+            case .clear: routeAction = .clear
+            case .copyIncoming: routeAction = .copyIncoming
+            }
+            let cleanup = await closeNativeAdaptationFixture(f)
+            return .init(path: path, cut: cut, result: primaryKind,
+                preparedPolicyAtoms: prepared.atoms.prefix(168).map { .init(kind: $0.kind, present: $0.present, high: $0.high, low: $0.low) },
+                preparedNativeTimes: prepared.policyTimes, preparedRouteAction: routeAction,
+                preparedIncomingRoute: prepared.report.incomingRoute, preparedApplyingRevision: prepared.tail.applyingRevision,
+                ownerBeforeStaleCut: beforeStale, beforeFinal: beforeFinal, afterFinal: afterFinal, afterReplay: afterReplay,
+                nativeBeforeRun: nativeBeforeRun, nativeAfterRun: nativeAfterRun,
+                nativeBeforeFinal: nativeBeforeFinal, nativeAfterFinal: nativeAfterFinal, nativeAfterReplay: nativeAfterReplay,
+                successDispatchBeforeFinal: dispatchBefore, successDispatchAfterFinal: dispatchAfter,
+                successDispatchAfterReplay: trace?.observation,
+                codecUseSpentBeforeFinal: useBefore, nativeEntryAvailableBeforeFinal: entryBefore,
+                codecUseSpentAfterFinal: useAfter, nativeEntryUnavailableAfterFinal: entryAfter,
+                codecUseSpentAfterReplay: useAfterReplay, nativeEntryUnavailableAfterReplay: entryAfterReplay,
+                replayRefused: replayRefused, noApplyCompletionReplayRefused: noApplyReplayRefused,
+                cleanupSourceStopped: cleanup.sourceStopped, cleanupPeerClosed: cleanup.peerClosed,
+                cleanupFieldsAreAbsent: cleanup.absent, cleanupAuthorizationsAreRevoked: cleanup.revoked)
+        } catch {
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw Native704FixtureError.unsafeCleanup
+            }
+            throw error
+        }
+    }
+}
+#endif
+
+// STOPPED SOURCE-ONLY PROPOSAL. No canonical adoption or compilation.
+// Apply the companion ACTOR_INSERTIONS patch: two actual-record fields plus
+// mandatory hasUnconfirmedNativeCaptureStop quarantine visibility. Append the
+// remaining definitions in the SAME WSS source file, not a separate module.
+
+extension WorldwideScreenService {
+    private enum NativeDispatchUnverifiedReason {
+        case adapterRefused, rollbackUncertain, recoveryCustodyMismatch
+        case alreadyStoppedUnverified, nativeStopUnconfirmed
+    }
+    // Strong, constructor-sealed retention only. Not a retry/effect grant.
+    // No setter/clear API. owner→record→completion→owner intentionally retains
+    // unresolved custody until process exit; host terminal predicate sees it.
+    // Positive paths do not create this record or its cycle. Generic stop does
+    // NOT clear it; future live activation requires a reviewed owned disposal.
+    private final class NativeDispatchUnresolvedRecord {
+        let completion: BelugaNetworkAdaptationNativeCompletion
+        let reason: NativeDispatchUnverifiedReason
+        let secondaryError: (any Error)?
+        let actualSenderError: (any Error)?
+        init(completion: BelugaNetworkAdaptationNativeCompletion,
+            reason: NativeDispatchUnverifiedReason, secondaryError: (any Error)?) {
+            self.completion = completion; self.reason = reason
+            self.secondaryError = secondaryError
+            if case let .senderFailed(error) = completion.settlement {
+                actualSenderError = error
+            } else { actualSenderError = nil }
+        }
+    }
+    private enum NativeDispatchOutcome {
+        case adopted, superseded
+        case rollbackOnly(reverted: Bool, adapterRefusal: (any Error)?)
+        case retainedFailure(BelugaNetworkAdaptationFailureRetainedReceipt)
+        case terminalStopConfirmed
+        case unverified(NativeDispatchUnverifiedReason)
+    }
+    // Private actor-file sealed result of a synchronous claim, never supplied
+    // by a caller as recovery authority. Owns the one existing consuming plan.
+    private enum NativeDispatchPostFPSClaim: ~Copyable {
+        case stop(ServiceStopPlan)
+        case alreadyStopped
+        case unverified(NativeDispatchUnverifiedReason)
+    }
+
+    // ONE owned RunNativeAttempt result. No caller-supplied settlement/result,
+    // recovery enum, SDK token, fake Owner or mutable permission flag.
+    private func dispatchActualNativeAdaptation(_ attempt: BelugaNetworkAdaptationNativeAttempt)
+        async throws -> NativeDispatchOutcome {
+        guard activeNativeAdaptationDispatch == nil,
+              nativeAdaptationDispatchPhase == nil,
+              unresolvedNativeAdaptationDispatch == nil else {
+            // Consume only this waiting attempt; never replace an active owner.
+            try attempt.claim(by: self, boundary: screenVideoAdaptationOwnerBoundary)
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        activeNativeAdaptationDispatch = attempt
+        nativeAdaptationDispatchPhase = .waitingSDK
+        defer { retireNativeAdaptationDispatch(attempt) }
+        let completion = try await networkAdaptationRunNativeAttempt(attempt)
+        precondition(completion.attempt === attempt)
+        nativeAdaptationDispatchPhase = .settling
+        switch completion.settlement {
+        case .senderSucceeded:
+            let result: BelugaNetworkAdaptationSuccessResult
+            do { result = try screenVideoAdaptationOwnerBoundary.finishSuccess(completion, on: self) }
+            catch {
+                return retainUnverifiedNativeDispatch(completion, .adapterRefused, error)
+            }
+            switch result {
+            case let .accepted(final):
+                // No suspension or arbitrary callback between actual702/704.
+                return finishActualNativeDispatchFinal(final, completion: completion)
+            case let .rollback(cleanup):
+                nativeAdaptationDispatchPhase = .waitingRollback
+                return await finishNativeDispatchTokenRollback(cleanup,
+                    completion: completion, refusal: nil)
+            case let .refused(cleanup, error):
+                nativeAdaptationDispatchPhase = .waitingRollback
+                return await finishNativeDispatchTokenRollback(cleanup,
+                    completion: completion, refusal: error)
+            case let .requiresGuardedRecovery(cleanup):
+                // The result came from OUR actual synchronous finishSuccess.
+                // Synchronous cleanup spend + exact native claim + beginStop
+                // happen HERE before the first await on this result path.
+                let claim = claimCurrentNativeDispatchPostFPSRecovery(cleanup,
+                    completion: completion)
+                switch consume claim {
+                case let .stop(plan):
+                    // Only this exact synchronous noncopyable claim creates
+                    // the exemption; never an ambient recovery/phase flag.
+                    nativeAdaptationDispatchPhase = .ownStopTail(completion)
+                    await finishStop(consume plan)
+                    guard nativeDispatchOwnsExactClaimedStopTail(completion),
+                          !nativeDispatchHasUnconfirmedBaseStop() else {
+                        return retainUnverifiedNativeDispatch(completion, .nativeStopUnconfirmed, nil)
+                    }
+                    return .terminalStopConfirmed
+                case .alreadyStopped:
+                    await waitForStopToFinish()
+                    return retainUnverifiedNativeDispatch(completion, .alreadyStoppedUnverified, nil)
+                case let .unverified(reason):
+                    return retainUnverifiedNativeDispatch(completion, reason, nil)
+                }
+            }
+        case .senderFailed:
+            do {
+                switch try screenVideoAdaptationOwnerBoundary.finishFailure(completion, on: self) {
+                case let .retained(receipt):
+                    // Actual703 stored its complete/prefix result before return.
+                    // Preserve SDK error and semanticStatus/clockDenial separately.
+                    return .retainedFailure(receipt)
+                case let .requiresGuardedRecovery(entry, error):
+                    precondition(entry.completion === completion)
+                    // No returned token and no proven full-stop admission here.
+                    return retainUnverifiedNativeDispatch(completion, .adapterRefused, error)
+                }
+            } catch {
+                return retainUnverifiedNativeDispatch(completion, .adapterRefused, error)
+            }
+        case .finalAdoptionOnly:
+            do {
+                let final = try screenVideoAdaptationOwnerBoundary.consumeFinalAdoptionOnly(completion, on: self)
+                return finishActualNativeDispatchFinal(final, completion: completion)
+            } catch {
+                return retainUnverifiedNativeDispatch(completion, .adapterRefused, error)
+            }
+        }
+    }
+
+    private func finishActualNativeDispatchFinal(_ final: BelugaNetworkAdaptationFinalAdoptionReceipt,
+        completion: BelugaNetworkAdaptationNativeCompletion) -> NativeDispatchOutcome {
+        do {
+            switch try screenVideoAdaptationOwnerBoundary.finalAdopt(final, on: self) {
+            case .adopted: return .adopted
+            case .superseded: return .superseded
+            case let .refused(_, error):
+                // Accepted702 cleanup is already retired. Do not mint/revive
+                // a token receipt or stop an ambient newer source on704 refusal.
+                return retainUnverifiedNativeDispatch(completion, .adapterRefused, error)
+            }
+        } catch {
+            return retainUnverifiedNativeDispatch(completion, .adapterRefused, error)
+        }
+    }
+
+    private func finishNativeDispatchTokenRollback(_ cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt,
+        completion: BelugaNetworkAdaptationNativeCompletion,
+        refusal: (any Error)?) async -> NativeDispatchOutcome {
+        precondition(cleanup.completion === completion)
+        do {
+            let reverted = try await networkAdaptationRollbackSuccessCleanup(cleanup)
+            // false is native token supersession, not rollback success.
+            // No Owner store, FPS, authorization revoke or current-source stop.
+            return .rollbackOnly(reverted: reverted, adapterRefusal: refusal)
+        } catch {
+            return retainUnverifiedNativeDispatch(completion, .rollbackUncertain, error)
+        }
+    }
+
+    // No await, callback or borrowed C frame. The caller owns the consuming
+    // result; native shutdown claim cannot be delayed behind an async hop.
+    private func claimCurrentNativeDispatchPostFPSRecovery(
+        _ cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt,
+        completion: BelugaNetworkAdaptationNativeCompletion) -> NativeDispatchPostFPSClaim {
+        // One-use record disposal precedes every rejection. No token/FPS retry.
+        guard case .available = cleanup.state else {
+            return .unverified(.recoveryCustodyMismatch)
+        }
+        cleanup.state = .spent
+        let attempt = completion.attempt
+        guard cleanup.completion === completion,
+              activeNativeAdaptationDispatch === attempt,
+              attempt.owner === self,
+              attempt.seed.boundary === screenVideoAdaptationOwnerBoundary,
+              case .settled = attempt.phase,
+              case .senderSucceeded = completion.settlement,
+              let r = attempt.resources else {
+            return .unverified(.recoveryCustodyMismatch)
+        }
+        if isStopped {
+            // Caller joins only; prior service stop is not old-source proof.
+            return .alreadyStopped
+        }
+        guard !stopIsInProgress,
+              peer === attempt.sourcePeer,
+              peerGeneration == attempt.seed.entry.preparation.generation,
+              screenVideoAdaptationOwner.revision == attempt.seed.prepared.tail.applyingRevision,
+              screenVisibilityCommandEpoch == attempt.seed.entry.preparation.visibilityEpoch,
+              captureSource === r.source, captureSink === r.sink,
+              captureAuthorization === r.captureAuthorization,
+              captureForwardingAuthorization === r.forwardingAuthorization,
+              captureVideoBaseDimensions == r.baseDimensions,
+              attempt.sourcePeer.externalVideoCapturer === r.capturer,
+              automaticScreenMediaResumeContext == nil else {
+            // Shared/newer Show/capturer ownership is not disposal permission.
+            // Retain actual unresolved custody; do not touch native resources.
+            return .unverified(.recoveryCustodyMismatch)
+        }
+        // Deliberately NO .isValid predicate: an already-revoked exact token
+        // still identifies the affected lifetime needing disposal. No await
+        // occurred since actual702 returned; no actor owner can interleave here.
+        return .stop(beginStop())
+    }
+
+    private func retainUnverifiedNativeDispatch(_ completion: BelugaNetworkAdaptationNativeCompletion,
+        _ reason: NativeDispatchUnverifiedReason, _ error: (any Error)?) -> NativeDispatchOutcome {
+        precondition(activeNativeAdaptationDispatch === completion.attempt)
+        precondition(unresolvedNativeAdaptationDispatch == nil)
+        unresolvedNativeAdaptationDispatch = .init(completion: completion,
+            reason: reason, secondaryError: error)
+        return .unverified(reason)
+    }
+}
+// STOPPED SOURCE-ONLY append in SAME WSS file; no fake SDK completion/error.
+#if DEBUG
+extension WorldwideScreenService {
+    enum NativeDispatchFixtureCase: Equatable, Sendable { case success, noApply, closedPeerFailure, staleBeforeRun }
+    enum NativeDispatchFixtureKind: Equatable, Sendable { case adopted, retainedFailure, preSDKRefused }
+    struct NativeDispatchFixtureObservation: Sendable {
+        let selected: NativeDispatchFixtureCase
+        let kind: NativeDispatchFixtureKind
+        let before: NativeOwnerPublicationSnapshotObservation
+        let after: NativeOwnerPublicationSnapshotObservation
+        let nativeBefore: Native704SDKReadback
+        let nativeAfter: Native704SDKReadback
+        let semanticStatus: UInt32?
+        let acceptedReads: UInt32?
+        let attemptedReads: UInt32?
+        let actualSenderErrorIsTransportClosed: Bool?
+        let quarantineAbsent: Bool
+        let cleanupSourceStopped: Bool
+        let cleanupPeerClosed: Bool
+        let cleanupFieldsAreAbsent: Bool
+        let cleanupAuthorizationsAreRevoked: Bool
+    }
+    private enum NativeDispatchFixtureError: Error { case unexpectedDisposition, unsafeCleanup }
+    func nativeDispatchFixtureObservationForTesting(_ selected: NativeDispatchFixtureCase,
+        readNative: @Sendable (WebRTCPeer) async -> Native704SDKReadback)
+        async throws -> NativeDispatchFixtureObservation {
+        guard ProcessInfo.processInfo.environment["BELUGA_RUN_NATIVE_ADAPTATION_RESOURCE_FIXTURE"] == "1",
+              activeNativeAdaptationDispatch == nil, unresolvedNativeAdaptationDispatch == nil else {
+            throw NativeAdaptationFixtureError.unsafeSetup
+        }
+        let f = try await makeNativeAdaptationFixtureResources()
+        do {
+            let attempt: BelugaNetworkAdaptationNativeAttempt
+            if selected == .noApply { attempt = try await native704NoApplyAttempt(f) }
+            else { attempt = try await native702FixtureAttempt(f) }
+            if selected == .closedPeerFailure {
+                guard await f.peer.close(reason: .normal) else {
+                    throw NativeAdaptationFixtureError.unsafeSetup
+                }
+            }
+            if selected == .staleBeforeRun { peer = nil }
+            let before = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeBefore = await readNative(f.peer)
+            let kind: NativeDispatchFixtureKind
+            var semantic: UInt32?, accepted: UInt32?, attempted: UInt32?, transportClosed: Bool?
+            do {
+                let result = try await dispatchActualNativeAdaptation(attempt)
+                switch result {
+                case .adopted:
+                    guard selected == .success || selected == .noApply else {
+                        throw NativeDispatchFixtureError.unexpectedDisposition
+                    }
+                    kind = .adopted
+                case let .retainedFailure(receipt):
+                    guard selected == .closedPeerFailure,
+                          receipt.disposition == .ordinary else {
+                        throw NativeDispatchFixtureError.unexpectedDisposition
+                    }
+                    semantic = receipt.semanticStatus; accepted = receipt.acceptedReads
+                    attempted = receipt.attemptedReads
+                    if let error = receipt.actualSenderError as? WebRTCTransportError,
+                       case .transportClosed = error { transportClosed = true }
+                    else { transportClosed = false }
+                    kind = .retainedFailure
+                default: throw NativeDispatchFixtureError.unexpectedDisposition
+                }
+            } catch BelugaNetworkAdaptationOwnerError.refused {
+                guard selected == .staleBeforeRun else { throw BelugaNetworkAdaptationOwnerError.refused }
+                kind = .preSDKRefused
+            }
+            let after = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeAfter = await readNative(f.peer)
+            let quarantineAbsent = unresolvedNativeAdaptationDispatch == nil
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeDispatchFixtureError.unsafeCleanup
+            }
+            return .init(selected: selected, kind: kind, before: before, after: after,
+                nativeBefore: nativeBefore, nativeAfter: nativeAfter,
+                semanticStatus: semantic, acceptedReads: accepted, attemptedReads: attempted,
+                actualSenderErrorIsTransportClosed: transportClosed, quarantineAbsent: quarantineAbsent,
+                cleanupSourceStopped: cleanup.sourceStopped, cleanupPeerClosed: cleanup.peerClosed,
+                cleanupFieldsAreAbsent: cleanup.absent, cleanupAuthorizationsAreRevoked: cleanup.revoked)
+        } catch {
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeDispatchFixtureError.unsafeCleanup
+            }
+            throw error
+        }
+    }
+}
+#endif
+
+// The fault models post-C adapter refusal, NOT a natural SDK/Rust failure.
+#if DEBUG
+final class BelugaNetworkAdaptationPostEffectFixtureRefusal {
+    fileprivate let attempt: BelugaNetworkAdaptationNativeAttempt
+    fileprivate let boundary: BelugaNetworkAdaptationOwnerBoundary
+    fileprivate var consumedBeforeC = false
+    fileprivate var completion: BelugaNetworkAdaptationNativeCompletion?
+    fileprivate var cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt?
+    private(set) var actualStatus: UInt32?
+    private(set) var substitutions: UInt64 = 0
+    fileprivate init(attempt: BelugaNetworkAdaptationNativeAttempt,
+        boundary: BelugaNetworkAdaptationOwnerBoundary) {
+        self.attempt = attempt; self.boundary = boundary
+    }
+    // Only the fixed post-effect adapter site uses this preallocated record.
+    // These scalar writes neither manufacture recovery nor alter C/SDK output.
+    func recordActualPostEffectStatus(_ status: UInt32) {
+        actualStatus = status
+        substitutions &+= 1
+    }
+}
+
+extension WorldwideScreenService {
+    private func bindNativeDispatchPostEffectFixtureRefusal(
+        _ completion: BelugaNetworkAdaptationNativeCompletion,
+        boundary: BelugaNetworkAdaptationOwnerBoundary,
+        admission: BelugaNetworkAdaptationNativeSuccessEntry.Admission,
+        cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt) throws
+        -> BelugaNetworkAdaptationPostEffectFixtureRefusal? {
+        guard let fault = nativeDispatchPostEffectFixtureRefusal else { return nil }
+        guard !fault.consumedBeforeC else { throw BelugaNetworkAdaptationOwnerError.refused }
+        fault.consumedBeforeC = true // Also burns any wrong-identity admission.
+        let attempt = completion.attempt
+        guard ProcessInfo.processInfo.environment["BELUGA_RUN_NATIVE_ADAPTATION_RESOURCE_FIXTURE"] == "1",
+              fault.completion == nil, fault.cleanup == nil, fault.attempt === attempt,
+              fault.boundary === boundary, boundary === screenVideoAdaptationOwnerBoundary,
+              activeNativeAdaptationDispatch === attempt, attempt.owner === self,
+              attempt.seed.boundary === boundary, case .settled = attempt.phase,
+              case .senderSucceeded = completion.settlement, let r = attempt.resources,
+              cleanup.completion === completion, case .available = cleanup.state,
+              case let .ready(observation) = admission, observation.facts == 511,
+              observation.generation == attempt.seed.prepared.tail.generation,
+              observation.source.value.revision == attempt.seed.prepared.tail.applyingRevision,
+              peer === attempt.sourcePeer,
+              peerGeneration == attempt.seed.entry.preparation.generation,
+              captureSource === r.source, captureSink === r.sink,
+              captureAuthorization === r.captureAuthorization,
+              captureForwardingAuthorization === r.forwardingAuthorization,
+              captureVideoBaseDimensions == r.baseDimensions,
+              attempt.sourcePeer.externalVideoCapturer === r.capturer else {
+            throw BelugaNetworkAdaptationOwnerError.refused
+        }
+        // The actual returned completion is sealed HERE, before borrowed C/FPS.
+        fault.completion = completion
+        fault.cleanup = cleanup
+        return fault
+    }
+
+    struct NativeDispatchPostEffectPeerReadback: Sendable {
+        let sdk: Native704SDKReadback
+        let isClosed: Bool
+    }
+    struct NativeDispatchPostEffectRecoveryObservation: Sendable {
+        let before: NativeOwnerPublicationSnapshotObservation
+        let after: NativeOwnerPublicationSnapshotObservation
+        let nativeBefore: NativeDispatchPostEffectPeerReadback
+        let nativeAfter: NativeDispatchPostEffectPeerReadback
+        let consumedBeforeC: Bool
+        let actualCStatus: UInt32?
+        let substitutions: UInt64
+        let successDispatch: Native702DispatchObservation
+        let cleanupUseSpent: Bool
+        let terminalStopConfirmed: Bool
+        let serviceStopped: Bool
+        let stopTailJoined: Bool
+        let originalSourceOwnershipClearedByTail: Bool
+        let originalAuthorizationsRevokedByTail: Bool
+        let originalSinkGateClosedByTail: Bool
+        let dispatchSlotCleared: Bool
+        let quarantineAbsent: Bool
+        let hostUnconfirmedStopAbsent: Bool
+        let secondaryCleanupSourceStopped: Bool
+        let secondaryCleanupPeerClosed: Bool
+        let secondaryCleanupFieldsAbsent: Bool
+        let secondaryCleanupAuthorizationsRevoked: Bool
+    }
+    private enum NativeDispatchPostEffectFixtureError: Error {
+        case unexpectedDisposition, missingActualCompletion, unsafeCleanup
+    }
+
+    // No external selected-case/effect flag or supplied completion/error. This
+    // one fixed test factory owns a fresh inert tuple and its one fault use.
+    func nativeDispatchPostEffectRecoveryObservationForTesting(
+        readNative: @Sendable (WebRTCPeer) async -> NativeDispatchPostEffectPeerReadback)
+        async throws -> NativeDispatchPostEffectRecoveryObservation {
+        guard ProcessInfo.processInfo.environment["BELUGA_RUN_NATIVE_ADAPTATION_RESOURCE_FIXTURE"] == "1",
+              activeNativeAdaptationDispatch == nil, unresolvedNativeAdaptationDispatch == nil,
+              nativeDispatchPostEffectFixtureRefusal == nil else {
+            throw NativeAdaptationFixtureError.unsafeSetup
+        }
+        let f = try await makeNativeAdaptationFixtureResources()
+        defer { nativeDispatchPostEffectFixtureRefusal = nil }
+        do {
+            let attempt = try await native702FixtureAttempt(f)
+            let fault = BelugaNetworkAdaptationPostEffectFixtureRefusal(attempt: attempt,
+                boundary: screenVideoAdaptationOwnerBoundary)
+            nativeDispatchPostEffectFixtureRefusal = fault
+            let before = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeBefore = await readNative(f.peer)
+            let outcome = try await dispatchActualNativeAdaptation(attempt)
+            guard case .terminalStopConfirmed = outcome else {
+                throw NativeDispatchPostEffectFixtureError.unexpectedDisposition
+            }
+            // Capture all tail assertions BEFORE secondary fixture cleanup.
+            // stopScreenCapture clears an exact source only after source.stop
+            // returned; this tuple never starts an SCStream or transport.
+            let serviceStopped = isStopped
+            let tailJoined = !stopIsInProgress
+            let sourceCleared = captureSource == nil && captureSink == nil
+                && captureVideoBaseDimensions == nil
+            let revoked = !f.captureAuthorization.isValid && !f.forwardingAuthorization.isValid
+                && captureAuthorization == nil && captureForwardingAuthorization == nil
+            let sinkClosed = !f.sink.allowsActiveUse(authorizedBy: f.forwardingAuthorization)
+            let slotCleared = activeNativeAdaptationDispatch == nil
+            let quarantineAbsent = unresolvedNativeAdaptationDispatch == nil
+            let unconfirmedAbsent = !hasUnconfirmedNativeCaptureStop()
+            guard let completion = fault.completion, let cleanupReceipt = fault.cleanup else {
+                throw NativeDispatchPostEffectFixtureError.missingActualCompletion
+            }
+            let trace = try native702Trace(completion)
+            let spent: Bool
+            // Observe the actual entry's exact cleanup latch, not a derived
+            // status vote. No receipt or returned update escapes the actor.
+            if case .spent = cleanupReceipt.state { spent = true }
+            else { spent = false }
+            let after = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeAfter = await readNative(f.peer)
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeDispatchPostEffectFixtureError.unsafeCleanup
+            }
+            return .init(before: before, after: after, nativeBefore: nativeBefore, nativeAfter: nativeAfter,
+                consumedBeforeC: fault.consumedBeforeC, actualCStatus: fault.actualStatus,
+                substitutions: fault.substitutions, successDispatch: trace, cleanupUseSpent: spent,
+                terminalStopConfirmed: true, serviceStopped: serviceStopped, stopTailJoined: tailJoined,
+                originalSourceOwnershipClearedByTail: sourceCleared,
+                originalAuthorizationsRevokedByTail: revoked, originalSinkGateClosedByTail: sinkClosed,
+                dispatchSlotCleared: slotCleared, quarantineAbsent: quarantineAbsent,
+                hostUnconfirmedStopAbsent: unconfirmedAbsent,
+                secondaryCleanupSourceStopped: cleanup.sourceStopped,
+                secondaryCleanupPeerClosed: cleanup.peerClosed,
+                secondaryCleanupFieldsAbsent: cleanup.absent,
+                secondaryCleanupAuthorizationsRevoked: cleanup.revoked)
+        } catch {
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeDispatchPostEffectFixtureError.unsafeCleanup
+            }
+            throw error
+        }
+    }
+}
+#endif
+
+extension WorldwideScreenService {
+    private enum NativeDispatchPhase {
+        case waitingSDK, settling, waitingRollback
+        case ownStopTail(BelugaNetworkAdaptationNativeCompletion)
+    }
+    private func nativeDispatchHasUnconfirmedBaseStop() -> Bool {
+        unresolvedNativeAdaptationDispatch != nil
+            || (isStopped && (captureSource != nil || audioSource != nil))
+    }
+    private func nativeDispatchOwnsExactClaimedStopTail(
+        _ completion: BelugaNetworkAdaptationNativeCompletion) -> Bool {
+        guard case let .ownStopTail(recorded)? = nativeAdaptationDispatchPhase,
+              recorded === completion,
+              activeNativeAdaptationDispatch === completion.attempt,
+              completion.attempt.owner === self,
+              completion.attempt.seed.boundary === screenVideoAdaptationOwnerBoundary,
+              case .settled = completion.attempt.phase,
+              case .senderSucceeded = completion.settlement,
+              completion.attempt.resources != nil, isStopped else { return false }
+        return true
+    }
+    private func retireNativeAdaptationDispatch(_ attempt: BelugaNetworkAdaptationNativeAttempt) {
+        precondition(activeNativeAdaptationDispatch === attempt && nativeAdaptationDispatchPhase != nil)
+        // Result/quarantine is already published inside this actor; no await
+        // can split these two custody writes or reopen a waiting admission.
+        nativeAdaptationDispatchPhase = nil
+        activeNativeAdaptationDispatch = nil
+    }
+}
+
+#if DEBUG
+extension WorldwideScreenService {
+    // Pure event rendezvous. NO attempt/completion/resources/C POD enter this
+    // Sendable actor; those remain in the service's sealed private use below.
+    private actor NativeDispatchReturnFixtureGate {
+        private enum State { case armed, held, released, completedBeforeArrival }
+        private var state = State.armed
+        private var arrivalWaiter: CheckedContinuation<Void, Never>?
+        private var releaseWaiter: CheckedContinuation<Void, Never>?
+        func holdActualReturn() async {
+            guard case .armed = state else { preconditionFailure("Return gate used twice") }
+            state = .held
+            let arrival = arrivalWaiter; arrivalWaiter = nil
+            arrival?.resume()
+            await withCheckedContinuation { continuation in
+                precondition(releaseWaiter == nil)
+                releaseWaiter = continuation
+            }
+            guard case .released = state else { preconditionFailure("Return gate was not released") }
+        }
+        func waitForHeldOrEarlyCompletion() async -> Bool {
+            if case .held = state { return true }
+            if case .completedBeforeArrival = state { return false }
+            guard case .armed = state, arrivalWaiter == nil else {
+                preconditionFailure("Return gate arrival waited twice")
+            }
+            await withCheckedContinuation { arrivalWaiter = $0 }
+            if case .held = state { return true }
+            guard case .completedBeforeArrival = state else {
+                preconditionFailure("Unexpected return gate arrival state")
+            }
+            return false
+        }
+        func releaseOwnedReturn() {
+            guard case .held = state, let release = releaseWaiter else {
+                preconditionFailure("Return gate release without held return")
+            }
+            state = .released; releaseWaiter = nil
+            release.resume()
+        }
+        func releaseHeldReturnForFailureCleanup() {
+            if case .held = state { releaseOwnedReturn() }
+        }
+        func noteOwnedRunFinished() {
+            if case .armed = state {
+                state = .completedBeforeArrival
+                let arrival = arrivalWaiter; arrivalWaiter = nil
+                arrival?.resume()
+                return
+            }
+            guard case .released = state else {
+                preconditionFailure("Owned dispatch ended with held return")
+            }
+        }
+    }
+    private final class NativeDispatchReturnFixtureUse {
+        let attempt: BelugaNetworkAdaptationNativeAttempt
+        let boundary: BelugaNetworkAdaptationOwnerBoundary
+        let gate: NativeDispatchReturnFixtureGate
+        var completion: BelugaNetworkAdaptationNativeCompletion?
+        var cleanup: BelugaNetworkAdaptationSuccessCleanupReceipt?
+        var outcome: NativeDispatchOutcome?
+        var failure: (any Error)?
+        var didReturn = false
+        init(attempt: BelugaNetworkAdaptationNativeAttempt,
+            boundary: BelugaNetworkAdaptationOwnerBoundary,
+            gate: NativeDispatchReturnFixtureGate) {
+            self.attempt = attempt; self.boundary = boundary; self.gate = gate
+        }
+    }
+    enum NativeDispatchReturnFixtureCut: Equatable, Sendable { case captureStop, serviceStop }
+    enum NativeDispatchReturnFixtureResult: Equatable, Sendable { case rollbackTrue, rollbackUncertainTransportClosed }
+    struct NativeDispatchReturnFixtureObservation: Sendable {
+        let selected: NativeDispatchReturnFixtureCut
+        let result: NativeDispatchReturnFixtureResult
+        let before: NativeOwnerPublicationSnapshotObservation
+        let afterCut: NativeOwnerPublicationSnapshotObservation
+        let afterDispatch: NativeOwnerPublicationSnapshotObservation
+        let afterRepeatedStop: NativeOwnerPublicationSnapshotObservation?
+        let nativeBefore: NativeDispatchPostEffectPeerReadback
+        let nativeAfterSetter: NativeDispatchPostEffectPeerReadback
+        let nativeAfterCut: NativeDispatchPostEffectPeerReadback
+        let nativeAfterDispatch: NativeDispatchPostEffectPeerReadback
+        let nativeAfterRepeatedStop: NativeDispatchPostEffectPeerReadback?
+        let terminalOwnedBeforeRelease: Bool
+        let slotsAbsentBeforeRelease: Bool
+        let originalAuthorizationsRevokedBeforeRelease: Bool
+        let originalSinkClosedBeforeRelease: Bool
+        let publicUnconfirmedAfterDispatch: Bool
+        let publicUnconfirmedAfterRepeatedStop: Bool?
+        let exactQuarantineSurvivedRepeatedStop: Bool?
+        let successDispatch: Native702DispatchObservation
+        let cleanupUseSpent: Bool
+        let dispatchSlotsCleared: Bool
+        let secondaryCleanupSourceStopped: Bool
+        let secondaryCleanupPeerClosed: Bool
+        let secondaryCleanupFieldsAbsent: Bool
+        let secondaryCleanupAuthorizationsRevoked: Bool
+    }
+    private enum NativeDispatchReturnFixtureError: Error {
+        case earlyReturn, notSuccessfulActualCompletion, wrongDisposition
+        case missingActualCleanup, unsafeCleanup
+    }
+    // Task captures ONLY the Sendable service actor. All non-Sendable attempt,
+    // completion, receipt, result and Error custody stays in its private slot.
+    private func runOwnedNativeDispatchReturnFixture() async {
+        guard let use = nativeDispatchReturnFixtureUse else {
+            preconditionFailure("Missing owned native return fixture")
+        }
+        do { use.outcome = try await dispatchActualNativeAdaptation(use.attempt) }
+        catch { use.failure = error }
+        use.didReturn = true
+        await use.gate.noteOwnedRunFinished()
+    }
+    func nativeDispatchReturnFixtureObservationForTesting(_ selected: NativeDispatchReturnFixtureCut,
+        readNative: @Sendable (WebRTCPeer) async -> NativeDispatchPostEffectPeerReadback)
+        async throws -> NativeDispatchReturnFixtureObservation {
+        guard ProcessInfo.processInfo.environment["BELUGA_RUN_NATIVE_ADAPTATION_RESOURCE_FIXTURE"] == "1",
+              activeNativeAdaptationDispatch == nil, nativeAdaptationDispatchPhase == nil,
+              unresolvedNativeAdaptationDispatch == nil,
+              nativeDispatchPostEffectFixtureRefusal == nil, nativeDispatchReturnFixtureUse == nil else {
+            throw NativeAdaptationFixtureError.unsafeSetup
+        }
+        let f = try await makeNativeAdaptationFixtureResources()
+        var ownedTask: Task<Void, Never>?
+        var ownedGate: NativeDispatchReturnFixtureGate?
+        defer { nativeDispatchReturnFixtureUse = nil }
+        do {
+            let attempt = try await native702FixtureAttempt(f)
+            let gate = NativeDispatchReturnFixtureGate()
+            let use = NativeDispatchReturnFixtureUse(attempt: attempt,
+                boundary: screenVideoAdaptationOwnerBoundary, gate: gate)
+            nativeDispatchReturnFixtureUse = use; ownedGate = gate
+            let before = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeBefore = await readNative(f.peer)
+            let task = Task<Void, Never> { [self] in await runOwnedNativeDispatchReturnFixture() }
+            ownedTask = task
+            guard await gate.waitForHeldOrEarlyCompletion() else {
+                throw NativeDispatchReturnFixtureError.earlyReturn
+            }
+            guard let completion = use.completion,
+                  completion.attempt === attempt, case .senderSucceeded = completion.settlement else {
+                throw NativeDispatchReturnFixtureError.notSuccessfulActualCompletion
+            }
+            let nativeAfterSetter = await readNative(f.peer)
+            // Fixed original lifecycle actions only; never Owner/generation
+            // seeding, replacement resources, SDK error/token fabrication.
+            switch selected {
+            case .captureStop: try await stopScreenCapture()
+            case .serviceStop: await stop()
+            }
+            let afterCut = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeAfterCut = await readNative(f.peer)
+            let terminalOwnedBeforeRelease = hasUnconfirmedNativeCaptureStop()
+            let slotsAbsent = captureSource == nil && captureSink == nil
+                && captureAuthorization == nil && captureForwardingAuthorization == nil
+                && captureVideoBaseDimensions == nil
+            let revoked = !f.captureAuthorization.isValid && !f.forwardingAuthorization.isValid
+            let sinkClosed = !f.sink.allowsActiveUse(authorizedBy: f.forwardingAuthorization)
+            await gate.releaseOwnedReturn()
+            await task.value // genuine Void Task, joined BEFORE helper cleanup
+            guard use.didReturn else { preconditionFailure("Owned dispatch task did not return") }
+            if let error = use.failure { throw error }
+            let result: NativeDispatchReturnFixtureResult
+            switch use.outcome {
+            case let .rollbackOnly(reverted, refusal)?:
+                guard selected == .captureStop, reverted, refusal == nil else {
+                    throw NativeDispatchReturnFixtureError.wrongDisposition
+                }
+                result = .rollbackTrue
+            case let .unverified(reason)?:
+                guard selected == .serviceStop, case .rollbackUncertain = reason,
+                      let record = unresolvedNativeAdaptationDispatch,
+                      record.completion === completion,
+                      let error = record.secondaryError as? WebRTCTransportError,
+                      case .transportClosed = error else {
+                    throw NativeDispatchReturnFixtureError.wrongDisposition
+                }
+                result = .rollbackUncertainTransportClosed
+            default: throw NativeDispatchReturnFixtureError.wrongDisposition
+            }
+            guard let receipt = use.cleanup, receipt.completion === completion else {
+                throw NativeDispatchReturnFixtureError.missingActualCleanup
+            }
+            let spent: Bool
+            if case .spent = receipt.state { spent = true } else { spent = false }
+            let trace = try native702Trace(completion)
+            let afterDispatch = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+            let nativeAfterDispatch = await readNative(f.peer)
+            let publicAfterDispatch = hasUnconfirmedNativeCaptureStop()
+            let slotsCleared = activeNativeAdaptationDispatch == nil && nativeAdaptationDispatchPhase == nil
+            var afterRepeated: NativeOwnerPublicationSnapshotObservation?
+            var nativeAfterRepeated: NativeDispatchPostEffectPeerReadback?
+            var publicAfterRepeated: Bool?, exactQuarantine: Bool?
+            if selected == .serviceStop {
+                let retained = unresolvedNativeAdaptationDispatch
+                await stop() // cannot clear the already-published actual record
+                afterRepeated = try nativeOwnerStopSnapshotObservation(retainingAnchor: attempt.seed.published.anchor)
+                nativeAfterRepeated = await readNative(f.peer)
+                publicAfterRepeated = hasUnconfirmedNativeCaptureStop()
+                exactQuarantine = retained != nil && unresolvedNativeAdaptationDispatch === retained
+            }
+            // All outcome/native/quarantine observations precede this helper.
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeDispatchReturnFixtureError.unsafeCleanup
+            }
+            return .init(selected: selected, result: result, before: before, afterCut: afterCut,
+                afterDispatch: afterDispatch, afterRepeatedStop: afterRepeated,
+                nativeBefore: nativeBefore, nativeAfterSetter: nativeAfterSetter,
+                nativeAfterCut: nativeAfterCut, nativeAfterDispatch: nativeAfterDispatch,
+                nativeAfterRepeatedStop: nativeAfterRepeated,
+                terminalOwnedBeforeRelease: terminalOwnedBeforeRelease,
+                slotsAbsentBeforeRelease: slotsAbsent,
+                originalAuthorizationsRevokedBeforeRelease: revoked,
+                originalSinkClosedBeforeRelease: sinkClosed,
+                publicUnconfirmedAfterDispatch: publicAfterDispatch,
+                publicUnconfirmedAfterRepeatedStop: publicAfterRepeated,
+                exactQuarantineSurvivedRepeatedStop: exactQuarantine,
+                successDispatch: trace, cleanupUseSpent: spent, dispatchSlotsCleared: slotsCleared,
+                secondaryCleanupSourceStopped: cleanup.sourceStopped,
+                secondaryCleanupPeerClosed: cleanup.peerClosed,
+                secondaryCleanupFieldsAbsent: cleanup.absent,
+                secondaryCleanupAuthorizationsRevoked: cleanup.revoked)
+        } catch {
+            // No native tuple is cleaned while its owned dispatch Task remains
+            // parked. Early native admission failure wakes arrival separately.
+            await ownedGate?.releaseHeldReturnForFailureCleanup()
+            await ownedTask?.value
+            let cleanup = await closeNativeAdaptationFixture(f)
+            guard cleanup.sourceStopped && cleanup.peerClosed && cleanup.absent && cleanup.revoked else {
+                throw NativeDispatchReturnFixtureError.unsafeCleanup
+            }
+            throw error
+        }
+    }
+}
+#endif

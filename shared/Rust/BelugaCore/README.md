@@ -2,7 +2,8 @@
 
 This dependency-free Rust crate currently owns **media-handoff menu admission,
 the worldwide host lifecycle state machine, the handoff transaction ledger, and
-the one-use offer/timeline reducer, the phone playback-operation reducer, and
+the one-use offer/timeline reducer, the phone playback-operation reducer,
+the source/timeline pause predicate, microphone input-lease scalar votes, and
 the invitation acceptance policy, the bounded signaling replay window, and
 catalog-checkpoint attempt admission/revocation, durable reconnect counter
 proposals, pairing-commit phase/recovery plans, supported-player arbitration,
@@ -50,6 +51,15 @@ wire codecs, peer authorization/continuity, actual phone playback confirmation,
 exact-source Mac Pause and protected microphone/audio leases remain native.
 Offer acceptance and scalar effects are never proof of playback or Pause.
 
+The source pause predicate preserves the original native numeric domain:
+separate preparation and live-match checks, an exclusive 30-second page-clock
+window, inclusive one-second Mac and two-second phone drift limits, and unchanged
+IEEE-754 payload bits. Swift retains UUID/URL parsing, exact source identity,
+one-use authorization and final browser readback. A malformed Rust result denies
+the operation; no Swift numeric fallback can authorize Pause. The independent
+frozen-Swift parity suite and compiled source/export/validator mutations cover
+this boundary, not an actual browser or phone transfer.
+
 The phone operation uses copied raw Double bits, distinct typed message/proof/
 completion identity domains, an optional nonzero proof token and bounded state.
 It preserves arbitrary initial clocks, foreign-before-time and stale-after-time
@@ -61,6 +71,16 @@ must pass native custody checks before a UUID, callback or pause admission exist
 Independent reference traces, native equality/value copies, malformed projections,
 candidate exhaustion, actual C/Swift linkage and signed Simulator composition are
 required. Raw policy tests do not prove physical playback or acoustic output.
+
+Microphone input-lease policy uses four copied scalar operations: acquisition
+budget, acquisition outcome, release continuation, and release outcome. Native
+Swift retains exact peer/device/authorization ownership, route listeners and
+readbacks, and conditional input restoration. Refused or malformed results close
+new admission without discarding a retained cleanup owner. Each release performs
+its first exact native cleanup before consulting the retry vote, and fences later
+bookkeeping against reentrant ownership, lifecycle, and protection changes.
+The Rust/bridge tests establish bounded decisions and whole-result rejection;
+they do not prove native route restoration or physical microphone behavior.
 
 Invitation acceptance uses copy-only scalar state and exhaustive typed operations.
 Rust preserves foreign-owner and consumed-before-phase guards, optional admission
@@ -157,6 +177,14 @@ supervisor task ownership are not transferred to Rust. Tests use frozen original
 arithmetic/literal histories, actual-C-first copied corruption and the real inert
 supervisor; its empty-default immutable exit observer conveys no authorization.
 Source integration alone is not an archive/link, network or installed-host pass.
+
+Microphone output-format validation preserves the sixteen ordered native-read and
+format checks over copied scalars. Signed status values, full-width integer fields
+and original floating-point bits are preserved. Success returns all twelve format
+observations; ordinary rejections retain their exact reason and offending value.
+Malformed ABI/reserved fields or an uncorrelated complete result fail closed with
+no successful Swift fallback. Native getters remain eager and ordered; queue
+identity, clock proof, privacy, admission and cleanup remain native responsibilities.
 
 The reviewed artifact profile has **macos-arm64, ios-arm64, and
 ios-arm64_x86_64-simulator slices**, using only already-installed pinned targets.

@@ -26,9 +26,12 @@ final class BelugaUpdateController: ObservableObject {
     private var needsReadiness = false
     private var failed = false
     private let operations: Operations
+    private let availabilityResultMutation: BelugaRustUpdateAvailability.ResultMutation?
 
-    init(bundle: Bundle = .main, operations: Operations = .native) {
+    init(bundle: Bundle = .main, operations: Operations = .native,
+         availabilityResultMutation: BelugaRustUpdateAvailability.ResultMutation? = nil) {
         self.operations = operations
+        self.availabilityResultMutation = availabilityResultMutation
         bundleURL = bundle.bundleURL
         isRelease = (try? BelugaReleaseConfiguration(info: bundle.infoDictionary ?? [:])) != nil
         guard isRelease else { return }
@@ -46,6 +49,13 @@ final class BelugaUpdateController: ObservableObject {
         guard isRelease, needsReadiness, task == nil, !failed else { return }
         let url = bundleURL, menuID = menuInstanceID, operations = operations
         task = Task { [weak self] in
+            // Creating the task publishes its busy plan before the actor runs it.
+            // A bridge refusal during that publication must not start a worker.
+            guard self?.failed == false else {
+                self?.task = nil
+                self?.refreshAvailability()
+                return
+            }
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try operations.ready(url, menuID)
@@ -62,6 +72,11 @@ final class BelugaUpdateController: ObservableObject {
         guard canCheckForUpdates, task == nil else { return }
         let url = bundleURL, menuID = menuInstanceID, operations = operations
         task = Task { [weak self] in
+            guard self?.failed == false else {
+                self?.task = nil
+                self?.refreshAvailability()
+                return
+            }
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try operations.begin(url, menuID)
@@ -77,16 +92,29 @@ final class BelugaUpdateController: ObservableObject {
     func waitForCurrentOperation() async { await task?.value }
 
     private func refreshAvailability() {
-        isUpdateInProgress = isRelease && (task != nil || needsReadiness || failed)
-        canCheckForUpdates = isRelease && !isUpdateInProgress && admission.permitsUpdate
-        guard isRelease else { return }
-        if failed {
+        guard let snapshot = BelugaRustUpdateAvailability.evaluate(admission, isRelease: isRelease,
+            taskInProgress: task != nil, needsReadiness: needsReadiness, failed: failed,
+            resultMutation: availabilityResultMutation) else {
+            failed = true
+            canCheckForUpdates = false
+            isUpdateInProgress = isRelease
+            if isRelease {
+                statusText = "Update verification needs recovery. Streaming remains blocked; no session will be interrupted."
+            }
+            return
+        }
+        isUpdateInProgress = snapshot.isUpdateInProgress
+        canCheckForUpdates = snapshot.canCheckForUpdates
+        switch snapshot.status {
+        case .development:
+            statusText = "Updates are unavailable in this development build."
+        case .recovery:
             statusText = "Update verification needs recovery. Streaming remains blocked; no session will be interrupted."
-        } else if task != nil || needsReadiness {
+        case .owned:
             statusText = "The separate updater owns this check. Streaming waits for verified completion."
-        } else if admission.permitsUpdate {
+        case .ready:
             statusText = "Updates are signed and verified before installation."
-        } else {
+        case .unavailable:
             statusText = "To update, finish sharing, quit Beluga, then reopen it before starting a stream."
         }
     }

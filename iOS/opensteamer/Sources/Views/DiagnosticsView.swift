@@ -55,6 +55,12 @@ struct DiagnosticsView: View {
                     title: "Video",
                     value: worldwideVideoDescription
                 )
+                if worldwideViewModel.screenLivenessBridgeError != nil {
+                    Text("Prior pipeline counters are retained; evidence is stale.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("worldwideScreenLivenessEvidenceStale")
+                }
                 MetricRow(
                     title: "Client Pipeline",
                     value: worldwideViewModel.screenLivenessStatusText

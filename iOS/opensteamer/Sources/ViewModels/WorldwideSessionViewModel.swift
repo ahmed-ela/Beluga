@@ -1413,6 +1413,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     @Published private(set) var screenLivenessDiagnosticSnapshot =
         WorldwideScreenLivenessDiagnosticSnapshot.unobserved
+    @Published private(set) var screenLivenessBridgeError:
+        WorldwideScreenLivenessBridgeError?
     @Published private(set) var screenClientDiagnosticsDeliveryText = "Idle"
     @Published private(set) var audioStateText = "Inactive"
     @Published private(set) var isRemoteAudioAvailable = false
@@ -1841,6 +1843,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         (@MainActor (WebRTCPeer, String) -> Void)?
     private var debugScreenLivenessUptimeClock:
         (@MainActor () -> UInt64)?
+    private var debugScreenClientDiagnosticsNegotiatedReader:
+        (@MainActor (WebRTCPeer) async -> Bool)?
+    private var debugScreenClientDiagnosticsHeartbeatSender:
+        (@MainActor (WebRTCPeer, WebRTCScreenClientDiagnosticsHeartbeat) async throws -> Void)?
     private var debugRemoteMediaCommandSender:
         (@MainActor (RemoteMediaCommandDispatch) async throws -> Void)?
     #endif
@@ -1997,7 +2003,9 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     var screenLivenessStatusText: String {
-        screenLivenessDiagnosticSnapshot.statusText
+        screenLivenessBridgeError == nil
+            ? screenLivenessDiagnosticSnapshot.statusText
+            : "Client screen evidence unavailable"
     }
 
     /// Current, content-free Metal path evidence for the exact screen lease and track. Reading
@@ -4102,16 +4110,24 @@ final class WorldwideSessionViewModel: ObservableObject {
             } else {
                 nil
             }
-        screenLivenessDiagnosticSnapshot = screenLivenessClassifier.observe(
-            WorldwideScreenLivenessSample(
-                generation: screenLivenessGeneration,
-                observedAtUptimeNanoseconds: observedAt,
-                hasRemoteVideoTrack: remoteVideoTrack != nil,
-                coverState: currentScreenLivenessCoverState,
-                inboundVideo: statistics?.inboundVideo,
-                renderObservation: renderObservation
+        do {
+            let snapshot = try screenLivenessClassifier.observe(
+                WorldwideScreenLivenessSample(
+                    generation: screenLivenessGeneration,
+                    observedAtUptimeNanoseconds: observedAt,
+                    hasRemoteVideoTrack: remoteVideoTrack != nil,
+                    coverState: currentScreenLivenessCoverState,
+                    inboundVideo: statistics?.inboundVideo,
+                    renderObservation: renderObservation
+                )
             )
-        )
+            screenLivenessDiagnosticSnapshot = snapshot
+            screenLivenessBridgeError = nil
+        } catch {
+            // Retain explicitly stale diagnostics only; never change screen/input authority.
+            screenLivenessBridgeError = .invalidBridge
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
+        }
     }
 
     private static func audioDiagnosticsNow() -> UInt64 {
@@ -4272,16 +4288,25 @@ final class WorldwideSessionViewModel: ObservableObject {
             screenClientDiagnosticsDeliveryText = "Idle"
             return
         }
+        guard screenLivenessBridgeError == nil else {
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
+            return
+        }
         guard nextScreenClientDiagnosticsSequence < UInt64.max else {
             screenClientDiagnosticsDeliveryText = "Local only"
             return
         }
-        let isNegotiated = await sourcePeer
-            .screenClientDiagnosticsIsNegotiated()
+        let isNegotiated = await screenClientDiagnosticsIsNegotiated(
+            through: sourcePeer
+        )
         guard !Task.isCancelled, generation == sessionGeneration,
               peer === sourcePeer,
               transportAuthorizationGeneration == expectedTransport,
               activeScreenRequestID == screenRequestID else {
+            return
+        }
+        guard screenLivenessBridgeError == nil else {
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
             return
         }
         guard isNegotiated else {
@@ -4319,22 +4344,48 @@ final class WorldwideSessionViewModel: ObservableObject {
         // an accepted sequence merely because its completion no longer owns the presentation.
         nextScreenClientDiagnosticsSequence += 1
         do {
-            try await sourcePeer.sendScreenClientDiagnosticsHeartbeat(
-                heartbeat
+            try await sendScreenClientDiagnosticsHeartbeatPayload(
+                heartbeat, through: sourcePeer
             )
             guard !Task.isCancelled, generation == sessionGeneration,
                   peer === sourcePeer,
                   transportAuthorizationGeneration == expectedTransport,
-                  activeScreenRequestID == screenRequestID else { return }
+                  activeScreenRequestID == screenRequestID,
+                  screenLivenessBridgeError == nil else { return }
             screenClientDiagnosticsDeliveryText = "Reporting to Mac"
         } catch {
             guard !Task.isCancelled, generation == sessionGeneration,
                   peer === sourcePeer,
                   transportAuthorizationGeneration == expectedTransport,
-                  activeScreenRequestID == screenRequestID else { return }
+                  activeScreenRequestID == screenRequestID,
+                  screenLivenessBridgeError == nil else { return }
             // This best-effort lane never changes the user-visible media or control state.
             screenClientDiagnosticsDeliveryText = "Heartbeat unavailable"
         }
+    }
+
+    private func screenClientDiagnosticsIsNegotiated(
+        through sourcePeer: WebRTCPeer
+    ) async -> Bool {
+        #if DEBUG
+        if let debugScreenClientDiagnosticsNegotiatedReader {
+            return await debugScreenClientDiagnosticsNegotiatedReader(sourcePeer)
+        }
+        #endif
+        return await sourcePeer.screenClientDiagnosticsIsNegotiated()
+    }
+
+    private func sendScreenClientDiagnosticsHeartbeatPayload(
+        _ heartbeat: WebRTCScreenClientDiagnosticsHeartbeat,
+        through sourcePeer: WebRTCPeer
+    ) async throws {
+        #if DEBUG
+        if let debugScreenClientDiagnosticsHeartbeatSender {
+            try await debugScreenClientDiagnosticsHeartbeatSender(sourcePeer, heartbeat)
+            return
+        }
+        #endif
+        try await sourcePeer.sendScreenClientDiagnosticsHeartbeat(heartbeat)
     }
 
     private var currentScreenRendererPathDiagnostics:
@@ -7175,16 +7226,14 @@ final class WorldwideSessionViewModel: ObservableObject {
                     )
                 }
             }
-            let coordinator = ICERecoveryCoordinator(
+            let coordinator = makeICERecoveryCoordinator(
+                generation: generation,
                 restart: { [weak self] in
                     guard let self else { throw CancellationError() }
                     try await self.sendICERestartRequest(
                         client: client,
                         generation: generation
                     )
-                },
-                exhausted: { [weak self] in
-                    await self?.iceRecoveryDidExhaust(generation: generation)
                 }
             )
             peer = newPeer
@@ -12437,6 +12486,34 @@ final class WorldwideSessionViewModel: ObservableObject {
         failSession(message, generation: sessionGeneration)
     }
 
+    private var debugCheckingICERecoveryFaultInjection:
+        ICERecoveryCoordinator.CheckingFaultInjectionForTesting?
+
+    /// Requires the existing synthetic active peer/session fixture; no signaling or audio IO.
+    /// A replaced actor must be retained and explicitly cancelled by its test owner.
+    func debugInstallActualICERecoveryCoordinatorForTests(
+        generation: UUID,
+        checkingFaultInjection: ICERecoveryCoordinator.CheckingFaultInjectionForTesting? = nil,
+        restart: @escaping ICERecoveryCoordinator.RestartAction
+    ) -> ICERecoveryCoordinator {
+        precondition(sessionGeneration == generation && hasActiveSession && peer != nil)
+        precondition(signaling == nil && sessionTask == nil && !isConnecting)
+        precondition(debugCheckingICERecoveryFaultInjection == nil)
+        debugCheckingICERecoveryFaultInjection = checkingFaultInjection
+        defer { debugCheckingICERecoveryFaultInjection = nil }
+        let coordinator = makeICERecoveryCoordinator(generation: generation, restart: restart)
+        recoveryCoordinator = coordinator
+        return coordinator
+    }
+
+    func debugICERecoveryCoordinatorIsForTests(_ candidate: ICERecoveryCoordinator) -> Bool {
+        recoveryCoordinator === candidate
+    }
+    /// Receiver-level test delivery; the captured generation passes through the real fence.
+    func debugDeliverICERecoveryPolicyFaultForTests(generation: UUID) {
+        iceRecoveryPolicyDidFail(generation: generation)
+    }
+
     /// Installs non-sensitive synthetic state for lifecycle ordering tests only. Release builds
     /// contain neither this hook nor the snapshot type.
     @discardableResult
@@ -12747,6 +12824,41 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ clock: @escaping @MainActor () -> UInt64
     ) {
         debugScreenLivenessUptimeClock = clock
+    }
+
+    func debugInstallScreenLivenessClassifier(
+        _ classifier: WorldwideScreenLivenessClassifier
+    ) {
+        screenLivenessClassifier = classifier
+    }
+
+    func debugRefreshScreenLivenessDiagnosticForTests() {
+        refreshScreenLivenessDiagnostic()
+    }
+
+    var debugScreenClientDiagnosticsNextSequence: UInt64 {
+        nextScreenClientDiagnosticsSequence
+    }
+
+    func debugInstallScreenClientDiagnosticsNegotiatedReader(
+        _ reader: @escaping @MainActor (WebRTCPeer) async -> Bool
+    ) {
+        debugScreenClientDiagnosticsNegotiatedReader = reader
+    }
+
+    func debugInstallScreenClientDiagnosticsHeartbeatSender(
+        _ sender: @escaping @MainActor (
+            WebRTCPeer, WebRTCScreenClientDiagnosticsHeartbeat
+        ) async throws -> Void
+    ) {
+        debugScreenClientDiagnosticsHeartbeatSender = sender
+    }
+
+    func debugSendScreenClientDiagnosticsHeartbeatForTests() async {
+        guard let peer else { return }
+        await sendScreenClientDiagnosticsHeartbeat(
+            through: peer, generation: sessionGeneration
+        )
     }
 
     func debugDeliverScreenMediaSuspensionForTests(
@@ -13774,6 +13886,32 @@ final class WorldwideSessionViewModel: ObservableObject {
         let requestID = nextICERestartRequestID
         nextICERestartRequestID += 1
         try await client.send(.iceRestartRequest(.init(requestID: requestID)))
+    }
+
+    /// Fail the current session through its existing native teardown, never policy fallback.
+    /// Both real setup and the DEBUG chain fixture use these exact captured callbacks.
+    private func makeICERecoveryCoordinator(
+        generation: UUID,
+        restart: @escaping ICERecoveryCoordinator.RestartAction
+    ) -> ICERecoveryCoordinator {
+        let exhausted: ICERecoveryCoordinator.ExhaustedAction = { [weak self] in
+            await self?.iceRecoveryDidExhaust(generation: generation)
+        }
+        let policyFailed: ICERecoveryCoordinator.PolicyFailureAction = { [weak self] _ in
+            await self?.iceRecoveryPolicyDidFail(generation: generation)
+        }
+        #if DEBUG
+        if let injection = debugCheckingICERecoveryFaultInjection {
+            return ICERecoveryCoordinator(restart: restart, exhausted: exhausted,
+                policyFailed: policyFailed, checkingFaultInjectionForTesting: injection)
+        }
+        #endif
+        return ICERecoveryCoordinator(restart: restart, exhausted: exhausted, policyFailed: policyFailed)
+    }
+
+    private func iceRecoveryPolicyDidFail(generation: UUID) {
+        guard generation == sessionGeneration, hasActiveSession else { return }
+        failSession("Secure media recovery evidence is unavailable.", generation: generation)
     }
 
     private func iceRecoveryDidExhaust(generation: UUID) {

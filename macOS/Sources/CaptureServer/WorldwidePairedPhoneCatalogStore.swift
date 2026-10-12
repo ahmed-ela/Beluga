@@ -48,10 +48,13 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
     private static let serializationLock = NSLock()
     private let dataStore: any WorldwidePairingDataStore
     private let pairedRecordDecodeFault: UInt32?
+    private let policy: BelugaRustPhoneCatalog
 
-    init(dataStore: any WorldwidePairingDataStore, pairedRecordDecodeFault: UInt32? = nil) {
+    init(dataStore: any WorldwidePairingDataStore, pairedRecordDecodeFault: UInt32? = nil,
+         resultMutation: BelugaRustPhoneCatalog.ResultMutation? = nil) {
         self.dataStore = dataStore
         self.pairedRecordDecodeFault = pairedRecordDecodeFault
+        self.policy = BelugaRustPhoneCatalog(resultMutation: resultMutation)
     }
 
     /// Imports the original record at most once, without changing any of its original bytes.
@@ -106,18 +109,7 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
         for identity: RemoteDeviceIdentity,
         expectedToken: WorldwidePairedPhoneCatalogToken
     ) throws -> WorldwidePairedPhoneCatalogSnapshot {
-        try mutate(for: identity, expectedToken: expectedToken) { catalog in
-            try validateRecord(record, for: identity)
-            guard !catalog.records.contains(where: {
-                $0.remoteDeviceID == record.remoteDeviceID ||
-                    $0.remoteSigningPublicKey == record.remoteSigningPublicKey ||
-                    $0.pairID == record.pairID || $0.commitID == record.commitID
-            }) else { throw WorldwidePairedPhoneCatalogError.duplicatePhone }
-            guard catalog.records.count < Self.maximumPhoneCount else {
-                throw WorldwidePairedPhoneCatalogError.capacityReached
-            }
-            catalog.records.append(record)
-        }
+        try mutate(for: identity, expectedToken: expectedToken, operation: .add(record))
     }
 
     /// Advances only an existing exact binding. Old asynchronous completions cannot reinsert a
@@ -128,32 +120,7 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
         for identity: RemoteDeviceIdentity,
         expectedToken: WorldwidePairedPhoneCatalogToken
     ) throws -> WorldwidePairedPhoneCatalogSnapshot {
-        try mutate(for: identity, expectedToken: expectedToken) { catalog in
-            try validateRecord(record, for: identity)
-            guard let index = catalog.records.firstIndex(where: {
-                $0.remoteDeviceID == record.remoteDeviceID
-            }) else { throw WorldwidePairedPhoneCatalogError.unknownPhone }
-            let previous = catalog.records[index]
-            guard try immutableBinding(of: previous) == immutableBinding(of: record) else {
-                throw WorldwidePairedPhoneCatalogError.bindingConflict
-            }
-            guard record.nextOutboundReconnectSequence >= previous.nextOutboundReconnectSequence,
-                  record.highestAcceptedReconnectSequence >= previous.highestAcceptedReconnectSequence,
-                  phaseRank(record.pairingState) >= phaseRank(previous.pairingState) else {
-                throw WorldwidePairedPhoneCatalogError.staleRecord
-            }
-            let previousRecovery = previous.recoveryAction
-            let candidateRecovery = record.recoveryAction
-            guard previousRecovery != .invalidBridge, candidateRecovery != .invalidBridge else {
-                throw RemoteSessionCoreError.invalidPairingCommitBridge
-            }
-            if previous.pairingState == record.pairingState,
-               case let .resend(commit) = previousRecovery,
-               candidateRecovery != .resend(commit) {
-                throw WorldwidePairedPhoneCatalogError.staleRecord
-            }
-            catalog.records[index] = record
-        }
+        try mutate(for: identity, expectedToken: expectedToken, operation: .update(record))
     }
 
     /// Selection is explicit. Passing nil disconnects durable selection without forgetting keys.
@@ -163,13 +130,7 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
         for identity: RemoteDeviceIdentity,
         expectedToken: WorldwidePairedPhoneCatalogToken
     ) throws -> WorldwidePairedPhoneCatalogSnapshot {
-        try mutate(for: identity, expectedToken: expectedToken) { catalog in
-            if let remoteDeviceID,
-               !catalog.records.contains(where: { $0.remoteDeviceID == remoteDeviceID }) {
-                throw WorldwidePairedPhoneCatalogError.unknownPhone
-            }
-            catalog.selectedPhoneID = remoteDeviceID
-        }
+        try mutate(for: identity, expectedToken: expectedToken, operation: .select(remoteDeviceID))
     }
 
     /// Removes only this binding, never chooses a replacement, and preserves migration proof.
@@ -179,35 +140,208 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
         for identity: RemoteDeviceIdentity,
         expectedToken: WorldwidePairedPhoneCatalogToken
     ) throws -> WorldwidePairedPhoneCatalogSnapshot {
-        try mutate(for: identity, expectedToken: expectedToken) { catalog in
-            guard let index = catalog.records.firstIndex(where: {
-                $0.remoteDeviceID == remoteDeviceID
-            }) else { throw WorldwidePairedPhoneCatalogError.unknownPhone }
-            catalog.records.remove(at: index)
-            if catalog.selectedPhoneID == remoteDeviceID { catalog.selectedPhoneID = nil }
-        }
+        try mutate(for: identity, expectedToken: expectedToken, operation: .forget(remoteDeviceID))
     }
 
     private func mutate(
         for identity: RemoteDeviceIdentity,
         expectedToken: WorldwidePairedPhoneCatalogToken,
-        change: (inout Catalog) throws -> Void
+        operation: Mutation
     ) throws -> WorldwidePairedPhoneCatalogSnapshot {
         try serialized {
             try validatePersistedIdentity(identity)
-            guard var catalog = try loadCatalog(for: identity),
-                  catalog.snapshot.token == expectedToken else {
-                throw WorldwidePairedPhoneCatalogError.staleCatalog
+            let loaded = try loadCatalog(for: identity)
+            var token = BelugaRustPhoneCatalog.input(3, operation: operation.opcode)
+            token.flags = Self.flag(loaded != nil)
+                | (Self.flag(loaded?.snapshot.token == expectedToken) << 1)
+            _ = try policy.checked(token)
+            guard let previous = loaded else { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+
+            let (target, candidate) = try admit(operation, in: previous, for: identity)
+            var planInput = BelugaRustPhoneCatalog.input(10, operation: operation.opcode)
+            planInput.count = UInt32(previous.records.count)
+            planInput.selected_slot = slot(of: previous.selectedPhoneID, in: previous)
+            planInput.target_slot = target
+            let plan = try policy.checked(planInput)
+            guard plan.action == 1 else { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+            let temporary = try custody(previous, candidate: candidate, plan: plan,
+                                        revision: previous.revision)
+
+            var finish = planInput
+            finish.stage = 11
+            finish.revision = previous.revision
+            finish.flags = Self.flag(temporary == previous)
+            let result = try policy.checked(finish)
+            let proposed = try custody(previous, candidate: candidate, plan: result,
+                                       revision: result.revision)
+            guard proposed.records == temporary.records,
+                  proposed.selectedPhoneID == temporary.selectedPhoneID,
+                  proposed.legacyImportReceipt == previous.legacyImportReceipt,
+                  proposed.catalogID == previous.catalogID,
+                  proposed.hostDeviceID == previous.hostDeviceID,
+                  proposed.hostSigningPublicKey == previous.hostSigningPublicKey,
+                  proposed.version == previous.version else {
+                throw WorldwidePairedPhoneCatalogError.invalidCatalog
             }
-            let previous = catalog
-            try change(&catalog)
-            if catalog == previous { return previous.snapshot }
-            guard catalog.revision < UInt64.max else {
-                throw WorldwidePairedPhoneCatalogError.revisionExhausted
+            switch result.action {
+            case 2:
+                guard proposed == previous else { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+                return previous.snapshot
+            case 3:
+                guard proposed != previous else { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+                try persist(proposed, for: identity)
+                return proposed.snapshot
+            default: throw WorldwidePairedPhoneCatalogError.invalidCatalog
             }
-            catalog.revision += 1
-            try persist(catalog, for: identity)
-            return catalog.snapshot
+        }
+    }
+
+    private enum Mutation {
+        case add(RemotePairedDeviceRecord)
+        case update(RemotePairedDeviceRecord)
+        case select(UUID?)
+        case forget(UUID)
+
+        var opcode: UInt32 {
+            switch self {
+            case .add: 1
+            case .update: 2
+            case .select: 3
+            case .forget: 4
+            }
+        }
+    }
+
+    private static func flag(_ value: Bool) -> UInt32 { value ? 1 : 0 }
+
+    private func slot(of deviceID: UUID?, in catalog: Catalog) -> UInt32 {
+        guard let deviceID,
+              let index = catalog.records.firstIndex(where: { $0.remoteDeviceID == deviceID }) else {
+            return 8
+        }
+        return UInt32(index)
+    }
+
+    /// Each opaque native cut is delayed until its preceding Rust decision passed.
+    private func admit(
+        _ operation: Mutation, in catalog: Catalog, for identity: RemoteDeviceIdentity
+    ) throws -> (UInt32, RemotePairedDeviceRecord?) {
+        switch operation {
+        case let .add(record):
+            try validateRecord(record, for: identity)
+            var input = BelugaRustPhoneCatalog.input(4, operation: 1)
+            input.count = UInt32(catalog.records.count)
+            for previous in catalog.records {
+                input.duplicate_axes |= duplicateAxes(record, previous)
+            }
+            _ = try policy.checked(input)
+            return (8, record)
+        case let .update(record):
+            try validateRecord(record, for: identity)
+            let target = slot(of: record.remoteDeviceID, in: catalog)
+            var lookup = BelugaRustPhoneCatalog.input(5, operation: 2)
+            lookup.count = UInt32(catalog.records.count)
+            lookup.target_slot = target
+            _ = try policy.checked(lookup)
+            guard Int(target) < catalog.records.count else {
+                throw WorldwidePairedPhoneCatalogError.invalidCatalog
+            }
+            let previous = catalog.records[Int(target)]
+            let bindingEqual = try immutableBinding(of: previous) == immutableBinding(of: record)
+            var monotonic = BelugaRustPhoneCatalog.input(6, operation: 2)
+            monotonic.flags = Self.flag(bindingEqual)
+            monotonic.previous_phase = phaseTag(previous.pairingState)
+            monotonic.candidate_phase = phaseTag(record.pairingState)
+            monotonic.previous_outbound = previous.nextOutboundReconnectSequence
+            monotonic.candidate_outbound = record.nextOutboundReconnectSequence
+            monotonic.previous_accepted = previous.highestAcceptedReconnectSequence
+            monotonic.candidate_accepted = record.highestAcceptedReconnectSequence
+            _ = try policy.checked(monotonic)
+
+            let previousRecovery = previous.recoveryAction
+            let candidateRecovery = record.recoveryAction
+            var recovery = BelugaRustPhoneCatalog.input(7, operation: 2)
+            recovery.previous_phase = monotonic.previous_phase
+            recovery.candidate_phase = monotonic.candidate_phase
+            recovery.previous_recovery = recoveryTag(previousRecovery)
+            recovery.candidate_recovery = recoveryTag(candidateRecovery)
+            if case let .resend(commit) = previousRecovery {
+                recovery.flags = Self.flag(candidateRecovery == .resend(commit))
+            }
+            _ = try policy.checked(recovery)
+            return (target, record)
+        case let .select(deviceID):
+            let target = slot(of: deviceID, in: catalog)
+            var input = BelugaRustPhoneCatalog.input(8, operation: 3)
+            input.count = UInt32(catalog.records.count)
+            input.target_slot = target
+            input.flags = Self.flag(deviceID == nil)
+            _ = try policy.checked(input)
+            return (target, nil)
+        case let .forget(deviceID):
+            let target = slot(of: deviceID, in: catalog)
+            var input = BelugaRustPhoneCatalog.input(9, operation: 4)
+            input.count = UInt32(catalog.records.count)
+            input.target_slot = target
+            _ = try policy.checked(input)
+            return (target, nil)
+        }
+    }
+
+    /// Materialize only a verified full recipe, retaining exact native record/receipt custody.
+    private func custody(
+        _ previous: Catalog, candidate: RemotePairedDeviceRecord?,
+        plan: BelugaRustPhoneCatalog.Result, revision: UInt64
+    ) throws -> Catalog {
+        guard plan.count <= 8 else { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+        let slots = BelugaRustPhoneCatalog.slots(plan)
+        var records: [RemotePairedDeviceRecord] = []
+        for index in 0..<Int(plan.count) {
+            let source = slots[index]
+            if source == 8 {
+                guard let candidate else { throw WorldwidePairedPhoneCatalogError.invalidCatalog }
+                records.append(candidate)
+            } else {
+                guard Int(source) < previous.records.count else {
+                    throw WorldwidePairedPhoneCatalogError.invalidCatalog
+                }
+                records.append(previous.records[Int(source)])
+            }
+        }
+        guard slots.dropFirst(Int(plan.count)).allSatisfy({ $0 == 9 }),
+              plan.selected_slot == 8 || Int(plan.selected_slot) < records.count else {
+            throw WorldwidePairedPhoneCatalogError.invalidCatalog
+        }
+        var result = previous
+        result.records = records
+        result.selectedPhoneID = plan.selected_slot == 8 ? nil
+            : records[Int(plan.selected_slot)].remoteDeviceID
+        result.revision = revision
+        return result
+    }
+
+    private func duplicateAxes(_ lhs: RemotePairedDeviceRecord, _ rhs: RemotePairedDeviceRecord) -> UInt32 {
+        Self.flag(lhs.remoteDeviceID == rhs.remoteDeviceID)
+            | (Self.flag(lhs.remoteSigningPublicKey == rhs.remoteSigningPublicKey) << 1)
+            | (Self.flag(lhs.pairID == rhs.pairID) << 2)
+            | (Self.flag(lhs.commitID == rhs.commitID) << 3)
+    }
+
+    private func phaseTag(_ state: RemotePairingPersistenceState) -> UInt32 {
+        switch state {
+        case .pending: 0
+        case .acceptedReceived: 1
+        case .active: 2
+        case .acceptedIssued: 3
+        }
+    }
+
+    private func recoveryTag(_ action: RemotePairingRecoveryAction) -> UInt32 {
+        switch action {
+        case .none: 0
+        case .resend: 1
+        case .invalidBridge: 3
+        case .awaitProposal, .issueProposal, .issueCompletion: 2
         }
     }
 
@@ -271,40 +405,41 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
     }
 
     private func validate(_ catalog: Catalog, for identity: RemoteDeviceIdentity) throws {
-        guard catalog.version == 1, catalog.catalogID != Self.zeroUUID, catalog.revision > 0 else {
-            throw WorldwidePairedPhoneCatalogError.invalidCatalog
-        }
-        guard catalog.hostDeviceID == identity.deviceID,
-              catalog.hostSigningPublicKey == identity.signingPublicKey else {
-            throw WorldwidePairedPhoneCatalogError.identityMismatch
-        }
-        guard catalog.records.count <= Self.maximumPhoneCount else {
-            throw WorldwidePairedPhoneCatalogError.capacityReached
-        }
+        var header = BelugaRustPhoneCatalog.input(0)
+        header.flags = Self.flag(catalog.version == 1 && catalog.catalogID != Self.zeroUUID
+            && catalog.revision > 0)
+            | (Self.flag(catalog.hostDeviceID == identity.deviceID
+                && catalog.hostSigningPublicKey == identity.signingPublicKey) << 1)
+        header.count = UInt32(min(catalog.records.count, 9))
+        _ = try policy.checked(header)
         var deviceIDs = Set<UUID>()
         var signingKeys = Set<Data>()
         var pairIDs = Set<UUID>()
         var commitIDs = Set<UUID>()
         for record in catalog.records {
             try validateRecord(record, for: identity)
-            guard deviceIDs.insert(record.remoteDeviceID).inserted,
-                  signingKeys.insert(record.remoteSigningPublicKey).inserted,
-                  pairIDs.insert(record.pairID).inserted,
-                  commitIDs.insert(record.commitID).inserted else {
-                throw WorldwidePairedPhoneCatalogError.duplicatePhone
-            }
+            var uniqueness = BelugaRustPhoneCatalog.input(1)
+            uniqueness.duplicate_axes = Self.flag(deviceIDs.contains(record.remoteDeviceID))
+                | (Self.flag(signingKeys.contains(record.remoteSigningPublicKey)) << 1)
+                | (Self.flag(pairIDs.contains(record.pairID)) << 2)
+                | (Self.flag(commitIDs.contains(record.commitID)) << 3)
+            _ = try policy.checked(uniqueness)
+            deviceIDs.insert(record.remoteDeviceID)
+            signingKeys.insert(record.remoteSigningPublicKey)
+            pairIDs.insert(record.pairID)
+            commitIDs.insert(record.commitID)
         }
-        if let selected = catalog.selectedPhoneID, !deviceIDs.contains(selected) {
-            throw WorldwidePairedPhoneCatalogError.invalidCatalog
-        }
+        let selectionValid = catalog.selectedPhoneID.map { deviceIDs.contains($0) } ?? true
+        var receiptValid = true
         if let receipt = catalog.legacyImportReceipt {
-            guard receipt.sourceAccount == WorldwidePairingStore.pairedViewerAccount,
-                  receipt.sourceSHA256.count == SHA256.Digest.byteCount,
-                  receipt.remoteDeviceID != Self.zeroUUID,
-                  receipt.pairID != Self.zeroUUID, receipt.commitID != Self.zeroUUID else {
-                throw WorldwidePairedPhoneCatalogError.invalidCatalog
-            }
+            receiptValid = receipt.sourceAccount == WorldwidePairingStore.pairedViewerAccount
+                && receipt.sourceSHA256.count == SHA256.Digest.byteCount
+                && receipt.remoteDeviceID != Self.zeroUUID
+                && receipt.pairID != Self.zeroUUID && receipt.commitID != Self.zeroUUID
         }
+        var trailer = BelugaRustPhoneCatalog.input(2)
+        trailer.flags = Self.flag(selectionValid) | (Self.flag(receiptValid) << 1)
+        _ = try policy.checked(trailer)
     }
 
     private func validateRecord(
@@ -346,15 +481,6 @@ struct WorldwidePairedPhoneCatalogStore: Sendable {
             )))
         } catch let error as WorldwidePairedPhoneCatalogError { throw error }
         catch { throw WorldwidePairedPhoneCatalogError.encodingFailed }
-    }
-
-    private func phaseRank(_ state: RemotePairingPersistenceState) -> Int {
-        switch state {
-        case .pending: 0
-        case .acceptedReceived: 1
-        case .active: 2
-        case .acceptedIssued: -1 // A viewer-only state; validateRecord rejects it before comparison.
-        }
     }
 
     private func validateWrapperKeys(_ bytes: Data) throws {
