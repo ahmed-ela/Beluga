@@ -18,15 +18,370 @@ implemented gates from the remaining release boundaries; it is not a feature-com
 | Replacement virtual-driver timeline | The clean-room C17 core and direct production-wrapper tests increment a nonzero zero-timestamp seed only when the shared clock moves from zero clients to its first client, preserve it when the sibling endpoint joins, bind ring frames to exact epoch/session/absolute-frame tags, and repeat both start orders and 1,000 complete restarts without stale PCM. Concurrent lifecycle/I/O/timestamp tests run under ThreadSanitizer; ASan/UBSan, malformed-bundle mutations, two byte-identical universal builds, and loading the actual built bundle cover the artifact seam. The user reports the current side-by-side product path works bidirectionally; provenance-bound installed public-API validation remains required for independent artifact proof. | Keep a constant seed across reset, change it on a join, publish a new seed with an old anchor, retain stale ring state, expose lifecycle retry as a callback error, omit a loadable Mach-O UUID, test only one order, or infer the seed from public AudioQueue time. |
 | Active iPhone call isolation | A signed lifecycle suite samples aggregate CallKit state before ordinary activation. Ringing-only startup keeps ordinary best-effort playout while microphone ownership stays closed. Connected-call startup remains globally closed until an exact startup-origin authorization is bound to the first healthy peer, synchronously armed by the quiescent native ADM with zero session side effects, and then proved by fresh inbound/native evidence. A later bare CallKit transition closes only microphone ownership; a genuine interruption replaces any startup authorization with a fresh interruption-origin authorization. Call end revokes hosted ownership and requires a fresh ordinary rebuild plus a newly advancing proof window. | Activate before the startup call sample, open the manual gate before native startup arm, accept an unspecified or wrong origin, bind a startup authorization to a replacement peer, let foreground/route callbacks rebuild after hosted failure, retain startup ownership across a real interruption or call end, accept a suspended pre-call stats read, disconnect the peer, or report Playing before fresh callbacks and frames advance. |
 | Background audio | The built-app test inspects `UIBackgroundModes=audio`. The physical gate presses Home for 35 seconds, returns to the app, and requires the original session generation to have accumulated real-time inbound duration/energy and output-only RemoteIO render-input PCM with the coded high/low-band and envelope signatures over the entire interval, without a callback gap, near-silence callback, or audio-unit rebuild. | Remove the capability, stop or mute the track on Home, freeze/replay one callback, suspend RemoteIO, stall for most of the interval, catch counters up only after foregrounding, or reconnect on foreground. |
-| Screen Show/Hide | The driver places a nonsecret changing pattern on every Mac display. The physical gate binds an authenticated Show/Active acknowledgement to a stable sequence of at least 12 decoded frames/sec whose independently sampled salted pixel digest changes at least 3 times/sec, then requires a newer authenticated Hide/Inactive acknowledgement and proves audio continues in the same media session. | Acknowledge Show without advancing decoded frames, reuse a stale acknowledgement/renderer, emit one late frame, report 60 fps while pixels change only 1–2 times/sec, advance timestamps over frozen pixels, stop the deterministic visual challenge, or Hide by reconnecting the media session. |
+| Screen Show/Hide | The lifecycle driver retains its decoded-frame, decoded-pixel, Hide acknowledgement, and audio-continuity gates. A separate guarded visual driver pins the exact production iPhone 17 Pro (CoreDevice `7694F11E-D66D-5632-9A0D-462C980130A5`, hardware UDID `00008150-0002581C3E3A401C`) and installed production-bundle build, prepares and seals its signed test products while the phone may remain locked, then arms one observer for the next natural interval in which the already-authenticated viewer has its screen visible. It refuses to unlock, launch, activate, background, tap, hide, replace, or disconnect that production app/session. It continuously listens for all three Mac default-audio selectors, treats even a transient notification as a sticky violation, retains point-in-time UID readbacks, and draws four ordered high-contrast symbols whose 12-bit spatial payload is bound to a fresh 128-bit run nonce. Its UI test aspect-fits the decoded video inside `worldwideMacScreenVideo`, crops that region from repeated final-composite iPhone screenshots for the full observation interval, requires a complete cycle plus a fifth ordered run while the exact Show acknowledgement and renderer remain unchanged, bounds undecodable gaps and same-symbol hold time, and requires fresh final evidence before passing. CoreDevice metadata must report the exact `iPhone 17 Pro` marketing name at every checkpoint, and the `.xcresult` must bind its sole passing configuration to that hardware UDID and model. Device metadata does not prove TestFlight receipt provenance; that remains a separate App Store Connect fact. | Create or replace the viewer, change production-app lifecycle/UI, mutate a default audio route even if it later restores, acknowledge Show without advancing decoded frames, reuse a stale acknowledgement/renderer, report healthy counters under a black or obscured final surface, show unrelated vivid animation, replay a prior run's symbols, freeze after one complete cycle, skip/reverse a symbol, begin clear and remain black, sample letterboxing instead of the decoded content, use the wrong orientation/crop/build/device, mutate the sealed test products, or replace the installed production app during test setup. |
 
-The current Screen gate proves that decoded pixel changes overlap a live deterministic host
-challenge at the production renderer boundary, but the decoded pixels do not yet carry a
-cryptographic nonce that identifies that exact challenge. It therefore does **not** independently
-prove source identity, GPU presentation, or host capture-process quiescence after Hide. The
-current remote-input check proves only that a fresh authenticated capability is present;
-it does **not** yet drive a disposable Mac target and observe real AX/model mutations. Those claims
-remain release-incomplete and must not be inferred from acknowledgements or screenshots.
+The lifecycle Screen gate still checks decoded pixel changes and a small final-composite screenshot
+region under its changing challenge. The dedicated observe-only screen source closes that gate's source-
+identity ambiguity with a fresh nonce-derived spatial sequence and observes long enough to reject
+the reported clear-then-black failure. Its source, unit mutations, build, or an older screenshot are
+not release proof: the intended installed production-bundle build must run the non-skipping physical test
+and produce a fresh passing result. `arm-testflight-screen-visual-oracle.sh` performs compilation,
+signing, product sealing, and identity checks while the phone may remain locked, then leaves exactly
+one local observer waiting for up to a week. It automatically uses the next natural foreground Mac-
+screen interval and rearms if that interval closes before device/session binding, so the user does not
+need to hold the phone open while preparation or polling occurs. One uninterrupted foreground interval
+is still logically required for the changing final-composite screenshot sequence; the observer will not
+unlock or perturb iPhone microphone/audio ownership or production-app lifecycle merely to create that
+fixture, and it leaves that screen presentation in place. Sampled screenshots do not prove every
+intervening frame or host
+capture-process quiescence after Hide. The current remote-input check proves only that a fresh
+authenticated capability is present; it does **not** yet drive a disposable Mac target and observe
+real AX/model mutations. Those claims remain release-incomplete and must not be inferred from
+acknowledgements or screenshots.
+
+Both runners stage a candidate summary privately, atomically commit the terminal run status first,
+and only then publish a `passed` summary and success line. Failure of that final status commit instead
+publishes only failed evidence; an uncommitted staged file is never release proof.
+
+Both physical screen runners now require an external release seal for the Mac host before they can
+start the visual challenge. Set `OPENSTEAMER_SCREEN_ORACLE_HOST_IDENTITY_MANIFEST` to a canonical,
+owner-owned mode-0600 manifest,
+`OPENSTEAMER_SCREEN_ORACLE_HOST_IDENTITY_MANIFEST_SHA256_PATH` to its exact adjacent committed
+mode-0600 one-link `.sha256` sidecar, and
+`OPENSTEAMER_SCREEN_ORACLE_HOST_IDENTITY_MANIFEST_SHA256` to the independently transported SHA-256
+of those exact manifest bytes. The production armer forwards all three values through the environment;
+none is placed in the runner command line. The manifest schema is
+`opensteamer.sealed-live-mac-host-identity.v1` and contains exactly the installed executable path,
+SHA-256, CDHash, signing identifier, and TeamIdentifier plus the corresponding path, SHA-256,
+CDHash, signing identifier, and TeamIdentifier for the LiveKitWebRTC executable. The verifier first
+runs the reviewed installed-bundle verifier, then binds the launchd PID's executable vnode and
+dynamic signature to those sealed bytes and binds its loaded LiveKitWebRTC vnode to the sealed
+framework bytes. Both runners retain that exact snapshot immediately before challenge launch and
+require a byte-identical snapshot after the physical observation. The development runner establishes
+the same sealed baseline before its first secondary-manager probe and re-verifies it immediately
+around every probe, invitation mint, and exact-generation stop, including finalizer cleanup.
+
+The production V90 packaging hook is
+`macOS/scripts/prepare-v90-sealed-host-oracle-handoff.sh prepare`. It accepts only an owner-owned,
+mode-0600, one-link metadata file in a fresh owner-owned mode-0700 V90 capsule plus that metadata's
+independently retained lowercase SHA-256. That capsule must be outside the user-protected
+`~/Library/Application Support/opensteamer` runtime/evidence root. The exact
+`opensteamer.v90-host-oracle-capsule-metadata.v1` fields are `schema`,
+`candidateAppRelativePath`, `candidateExecutableSHA256`,
+`candidateMediaFrameworkExecutableSHA256`,
+`designatedRequirementReferenceRelativePath`, and
+`designatedRequirementReferenceSHA256`. Both relative paths must resolve canonically inside that
+new capsule. The reference must be a separate owner-owned, xattr-free, mode-0755, one-link code
+object whose digest came from the approved pinned predecessor metadata; the capsule builder must
+never fill that digest by hashing the V90 candidate, reading either installed `/Applications`
+bundle, or reopening any retained/consumed migration or update capsule. The candidate and reference
+digests must differ. If a separately authorized capsule assembler cannot supply those already
+reviewed inputs, preparation stops instead of borrowing historical live or retained state.
+
+The approved predecessor input is the preserved-input V86 re-sign whose executable SHA-256 is
+`553892526e1f9de1e6d67b5556b3c2c008d9b48bbd553eb799c2260ee184ac66`. Before copying it, the
+assembler requires that executable to remain at `Contents/MacOS/CaptureServer` inside its complete
+canonical app and verifies both the code object and the full app with strict resource validation.
+It then fingerprints the original and independent capsule copy by exact size (`11442304`),
+`LC_CODE_SIGNATURE` extent (`dataoff=11401072`, `datasize=41232`), unsigned-prefix SHA-256
+`a7885a8d1ffef70f5a747eaed984a6cb70fe382491fcc6fbf8505aa0ad47ff5b`, CDHash
+`e41c23322912104a648e791bfb0d3a5714323b26`, full CodeDirectory SHA-256
+`e41c23322912104a648e791bfb0d3a5714323b26b1b299ae5f0cfa225f68aba0`, TeamIdentifier
+`MSMG8CJLB3`, identifier `com.elamin.AudioStreamer.CaptureServer`, and designated requirement
+`identifier "com.elamin.AudioStreamer.CaptureServer" and anchor apple generic and certificate
+leaf[subject.CN] = "Apple Development: Ahmed Elamin (92LVX32M8K)" and certificate
+1[field.1.2.840.113635.100.6.2.1] /* exists */`. The standalone copy is code-identity
+evidence, not full-bundle resource proof: the controller replays those compiled byte, Mach-O,
+CodeDirectory, identity, and requirement pins without pretending the separated executable still
+contains its original Info.plist or sealed resources.
+
+Preparation creates the fixed, previously absent `v90-screen-oracle-handoff` directory once, calls
+`create-sealed-mac-host-identity-manifest.sh` with the metadata-pinned reference digest, and verifies
+that the generated manifest describes the exact metadata-pinned candidate and fixed production team
+`MSMG8CJLB3`. The generator publishes `sealed-live-mac-host-identity.json` followed by
+`sealed-live-mac-host-identity.json.sha256`; the wrapper then publishes
+`v90-screen-oracle-host-identity-handoff.json` followed by its own `.sha256` overall commit marker.
+The handoff schema records the trusted metadata digest, both candidate digests, the designated-
+reference digest, fixed team, and fixed manifest basenames. Any missing sidecar is an uncommitted
+capsule, and a failed output directory is never reused. Carry the complete four-file handoff
+directory plus the independently retained handoff SHA-256 into the post-deploy step.
+
+Only after a separately authorized deployment may
+`prepare-v90-sealed-host-oracle-handoff.sh arm <handoff> <external-handoff-sha256> <coredevice-id>
+<hardware-udid> <build>` consume it. `arm` revalidates both commit markers, both JSON field sets,
+the fixed team, and the candidate hashes, then supplies only the committed manifest path, sidecar
+path, and external digest through the existing production armer environment contract. Until that
+complete candidate-specific handoff exists, both physical runners intentionally fail before
+challenge launch. The artifacts
+contain identity metadata only; invitations, rendezvous capabilities, unlock material, and other
+secrets remain out of arguments, logs, and the manifests.
+
+### V90 sealed build, cutover, and physical promotion sequence
+
+The immutable V90 release source (commit A) is commit
+`92d08a1c434eefef40901333f6d924dc8851a162`, tree
+`00ace7a5f69afffdbe7abfdc5c27b1708ab0908c`. It is exported and built only from a
+separate clean checkout at that exact identity. The assembler and cutover tooling belong to a
+later reviewed tooling identity (commit B): its local HEAD, upstream, and fresh single-record
+remote branch readback must agree, its running tracked blobs must equal commit B, and commit A
+must be its ancestor. Commit A identifies the product source bytes; commit B identifies the
+mechanism that assembled them. Deployment may use a later reviewed descendant of B;
+it records its own current commit, tree, and tracked observer blobs. The build's
+historical commit/tree/assembler blob must remain exact and ancestral, but need not
+equal the deployment-tool commit. Neither identity substitutes for the other.
+
+`macOS/scripts/assemble-v90-sealed-host-oracle-capsule.sh` is offline with respect to the
+installed host and every running service. It accepts only nonoverlapping clean source/tooling
+locations, a fresh private capsule root, and an independent predecessor-reference code object
+whose externally supplied SHA-256 equals the explicitly approved compiled pin. A malformed
+compiled pin or digest mismatch fails before capsule construction; deployment authorization alone
+does not approve a byte- or CDHash-different predecessor reconstruction. The assembler exports
+commit A, builds and signs the candidate, copies the exact source launch plist, removes build
+scratch, and commits strong source/candidate manifests, a copy-stable candidate manifest, the
+host-identity handoff, and
+`v90-deployment-payload-manifest.json` plus its sidecar. Payload schema
+`opensteamer.v90-deployment-payload-manifest.v2` records all nine additional predecessor fingerprint
+fields so the controller can require the capsule record, compiled pins, copied bytes, and copied
+signature metadata to agree. Capsule assembly is sealed build evidence, not deployment evidence.
+
+Live use goes only through `macOS/scripts/run-opensteamer-host-v90-cutover.sh` and
+`macOS/scripts/opensteamer-host-v90-cutover-controller.rb` with the sealed capsule and independently
+retained handoff and payload digests. The launcher re-proves clean remote tooling and pinned
+controller, route-monitor, Ruby, Swift compiler, and SDK identities. Preflight performs two
+mutation-free observations; execution replays the full capsule and live V86 fences immediately
+before durable `STOP_INTENT`. The controller holds same-filesystem exact-V86 app/plist rollback
+copies, keeps the sticky CoreAudio monitor armed with zero notifications, and requires at least
+31 monotonic elapsed seconds of stable V90 PID, generation, bytes, display, session, routes, and
+secondary-viewer readiness. Full samples run once per second when fast; slow samples count toward
+elapsed time, and the window ends only after a complete successful sample reaches its deadline.
+The full final pre-irreversible safety replay remains mandatory. Any
+failure after `STOP_INTENT` but before durable `V90_COMMIT_IRREVERSIBLE` must traverse the journaled
+rollback to terminal `ROLLED_BACK_EXACT_V86`. The sticky monitor remains live through that point of
+no return. A later failure must leave V90 live, publish committed-but-unverified evidence, exit
+nonzero, and never attempt an unmonitored rollback. Only clean zero-notification monitor teardown,
+the post-commit safety proof, final route readback, and terminal `COMMITTED_V90` form a successful
+host-deployment result; neither an intermediate state nor a pending result/pointer is such a claim.
+
+The signed capsule is a reusable artifact, not a deployment-attempt identifier. Each
+execution allocates a new private transaction and captures the verified predecessor's
+PID/start/nonce, lock identity, and app/plist identities. Any change before stop fails
+the attempt. Rollback restores those exact held filesystem objects and proves the new
+process generation against the same trusted predecessor bytes. Completed rollback
+transactions and their failed archives remain immutable history; a durable terminal
+receipt permits a subsequent fresh attempt with the same artifact. Missing or corrupt
+receipts, unfinished transactions, active pointers, and unknown staging residue block
+automatic retry. Existing pre-receipt history is admitted only by its reviewed legacy
+baseline. The controller never deletes history to make a retry pass.
+
+Offline regression coverage must exercise two completed rollback attempts with the
+same artifact, acceptance of a fresh verified predecessor generation, rejection of
+within-attempt identity drift, and rejection of incomplete or altered history. The
+readiness observer must be bound to current deployment tooling, not the capsule's old
+source export. These are tooling proofs, not installed-host or final-pixel proof.
+Readiness failures retain the client exit status, a possible signal number, and a
+bounded allowlisted error classification; they must not collapse every rejection
+into a timeout or print arbitrary client output. The exact sealed client can be
+exercised against an isolated local control-server fixture before another cutover.
+That fixture must bind a real socket inside a fresh private directory under
+`/private/tmp`, not merely put its output there. Foundation's `standardizedFileURL`
+can rewrite an existing `/private/tmp/...` path to `/tmp/...` while leaving the
+same nonexistent path unchanged. Path syntax validation must not depend on whether
+the socket, invitation, or cleanup receipt already exists. Preserve the separate
+owner/mode, no-follow, descriptor, inode, and parent-symlink checks; accepting a
+valid spelling is not permission to trust the object at that path. Require the
+exact signed candidate to pass this isolated socket fixture before switching the
+installed host, so this class of client-side rejection is caught offline.
+
+### V91 host-only quality-step successor
+
+The V91 assembler and cutover scripts are a fresh successor for the small promotion-margin
+change at product commit `0af3846c4c9c81411e87d6ab997fac55dddc1e5d`, tree
+`d820ce85893abafabecde33735763d5082bc31d3`. They preserve the V90 build/attempt separation,
+same-filesystem rollback, readiness, session, display, and sticky audio-route gates above.
+The exact installed V90 executable is pinned independently from the older approved
+designated-requirement compatibility reference; the reference is not the live predecessor.
+No iPhone binary changes are included in this host-only update.
+
+Use `assemble-v91-sealed-host-oracle-capsule.sh` once with the clean pinned product checkout,
+a fresh private capsule path, and the independently pinned compatibility reference and digest.
+Current clean, pushed tooling supplies the V91 handoff preparer and readiness observer; it must
+not modify the exported product tree. Exercise the exact signed candidate against the isolated
+real-socket readiness fixture before `run-opensteamer-host-v91-cutover.sh` preflight/execution.
+Each execution gets a fresh transaction even when reusing a verified artifact after exact rollback.
+
+The session fence streams bounded chunks while retaining full-log and prior-prefix hashes.
+The host-owned final `Worldwide media ended; the Mac remains available for the paired iPhone`
+event is a quiescent boundary only after confirmed capture teardown. A queued heartbeat before
+that boundary is historical; any authenticated peer or capture marker after it rejects cutover.
+Pairing checks compare metadata-only digests for the two product-owned Keychain records before
+and after commit or rollback, without retrieving or persisting secret values.
+
+Only terminal `COMMITTED_V91`, fresh exact live/installed/readiness/session/display/route
+readback, unchanged pairing metadata, and clean zero-notification monitor teardown establish
+host deployment. `ROLLED_BACK_EXACT_V90` means the update was not applied.
+`COMMITTED_V91_UNVERIFIED` leaves the new host live without a deployment-success claim or a
+rollback past the irreversible boundary. None of these host checks establishes improved image
+quality or end-to-end latency; those require the matched live measurements described in
+`STARTUP_SPATIAL_FIRST.md`.
+
+### Physical promotion and development boundaries
+
+After a terminal `COMMITTED_V90` host result and fresh sealed-host readback, run
+`validate-iphone15-dev-screen-visual-oracle.sh` on the paired iPhone 15. That pass is development
+diagnosis only. Only after it passes may the production iOS candidate proceed through the
+separately evidenced TestFlight build/upload, App Store Connect availability, and exact-build
+installation steps. Release completion then requires a fresh non-skipping
+`validate-testflight-screen-visual-oracle.sh` pass on the pinned personal iPhone 17 Pro, with the
+nonce-bound final pixels, sole XCTest pass, unchanged app/build/host/peer/screen-session identities,
+and clean zero-notification route-monitor teardown. Source tests, capsule sealing, host cutover,
+iPhone 15 diagnosis, TestFlight availability, installation, and the iPhone 17 Pro physical result
+are distinct evidence boundaries; no earlier stage implies a later one.
+
+Development diagnosis uses the separately signed `org.example.AudioStreamer.dev` bundle on the
+paired iPhone 15; it never operates the personal production iPhone. The guarded development runner
+also admits a never-connected primary only when the complete current-generation
+startup/waiting/online boundary, exact PID/nonce, secondary-manager idle proof, and
+absence of subsequent primary activity agree. This branch records no primary
+session, build, audio, or microphone proof; the existing no-reactivation and exact
+secondary-session cleanup fences still apply. A fresh host therefore does not need
+the personal phone connected merely to enable development validation. The runner
+builds the current checkout with a generic-iOS `build-for-testing`, performs at most one bounded
+Xcode-owned clean/rebuild for an invalid incremental runner signature, and seals those products
+before it needs the phone. It then publishes a private, 30-minute, run-nonce-bound unlock request and
+parks while refreshing an owner-only status heartbeat. The exact-device unlocked-state
+acknowledgement helper binds the runner's process-start identity, verifies that its exact run lock is
+still held, observes the pinned iPhone 15 unlocked, verifies that no matching credential-holding
+controller is currently running, and rejects a stale or replaced request and a competing writer. It
+does not attest screenshot history or prove that an unlock controller previously ran and exited. A
+local heartbeat/agent must still use the
+`iphone-usb-unlock` workflow against the exact saved-code
+Keychain account: inspect fresh before/after screenshots, make at most one complete entry, prove the
+phone unlocked, send `exit` to the credential-holding controller, and only then run
+`ack-iphone15-dev-screen-visual-oracle-unlock.sh`. The acknowledgement contains no credential and is
+only a wake signal; the runner independently rechecks the exact CoreDevice identity, hardware UDID,
+and unlocked state and has no manual-success or skip switch. Offline acknowledgement tests execute
+the actual helper serializer and runner validator together, including exact keys, identity, digest,
+request mutation, and observation-age rejection; matching source strings are not a handoff proof.
+Ordinary screen unlock does not grant XCTest's separate UI-automation authorization. If the exact
+development phone shows “Enter iPhone Passcode for XCTest — Enable UI Automation,” request direct
+user approval and stop unchanged retries; do not enter the saved credential into that protected
+authorization prompt. A bounded read-only screen observation during initialization can distinguish
+this gate from an app failure without changing phone security settings. The runner preserves the
+`xcodebuild` exit status and exact-device result tree before checking the required import receipt.
+An explicit runner-initialization error with no selected-test record or start log is reported as
+`xctestInitializationFailure`; unavailable or conflicting evidence stays a generic execution failure.
+Missing import/cleanup proof remains fatal and is retained alongside the original failure. These
+reporting fixtures run offline in `scripts/tests/test_iphone15_dev_test_failure_reporting.py` under
+`iOS/opensteamer`; they do not replace the sole passing XCTest, final-pixel marker, or safety gates.
+During the live step a separate
+credential-free exact-UDID `PreventUserIdleSystemSleep` lease emits a private heartbeat. Its Python
+runtime is launched with `-I -S -B` and an empty environment, before any virtualenv `site` or `.pth`
+startup hook can execute. It pins the exact interpreter and a deterministic digest of every
+non-cache file in the complete third-party runtime, rejects symlinked runtime paths, installs a
+source/native-extension-only loader so excluded bytecode cannot execute, and re-hashes after import.
+It then uses an existing-pairing-only native tunnel path that never issues a pairing command. Each
+renewal acquires a replacement lease on a fresh assertion-service connection before closing the old
+connection: the physical device resets a second create command on a reused connection. Behavioral
+tests must model that one-command connection and exercise multiple renewals and failure cleanup.
+Tunnel, service, and lease acquisition are bounded. The runner supervises the background `xcodebuild`
+process against that heartbeat and terminates/reaps it before trap cleanup if the lease fails. The
+lease stays owned through nonce-bound device secret cleanup (including trap cleanup), explicitly
+closes its remaining service and tunnel after cleanup proof, and the runner waits out the final device
+lease's at-most-45-second residual because the assertion protocol has no release acknowledgement.
+Thus the unlock controller itself is never retained as a keepalive. The runner
+mints a one-use secondary invitation only after rechecking the installed `.dev` build, host
+generation, primary peer/screen lifecycle, and Mac default routes. A fresh owner-only status probe
+must bind the same host PID/generation to an idle secondary manager before baseline and again after
+the final continuity interval without advancing its generation. One final peer/screen-lifecycle
+fence follows that probe immediately before mint. The minted receipt must be the single successor
+of that baseline generation; after exact stop, a third idle probe must equal the receipt generation.
+
+The development runner has two explicit primary baselines. In `activePrimary`, primary audio must
+provide a fresh `renderingNonzero` checkpoint with bounded native/inbound evidence age and sequential
+counter progress at each fresh, non-overlapping before/mint/after window. Primary microphone
+forwarding may either stay healthy and advance, or begin with at least two consecutive exact
+app-inactive `sourceMediaStalled` all-zero samples and remain in that same phase and zero-state.
+Both modes require the forwarding snapshot's privacy-safe monitor, device, peer,
+transport-authorization, and track generations to match its last attempted key, plus a nonzero
+attempt generation that stays unchanged. An older host that does not emit the complete key fails
+closed. Every new forwarding sample must advance its media-sample sequence, and any partial
+writer/decoder state, mode transition, identity change, or new hidden-writer selection fails closed.
+Intermediate audio counters are accepted only as decimal unsigned integers before arithmetic, so a
+log value cannot be interpreted as a shell expression. Stale top-level audio status cannot borrow
+otherwise healthy-looking retained fields.
+
+In development-only `inactivePrimary`, the personal production iPhone may remain asleep. The runner
+requires the ordered terminal primary lifecycle `viewer disconnected` -> exact expected-build
+`unavailable.stopped` with `appActive=false` -> `media ended`, then proves the live secondary manager
+is idle. A force-closed signaling session can omit the viewer-disconnected event, and the host's
+rate-limited summary logger can suppress its terminal diagnostic even though the separate atomic
+report writer publishes `unavailable.stopped`. For that case only, the runner may use the private
+stopped report bound to the latest logged host/session/build/peer/negotiation/heartbeat identity and
+the current host lifetime, corroborated by later completed media teardown and waiting state with no
+subsequent primary reactivation. It pins and rechecks the report's bytes and filesystem identity
+through the existing continuity checkpoints. The report alone is not teardown proof: the host
+publishes it before closing the peer and native capture owners. The real sink/report-schedule
+regression and executable reader/lifecycle/continuity fixtures must cover this reporting gap and
+reject mismatched, replaced, malformed, or reactivated evidence without synthesizing a log message.
+Both paths remain terminal-only/no-audio-proof evidence; stopped audio is never reported as healthy.
+The offline production-function fixtures run with `python3 -I -S -B
+iOS/opensteamer/scripts/tests/test_iphone15_inactive_primary_stopped_report.py`.
+Fresh append windows must contain no primary audio, microphone forwarding/selection, virtual-mic
+route selection, or primary media-end activity. Before mint, any peer or capture transition fails.
+After the test, only the separately verified ordered secondary connect -> capture start -> viewer
+disconnect -> capture stop lifecycle is allowed. The final primary continuity interval is consumed
+first, then the receipt-bound manager must be idle again, and a final lifecycle fence must still
+prove that exact closed sequence. The sticky CoreAudio monitor must still report zero notifications.
+Completed historical secondary cycles may remain in the bounded
+baseline only when their latest capture is stopped and their later peer history has a later viewer
+disconnect; a stale connected peer or unmatched capture start fails closed. This mode supplies no
+primary audio or microphone continuity claim. The DEBUG app imports that
+invitation only in memory, removes the copied seed and worldwide Keychain item before constructing
+normal runtime owners, and emits a nonce-bound nonsecret cleanup receipt. Every post-copy exit
+repeats that cleanup, and the host tears down only the receipt-bound secondary generation. A passing
+iPhone 15 run is diagnostic behavior evidence; it can neither replace nor complete the final
+TestFlight oracle on the exact production iPhone/build.
+
+The development UI step observes an `Inactive` audio label and disabled microphone affordance; those
+are presentation/topology evidence, not an independent native `AVAudioSession`, audio-unit, or hidden
+ownership measurement. Separate native `videoControlOnly` tests require no custom iOS audio
+transaction device, no local microphone track, and no audio SDP section. Keep those source/native
+tests distinct from the physical pixel result and do not infer an unobserved ownership claim from the
+UI labels alone.
+
+Healthy and quiescent forwarding are both labeled `exactAttemptBound`. Pre-attempt-generation hosts
+cannot prove same-attempt continuity and therefore fail closed instead of receiving a sampled-health
+fallback.
+
+The initial host-log checkpoint records the exact append cursor and inode while retaining only a
+bounded 16 MiB complete-line tail. It never copies or repeatedly rescans the full long-lived host
+log; every later checkpoint consumes a fresh, non-overlapping byte interval from that cursor.
+
+The local integrity boundary trusts the current macOS user, authoritative worktree, and pinned UV
+CPython/standard-library tree. The sealing above prevents ambient environment/`.pth` execution,
+bytecode shadowing, and at-rest third-party drift; it does not claim resistance to a malicious
+concurrent process running as that same user, which could also rewrite the runner itself. Closing
+that different threat model requires an administrator-owned or OS-immutable Python and dependency
+runtime.
+
+For V90, `--probe-secondary-test-viewer-status <new-absolute-output-file>` is a strictly
+non-minting endpoint-idle observation only. The verifier requires the exact expected lowercase
+SHA-256 of an owner-matching, single-link `0755` CaptureServer candidate, validates its strict code
+signature and preserved `com.elamin.AudioStreamer.CaptureServer` identifier, then accepts only a
+fresh nonce-bound `observed` record with `managerPhase=idle`, `managerIsIdle=true`, no invitation or
+generation receipt, and an unchanged manager generation. Fence every probe to the same control-
+socket device/inode, owner UID and exact `0600` mode across connect, the current owner-only host-lock
+PID/generation, and the server peer PID. This observation does not inspect or certify screen-
+inactive, viewer-released, or stable-route safe-idle gates; revalidate those gates separately and
+immediately before any authorized mint. The probe replay table accepts at most 256 unique probes per
+host generation; the 257th fails closed, and even a clean bounded run is race sampling, not readiness,
+mint authority, or a continuous watchdog.
+V90 remains ineligible until rebuilt and sealed from a clean checkout whose exact HEAD equals a
+fresh upstream branch readback, with an immutable V89 committed-rollback-to-exact-V86 origin record
+pinned and validated from the actual success result, terminal journal state, and active V86 readback;
+the stale offline/unsealed V89 draft README is not origin evidence. After any pass, obtain fresh
+explicit per-run authorization and revalidate every fence immediately before a separate invitation-
+minting action.
 
 The retained historical BlackHole 2ch v0.7.1 is release-incompatible for worldwide routing. Its local
 timeline counter resets without a new zero-timestamp seed, and a no-call run still
@@ -87,6 +442,24 @@ driver evidence and does not certify a later build from this source cleanup.
 - Graceful teardown can prove conditional restoration. An in-memory lease cannot
   prove restoration after `SIGKILL`, process crash, kernel failure, or power loss;
   release claims must state that limitation rather than inferring crash recovery.
+
+## YouTube viewing idle timer
+
+The iPhone wake lease is observation-only. Require an admitted primary YouTube watch item
+with valid provider artwork, playing state and positive rate, plus an active, exact visible
+screen lease, video track, first rendered frame and no presentation cover. Hidden/audio-only,
+paused/stopped, inactive, detached, disconnected or stale evidence must release it; do not
+change AVAudioSession or send media commands to keep the screen awake. A 15-second monotonic
+cap fails off when change-driven host updates stop; cached refresh replies are not a new poll.
+
+Run ScreenVideoIdleTimerTests and ScreenVideoIdleTimerViewTests in the signed Simulator.
+Require actual UIKit property readback through the SwiftUI modifier, overlap/stale-owner
+rejection, real scheduled expiry, and the existing suspended-statistics external-pause VM
+test. Removing the playing-state guard must fail the paused/stopped cases. These tests do
+not prove physical Auto-Lock timing. On the exact TestFlight build, separately observe a
+YouTube viewing interval longer than Auto-Lock, then pause and verify normal sleep; repeat
+for hidden/audio-only listening. Metadata identifies a YouTube watch player, not whether
+its content genre is music or whether the user's eyes are on the video.
 
 ## Ordinary microphone effective-sharing profile
 
@@ -190,10 +563,82 @@ the main actor. Restoring the inferred MainActor artwork callback must fail this
 background test with the executor assertion, not merely a missing-image assertion.
 Run `ruby scripts/test-native-media-callback-isolation.rb EMPTY_PRIVATE_OUTPUT_DIRECTORY
 DEVELOPER_DIRECTORY` with the selected canonical Xcode developer directory. This bounded
-compiler oracle extracts both production callbacks and checks their isolation in SILGen
+compiler oracle extracts the artwork, mapped-command and absolute-position callbacks and checks their isolation in SILGen
 and optimized Swift 6, with independent annotation-removal mutants. It complements the
 signed artwork runtime test; it does not execute a native remote command or prove a
 physical iPhone crash has the same cause.
+
+Native timeline scrubbing uses the current YouTube item's advertised absolute-seek
+capability and finite timeline. Preserve the requested fractional position, exact
+context and negotiation through the native callback, actor hop and WebRTC command.
+Reject missing/nonfinite/negative/out-of-bound positions and timestamps on unrelated
+commands. Clamp only to the admitted item's duration; never invent successful metadata
+before host readback. The Chrome renderer must recheck identity, authorization and
+deadline before setting `currentTime`, bind duplicates to the same requested position,
+and require observed position readback. Cover actual native WebRTC timestamp delivery
+and production browser-script mutations. Legacy hosts must keep the scrubber disabled.
+iOS chooses the system player's visible transport layout; registered commands and
+simulator tests do not prove simultaneous buttons or physical locked-screen scrubbing.
+
+The expanded Beluga notification must expose distinct previous/next, backward/forward
+30 seconds and play/pause buttons with a draggable timeline when the exact selected
+item advertises a finite seekable timeline. A drag is preview-only until release:
+capture its epoch/context/duration, reject stale or replaced authority and submit at
+most one bounded absolute-position intent. Hiding the extension, retiring selection,
+losing fresh state or changing the timeline cancels the draft without retargeting.
+The mailbox and deferred app dispatch must revalidate capability, payload and the
+original intent deadline; a queued intent may not acquire a fresh lifetime. Missing
+new capabilities from old snapshots decode disabled, and non-seek actions reject a
+position payload. Acknowledgement must reflect actual host execution, not optimistic
+slider or playback state.
+
+Run the real simulator notification extension and native WebRTC loopback oracle for
+the five-button layout and a real thumb drag. Require one position-bearing host
+receipt, returned timeline agreement, exact next/previous receipts and explicit
+source reselection after each context retirement. Keep the five-command source-switch
+test and the same-delivered-notification reopening test separate. Reopen the same
+card three times through the visible system View action without posting a replacement;
+require fresh labels before source selection, the selected timeline and toggle state,
+exact first-command receipts, and unchanged OS-delivered identifier/date/epoch/category
+from a fresh read-only inspection after each cycle. Retain the earlier failed
+long-press evidence rather than treating the alternate path as its root-cause fix.
+These isolated tests do not prove a real YouTube effect or physical locked-screen behavior.
+
+For a stale external-pause report, correlate host refresh acceptance, controller state,
+successful wire publication, viewer receipt/admission, successful App Group publication
+and the extension's last fresh read. Record only revision, item count, playback bitmask
+and bounded statuses; never titles, URLs, content/context identifiers or audio. The
+native-send trace's `summaryScope=attempt` describes the attempted catalog, not
+the effective wire projection for an older primary-only viewer. Use the viewer's
+received stage to establish what it actually accepted.
+The optional media-pipeline fields on audio diagnostics require their exact current SDP
+nonce echo, because older hosts reject unknown heartbeat keys. Test both mixed-version
+directions and renegotiation, retain the 4 KiB envelope bound, and keep diagnostics
+incapable of granting media/command authority. The extension receipt is best-effort,
+bounded and uses a separate nonblocking diagnostic lock; its timestamp is the actual
+read time, never renewed by host/app observation. A receipt proves a state read, not
+rendered pixels. The loopback UI fixture bypasses the production VM/admission path;
+an injected VM event cannot stand in for native peer receipt. Keep those narrow tests
+separate from a correlated real-phone pause/update result.
+
+Media-surface observations additionally require their own exact current SDP nonce echo;
+never send the new heartbeat key under only the older media-pipeline capability. Test
+both mixed-version schemas, native loopback and renegotiation retirement. A malformed
+optional surface must not erase audio/pipeline evidence or revoke critical authority,
+and optional surface telemetry must be discarded first under the 4 KiB budget.
+Native readback must sample the actual Now Playing dictionary, project source equality
+privately to a boolean, classify absent/zero/positive/invalid rates, and never use the
+macOS-only playbackState getter as physical iOS glyph proof. Command entrypoints must
+be recorded at native/custom callers under existing ownership and admission locks;
+tests must prove rejection, owner replacement and uncertainty retirement without
+changing dispatch, callbacks, deadlines or command authority. Neither entrypoint nor
+readback establishes native surface visibility or rendered pixels.
+
+Exercise a pending command on the same poll that refreshes the mailbox heartbeat.
+Claim-time freshness must use a timestamp sampled after publication, not the earlier
+poll-start time; otherwise a valid new snapshot appears to come from the future.
+Require one dispatch and durable at-most-once consumption without extending the
+original command deadline or allowing future-dated snapshots.
 
 Before shipping a change to Now Playing controls, require deterministic coverage of
 negotiation with legacy peers, the 4 KiB wire bound, exact current-source command
@@ -212,7 +657,343 @@ Native Apple Event tests must bind PID/launch identity and stable window/tab IDs
 reject changed targets, enforce final host authorization/deadlines, verify actual
 command readback, and fail closed on ambiguous or indeterminate player discovery.
 Mutation oracles must reject removal of final renderer/native admission and expiry
-checks and relative-command duplicate interception. Permission-only helper IPC must
+checks and relative-command duplicate interception.
+
+Chrome selection bootstraps from the first freshly confirmed playing tab, not global
+play chronology or complete inventory ordering. Discovery is bounded by 32 windows,
+512 total tabs, a stable-tab-identity round-robin cursor and the existing absolute
+deadline; an unknown unrelated tab is not no-media and must not starve healthy tabs.
+A freshly verified playing owner remains sticky. A freshly verified paused owner
+remains explicitly controllable while successor discovery is incomplete (this is not
+an all-paused claim); re-read that owner before promotion and retain it if it resumed.
+Unknown selected state blocks promotion and revokes command authority; only a fresh
+same-item read may recover with a new token. Confirmed absence/replacement retires the
+ownership hold. A bootstrap paused fallback requires a complete fresh determinate
+inventory. Commands refresh only their exact currently published item, not unrelated
+tabs; automatic promotion revokes queued old commands. Preserve original snapshot
+expiry, capability checks, final authorization and observed effect readback; command
+uncertainty also revokes absolute Play/Pause authority. Cover 39 eligible tabs, excess
+capacity, unknown selected versus unrelated renderers, cursor churn, paused-resume
+handoff races, and current-item command operation despite unrelated timeouts.
+
+### Explicitly negotiated phone media handoff
+
+The production Mac and iOS peer factories now explicitly opt in only for the full
+primary media/audio owner, with an available Mac media controller. The shared
+transport still defaults to off, requires remote-media controls and full topology,
+and requires the exact peer capability echo. Restricted viewers, legacy peers
+without that echo and the Android pairing preview remain unsupported. Factory
+regressions exercise these actual production configuration values; the composed
+phone receiver tests now use the production iOS factory instead of a test-only
+capability opt-in.
+
+Actual native Mac/provider/phone handoff remains unverified because YouTube is
+blocked by the user's policy. That restriction is not waived proof: deterministic
+tests, capability advertisement and an offer ID must not be reported as successful
+native playback transfer, acoustic coexistence or completed runtime validation.
+
+`MediaHandoffProtocolTests` and the actual headless ordered-channel case in
+`RemoteMediaControlsProtocolTests` cover optional exact-nonce negotiation,
+fresh primary-source descriptions, one-use receipts, replay/deadline rejection
+and synchronous native continuity loss before actor event delivery. Removing
+the receive-side consumption clear must fail the duplicate-consumption assertion;
+removing the peer-disconnect continuity retirement must fail the native ABA case.
+Retain existing media-command and native input-revocation tests alongside these
+checks. A non-authorizing offer is not a native source descriptor or Pause lease.
+
+The host-side `MacChromeNowPlayingRuntimeTests` handoff cases exercise opaque,
+one-use source preparation through the real controller, composite runtime and
+AppleEvent backend with an explicit native target double. Cover exact owner,
+deadline, controller stop/invalidation/timeout, caller revocation, source timeline
+changes, duplicate consumption and native paused/position readback. Removing the
+descriptor's consumption assignment must fail the direct-runtime replay test,
+not just the controller's independent one-use check. Retain the full existing
+Chrome, composite and controller suites to check ordinary media controls.
+
+`node --test scripts/test-native-youtube-handoff.mjs` executes the extracted
+production Chrome script with a DOM/media double. Cover pause/resume and seek
+ABA, late native timeline changes, final-validation event invalidation, strict
+pause-only constraints and ordinary Pause compatibility. Independently run
+`BELUGA_NATIVE_HANDOFF_MUTANT=timeline` and `events`; both must fail actual runtime
+assertions. This is not live Chrome consent, actual YouTube or phone-transfer
+proof. The native descriptor/Pause preparation alone does not establish a
+current peer, phone playback or an offer-correlated completion receipt.
+
+`MediaHandoffTransactionTests` and the real-peer handoff cases in
+`RemoteMediaControlsProtocolTests` cover exact commit/reply binding, fresh caller
+playback samples, cancellation, missing replies, malformed-message revocation,
+one-use host offer consumption and native-source scalar/deadline cross-checks.
+Remove the host `consumeSent` clear and require the unchanged replay and rejected
+timeline assertions to fail. Restore exact bytes and rerun the affected suites.
+A supplied `.macPaused` in a transport test is explicitly a boundary double, not
+native Pause evidence. Production completion must flow through the original
+native preparation and actual readback. Assert that no ordinary Pause command
+is emitted by the new protocol. Keep existing native input revocation and
+diagnostics-backlog isolation coverage alongside the new cases.
+
+Build the current iOS target against the expanded event union. Build-only success
+does not replace runtime tests; use the existing development Simulator under its
+authorization/boot workflow, never a personal phone as an implicit substitute.
+The phone player, menu, scoped audio policy and exact native transaction are wired
+in source. Full service-to-native/runtime transfer proof remains a separate gate;
+production capability advertisement does not satisfy it.
+
+`BelugaMediaHandoffMenuTests` cover the actual menu model's exact connected-phone
+target, one in-flight request, pre-dispatch cancellation, replacement-session and
+shutdown races, sanitized refusal and truthful offer-only status. The coordinator
+bridges the menu to its exact active media service after checking phone selection,
+selection epoch, media exchange and process ownership; it never substitutes a newer
+service for a delayed target. The service rechecks cancellation and its captured peer
+generation around negotiation, native preparation and wire dispatch. Keep existing
+menu, phone-catalog, host-coordinator and media-controller suites alongside these
+cases. Remove the menu's exact-target comparison and require the unchanged stale
+target test to fail; restore the bytes before the final run. Menu command doubles
+and the idle coordinator refusal test are not live positive-dispatch, rendered
+popover, phone-receiver or completed-transfer proof. Do not label an offer ID as a
+successful transfer, and retain the shared transport's default-off negotiation.
+
+#### Rust menu/lifecycle core first checkpoint — 2026-10-06
+
+The production Mac menu now uses the linked `BelugaCore` Rust policy: visibility
+depends on having started, not on a transient optional connection target. Readiness,
+exact-target dispatch and all native handoff authority remain separate guards.
+`BelugaRustHandoffPolicyTests` exhaust all 128 known input combinations through the
+actual archive and reject unknown ABI/bits and malformed foreign outputs. The Rust
+policy tests independently exhaust 4,096 flag values. The actual model's control stays
+visible but disabled across disconnect, reconnect and unavailable presentation.
+
+The production `WorldwideHostLifecycle` now delegates transitions to the same Rust
+archive, with independently owned availability and media slots. Retain both the original
+`WorldwideHostLifecycleTests` and `BelugaRustHostLifecycleTests`: exhaustive reachable
+state/event comparisons and seeded churn must preserve delayed-departure behavior,
+terminal stop, value copies, public equality, UTF-8 admission bounds, canonical Unicode
+equality and each owner's original String bytes. The Swift bridge stores no foreign
+pointers; copied nonzero tokens are pruned to current owners and never recycled.
+
+The core builder/verifier binds exact source/artifact manifests, copied headers,
+arm64 slice/tool metadata and actual C/Swift import/link/execution smokes. Five mutants
+must compile and fail assertions: visibility coupled to target, ignored unknown flags,
+removed command admission, availability departure erasing media, and stale media end
+clearing another owner. Missing/skipped/discovery-incomplete tests and stale or unbound
+archives fail the mandatory release gate. This new core is Mac-arm64-only; iOS audio's
+existing Rust authority is distinct and its gates remain mandatory.
+
+The earlier menu/lifecycle source checkpoint passes 15 Rust tests, 126 focused Mac adapter/model tests,
+470 discovered mandatory Mac tests and 72 release-gate self-tests (1,388 assertions).
+The full signed Simulator/native producer/release receipt has not been regenerated
+for this source. Rendered live menu behavior and completed physical handoff remain
+separate evidence; a source-level visibility fix is not an installed-product claim.
+
+#### Shared Rust handoff transaction ledger — 2026-10-06
+
+`WebRTCTransport.MediaHandoffTransactions` now consumes the production Rust ledger
+through copied nonzero tokens and bounded native host/viewer bindings. Retain all
+original transaction/protocol and real-peer ordered-channel tests. The new
+`BelugaRustHandoffTransactionTests` independently replays the original Swift reducer
+against actual linked Rust effects, including exhaustive finite traces, seeded churn,
+exact receipts, cached results, expiry/clear, native revocation, value copies,
+canonical Unicode and non-reflexive malformed NaN envelopes. A host receipt's native
+validity remains the caller's boundary; do not add a second validity gate in the
+ledger or replace native equality with a lossy hash.
+
+Copied-result decoder tests must reject missing host retirement, dropped viewer
+outcomes, completion with a retained viewer, wrong identities/results, fabricated
+no-change/rejection on clear and unknown ABI/status/effect fields. They also admit
+every legitimate custody pattern; fail-closed decoding is not a Swift fallback
+business reducer. Rust's ten ledger tests add exhaustive 85-state/34-event coverage
+and churn. The core gate discovers all 25 Rust tests and requires eleven compiled,
+assertion-failing mutants, including busy-host replacement, wrong receipt/envelope,
+conflicting cached reply, missing retirement and successful expiry substitutions.
+
+Artifact validation now requires exactly Mac arm64, iOS arm64 and universal iOS
+Simulator arm64/x86_64 slices with matching headers/source/artifact manifests and
+pinned tool/SDK metadata. Each slice must be a static `BelugaCore.framework` with
+its exact bundle metadata, `Headers/beluga_core.h` and namespaced
+`Modules/module.modulemap`. A rehashed flat archive/Headers layout is rejected: it
+collides with the independent audio-authority library during the actual iOS build.
+The mandatory link phase executes both Mac C/Swift smokes
+and cross-links both languages against all three phone target architectures; those
+cross-links do not claim phone execution. The new shared-handoff phase validates
+every discovered named non-skipping result. The signed Simulator operation, real WK
+bridge and composed real-peer/audio-lease tests are separate mandatory execution
+evidence. Existing physical-only exclusions are unchanged, and no archive, reducer
+pass or Simulator test substitutes for physical playback and exact-source Mac Pause.
+
+#### Shared Rust offers and timeline admission
+
+`MediaHandoffOffers` now delegates the production one-use offers/timeline reducer
+to the linked Rust core. `BelugaRustHandoffOffersTests` independently transcribes
+the original reducer, compares all 14,425 traces over a 24-event alphabet through
+length three, and runs 8,192 seeded churn events. Native receipt UUIDs are retained
+independently, not normalized into interchangeable authority. Keep the original
+protocol, transaction, real-peer and signed Simulator composition tests mandatory.
+
+Thirty new bridge methods cover exclusive snapshot/deadline boundaries, inclusive
+phone sample age, separate host/phone drift bounds, signed zero, rounded large
+clocks, original revision floors, declined operations that still burn/retire,
+actual supplied Unicode/NaN validity, original spelling, value copies and counter/
+token exhaustion. Copied-result tests admit legitimate patterns and reject custody
+violations including missing cleanup, malformed-wire sequence burns, invalid-sample
+receipt retirement, backwards retained positions, forged mints and cross-slot/
+counter changes. This decoder is not fallback policy or native Pause authorization.
+
+The offers checkpoint requires its 44 discovered Rust tests and 27 compiled mutants,
+preserved as exact prefixes when the next contract extends the inventory. The
+sixteen additional offer mutants must fail their intended assertions for replay,
+timeline/source boundaries, wrong comparison domain, retirement ordering, counter
+reset/wrap or unknown operation handling. All copied-layout offsets and actual
+offers symbols are exercised by C and Swift against the produced Mac archive and
+cross-linked for device and both Simulator architectures. These source additions
+still require a fresh final-source canonical receipt; prior ledger proof or a
+candidate build does not establish the new adapter, physical transfer or deployment.
+
+#### Rust phone playback operation
+
+The linked phone-operation ABI adds request40/evidence32/state152/event80/result168
+copied layouts. Rust retains raw floating bits and typed identity domains; native
+Swift keeps exact operation/page/video/proof comparisons, the private proof UUID,
+request and provider admission, and platform effects. Copied-output tests reject
+forged mints, refreshed proofs, missing revocation, first-sample confirmation,
+hidden owner claims, replayed or expired completion and dishonest Mac outcomes.
+Original proof age and current playback freshness remain separate requirements.
+
+All 32 new Rust tests are discovered and pinned, with 19,200 reference-comparison
+steps and six additional compiled assertion mutants. All fifth-contract C/Swift
+field layouts and actual exported symbols must link against the produced archive
+for Mac, iOS device and both Simulator architectures. The signed Simulator gate
+adds all nine existing Coordinator and twenty independent native adapter methods:
+538 discovered cases, 516 required passes and the unchanged 22 physical exclusions.
+The new cases may not be skipped, manually judged or replaced with provider mocks
+as physical proof. A fresh final-source receipt is still required for this slice.
+
+The total core inventory is now 76 tests and 33 intended compiled Rust assertion
+failures. The focused signed 50-test proof retains all 17 original operation,
+20 new native boundary/parity, nine Coordinator and four WebView cases, with no
+skips. Separate compiled Swift mutants replace whole-proof equality with an
+operation-only comparison and bypass copied-result custody; each must fail its
+exact named XCTest assertion, not compilation or a crash. Baseline/restored
+controls must pass, and the exact production source must be restored before any
+other build. Their private proof does not replace the full canonical gate.
+
+Run the signed Simulator `YouTubeHandoffOperationTests` and
+`YouTubeHandoffWebViewTests`. The latter execute the real native WK navigation,
+main-frame message bridge and teardown with inert local provider HTML, not a real
+YouTube stream. An interrupted confirmation must remain revoked even if playback
+quickly resumes. Ready, no time advancement, wrong video/page/position, hidden
+presentation and stale evidence cannot confirm a new handoff.
+
+Player completion tests reserve only current evidence, reject unrequested,
+foreign, repeated and late completions, preserve unknown outcomes after
+interruption/cancellation, and require fresh continuing playback at the exact
+successful reply. After success, normal local controls must not re-enter the
+pre-transfer timeline checks or authorize another Mac pause. The original
+deadline is never renewed; an unanswered reservation also has a three-second
+local reply bound. Failure text distinguishes no request from uncertain or
+confirmed native outcomes. Remove the operation-ID completion check and require
+the foreign-result assertion to fail. Independently bypass the committed-player
+receive branch and require both model and actual local WK control tests to fail.
+The WK test observes published native phases and drains through a final ordered
+bridge message; JavaScript evaluation completion alone is not native-delivery
+proof. Its supplied completion is not a live Mac pause or a connected transfer.
+
+`node --test scripts/test-youtube-handoff-player.mjs` executes the extracted
+production player script with a provider double. Independently rerun with
+`BELUGA_HANDOFF_SCRIPT_MUTANT=identity`, `visibility`, `cleanup`, and `readiness`; each must
+fail its intended behavioral assertion, not extraction, compilation or setup.
+These mutants change script bytes only in memory. Restore any native Swift
+mutation exactly and rerun the affected suites; never distribute a mutant.
+
+The `WorldwideAudioLifecycleTests.testMediaHandoff...` cases cover the separate
+local-player downlink lease. A single exact owner may suppress decoded Mac audio;
+neither acquisition nor release changes microphone intent, native audio-session
+policy, proof admission or the explicit route-resume latch. Interruption, call,
+transport, runtime-proof and track changes revoke the owner. Revocation keeps
+the mute until that owner acknowledges player cleanup, so recovery cannot unmute
+under a still-closing player. Stale owners cannot release a replacement session
+or player, and synchronous snapshot/cleanup callbacks cannot return retired
+authority. Remove the exact-owner release check and require the stale-release
+assertions to fail.
+
+The ordinary playout watchdog exempts only intentionally suppressed decoded PCM,
+not frozen native callbacks or invalid profiles. Suppression identity and a
+separate change generation fence observations and counter floors; acquiring and
+releasing entirely between samples must not look like an unchanged nil owner.
+The suspended real-VM diagnostics tests cover acquire, release, replacement and
+that nil-to-nil round trip. Remove the generation check to expose stale publication;
+exempt muted frozen callbacks and require the unchanged liveness assertion to
+fail. Restore exactly and run all three signed Simulator audio suites plus the
+pinned Rust tests in `MICROPHONE_REGRESSION_GUARDRAILS.md`. These owner/track doubles
+do not prove concurrent native WK audio output, microphone capture or a completed
+phone handoff. The lease API is now wired through the current-peer coordinator;
+its real-WebKit cleanup acknowledgement is still not acoustic/device coexistence proof.
+
+The two `WorldwideAudioLifecycleTests.testComposedHandoff...` tests join actual
+local SDP/ICE/SCTP peers to the production VM event receiver, coordinator, WK bridge
+and audio owner. Explicit boundary doubles remain for provider HTML, native audio
+endpoints and native Mac completion. Use the DEBUG-only no-hardware host/viewer
+factories, not ordinary native audio endpoints. Assert one exact-source commit on
+success, no generic Pause, no commit before playback, same-channel refresh-barrier
+proof after cancellation, scoped cleanup, and no unmute into an uncertain transport.
+Release both factories and require their device delegates to retire. These tests
+do not connect cloud signaling, bind an audio transaction device or authorize a mic.
+On the approved development Simulator, the same explicit
+`OPENSTEAMER_LIVE_YOUTUBE_PROBE=1` opt-in also replaces the successful composed
+receiver test's provider double with production HTML and the real pinned YouTube
+demo. It retains the exact-source commit, scoped audio-owner and stop-ack assertions,
+and captures the real player pixels and page state. The cancellation case remains
+deterministic. Native audio endpoints, source-state publication and Mac completion
+are still doubles: this joins real provider playback to the production phone
+receiver and wire transaction, not the native Mac menu/pause or acoustic boundaries.
+Run the same focused pair without the opt-in to retain deterministic CI coverage;
+no new default-CI skip or hardware-only skip allowance is introduced.
+
+`YouTubeHandoffProviderProbeTests` is separately opt-in: set the test-runner variable
+`OPENSTEAMER_LIVE_YOUTUBE_PROBE=1` only on the approved development Simulator.
+It uses the production HTML and real YouTube IFrame API demo, with no fake playback
+event, peer or native Mac completion. Require fresh exact advancing playback
+evidence, a foreground UIWindowScene, visible iframe geometry and retained pixel
+attachments; default CI skips this network-dependent probe. A changed demo duration
+fails the pinned probe, never widens production drift/duration tolerances. API
+readiness can precede video metadata and names only the requested player; actual
+playback samples must not inherit that requested identity. Deliberately revert
+the readiness-specific message identity and require the script oracle to fail.
+Always wait for actual WebKit stop acknowledgement. This probe proves provider
+playback, not audible physical-phone output or a completed source handoff.
+
+`NativeYouTubeHandoffOracleTests` is an explicitly approved Mac-only boundary probe,
+not a release gate or an end-to-end phone test. Supply `BELUGA_HANDOFF_ORACLE_BROWSER`
+and `BELUGA_HANDOFF_ORACLE_PID` only for a signature-verified private Chrome copy
+inside `/Volumes/t7/beluga-native-handoff.*`, with a new signed-out profile and muted
+test audio. Never use the normal browser, its profile, or an ordinary second host.
+The only injected boundary is browser discovery: every native event uses the real
+production controller/runtime/backend and is fenced to the exact private path, PID
+and kernel start tuple. Direct executable launches do not have a LaunchServices
+launchDate, so the test retains/rechecks the full kernel seconds/microseconds tuple,
+not a fabricated date or PID alone. The fixture also rejects wrong event targets,
+unknown commands, non-production send options, and timeouts above the existing bound.
+
+Preflight must preserve the normal browser and host generations and watch default
+routes with a read-only sticky monitor through clean zero-notification teardown.
+The pinned YouTube demo must already be visibly playing. Browser scripting consent
+is separate: never enable it in the normal profile or silently bypass its gate.
+Chrome's real disabled-scripting reply can be code 12, not only -10000; both must
+map to content-free `javascriptPermissionRequired`, without any automatic prompt
+or media command. Unrelated/oversized errors must not become permission advice.
+
+This optional probe supplies the receiving position as `TEST_INPUT`; it does not
+claim a real phone commit. A native pass requires actual exact-source pause/readback,
+one command, no duplicate dispatch, unchanged owner and no permission prompts. Do
+not equate an env-off skip, a disabled-scripting failure, or this isolated boundary
+pass with the completed menu/service/phone/native-pause or acoustic handoff. The
+deterministic `NativeYouTubeHandoffIsolationTests` run without a browser or UI events.
+
+The product frontends opt in through their primary-owner configuration factories;
+native source binding, current-phone menu/presentation integration, exact
+offer-bound native pause/readback and owner-scoped audio coexistence are implemented.
+Actual provider playback, native phone output and the completed source handoff
+remain separate runtime gates. Model, script and local WK tests are not that evidence.
+
+Permission-only helper IPC must
 work without an extension or connected peer, reject media-state injection, tolerate
 ordinary consent latency, recover from a transient listener failure, and retire on
 stop/disconnect. Ordinary polling must never prompt or activate Chrome.
@@ -450,6 +1231,15 @@ proposal evidence separate from native acceptance and client presentation.
   substitute because it cannot exercise the production Keychain access group.
 - A generic-device UI `build-for-testing` proves the physical test source compiles; it does not
   execute a physical oracle.
+- An offline V90 capsule with valid manifests proves a pinned source build and sealed handoff; it
+  does not prove that `/Applications`, launchd, the live PID, or any audio route changed.
+- Only terminal `COMMITTED_V90` plus its fresh installed/live readbacks is V90 host-deployment
+  evidence. `V90_COMMIT_IRREVERSIBLE` or committed-but-unverified evidence means the host must remain
+  on V90 pending safety review, not that deployment passed; a rollback terminal proves restoration
+  to exact V86, not a successful V90 deployment.
+- An iPhone 15 `.dev` pass is diagnostic, TestFlight availability is distribution evidence, and
+  exact-build installation is device-state evidence. Only the fresh iPhone 17 Pro
+  production-bundle oracle is final user-device visual evidence.
 - Injected CallKit tests prove fail-closed microphone policy, explicit hosted-origin ownership,
   and asynchronous race fencing, not that a real device reports every transition. A signed
   physical-device pass must cold-launch during a real connected iPhone call, prove
@@ -458,9 +1248,11 @@ proposal evidence separate from native acceptance and client presentation.
   begin that interruption-origin window only after interruption-ended supplies a resume hint, then
   end the final call and require a fresh ordinary audio-policy generation plus new advancing
   render evidence before claiming recovery.
-- The production-bundle physical driver binds evidence to a fresh artifact directory, physical
-  device identity, installed bundle/build number, signed Mac host, changing host PIDs, session
-  identity, and current `.xcresult`. `devicectl` cannot independently prove that the installed
+- The production-bundle physical driver binds evidence to a fresh artifact directory, the exact
+  pinned iPhone 17 Pro CoreDevice/hardware-UDID/marketing-name identity, installed bundle/build
+  number, externally release-sealed Mac host executable and
+  loaded media framework, unchanged live PID/vnodes/signing identities before and after the
+  challenge, session identity, and current `.xcresult`. `devicectl` cannot independently prove that the installed
   bytes arrived through TestFlight, so App Store Connect/TestFlight remains the authority for that
   distribution fact.
 - The driver binds every retained attachment's name and metadata to its exact XCTActivity. Current

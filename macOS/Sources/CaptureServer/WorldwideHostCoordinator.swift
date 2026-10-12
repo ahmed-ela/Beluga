@@ -6,6 +6,8 @@ import RemoteSessionCore
 enum WorldwideHostStartResult: Equatable, Sendable {
     case invitation(String)
     case paired(remoteDisplayName: String?)
+    /// Saved trust may exist, but no phone is selected. Never choose a fallback or pair implicitly.
+    case unselected
 }
 
 /// Injectable paired-availability signaling boundary used by the coordinator.
@@ -16,6 +18,20 @@ protocol WorldwideHostAvailabilityTransport: AnyObject, Sendable {
 }
 
 extension PairedAvailabilitySignalingClient: WorldwideHostAvailabilityTransport {}
+
+/// Exact media-owner boundary. Test implementations never construct native capture services.
+/// Admission remains in the coordinator; implementations cannot mint a prepared menu target.
+protocol WorldwideHostMediaService: AnyObject, Sendable {
+    var completion: AsyncStream<Void> { get }
+    func startPairedSession() async throws
+    func stop() async
+    func hasUnconfirmedNativeCaptureStop() async -> Bool
+    func moveMediaToConnectedPhone() async throws -> UUID
+    func iPhoneMicrophoneForwardingSnapshot() async
+        -> WorldwideIPhoneMicrophoneForwardingHostSnapshot
+}
+
+extension WorldwideScreenService: WorldwideHostMediaService {}
 
 /// Supervises durable pairing, availability signaling, and one active media session.
 ///
@@ -49,21 +65,61 @@ actor WorldwideHostCoordinator {
         RemoteAvailabilityLocator
     ) throws -> any WorldwideHostAvailabilityTransport
     private let availabilityRetrySleep: @Sendable (Int) async throws -> Void
+    private let availabilityRetryProducer: BelugaRustAvailabilityRetryProducer
+    private let availabilityLoopDidEndObserver: @Sendable () -> Void
     private let availabilityLoopOverride: (@Sendable () async -> Void)?
     private let connectionTelemetry: any ConnectionTelemetryRecording
     private let teardownDidBegin: @Sendable () -> Void
     private let makeMediaServiceTeardownWatchdog: @Sendable () -> Task<Void, Never>?
     private let makeNativeCaptureWatchdog: @Sendable () -> Task<Void, Never>?
+    private let presentation: @Sendable (BelugaHostPresentation) -> Void
+    // New durable mutations need caller-composed process ownership and a fresh quiet proof.
+    // The default denies them until the GUI/CLI explicitly supplies that admission boundary.
+    private let catalogMutationIsAuthorized: @Sendable () -> Bool
+    private let catalogOwnerIsValid: @Sendable () -> Bool
+    private let makePairingClient: @Sendable (URL, RemoteInvitationCode) throws
+        -> any WorldwideHostPairingTransport
+    private let makeMediaService: (@Sendable (RemoteRendezvousCredential) throws
+        -> any WorldwideHostMediaService)?
 
     private var lifecycle = WorldwideHostLifecycle()
     private var identity: RemoteDeviceIdentity?
     private var pairedRecord: RemotePairedDeviceRecord?
+    private var phoneCatalog: WorldwidePairedPhoneCatalogSnapshot?
+    private var runtimeCatalog: BelugaRustRuntimeCatalog
+    private var selectionEpoch = UUID()
+    private var catalogActionID: UUID?
+    private var retiringAvailability: (id: UUID, client: (any WorldwideHostAvailabilityTransport)?,
+                                       task: Task<Void, Never>?)?
+    private var availabilityIsWaiting = false
     private var pairingBootstrap: WorldwidePairingBootstrap?
+    // A user-started first pairing may complete onboarding, but generic catalog writes,
+    // startup, and recovery never choose a phone. This authority is not persisted.
+    private struct FirstPairActivationIntent {
+        let attemptID: UUID
+        let selectionEpoch: UUID
+        let admittedCatalog: WorldwidePairedPhoneCatalogSnapshot
+    }
+    private var firstPairActivationIntent: FirstPairActivationIntent?
     private var availabilityClient: (any WorldwideHostAvailabilityTransport)?
-    private var mediaService: WorldwideScreenService?
+    // Retained until native teardown is confirmed, even after menu admission is revoked.
+    private var mediaService: (any WorldwideHostMediaService)?
+    private struct PreparedMediaOwner {
+        let id: UUID
+        let service: any WorldwideHostMediaService
+        let selectionEpoch: UUID
+        let exchangeID: String
+        let record: RemotePairedDeviceRecord
+    }
+    private var preparedMediaOwner: PreparedMediaOwner?
     private var pairingTask: Task<Void, Never>?
+    private var pairingPresentationTask: Task<Void, Never>?
+    private var presentationRevision: UInt64 = 0
+    private var currentPresentationPhase = BelugaHostPresentationPhase.starting
+    private var currentInvitation: BelugaPairingInvitation?
     private var availabilityTask: Task<Void, Never>?
     private var availabilityGeneration: UUID?
+    private var availabilityBinding: (epoch: UUID, phoneID: UUID, pairID: UUID, commitID: UUID)?
     private var mediaCompletionTask: Task<Void, Never>?
     private var isStarted = false
     private var isStopped = false
@@ -101,12 +157,24 @@ actor WorldwideHostCoordinator {
         availabilityRetrySleep: @escaping @Sendable (Int) async throws -> Void = {
             try await Task.sleep(for: .seconds($0))
         },
+        availabilityRetryProducer: BelugaRustAvailabilityRetryProducer = .actual,
+        availabilityLoopDidEndObserver: @escaping @Sendable () -> Void = {},
         availabilityLoopOverride: (@Sendable () async -> Void)? = nil,
         connectionTelemetry: any ConnectionTelemetryRecording =
             NoopConnectionTelemetryRecorder(),
         teardownDidBegin: @escaping @Sendable () -> Void = {},
         makeMediaServiceTeardownWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
         makeNativeCaptureWatchdog: @escaping @Sendable () -> Task<Void, Never>? = { nil },
+        presentation: @escaping @Sendable (BelugaHostPresentation) -> Void = { _ in },
+        catalogMutationIsAuthorized: @escaping @Sendable () -> Bool = { false },
+        catalogOwnerIsValid: @escaping @Sendable () -> Bool = { true },
+        runtimeCatalogResultMutation: BelugaRustRuntimeCatalog.ResultMutation? = nil,
+        pairingClientFactory: @escaping @Sendable (URL, RemoteInvitationCode) throws
+            -> any WorldwideHostPairingTransport = { endpoint, invitation in
+                try PairingBootstrapSignalingClient(endpoint: endpoint, invitation: invitation, role: .host)
+            },
+        mediaServiceFactory: (@Sendable (RemoteRendezvousCredential) throws
+            -> any WorldwideHostMediaService)? = nil,
         logger: Logger
     ) {
         let pair = AsyncThrowingStream<Void, Error>.makeStream(
@@ -132,11 +200,19 @@ actor WorldwideHostCoordinator {
         self.availabilityMarkerGenerationNonce = availabilityMarkerGenerationNonce
         makeAvailabilityClient = availabilityClientFactory
         self.availabilityRetrySleep = availabilityRetrySleep
+        self.availabilityRetryProducer = availabilityRetryProducer
+        self.availabilityLoopDidEndObserver = availabilityLoopDidEndObserver
         self.availabilityLoopOverride = availabilityLoopOverride
         self.connectionTelemetry = connectionTelemetry
         self.teardownDidBegin = teardownDidBegin
         self.makeMediaServiceTeardownWatchdog = makeMediaServiceTeardownWatchdog
         self.makeNativeCaptureWatchdog = makeNativeCaptureWatchdog
+        self.presentation = presentation
+        self.catalogMutationIsAuthorized = catalogMutationIsAuthorized
+        self.catalogOwnerIsValid = catalogOwnerIsValid
+        runtimeCatalog = BelugaRustRuntimeCatalog(resultMutation: runtimeCatalogResultMutation)
+        makePairingClient = pairingClientFactory
+        makeMediaService = mediaServiceFactory
         self.logger = logger
     }
 
@@ -144,27 +220,38 @@ actor WorldwideHostCoordinator {
 
     /// Loads durable identity state, then begins pairing or paired-device availability.
     ///
-    /// Resetting removes only the viewer binding; the stable Mac identity remains so
-    /// operators do not unexpectedly rotate the host's cryptographic identity.
+    /// Migration precedes every legacy writer. Reset means forget ONLY the selected phone;
+    /// nil selection is a no-op, never a fallback, clear-all, or invitation permission.
     func start(resetPairing: Bool) async throws -> WorldwideHostStartResult {
-        guard !isStarted, !isStopped else {
-            throw WorldwideHostCoordinatorError.invalidLifecycle
-        }
-        if resetPairing {
-            try store.resetPairedViewer()
-            logger.info("Forgot the paired iPhone; the Mac identity was preserved")
-        }
-
+        try runtimeCatalog.require(.startupGuard, [isStarted, isStopped])
+        try runtimeCatalog.require(.owner, [catalogOwnerIsValid()])
         let identity = try store.loadOrCreateHostIdentity(displayName: hostDisplayName)
-        let record = try store.loadPairedViewer(for: identity)
+        var snapshot = try store.phoneCatalog.loadOrMigrate(for: identity)
+        if resetPairing, let selected = snapshot.selectedPhoneID {
+            try runtimeCatalog.require(.owner, [catalogOwnerIsValid()])
+            try runtimeCatalog.require(.authorization, [catalogMutationIsAuthorized()])
+            snapshot = try store.phoneCatalog.forgetPhone(
+                selected, for: identity, expectedToken: snapshot.token
+            )
+        }
+        let record = snapshot.selectedRecord
 
+        try runtimeCatalog.require(.startupInstalled, [!resetPairing, snapshot.records.isEmpty,
+            snapshot.selectedPhoneID == nil, snapshot.token.revision == 1,
+            snapshot.legacyImportReceipt == nil])
         self.identity = identity
+        phoneCatalog = snapshot
         pairedRecord = record
-        try lifecycle.start(hasPairedViewer: record != nil)
         isStarted = true
 
         if let record {
+            try lifecycle.start(hasPairedViewer: true)
+            publishPresentation(.pairedConnecting)
             startAvailabilityLoop()
+            if runtimeCatalog.isPoisoned {
+                await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+            }
+            try runtimeCatalog.requireHealthy()
             if record.pairingState == .active {
                 logger.info("Loaded the paired iPhone and started worldwide availability")
             } else {
@@ -173,19 +260,148 @@ actor WorldwideHostCoordinator {
             return .paired(remoteDisplayName: record.remoteDisplayName)
         }
 
+        publishPresentation(.unselected)
+        if runtimeCatalog.isPoisoned {
+            await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+        }
+        try runtimeCatalog.requireHealthy()
+        return .unselected
+    }
+
+    /// Value-only catalog view; contains trust records, so the UI must not log/serialize it.
+    func pairedPhones() throws -> WorldwidePairedPhoneCatalogSnapshot {
+        try runtimeCatalog.require(.catalogPresence, [phoneCatalog != nil, identity != nil])
+        let phoneCatalog = self.phoneCatalog!, identity = self.identity!
+        let fresh = try store.phoneCatalog.loadOrMigrate(for: identity)
+        try runtimeCatalog.require(.catalogFresh, [fresh == phoneCatalog])
+        return fresh
+    }
+
+    /// An admission ticket is not permission to disconnect a viewer. Only a current validated
+    /// waiting boundary (or no selected owner), no media/bootstrap, and external owner proof qualify.
+    func phoneCatalogAction() throws -> WorldwidePhoneCatalogAction {
+        try requireQuietCatalog()
+        guard let phoneCatalog else { throw WorldwideHostCoordinatorError.invalidLifecycle }
+        return WorldwidePhoneCatalogAction(token: phoneCatalog.token, selectionEpoch: selectionEpoch)
+    }
+
+    func selectPhone(_ phoneID: UUID?, action: WorldwidePhoneCatalogAction) async throws {
+        try runtimeCatalog.require(.preflight, [phoneID != nil,
+            phoneID.map { id in phoneCatalog?.records.contains(where: { $0.remoteDeviceID == id }) == true } ?? false], operation: .select)
+        let operation = try beginCatalogAction(action, operation: .select).id
+        try await retireAvailabilityForCatalogAction(operation)
+        var needsFinalEnd = true
+        defer { if needsFinalEnd { endCatalogAction(operation) } }
         do {
+            try revalidateCatalogAction(operation, action: action)
+            guard let identity else { throw WorldwideHostCoordinatorError.invalidLifecycle }
+            phoneCatalog = try store.phoneCatalog.selectPhone(phoneID, for: identity, expectedToken: action.token)
+            resumeSelectedPhone()
+            try runtimeCatalog.requireHealthy()
+            needsFinalEnd = false
+            try await finishCatalogActionSuccessfully(operation)
+        } catch {
+            if runtimeCatalog.isPoisoned {
+                await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+            }
+            recoverCatalogActionIfSafe(operation)
+            throw error
+        }
+    }
+
+    func forgetPhone(_ phoneID: UUID, action: WorldwidePhoneCatalogAction) async throws {
+        try runtimeCatalog.require(.preflight, [false,
+            phoneCatalog?.records.contains(where: { $0.remoteDeviceID == phoneID }) == true], operation: .forget)
+        let operation = try beginCatalogAction(action, operation: .forget).id
+        try await retireAvailabilityForCatalogAction(operation)
+        var needsFinalEnd = true
+        defer { if needsFinalEnd { endCatalogAction(operation) } }
+        do {
+            try revalidateCatalogAction(operation, action: action)
+            guard let identity else { throw WorldwideHostCoordinatorError.invalidLifecycle }
+            phoneCatalog = try store.phoneCatalog.forgetPhone(phoneID, for: identity, expectedToken: action.token)
+            resumeSelectedPhone()
+            try runtimeCatalog.requireHealthy()
+            needsFinalEnd = false
+            try await finishCatalogActionSuccessfully(operation)
+        } catch {
+            if runtimeCatalog.isPoisoned {
+                await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+            }
+            recoverCatalogActionIfSafe(operation)
+            throw error
+        }
+    }
+
+    /// Pairs a new independent phone. Only an explicitly started, pristine first pairing
+    /// may select its own ACTIVE record after teardown; adding itself never selects.
+    /// Interrupted new records remain addressable by exact ID for a later explicit selection.
+    func pairAnotherPhone(action: WorldwidePhoneCatalogAction) async throws -> WorldwideHostStartResult {
+        try runtimeCatalog.require(.preflight, [false, false, Task.isCancelled,
+            phoneCatalog != nil, (phoneCatalog?.records.count ?? WorldwidePairedPhoneCatalogStore.maximumPhoneCount)
+                < WorldwidePairedPhoneCatalogStore.maximumPhoneCount], operation: .pair)
+        let phoneCatalog = self.phoneCatalog!
+        let admission = try beginCatalogAction(action, operation: .pair)
+        let operation = admission.id
+        let activateFirstPair = admission.activateFirst
+        try await retireAvailabilityForCatalogAction(operation)
+        var needsFinalEnd = true
+        defer { if needsFinalEnd { endCatalogAction(operation) } }
+        try revalidateCatalogAction(operation, action: action)
+        do {
+            try Task.checkCancellation()
+        } catch {
+            // Caller cancellation is not a request to deselect the predecessor. The exact
+            // transport has drained and revalidation above excluded foreign catalog/owner
+            // changes; the helper still rereads both before resuming that unchanged phone.
+            recoverCatalogActionIfSafe(operation)
+            throw error
+        }
+        try runtimeCatalog.require(.pairIdentity, [identity != nil])
+        let identity = self.identity!
+        lifecycle = WorldwideHostLifecycle()
+        try lifecycle.start(hasPairedViewer: false)
+
+        do {
+            let checkpoint = WorldwidePairingCatalogCheckpoint(
+                store: store, identity: identity, snapshot: phoneCatalog, ownerIsValid: catalogOwnerIsValid
+            )
             let bootstrap = try WorldwidePairingBootstrap(
                 endpoint: endpoint,
                 identity: identity,
-                store: store,
+                checkpoint: checkpoint,
+                signalingFactory: makePairingClient,
                 logger: logger
             )
             pairingBootstrap = bootstrap
-            let code = try await bootstrap.start()
-            guard !isStopped, pairingBootstrap === bootstrap else {
-                throw CancellationError()
+            let intent = try runtimeCatalog.require(.installIntent, [activateFirstPair])
+            firstPairActivationIntent = intent.value == 1 ? FirstPairActivationIntent(
+                attemptID: checkpoint.attemptID, selectionEpoch: selectionEpoch,
+                admittedCatalog: phoneCatalog
+            ) : nil
+            publishPresentation(.inviting)
+            try runtimeCatalog.requireHealthy()
+            pairingPresentationTask = Task { [weak self, bootstrap] in
+                for await event in bootstrap.invitationEvents {
+                    await self?.pairingInvitationChanged(event, bootstrap: bootstrap)
+                }
             }
+            let code = try await bootstrap.start()
+            do {
+                try runtimeCatalog.require(.bootstrapStartBeforeOwner, [!isStopped, !Task.isCancelled,
+                    catalogActionID == operation])
+                try runtimeCatalog.require(.bootstrapStartAfterOwner, [catalogOwnerIsValid(),
+                    pairingBootstrap === bootstrap])
+            } catch {
+                checkpoint.revoke()
+                await bootstrap.stop()
+                throw error
+            }
+            let completionLogger = logger
             pairingTask = Task { [weak self, bootstrap] in
+                // Observe the owned task's terminal boundary, not merely transport close.
+                // This carries no invitation, phone identity, or pairing material.
+                defer { completionLogger.info("Worldwide pairing completion task finished") }
                 do {
                     for try await record in bootstrap.completion {
                         await self?.pairingDidCommit(record, bootstrap: bootstrap)
@@ -204,12 +420,123 @@ actor WorldwideHostCoordinator {
                     )
                 }
             }
+            needsFinalEnd = false
+            try await finishCatalogActionSuccessfully(operation)
             return .invitation(code)
         } catch {
-            isStarted = false
-            lifecycle = WorldwideHostLifecycle()
+            _ = try? runtimeCatalog.decide(.clearIntent)
+            firstPairActivationIntent = nil
+            pairingBootstrap?.checkpoint.revoke()
+            await pairingBootstrap?.stop()
             pairingBootstrap = nil
+            pairingPresentationTask?.cancel()
+            pairingPresentationTask = nil
+            if runtimeCatalog.permits(.pairCatchBeforeOwner, [!isStopped, catalogActionID == operation]),
+               runtimeCatalog.permits(.pairCatchAfterOwner, [catalogOwnerIsValid()]) {
+                resumeSelectedPhone()
+            }
             throw error
+        }
+    }
+
+    private func requireQuietCatalog() throws {
+        try runtimeCatalog.require(.quietStructural, [isStarted, !isStopped, catalogActionID == nil,
+            retiringAvailability == nil, pairingBootstrap == nil, pairingTask == nil,
+            mediaService == nil, mediaCompletionTask == nil, pairedRecord == nil || availabilityIsWaiting,
+            lifecycle.activeExchangeID == nil, lifecycle.mediaExchangeID == nil])
+        try runtimeCatalog.require(.owner, [catalogOwnerIsValid()])
+        try runtimeCatalog.require(.authorization, [catalogMutationIsAuthorized()])
+        _ = try pairedPhones()
+    }
+
+    private func beginCatalogAction(_ action: WorldwidePhoneCatalogAction,
+                                    operation role: BelugaRustRuntimeCatalog.Operation) throws
+        -> (id: UUID, activateFirst: Bool) {
+        try requireQuietCatalog()
+        let admission = try runtimeCatalog.require(.begin, [phoneCatalog?.token == action.token,
+            selectionEpoch == action.selectionEpoch], operation: role)
+        let operation = UUID()
+        catalogActionID = operation
+        // Retire generation before the first await. Old callbacks cannot persist or claim media.
+        preparedMediaOwner = nil
+        selectionEpoch = UUID()
+        let retirement = (id: operation, client: availabilityClient, task: availabilityTask)
+        retiringAvailability = retirement
+        availabilityClient = nil
+        availabilityTask = nil
+        availabilityGeneration = nil
+        availabilityBinding = nil
+        availabilityIsWaiting = false
+        retirement.task?.cancel()
+        return (operation, admission.value == 1)
+    }
+
+    private func retireAvailabilityForCatalogAction(_ operation: UUID) async throws {
+        try runtimeCatalog.require(.retirementEnter, [retiringAvailability != nil,
+            retiringAvailability?.id == operation])
+        let retirement = retiringAvailability!
+        await retirement.client?.close()
+        await retirement.task?.value
+        let drained = try runtimeCatalog.decide(.retirementDrained, [retiringAvailability?.id == operation])
+        if drained.value == 1 { retiringAvailability = nil }
+        try runtimeCatalog.require(.retirementFinish, [!isStopped, catalogActionID == operation])
+    }
+
+    private func revalidateCatalogAction(_ operation: UUID, action: WorldwidePhoneCatalogAction) throws {
+        try runtimeCatalog.require(.revalidate, [!isStopped, catalogActionID == operation,
+            retiringAvailability == nil, mediaService == nil, lifecycle.activeExchangeID == nil,
+            lifecycle.mediaExchangeID == nil, phoneCatalog?.token == action.token])
+        try runtimeCatalog.require(.owner, [catalogOwnerIsValid()])
+        try runtimeCatalog.require(.authorization, [catalogMutationIsAuthorized()])
+        _ = try pairedPhones()
+    }
+
+    private func endCatalogAction(_ operation: UUID) {
+        guard let end = try? runtimeCatalog.decide(.end, [catalogActionID == operation, !isStopped]),
+              end.decision == 0 else { return }
+        catalogActionID = nil
+        if end.value == 1 {
+            publishPresentation(currentPresentationPhase, invitation: currentInvitation)
+        }
+    }
+
+    /// Final End and its presentation queries are part of a successful action's proof.
+    /// Failing paths retain their original deferred cleanup and domain-error precedence.
+    private func finishCatalogActionSuccessfully(_ operation: UUID) async throws {
+        endCatalogAction(operation)
+        if runtimeCatalog.isPoisoned {
+            await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+        }
+        try runtimeCatalog.requireHealthy()
+    }
+
+    /// A failed write may resume only the same unchanged durable selection after confirmed
+    /// transport drain. Foreign revision/owner loss remains fenced, not guessed or rolled back.
+    private func recoverCatalogActionIfSafe(_ operation: UUID) {
+        guard runtimeCatalog.permits(.recoveryStructural, [!isStopped, catalogActionID == operation,
+                retiringAvailability == nil]),
+              runtimeCatalog.permits(.recoveryOwner, [catalogOwnerIsValid()]),
+              runtimeCatalog.permits(.recoveryPresence, [identity != nil, phoneCatalog != nil]),
+              let identity, let phoneCatalog,
+              let fresh = try? store.phoneCatalog.loadOrMigrate(for: identity),
+              runtimeCatalog.permits(.recoveryFresh, [fresh == phoneCatalog]) else { return }
+        resumeSelectedPhone()
+    }
+
+    private func resumeSelectedPhone() {
+        guard runtimeCatalog.permits(.resumeBeforeOwner, [!isStopped]),
+              runtimeCatalog.permits(.resumeOwner, [catalogOwnerIsValid()]) else { return }
+        preparedMediaOwner = nil
+        pairedRecord = phoneCatalog?.selectedRecord
+        lifecycle = WorldwideHostLifecycle()
+        if pairedRecord != nil {
+            // Only a fresh lifecycle is admitted; any unexpected refusal starts no availability.
+            do { try lifecycle.start(hasPairedViewer: true) }
+            catch { return }
+            publishPresentation(.pairedConnecting)
+            startAvailabilityLoop()
+        } else {
+            publishPresentation(.unselected)
         }
     }
 
@@ -241,21 +568,54 @@ actor WorldwideHostCoordinator {
         _ record: RemotePairedDeviceRecord,
         bootstrap: WorldwidePairingBootstrap
     ) async {
-        guard !isStopped,
-              pairingBootstrap === bootstrap,
-              record.pairingState == .active else {
-            return
-        }
+        guard runtimeCatalog.permits(.commitBeforeOwner, [!isStopped]),
+              runtimeCatalog.permits(.commitAfterOwner, [catalogOwnerIsValid(),
+                pairingBootstrap === bootstrap, record.pairingState == .active]) else { return }
+        let activationIntent = firstPairActivationIntent
         do {
-            try lifecycle.durablePairingRecordAvailable()
+            try runtimeCatalog.require(.takeIntent, [activationIntent != nil])
         } catch {
             await fail(error, bootstrap: bootstrap)
             return
         }
-        pairedRecord = record
+        firstPairActivationIntent = nil
+        await bootstrap.stop()
+        guard runtimeCatalog.permits(.commitStoppedBeforeOwner, [!isStopped, !Task.isCancelled]),
+              runtimeCatalog.permits(.commitStoppedAfterOwner, [catalogOwnerIsValid(),
+                pairingBootstrap === bootstrap]) else { return }
+        do {
+            let readback = try bootstrap.checkpoint.readback()
+            try runtimeCatalog.require(.recordReadback, [readback.record == record])
+            if let intent = activationIntent {
+                try runtimeCatalog.require(.activationAuthority, [catalogMutationIsAuthorized(), identity != nil])
+                let identity = self.identity!
+                try runtimeCatalog.require(.activationIntent, [
+                    intent.attemptID == bootstrap.checkpoint.attemptID, intent.selectionEpoch == selectionEpoch,
+                    phoneCatalog == intent.admittedCatalog, intent.admittedCatalog.records.isEmpty,
+                    intent.admittedCatalog.selectedPhoneID == nil, intent.admittedCatalog.token.revision == 1,
+                    intent.admittedCatalog.legacyImportReceipt == nil,
+                    readback.snapshot.token.catalogID == intent.admittedCatalog.token.catalogID,
+                    readback.snapshot.records == [record], readback.snapshot.selectedPhoneID == nil,
+                    readback.snapshot.legacyImportReceipt == nil])
+                phoneCatalog = try store.phoneCatalog.selectPhone(
+                    record.remoteDeviceID, for: identity, expectedToken: readback.snapshot.token
+                )
+            } else {
+                phoneCatalog = readback.snapshot
+            }
+        } catch {
+            await fail(error, bootstrap: bootstrap)
+            return
+        }
+        pairingPresentationTask?.cancel()
+        pairingPresentationTask = nil
         pairingBootstrap = nil
         pairingTask = nil
-        startAvailabilityLoop()
+        // An existing selection resumes unchanged; only the exact first-pair intent can select.
+        resumeSelectedPhone()
+        if runtimeCatalog.isPoisoned {
+            await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+        }
     }
 
     /// Recovers a bootstrap disconnect when a durable commit checkpoint already exists.
@@ -263,25 +623,34 @@ actor WorldwideHostCoordinator {
         error: any Error,
         bootstrap: WorldwidePairingBootstrap
     ) async {
-        guard !isStopped,
-              pairingBootstrap === bootstrap,
-              let identity else {
+        guard runtimeCatalog.permits(.bootstrapEndBeforeOwner, [!isStopped]),
+              runtimeCatalog.permits(.bootstrapEndAfterOwner, [catalogOwnerIsValid(),
+                pairingBootstrap === bootstrap, identity != nil]) else { return }
+        do {
+            try runtimeCatalog.require(.clearIntent)
+        } catch {
+            await fail(error, bootstrap: bootstrap)
             return
         }
+        firstPairActivationIntent = nil
+        await bootstrap.stop()
+        guard runtimeCatalog.permits(.bootstrapEndStoppedBeforeOwner, [!isStopped]),
+              runtimeCatalog.permits(.bootstrapEndStoppedAfterOwner, [catalogOwnerIsValid(),
+                pairingBootstrap === bootstrap]) else { return }
         do {
-            guard let record = try store.loadPairedViewer(for: identity) else {
-                await fail(error, bootstrap: bootstrap)
-                return
-            }
-            try lifecycle.durablePairingRecordAvailable()
-            pairedRecord = record
+            let readback = try bootstrap.checkpoint.readback()
+            phoneCatalog = readback.snapshot
+            pairingPresentationTask?.cancel()
+            pairingPresentationTask = nil
             pairingBootstrap = nil
             pairingTask = nil
-            logger.info(
-                "Pairing bootstrap ended after durable state was saved; " +
-                "continuing on authenticated availability recovery"
-            )
-            startAvailabilityLoop()
+            logger.info(readback.record == nil
+                ? "New-phone pairing ended without a durable checkpoint; previous selection retained"
+                : "New-phone pairing checkpoint retained; select that exact phone explicitly to recover")
+            resumeSelectedPhone()
+            if runtimeCatalog.isPoisoned {
+                await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+            }
         } catch {
             await fail(error, bootstrap: bootstrap)
         }
@@ -291,9 +660,14 @@ actor WorldwideHostCoordinator {
 
     /// Starts exactly one generation-tagged availability supervisor task.
     private func startAvailabilityLoop() {
-        guard availabilityTask == nil, !isStopped else { return }
+        guard runtimeCatalog.permits(.availabilityStartBeforeOwner, [availabilityTask == nil, !isStopped]),
+              runtimeCatalog.permits(.availabilityStartAfterOwner, [catalogOwnerIsValid(),
+                pairedRecord != nil, phoneCatalog?.selectedRecord == pairedRecord]),
+              let pairedRecord else { return }
         let generation = UUID()
+        let epoch = selectionEpoch
         availabilityGeneration = generation
+        availabilityBinding = (epoch, pairedRecord.remoteDeviceID, pairedRecord.pairID, pairedRecord.commitID)
         recordConnectionTelemetry(
             .availabilityLoopStarted,
             generation: generation
@@ -304,7 +678,7 @@ actor WorldwideHostCoordinator {
             if let override {
                 await override()
             } else {
-                await self.runAvailabilityLoop()
+                await self.runAvailabilityLoop(generation: generation, epoch: epoch)
             }
             await self.availabilityLoopDidEnd(generation: generation)
         }
@@ -312,10 +686,25 @@ actor WorldwideHostCoordinator {
 
     /// Converts an unsanctioned current-loop exit into a fatal host failure.
     private func availabilityLoopDidEnd(generation: UUID) async {
+        defer { availabilityLoopDidEndObserver() }
+        // Native exact custody fences even bridge-failure cleanup. A retiring task must
+        // never shut down a successor or join itself through shutdown's retirement slot.
         guard availabilityGeneration == generation else { return }
+        let admitted = runtimeCatalog.permits(.availabilityEnded, [true])
+        if runtimeCatalog.isPoisoned {
+            await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+            return
+        }
+        guard admitted else { return }
         availabilityGeneration = nil
+        availabilityBinding = nil
         availabilityTask = nil
-        guard !Task.isCancelled, !isStopped else { return }
+        let terminal = runtimeCatalog.permits(.availabilityEndedTerminal, [!Task.isCancelled, !isStopped])
+        if runtimeCatalog.isPoisoned {
+            await shutdown(throwing: WorldwidePhoneCatalogRuntimeError.invalidRuntimeCatalogBridge)
+            return
+        }
+        guard terminal else { return }
         recordConnectionTelemetry(
             .availabilityLoopUnexpectedlyEnded,
             generation: generation,
@@ -331,10 +720,11 @@ actor WorldwideHostCoordinator {
     ///
     /// A WebSocket upgrade alone does not reset backoff: the Worker must first send a
     /// protocol state proving that this socket owns the host availability role.
-    private func runAvailabilityLoop() async {
+    private func runAvailabilityLoop(generation: UUID, epoch: UUID) async {
         var retryPolicy = WorldwideAvailabilityRetryPolicy()
         var retryOrdinal: UInt16 = 0
-        while !Task.isCancelled, !isStopped {
+        while !Task.isCancelled, ownsAvailabilityGeneration(generation, epoch: epoch) {
+            var iterationClient: (any WorldwideHostAvailabilityTransport)?
             do {
                 guard let record = pairedRecord else {
                     throw WorldwideHostCoordinatorError.activePairMissing
@@ -343,12 +733,18 @@ actor WorldwideHostCoordinator {
                     endpoint,
                     record.availabilityLocator()
                 )
+                iterationClient = client
                 recordConnectionTelemetry(
                     .availabilitySocketOpening,
                     retryOrdinal: retryOrdinal
                 )
                 availabilityClient = client
+                availabilityIsWaiting = false
                 let events = try await client.connect()
+                guard isCurrentAvailabilityClient(client) else {
+                    await client.close()
+                    return
+                }
                 recordConnectionTelemetry(
                     .availabilitySocketOpened,
                     retryOrdinal: retryOrdinal
@@ -357,8 +753,9 @@ actor WorldwideHostCoordinator {
                     try Task.checkCancellation()
                     guard !isStopped, isCurrentAvailabilityClient(client) else { return }
                     try await handleAvailabilityEvent(event, client: client)
+                    guard isCurrentAvailabilityClient(client) else { return }
                     if event.validatesHostAvailability,
-                       retryPolicy.observedValidAvailabilityState() {
+                       try retryPolicy.observedValidAvailabilityState(using: availabilityRetryProducer) {
                         retryOrdinal = 0
                         logger.info(
                             "Worldwide paired-device availability is online " +
@@ -367,20 +764,35 @@ actor WorldwideHostCoordinator {
                         )
                     }
                 }
-                guard !isStopped else { return }
+                guard ownsAvailabilityGeneration(generation, epoch: epoch) else { return }
                 throw RendezvousSignalingError.connectionClosed
             } catch {
                 // Foundation transports can surface a literal CancellationError without
                 // cancelling this owner task. Treat only owner cancellation as terminal;
                 // otherwise the durable-pair availability loop must clean up and retry.
-                guard !Task.isCancelled, !isStopped else { return }
+                guard !Task.isCancelled, ownsAvailabilityGeneration(generation, epoch: epoch) else { return }
                 if let exchangeID = lifecycle.activeExchangeID {
                     lifecycle.availabilityPeerLeft(exchangeID: exchangeID)
                 }
-                let client = availabilityClient
-                availabilityClient = nil
-                await client?.close()
-                let retryDelaySeconds = retryPolicy.delayAfterFailure()
+                // Close only this iteration's exact client, never a successor's global slot.
+                if let iterationClient, isCurrentAvailabilityClient(iterationClient) {
+                    availabilityClient = nil
+                    availabilityIsWaiting = false
+                }
+                await iterationClient?.close()
+                guard !Task.isCancelled, ownsAvailabilityGeneration(generation, epoch: epoch) else { return }
+                // A copied-policy fault is not a transport failure and must not consume a second proposal.
+                if error is WorldwideAvailabilityRetryError {
+                    await failAvailabilityRetryBridge()
+                    return
+                }
+                let retryDelaySeconds: Int
+                do {
+                    retryDelaySeconds = try retryPolicy.delayAfterFailure(using: availabilityRetryProducer)
+                } catch {
+                    await failAvailabilityRetryBridge()
+                    return
+                }
                 recordConnectionTelemetry(
                     .retryScheduled,
                     retryOrdinal: retryOrdinal,
@@ -389,6 +801,7 @@ actor WorldwideHostCoordinator {
                 )
                 retryOrdinal = retryOrdinal == .max ? .max : retryOrdinal + 1
                 let sanitizedFailure = connectionTelemetryFailure(for: error).rawValue
+                publishPresentation(.unavailable)
                 logger.error(
                     "Worldwide availability disconnected; retrying in " +
                     "\(retryDelaySeconds) seconds " +
@@ -397,7 +810,7 @@ actor WorldwideHostCoordinator {
                 do {
                     try await availabilityRetrySleep(retryDelaySeconds)
                 } catch {
-                    guard !Task.isCancelled, !isStopped else { return }
+                    guard !Task.isCancelled, ownsAvailabilityGeneration(generation, epoch: epoch) else { return }
                     logger.error(
                         "Worldwide availability retry delay failed without owner " +
                         "cancellation; retrying immediately"
@@ -407,12 +820,49 @@ actor WorldwideHostCoordinator {
         }
     }
 
+    /// Called only after this iteration's exact client was closed and current generation rechecked.
+    private func failAvailabilityRetryBridge() async {
+        recordConnectionTelemetry(.attemptFailed, failure: .unknown, terminal: .failed)
+        logger.error("Worldwide availability retry policy bridge invalid; host stopped")
+        await shutdown(throwing: WorldwideAvailabilityRetryError.invalidBridge)
+    }
+
     /// Uses object identity to reject callbacks from a replaced signaling connection.
     private func isCurrentAvailabilityClient(
         _ client: any WorldwideHostAvailabilityTransport
     ) -> Bool {
-        guard let availabilityClient else { return false }
-        return ObjectIdentifier(availabilityClient) == ObjectIdentifier(client)
+        guard runtimeCatalog.permits(.currentClientPresence, [availabilityClient != nil,
+                availabilityGeneration != nil]),
+              let availabilityClient, let generation = availabilityGeneration,
+              ownsAvailabilityGeneration(generation, epoch: selectionEpoch) else { return false }
+        return runtimeCatalog.permits(.currentClientExact,
+            [ObjectIdentifier(availabilityClient) == ObjectIdentifier(client)])
+    }
+
+    private func ownsAvailabilityGeneration(_ generation: UUID, epoch: UUID) -> Bool {
+        guard runtimeCatalog.permits(.generationBeforeOwner, [!isStopped]) else { return false }
+        let ownerIsValid = catalogOwnerIsValid()
+        let binding = availabilityBinding
+        return runtimeCatalog.permits(.generationAfterOwner, [ownerIsValid,
+            availabilityGeneration == generation, selectionEpoch == epoch, binding != nil,
+            binding?.epoch == epoch, pairedRecord != nil,
+            binding.map { phoneCatalog?.selectedPhoneID == $0.phoneID } ?? false,
+            binding.map { pairedRecord?.remoteDeviceID == $0.phoneID } ?? false,
+            binding.map { pairedRecord?.pairID == $0.pairID } ?? false,
+            binding.map { pairedRecord?.commitID == $0.commitID } ?? false])
+    }
+
+    /// Existing selected binding only: never add, upsert, select, or consult legacy bytes.
+    private func persistSelected(_ record: RemotePairedDeviceRecord,
+                                 client: any WorldwideHostAvailabilityTransport) throws {
+        try runtimeCatalog.require(.persistSelected, [isCurrentAvailabilityClient(client),
+            identity != nil, phoneCatalog != nil, phoneCatalog?.selectedPhoneID == record.remoteDeviceID,
+            pairedRecord?.pairID == record.pairID, pairedRecord?.commitID == record.commitID])
+        let identity = self.identity!, snapshot = phoneCatalog!
+        phoneCatalog = try store.phoneCatalog.updatePairedPhone(
+            record, for: identity, expectedToken: snapshot.token
+        )
+        pairedRecord = record
     }
 
     /// Applies one authenticated availability event to exchange and media ownership.
@@ -422,20 +872,26 @@ actor WorldwideHostCoordinator {
     ) async throws {
         switch event {
         case .waiting:
+            availabilityIsWaiting = lifecycle.activeExchangeID == nil
+            publishPresentation(mediaService == nil ? .pairedWaiting : .sessionPrepared)
             recordConnectionTelemetry(.hostWorkerWaitingForViewer)
             logger.debug("Worldwide availability is waiting for the paired iPhone")
 
         case .ready(_, let exchangeID):
+            availabilityIsWaiting = false
             recordConnectionTelemetry(
                 .availabilityReady,
                 exchangeID: exchangeID.wireValue
             )
             if let activeExchangeID = lifecycle.activeExchangeID,
                activeExchangeID != exchangeID.wireValue {
-                try await stopActiveMediaSession()
+                // Rotate only availability here. A prepared media owner is retired
+                // by an authenticated reconnect, its own completion, or shutdown.
+                guard isCurrentAvailabilityClient(client) else { throw CancellationError() }
                 lifecycle.availabilityPeerLeft(exchangeID: activeExchangeID)
             }
             try lifecycle.availabilityReady(exchangeID: exchangeID.wireValue)
+            publishPresentation(.preparingSession)
             try await sendPairingRecoveryIfNeeded(client: client)
 
         case .signal(.pairingCommit(let commit)):
@@ -460,6 +916,8 @@ actor WorldwideHostCoordinator {
 
         case .peerLeft(_, let exchangeID):
             lifecycle.availabilityPeerLeft(exchangeID: exchangeID.wireValue)
+            availabilityIsWaiting = lifecycle.activeExchangeID == nil
+            publishPresentation(mediaService == nil ? .pairedWaiting : .sessionPrepared)
             logger.debug("The paired iPhone left the availability exchange")
 
         case .serverError(let error):
@@ -483,12 +941,14 @@ actor WorldwideHostCoordinator {
         switch record.recoveryAction {
         case .awaitProposal, .none:
             commit = nil
+        case .invalidBridge:
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
         case .issueProposal:
             commit = try record.prepareProposal(using: identity)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
         case .issueCompletion:
             commit = try record.prepareCompletion(using: identity)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
         case .resend(let savedCommit):
             commit = savedCommit
         }
@@ -496,9 +956,10 @@ actor WorldwideHostCoordinator {
         guard let commit else { return }
 
         try await client.send(.pairingCommit(commit))
+        guard isCurrentAvailabilityClient(client), pairedRecord == record else { throw CancellationError() }
         if commit.phase == .completion {
             try record.markCompletionSent(commitID: commit.commitID)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
             pairedRecord = record
         }
     }
@@ -516,19 +977,20 @@ actor WorldwideHostCoordinator {
         switch commit.phase {
         case .acknowledgement:
             try record.acceptAcknowledgement(commit)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
             let completion = try record.prepareCompletion(using: identity)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
             pairedRecord = record
 
             try await client.send(.pairingCommit(completion))
+            guard isCurrentAvailabilityClient(client), pairedRecord == record else { throw CancellationError() }
             try record.markCompletionSent(commitID: completion.commitID)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
             pairedRecord = record
 
         case .activationAcknowledgement:
             try record.acceptActivationAcknowledgement(commit)
-            try store.savePairedViewer(record, for: identity)
+            try persistSelected(record, client: client)
             pairedRecord = record
             logger.info("Worldwide pairing commit recovery completed")
 
@@ -538,6 +1000,49 @@ actor WorldwideHostCoordinator {
     }
 
     // MARK: - Media sessions
+
+    private var connectedMediaTarget: BelugaConnectedPhoneMediaTarget? {
+        guard runtimeCatalog.permits(.mediaTargetBeforeOwner, [!isStopped, !shutdownIsInProgress]) else { return nil }
+        let ownerIsValid = catalogOwnerIsValid()
+        let owner = preparedMediaOwner
+        guard runtimeCatalog.permits(.mediaTargetAfterOwner, [ownerIsValid, owner != nil,
+                mediaService != nil, owner.map { mediaService === $0.service } ?? false,
+                owner.map { selectionEpoch == $0.selectionEpoch } ?? false,
+                owner.map { lifecycle.mediaExchangeID == $0.exchangeID } ?? false,
+                pairedRecord != nil, pairedRecord?.pairingState == .active,
+                owner.map { pairedRecord == $0.record } ?? false,
+                phoneCatalog?.selectedRecord == pairedRecord]),
+              let owner, let record = pairedRecord else { return nil }
+        return .init(phoneID: record.remoteDeviceID, selectionEpoch: owner.selectionEpoch,
+                     exchangeID: owner.exchangeID, mediaOwnerID: owner.id)
+    }
+
+    /// Revoke only this exact owner's menu admission before suspending for native teardown.
+    /// This must not release retained source ownership or grant a quiet catalog boundary.
+    private func retirePreparedMediaOwner(service: (any WorldwideHostMediaService)?) {
+        guard let service, let owner = preparedMediaOwner, owner.service === service else { return }
+        // This is revocation only. A corrupt admission bridge cannot prevent exact native
+        // cleanup or convert logical revocation into release of retained capture custody.
+        if !runtimeCatalog.isPoisoned {
+            _ = runtimeCatalog.permits(.preparedRetire, [true, true, true])
+        }
+        preparedMediaOwner = nil
+        publishPresentation(currentPresentationPhase, invitation: currentInvitation)
+    }
+
+    /// Never reinterpret a delayed menu click as permission to address a newer phone/session.
+    /// This returns an offer ID, not a completed transfer; the phone shows native completion.
+    func moveMediaToConnectedPhone(target: BelugaConnectedPhoneMediaTarget) async throws -> UUID {
+        try runtimeCatalog.require(.mediaMovePrefix, [!Task.isCancelled])
+        try runtimeCatalog.require(.mediaMove, [connectedMediaTarget == target,
+            mediaService != nil])
+        let service = mediaService!
+        let id = try await service.moveMediaToConnectedPhone()
+        try runtimeCatalog.require(.mediaMovePrefix, [!Task.isCancelled])
+        try runtimeCatalog.require(.mediaMove, [connectedMediaTarget == target,
+            mediaService === service])
+        return id
+    }
 
     /// Authenticates a reconnect request and prepares one fresh WebRTC media rendezvous.
     ///
@@ -557,8 +1062,9 @@ actor WorldwideHostCoordinator {
 
         let responder = try record.respond(to: request, using: identity)
         // The replay high-water mark must be durable before any response is sent.
-        try store.savePairedViewer(record, for: identity)
+        try persistSelected(record, client: client)
         pairedRecord = record
+        let admittedSelectionEpoch = selectionEpoch
 
         try await stopActiveMediaSession()
         guard !isStopped,
@@ -567,25 +1073,30 @@ actor WorldwideHostCoordinator {
             throw CancellationError()
         }
 
-        let service = try WorldwideScreenService(
-            endpoint: endpoint,
-            sessionCredential: responder.credential,
-            forceRelay: forceRelay,
-            screenDisplayID: screenDisplayID,
-            screenDisplayRequirement: screenDisplayRequirement,
-            systemAudioDisplayID: systemAudioDisplayID,
-            maximumWidth: maximumWidth,
-            framesPerSecond: framesPerSecond,
-            maximumVideoBitrate: maximumVideoBitrate,
-            featureProfile: .fullPrimary,
-            remoteInputController: remoteInputController,
-            captureLifetime: captureLifetime,
-            iPhoneMicrophoneForwardingPolicy:
-                iPhoneMicrophoneForwardingPolicy,
-            makeServiceTeardownWatchdog: makeMediaServiceTeardownWatchdog,
-            makeNativeCaptureWatchdog: makeNativeCaptureWatchdog,
-            logger: logger
-        )
+        let service: any WorldwideHostMediaService
+        if let makeMediaService {
+            service = try makeMediaService(responder.credential)
+        } else {
+            service = try WorldwideScreenService(
+                endpoint: endpoint,
+                sessionCredential: responder.credential,
+                forceRelay: forceRelay,
+                screenDisplayID: screenDisplayID,
+                screenDisplayRequirement: screenDisplayRequirement,
+                systemAudioDisplayID: systemAudioDisplayID,
+                maximumWidth: maximumWidth,
+                framesPerSecond: framesPerSecond,
+                maximumVideoBitrate: maximumVideoBitrate,
+                featureProfile: .fullPrimary,
+                remoteInputController: remoteInputController,
+                captureLifetime: captureLifetime,
+                iPhoneMicrophoneForwardingPolicy:
+                    iPhoneMicrophoneForwardingPolicy,
+                makeServiceTeardownWatchdog: makeMediaServiceTeardownWatchdog,
+                makeNativeCaptureWatchdog: makeNativeCaptureWatchdog,
+                logger: logger
+            )
+        }
         try lifecycle.mediaStarted(exchangeID: exchangeID)
         mediaService = service
         do {
@@ -601,6 +1112,17 @@ actor WorldwideHostCoordinator {
                 await self?.mediaDidEnd(service: service, exchangeID: exchangeID)
             }
             try await client.send(.reconnectResponse(responder.response))
+            try runtimeCatalog.require(.preparedLifecyclePrefix, [!isStopped, !shutdownIsInProgress,
+                !Task.isCancelled])
+            try runtimeCatalog.require(.preparedBeforeOwner, [isCurrentAvailabilityClient(client),
+                lifecycle.activeExchangeID == exchangeID, lifecycle.mediaExchangeID == exchangeID,
+                mediaService === service, selectionEpoch == admittedSelectionEpoch])
+            try runtimeCatalog.require(.preparedAfterOwner, [catalogOwnerIsValid(),
+                pairedRecord == record, record.pairingState == .active, phoneCatalog?.selectedRecord == record])
+            // A fresh nonce distinguishes replacement services even on the same availability
+            // exchange. A retained service or generic availability phase never grants this.
+            preparedMediaOwner = .init(id: UUID(), service: service,
+                selectionEpoch: admittedSelectionEpoch, exchangeID: exchangeID, record: record)
             recordConnectionTelemetry(
                 .reconnectResponseSent,
                 exchangeID: exchangeID
@@ -610,7 +1132,9 @@ actor WorldwideHostCoordinator {
                 exchangeID: exchangeID
             )
             logger.info("A fresh encrypted media rendezvous is ready for the paired iPhone")
+            publishPresentation(.sessionPrepared)
         } catch {
+            retirePreparedMediaOwner(service: service)
             await service.stop()
             if await service.hasUnconfirmedNativeCaptureStop() {
                 let stopError = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
@@ -622,20 +1146,27 @@ actor WorldwideHostCoordinator {
                 mediaService = nil
                 mediaCompletionTask?.cancel()
                 mediaCompletionTask = nil
+                if lifecycle.mediaExchangeID == exchangeID {
+                    lifecycle.mediaEnded(exchangeID: exchangeID)
+                }
             }
-            lifecycle.mediaEnded(exchangeID: exchangeID)
             throw error
         }
     }
 
     /// Releases only the media service that still owns the active exchange.
     private func mediaDidEnd(
-        service: WorldwideScreenService,
+        service: any WorldwideHostMediaService,
         exchangeID: String
     ) async {
         guard mediaService === service else { return }
+        retirePreparedMediaOwner(service: service)
         let nativeStopIsUnconfirmed = await service.hasUnconfirmedNativeCaptureStop()
-        guard mediaService === service, !isStopped else { return }
+        guard mediaService === service else {
+            logger.debug("A retired media completion was ignored")
+            return
+        }
+        guard !isStopped else { return }
         if nativeStopIsUnconfirmed {
             let error = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
             logger.error(error.localizedDescription)
@@ -645,6 +1176,7 @@ actor WorldwideHostCoordinator {
         mediaService = nil
         mediaCompletionTask = nil
         lifecycle.mediaEnded(exchangeID: exchangeID)
+        publishPresentation(.pairedWaiting)
         logger.info("Worldwide media ended; the Mac remains available for the paired iPhone")
     }
 
@@ -654,6 +1186,7 @@ actor WorldwideHostCoordinator {
         mediaCompletionTask = nil
         let service = mediaService
         let exchangeID = lifecycle.mediaExchangeID
+        retirePreparedMediaOwner(service: service)
         await service?.stop()
         if let service, await service.hasUnconfirmedNativeCaptureStop() {
             let error = WorldwideHostCoordinatorError.nativeCaptureStopUnconfirmed
@@ -663,9 +1196,9 @@ actor WorldwideHostCoordinator {
         }
         if mediaService === service {
             mediaService = nil
-        }
-        if let exchangeID {
-            lifecycle.mediaEnded(exchangeID: exchangeID)
+            if let exchangeID, lifecycle.mediaExchangeID == exchangeID {
+                lifecycle.mediaEnded(exchangeID: exchangeID)
+            }
         }
     }
 
@@ -688,24 +1221,36 @@ actor WorldwideHostCoordinator {
         }
         teardownDidBegin()
         isStopped = true
+        preparedMediaOwner = nil
+        runtimeCatalog.revoke()
+        firstPairActivationIntent = nil
+        catalogActionID = nil
+        selectionEpoch = UUID()
         shutdownIsInProgress = true
         defer { finishShutdown() }
         lifecycle.stop()
+        publishPresentation(.stopped)
 
         pairingTask?.cancel()
         pairingTask = nil
+        pairingPresentationTask?.cancel()
+        pairingPresentationTask = nil
         let availabilityTask = availabilityTask
         self.availabilityTask = nil
         availabilityGeneration = nil
+        availabilityBinding = nil
+        availabilityIsWaiting = false
         availabilityTask?.cancel()
         mediaCompletionTask?.cancel()
         mediaCompletionTask = nil
 
         let bootstrap = pairingBootstrap
+        bootstrap?.checkpoint.revoke()
         pairingBootstrap = nil
         let availability = availabilityClient
         availabilityClient = nil
         let media = mediaService
+        let retirement = retiringAvailability
 
         // Revoke media and restore audio routing before waiting on network transports. A wedged
         // WebSocket must never extend the interval in which capture callbacks remain authorized.
@@ -720,7 +1265,10 @@ actor WorldwideHostCoordinator {
         }
         async let bootstrapStop: Void = bootstrap?.stop() ?? ()
         async let availabilityStop: Void = availability?.close() ?? ()
-        _ = await (bootstrapStop, availabilityStop)
+        async let retiredAvailabilityStop: Void = retirement?.client?.close() ?? ()
+        _ = await (bootstrapStop, availabilityStop, retiredAvailabilityStop)
+        await retirement?.task?.value
+        if retiringAvailability?.id == retirement?.id { retiringAvailability = nil }
 
         let terminalError: (any Error)? = error ?? (
             nativeScreenStopIsUnconfirmed
@@ -739,9 +1287,44 @@ actor WorldwideHostCoordinator {
         return !nativeScreenStopIsUnconfirmed
     }
 
+    private func pairingInvitationChanged(
+        _ event: BelugaPairingInvitationEvent, bootstrap: WorldwidePairingBootstrap
+    ) {
+        guard runtimeCatalog.permits(.invitationChanged, [!isStopped, pairingBootstrap === bootstrap]) else { return }
+        switch event {
+        case .available(let invitation): publishPresentation(.inviting, invitation: invitation)
+        case .hidden: publishPresentation(.inviting)
+        }
+    }
+
+    private func publishPresentation(
+        _ phase: BelugaHostPresentationPhase, invitation: BelugaPairingInvitation? = nil
+    ) {
+        currentPresentationPhase = phase
+        currentInvitation = invitation
+        presentationRevision += 1
+        let ticket = try? phoneCatalogAction()
+        let phones = BelugaPhoneCatalogPresentation(
+            items: phoneCatalog?.records.map {
+                BelugaPairedPhonePresentation(id: $0.remoteDeviceID, name: $0.remoteDisplayName,
+                                              needsPairingRecovery: $0.pairingState != .active)
+            } ?? [],
+            selectedPhoneID: phoneCatalog?.selectedPhoneID,
+            action: ticket,
+            canAddPhone: ticket != nil && (phoneCatalog?.records.count ?? 0)
+                < WorldwidePairedPhoneCatalogStore.maximumPhoneCount
+        )
+        presentation(BelugaHostPresentation(
+            revision: presentationRevision, phase: phase,
+            pairedPhoneName: pairedRecord?.remoteDisplayName, invitation: invitation, phones: phones,
+            connectedMediaTarget: connectedMediaTarget
+        ))
+    }
+
     /// Retries an exact source retained by a failed native stop and preserves it on uncertainty.
     private func retryRetainedMediaStopIfNeeded() async -> Bool {
         guard let media = mediaService else { return true }
+        retirePreparedMediaOwner(service: media)
         await media.stop()
         guard await media.hasUnconfirmedNativeCaptureStop() else {
             if mediaService === media {

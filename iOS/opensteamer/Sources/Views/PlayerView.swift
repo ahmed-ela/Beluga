@@ -138,6 +138,7 @@ struct PlayerView: View {
         .fullScreenCover(isPresented: $showsMacScreen) {
             if let descriptor = viewModel.screenVideoConnectionDescriptor {
                 ScreenViewerView(descriptor: descriptor)
+                    .modifier(YouTubeHandoffPresenter(coordinator: worldwideViewModel.mediaHandoff, priority: 1))
             }
         }
         .fullScreenCover(item: $worldwideScreenLease) { lease in
@@ -146,6 +147,7 @@ struct PlayerView: View {
                 dismissPresentation: dismissWorldwideScreen
             )
                 .environmentObject(worldwideViewModel)
+                .modifier(YouTubeHandoffPresenter(coordinator: worldwideViewModel.mediaHandoff, priority: 1))
         }
         .onChange(of: viewModel.selectedServer) { _, selectedServer in
             if selectedServer == nil {

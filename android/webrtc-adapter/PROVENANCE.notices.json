@@ -1,0 +1,85 @@
+{
+  "schema": "beluga.webrtc-notices.provenance.v1",
+  "status": "EXACT_UPSTREAM_NATIVE_NOTICE_BOUND_NOT_LICENSE_OR_SECURITY_CLEARANCE",
+  "upstream": {
+    "androidRelease": "v150.7871.01",
+    "androidReleaseURL": "https://github.com/webrtc-sdk/android/releases/tag/v150.7871.01",
+    "sourceRevision": "73cb8180f7258ee292878d6edd05177f41883962",
+    "buildTag": "m150.7871.01",
+    "buildRevision": "06e3410d8f67d08202e26f55225705596b60778e",
+    "buildRunURL": "https://github.com/webrtc-sdk/webrtc-build/actions/runs/33350496482",
+    "packagerURL": "https://raw.githubusercontent.com/webrtc-sdk/webrtc-build/06e3410d8f67d08202e26f55225705596b60778e/build/run.py",
+    "generatorURL": "https://raw.githubusercontent.com/webrtc-sdk/webrtc/73cb8180f7258ee292878d6edd05177f41883962/tools_webrtc/libs/generate_licenses.py"
+  },
+  "artifact": {
+    "id": 9744480229,
+    "name": "webrtc.android.tar.gz",
+    "url": "https://api.github.com/repos/webrtc-sdk/webrtc-build/actions/artifacts/9744480229/zip",
+    "container": "GitHub Actions artifact ZIP",
+    "sha256": "a38982b7ac42f143b01accf302955132754c768532689fe4f4bec689b48d6c6e",
+    "tarMember": "webrtc.tar.gz",
+    "noticeMember": "webrtc/NOTICE",
+    "versionsMember": "webrtc/VERSIONS",
+    "aarMember": "webrtc/aar/libwebrtc.aar"
+  },
+  "byteBinding": {
+    "method": "The artifact's embedded AAR and all four native members were SHA-256 compared with the retained raw AAR and native payload pins. The derived AAR preserves those native payloads unchanged.",
+    "rawAarSHA256": "8ad5e5fd02f0177743ddb566bea329006bef7689b944f6351717cd1d018958c0",
+    "derivedAarSHA256": "e98a90d72fa186d9feb92ea3cde3a6dda06e68361c061bce9f72bf854c92bf6d",
+    "nativePayloadSHA256": {
+      "jni/arm64-v8a/libjingle_peerconnection_so.so": "7b299113fcd743de7dc5559686b21fc2681b2c8598347d8dc0743d2e004995ca",
+      "jni/armeabi-v7a/libjingle_peerconnection_so.so": "762f3d5e1c4c69c3f02f2383540f40e1142cb631e9d99e86bdb1602f4c277559",
+      "jni/x86/libjingle_peerconnection_so.so": "80e7b1b7e07bb5a53841a8cacabf942a6f3eb8ee9759a1731741dd912f367f19",
+      "jni/x86_64/libjingle_peerconnection_so.so": "0717afcc43da0c1aabd904f9ef0653efc8f3d37b5750f39a123697e7910b623a"
+    }
+  },
+  "apkAssetDirectory": "third-party/webrtc-sdk-150.7871.01/",
+  "noticeAssets": {
+    "LICENSE.webrtc": {
+      "bytes": 1511,
+      "sha256": "ab00a482b6a3902e40211b43c5d0441962ea99b6cc7c25c0f243fa270b78d482",
+      "sourceURL": "https://raw.githubusercontent.com/webrtc-sdk/webrtc/73cb8180f7258ee292878d6edd05177f41883962/LICENSE"
+    },
+    "PATENTS.webrtc": {
+      "bytes": 1388,
+      "sha256": "01462e2068d1a04c2274f3389773014c14ed9bc3446b28303543bd3e3c064145",
+      "sourceURL": "https://raw.githubusercontent.com/webrtc-sdk/webrtc/73cb8180f7258ee292878d6edd05177f41883962/PATENTS"
+    },
+    "NOTICE.beluga": {
+      "bytes": 1633,
+      "sha256": "4355bb7125f3bac60b196bdd0f53d20fb64cfdc6b8686609665ee3772972cc93",
+      "source": "Beluga-authored adapter modification and provenance notice"
+    },
+    "NOTICE.native.webrtc": {
+      "bytes": 202324,
+      "sha256": "f851751c645ded1b53ac12ff643557c5a10f8c8db45637c0ba525e62739d68f3",
+      "artifactMember": "webrtc/NOTICE",
+      "transformation": "none; exact generated inventory bytes, including Markdown and HTML escapes"
+    },
+    "VERSIONS.webrtc": {
+      "bytes": 1468,
+      "sha256": "a7eba38f85176bb10b0dda7ab59df7cb759cfdef2ac5921b1528c9ed9b498edb",
+      "artifactMember": "webrtc/VERSIONS",
+      "transformation": "none"
+    },
+    "NOTICE.fork.webrtc": {
+      "bytes": 1216,
+      "sha256": "e00ec4edd5966821115deb6c73e0e158524b310250fbda3a50e8d542b2a501c2",
+      "sourceURL": "https://raw.githubusercontent.com/webrtc-sdk/webrtc/73cb8180f7258ee292878d6edd05177f41883962/NOTICE",
+      "transformation": "none"
+    },
+    "LICENSE.Apache-2.0": {
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "sourceURL": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+      "transformation": "none"
+    }
+  },
+  "limits": [
+    "This metadata is packaged alongside the pinned notice assets; it does not contain a self-referential hash.",
+    "The generated inventory covers the upstream Android build-target/architecture union, not an independently audited minimal linked-component list.",
+    "The generic public release webrtc.tar.gz is not substituted for the exact unprefixed Actions artifact.",
+    "Byte binding is provenance, not independent completeness, legal, patent, security or runtime clearance.",
+    "Actual built-APK notice delivery must be checked separately. No native rebuild or derived-AAR modification was performed for notice collection."
+  ]
+}

@@ -51,6 +51,7 @@ enum BlackHoleMicrophoneOutputFormatRejection:
     case unexpectedDeviceSampleRate(actual: Double)
     case unexpectedDeviceChannelCount(actual: UInt32)
     case converterError(actual: UInt32)
+    case rustBridgeRefused
 
     var coreAudioStatus: OSStatus {
         switch self {
@@ -70,7 +71,8 @@ enum BlackHoleMicrophoneOutputFormatRejection:
              .unexpectedStreamReserved,
              .unexpectedDeviceSampleRate,
              .unexpectedDeviceChannelCount,
-             .converterError:
+             .converterError,
+             .rustBridgeRefused:
             return kAudio_ParamError
         }
     }
@@ -110,6 +112,8 @@ enum BlackHoleMicrophoneOutputFormatRejection:
             return "queue device channel count was \(actual), expected 1"
         case .converterError(let actual):
             return "queue converter error was nonzero (actual=\(actual))"
+        case .rustBridgeRefused:
+            return "Rust output-format decision was refused"
         }
     }
 }
@@ -154,130 +158,10 @@ struct BlackHoleMicrophoneOutputFormatPolicy: Sendable {
         BlackHoleMicrophoneOutputFormatObservation,
         BlackHoleMicrophoneOutputFormatRejection
     > {
-        guard evidence.streamDescriptionStatus == noErr else {
-            return .failure(
-                .streamDescriptionCoreAudioStatus(
-                    evidence.streamDescriptionStatus
-                )
-            )
+        do {
+            return try BelugaRustMicrophoneOutputFormat.evaluate(evidence)
+        } catch {
+            return .failure(.rustBridgeRefused)
         }
-        guard evidence.deviceSampleRateStatus == noErr else {
-            return .failure(
-                .deviceSampleRateCoreAudioStatus(
-                    evidence.deviceSampleRateStatus
-                )
-            )
-        }
-        guard evidence.deviceChannelCountStatus == noErr else {
-            return .failure(
-                .deviceChannelCountCoreAudioStatus(
-                    evidence.deviceChannelCountStatus
-                )
-            )
-        }
-        guard evidence.converterErrorReadStatus == noErr else {
-            return .failure(
-                .converterErrorCoreAudioStatus(
-                    evidence.converterErrorReadStatus
-                )
-            )
-        }
-
-        let stream = evidence.streamDescription
-        guard stream.mSampleRate == Self.requiredSampleRate else {
-            return .failure(
-                .unexpectedStreamSampleRate(
-                    actual: stream.mSampleRate
-                )
-            )
-        }
-        guard stream.mFormatID == kAudioFormatLinearPCM else {
-            return .failure(
-                .unexpectedStreamFormatID(actual: stream.mFormatID)
-            )
-        }
-        guard stream.mFormatFlags == Self.requiredFormatFlags else {
-            return .failure(
-                .unexpectedStreamFormatFlags(
-                    actual: stream.mFormatFlags
-                )
-            )
-        }
-        guard stream.mBytesPerPacket == 2 else {
-            return .failure(
-                .unexpectedStreamBytesPerPacket(
-                    actual: stream.mBytesPerPacket
-                )
-            )
-        }
-        guard stream.mFramesPerPacket == 1 else {
-            return .failure(
-                .unexpectedStreamFramesPerPacket(
-                    actual: stream.mFramesPerPacket
-                )
-            )
-        }
-        guard stream.mBytesPerFrame == 2 else {
-            return .failure(
-                .unexpectedStreamBytesPerFrame(
-                    actual: stream.mBytesPerFrame
-                )
-            )
-        }
-        guard stream.mChannelsPerFrame == Self.requiredChannelCount else {
-            return .failure(
-                .unexpectedStreamChannelsPerFrame(
-                    actual: stream.mChannelsPerFrame
-                )
-            )
-        }
-        guard stream.mBitsPerChannel == 16 else {
-            return .failure(
-                .unexpectedStreamBitsPerChannel(
-                    actual: stream.mBitsPerChannel
-                )
-            )
-        }
-        guard stream.mReserved == 0 else {
-            return .failure(
-                .unexpectedStreamReserved(actual: stream.mReserved)
-            )
-        }
-        guard evidence.deviceSampleRate == Self.requiredSampleRate else {
-            return .failure(
-                .unexpectedDeviceSampleRate(
-                    actual: evidence.deviceSampleRate
-                )
-            )
-        }
-        guard evidence.deviceChannelCount == Self.requiredChannelCount else {
-            return .failure(
-                .unexpectedDeviceChannelCount(
-                    actual: evidence.deviceChannelCount
-                )
-            )
-        }
-        guard evidence.converterError == 0 else {
-            return .failure(
-                .converterError(actual: evidence.converterError)
-            )
-        }
-
-        return .success(
-            BlackHoleMicrophoneOutputFormatObservation(
-                sampleRate: stream.mSampleRate,
-                formatID: stream.mFormatID,
-                formatFlags: stream.mFormatFlags,
-                bytesPerPacket: stream.mBytesPerPacket,
-                framesPerPacket: stream.mFramesPerPacket,
-                bytesPerFrame: stream.mBytesPerFrame,
-                channelsPerFrame: stream.mChannelsPerFrame,
-                bitsPerChannel: stream.mBitsPerChannel,
-                reserved: stream.mReserved,
-                deviceSampleRate: evidence.deviceSampleRate,
-                deviceChannelCount: evidence.deviceChannelCount,
-                converterError: evidence.converterError
-            )
-        )
     }
 }

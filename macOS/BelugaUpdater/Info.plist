@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleIdentifier</key><string>com.elamin.beluga.Updater</string>
+    <key>CFBundleExecutable</key><string>BelugaUpdater</string>
+    <key>CFBundleName</key><string>Beluga Updater</string>
+    <key>CFBundleDisplayName</key><string>Beluga Updater</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.2.0</string>
+    <key>CFBundleVersion</key><string>100</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>LSUIElement</key><true/>
+    <!-- Replaced from Release.json by the builder and checked exactly. These
+         values never select the SDK target; hostBundle is the verified host. -->
+    <key>SUFeedURL</key><string>https://github.com/ahmed-ela/Beluga/releases/download/mac-update-stable/appcast.xml</string>
+    <key>SUPublicEDKey</key><string></string>
+    <key>SUVerifyUpdateBeforeExtraction</key><true/>
+    <key>SURequireSignedFeed</key><true/>
+    <key>SUAllowsAutomaticUpdates</key><false/>
+</dict>
+</plist>

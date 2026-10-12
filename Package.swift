@@ -18,11 +18,14 @@ let package = Package(
         .library(name: "WebRTCTransport", targets: ["WebRTCTransport"]),
         .executable(name: "CaptureCLI", targets: ["CaptureCLI"]),
         .executable(name: "CaptureServer", targets: ["CaptureServer"]),
+        .executable(name: "BelugaUpdater", targets: ["BelugaUpdater"]),
         .executable(name: "OpensteamerMediaBridge", targets: ["OpensteamerMediaBridge"]),
         .executable(name: "PCMClient", targets: ["PCMClient"]),
         .executable(name: "PCMPlayer", targets: ["PCMPlayer"])
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
+    ],
     targets: [
         .executableTarget(
             name: "CaptureCLI",
@@ -32,6 +35,9 @@ let package = Package(
         .executableTarget(
             name: "CaptureServer",
             dependencies: [
+                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
+                "BelugaUpdateCore",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS])),
                 "CaptureCore",
                 "MediaBridgeCore",
                 .target(
@@ -83,12 +89,37 @@ let package = Package(
             path: "shared/Sources/ClientCore"
         ),
         .target(
+            name: "BelugaUpdateCore",
+            dependencies: [.target(name: "BelugaCore", condition: .when(platforms: [.macOS]))],
+            path: "macOS/Sources/BelugaUpdateCore",
+            linkerSettings: [.linkedLibrary("bsm", .when(platforms: [.macOS]))]
+        ),
+        .executableTarget(
+            name: "BelugaUpdater",
+            dependencies: ["BelugaUpdateCore", "BelugaUpdateDriver"],
+            path: "macOS/Sources/BelugaUpdater"
+        ),
+        .target(
+            name: "BelugaUpdateDriver",
+            dependencies: [
+                "BelugaUpdateCore",
+                .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS]))
+            ],
+            path: "macOS/Sources/BelugaUpdateDriver"
+        ),
+        .target(
             name: "CaptureCore",
-            dependencies: ["WAV", "Utilities", "Streaming"],
+            dependencies: [
+                "WAV", "Utilities", "Streaming",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS]))
+            ],
             path: "macOS/Sources/CaptureCore"
         ),
         .target(
             name: "RemoteSessionCore",
+            dependencies: [
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS]))
+            ],
             path: "shared/Sources/RemoteSessionCore"
         ),
         .target(
@@ -128,6 +159,7 @@ let package = Package(
             name: "WebRTCTransport",
             dependencies: [
                 "RemoteSessionCore",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS])),
                 .target(
                     name: "OpensteamerAudioTransactionAuthority",
                     condition: .when(platforms: [.iOS])
@@ -143,6 +175,10 @@ let package = Package(
                 .target(name: "LiveKitWebRTC")
             ],
             path: "shared/Sources/WebRTCTransport"
+        ),
+        .binaryTarget(
+            name: "BelugaCore",
+            path: "shared/Vendor/BelugaCore.xcframework"
         ),
         .binaryTarget(
             name: "LiveKitWebRTC",
@@ -200,13 +236,26 @@ let package = Package(
         ),
         .testTarget(
             name: "CaptureCoreTests",
-            dependencies: ["CaptureCore", "Streaming"],
+            dependencies: [
+                "CaptureCore", "Streaming",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS]))
+            ],
             path: "macOS/Tests/CaptureCoreTests"
         ),
         .testTarget(
             name: "CaptureServerTests",
-            dependencies: ["CaptureServer", "WebRTCTransport", "MediaBridgeCore"],
+            dependencies: [
+                "CaptureServer", "BelugaUpdateCore", "BelugaUpdateDriver", "WebRTCTransport", "MediaBridgeCore",
+                .target(name: "BelugaRenderedAXTestSupport", condition: .when(platforms: [.macOS]))
+            ],
             path: "macOS/Tests/CaptureServerTests"
+        ),
+        .target(
+            name: "BelugaRenderedAXTestSupport",
+            path: "macOS/Tests/BelugaRenderedAXTestSupport",
+            publicHeadersPath: "include",
+            cSettings: [.unsafeFlags(["-fobjc-arc"], .when(platforms: [.macOS]))],
+            linkerSettings: [.linkedFramework("AppKit", .when(platforms: [.macOS]))]
         ),
         .testTarget(
             name: "ServerTests",
@@ -230,14 +279,18 @@ let package = Package(
         ),
         .testTarget(
             name: "RemoteSessionCoreTests",
-            dependencies: ["RemoteSessionCore"],
+            dependencies: [
+                "RemoteSessionCore",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS]))
+            ],
             path: "shared/Tests/RemoteSessionCoreTests"
         ),
         .testTarget(
             name: "WebRTCTransportTests",
             dependencies: [
                 "RemoteSessionCore",
-                "WebRTCTransport"
+                "WebRTCTransport",
+                .target(name: "BelugaCore", condition: .when(platforms: [.macOS, .iOS]))
             ],
             path: "shared/Tests/WebRTCTransportTests"
         ),

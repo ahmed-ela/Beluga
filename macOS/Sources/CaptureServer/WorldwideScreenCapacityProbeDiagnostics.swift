@@ -71,3 +71,26 @@ struct WorldwideScreenCapacityProbeDiagnostics: Equatable, Sendable {
             + " fastQueueMicros=\(averageQueueMicroseconds.map(String.init) ?? "unknown")"
     }
 }
+
+extension WorldwideScreenCapacityProbeDiagnostics {
+    init(networkAdaptationPreparedReader r: inout BelugaNetworkAdaptationPreparedReader) throws {
+        reason = try r.choice([.inactive, .expired, .rejectedReport, .roundTripTime, .routeChanged,
+            .missingPrimaryEvidence, .immediateQueue, .missingBandwidth, .bandwidthCollapse,
+            .queueWithheld, .growthVetoed, .bandwidthNotAdvanced, .atCeiling, .increased])
+        origin = try r.optionalTier(); collectionSequence = try r.unsigned()
+        previousNativeReportMicroseconds = try r.unsigned(); nativeReportMicroseconds = try r.unsigned()
+        beforeTotalCapBps = try r.integer(); proposedTotalCapBps = try r.integer()
+        collapseThresholdBps = try r.unsigned(); deltaPackets = try r.unsigned()
+        deltaSendDelayMicroseconds = try r.unsigned(); averageQueueMicroseconds = try r.unsigned()
+    }
+
+    func networkAdaptationOwnerWritePrepared(into w: inout BelugaNetworkAdaptationOwnerWriter) {
+        w.u32(UInt32([Reason.inactive, .expired, .rejectedReport, .roundTripTime, .routeChanged,
+            .missingPrimaryEvidence, .immediateQueue, .missingBandwidth, .bandwidthCollapse,
+            .queueWithheld, .growthVetoed, .bandwidthNotAdvanced, .atCeiling, .increased].firstIndex(of: reason)!))
+        w.tier(origin); w.unsigned(collectionSequence); w.unsigned(previousNativeReportMicroseconds)
+        w.unsigned(nativeReportMicroseconds); w.integer(beforeTotalCapBps); w.integer(proposedTotalCapBps)
+        w.unsigned(collapseThresholdBps); w.unsigned(deltaPackets); w.unsigned(deltaSendDelayMicroseconds)
+        w.unsigned(averageQueueMicroseconds)
+    }
+}

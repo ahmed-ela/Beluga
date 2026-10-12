@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum {
@@ -134,14 +135,15 @@ static SnapshotReadResult ResultForPropertyStatus(OSStatus status) {
   return kSnapshotReadFailed;
 }
 
-static SnapshotReadResult EvaluateCustomPropertyDeclarations(
-    const AudioServerPlugInCustomPropertyInfo *info, size_t count) {
+static SnapshotReadResult EvaluateCustomPropertyDeclarationsForSelector(
+    const AudioServerPlugInCustomPropertyInfo *info, size_t count,
+    AudioObjectPropertySelector selector) {
   if (info == NULL || count == 0) {
     return kSnapshotReadUnavailable;
   }
   bool found = false;
   for (size_t index = 0; index < count; ++index) {
-    if (info[index].mSelector != kOSVADiagnosticSnapshotProperty) {
+    if (info[index].mSelector != selector) {
       continue;
     }
     if (found ||
@@ -156,9 +158,16 @@ static SnapshotReadResult EvaluateCustomPropertyDeclarations(
   return found ? kSnapshotReadOK : kSnapshotReadUnavailable;
 }
 
+static SnapshotReadResult EvaluateCustomPropertyDeclarations(
+    const AudioServerPlugInCustomPropertyInfo *info, size_t count) {
+  return EvaluateCustomPropertyDeclarationsForSelector(
+      info, count, kOSVADiagnosticSnapshotProperty);
+}
+
 static SnapshotReadResult
-ValidateCustomPropertyDeclaration(AudioDeviceID deviceID,
-                                  OSStatus *statusOut) {
+ValidateCustomPropertyDeclarationForSelector(AudioDeviceID deviceID,
+                                  OSStatus *statusOut,
+                                  AudioObjectPropertySelector selector) {
   enum { kMaximumCustomPropertyCount = 32 };
   if (statusOut == NULL) {
     return kSnapshotReadFailed;
@@ -194,7 +203,13 @@ ValidateCustomPropertyDeclaration(AudioDeviceID deviceID,
   }
   const size_t count =
       (size_t)returnedSize / sizeof(AudioServerPlugInCustomPropertyInfo);
-  return EvaluateCustomPropertyDeclarations(info, count);
+  return EvaluateCustomPropertyDeclarationsForSelector(info, count, selector);
+}
+
+static SnapshotReadResult ValidateCustomPropertyDeclaration(
+    AudioDeviceID deviceID, OSStatus *statusOut) {
+  return ValidateCustomPropertyDeclarationForSelector(
+      deviceID, statusOut, kOSVADiagnosticSnapshotProperty);
 }
 
 static SnapshotReadResult
@@ -1190,6 +1205,724 @@ static int RunSelfTest(void) {
   return 0;
 }
 
+typedef struct DecodedV2Snapshot {
+  OSVADiagnosticSnapshotV2Header header;
+  OSVADiagnosticRegistryClientSnapshot *registry;
+} DecodedV2Snapshot;
+
+static void ReleaseV2Snapshot(DecodedV2Snapshot *snapshot) {
+  free(snapshot->registry);
+  memset(snapshot, 0, sizeof(*snapshot));
+}
+
+static bool BytesAreZero(const void *bytes, size_t count) {
+  const UInt8 *value = bytes;
+  for (size_t index = 0; index < count; ++index)
+    if (value[index] != 0) return false;
+  return true;
+}
+
+static UInt64 V2InvariantMask(void) {
+  return kOSVADiagnosticInvariantGlobalMatchesCoreSlots |
+      kOSVADiagnosticInvariantEndpointsMatchCoreSlots |
+      kOSVADiagnosticInvariantDriverStartsMatchCoreSlots |
+      kOSVADiagnosticInvariantIdleImpliesClockCleared |
+      kOSVADiagnosticInvariantActiveImpliesClockValid |
+      kOSVADiagnosticInvariantActiveSlotCountsWithinCapacity |
+      kOSVADiagnosticInvariantStartStopBalancedAtIdle |
+      kOSVADiagnosticInvariantSeedCreateClearBalancedAtIdle |
+      kOSVADiagnosticInvariantRingGenerationMatchesCurrentSeed |
+      kOSVADiagnosticInvariantNoActiveSlotReferencesRetiredGeneration |
+      kOSVADiagnosticInvariantCompleteRegistryInventory;
+}
+
+static bool V2HeaderGeometryIsExact(const OSVADiagnosticSnapshotV2Header *h,
+                                  size_t byteCount) {
+  const size_t headerSize = sizeof(*h);
+  const size_t recordSize = sizeof(OSVADiagnosticRegistryClientSnapshot);
+  return h->schema_version == kOSVADiagnosticSnapshotV2SchemaVersion &&
+      h->header_size == headerSize && h->registry_record_size == recordSize &&
+      byteCount >= headerSize &&
+      byteCount <= kOSVADiagnosticSnapshotV2MaximumByteCount &&
+      h->registry_record_count <=
+          (kOSVADiagnosticSnapshotV2MaximumByteCount - headerSize) / recordSize &&
+      h->registry_record_count <= (SIZE_MAX - headerSize) / recordSize &&
+      headerSize + (size_t)h->registry_record_count * recordSize == byteCount &&
+      h->total_byte_count == byteCount &&
+      h->core_slot_capacity == kOSVADiagnosticClientSlotCapacity &&
+      h->reserved_header == 0 &&
+      BytesAreZero(h->reserved, sizeof(h->reserved));
+}
+
+static bool TransitionFieldsAreExact(
+    const OSVADiagnosticTransitionSnapshot *transition, bool core) {
+  return transition->reserved == 0 &&
+      transition->type <= kOSVADiagnosticTransitionSeedCleared &&
+      transition->endpoint_role <= kOSVADiagnosticEndpointHiddenWriter &&
+      (transition->slot_index == UINT32_MAX ||
+       transition->slot_index < kOSVADiagnosticClientSlotCapacity) &&
+      (!core || transition->type != kOSVADiagnosticTransitionDriverClientAdded) &&
+      (!core || transition->type != kOSVADiagnosticTransitionDriverClientRemoved);
+}
+
+static bool FailureFieldsAreExact(
+    const OSVADiagnosticAdmissionFailureSnapshot *failure) {
+  if (failure->sequence == 0) return BytesAreZero(failure, sizeof(*failure));
+  if (failure->reserved != 0 || failure->host_ticks == 0 ||
+      failure->operation < kOSVADiagnosticAdmissionAdd ||
+      failure->operation > kOSVADiagnosticAdmissionStop ||
+      failure->reason < kOSVADiagnosticFailureNotInitialized ||
+      failure->reason > kOSVADiagnosticFailureCoreRejected ||
+      (failure->device_object_id != kOSVAObjectIDVisibleInputDevice &&
+       failure->device_object_id != kOSVAObjectIDHiddenWriterDevice) ||
+      failure->status == noErr) return false;
+  if ((failure->registry_index == UINT64_MAX) !=
+      (failure->driver_client_generation == 0)) return false;
+  if (failure->reason == kOSVADiagnosticFailureCoreRejected)
+  {
+    if ((failure->operation != kOSVADiagnosticAdmissionStart &&
+         failure->operation != kOSVADiagnosticAdmissionStop) ||
+        failure->registry_index == UINT64_MAX || failure->core_status < 1 ||
+        failure->core_status > 15) return false;
+    /* Frozen OSVAStatus-to-OSStatus mapping; failure status is exact evidence. */
+    const bool illegal = failure->core_status == 1 || failure->core_status == 4 ||
+        failure->core_status == 5 || failure->core_status == 7 ||
+        failure->core_status == 8 || failure->core_status == 9 ||
+        failure->core_status == 10;
+    return failure->status == (illegal ? kAudioHardwareIllegalOperationError
+                                     : kAudioHardwareUnspecifiedError);
+  }
+  if (failure->core_status != 0) return false;
+  if (failure->reason == kOSVADiagnosticFailureRegistrationAllocation ||
+      failure->reason == kOSVADiagnosticFailureIdentityExhausted)
+    return failure->operation == kOSVADiagnosticAdmissionAdd &&
+        failure->registry_index == UINT64_MAX &&
+        failure->status == kAudioHardwareUnspecifiedError;
+  if (failure->status != kAudioHardwareIllegalOperationError) return false;
+  if (failure->reason == kOSVADiagnosticFailureDuplicateRegistration)
+    return failure->operation == kOSVADiagnosticAdmissionAdd &&
+        failure->registry_index != UINT64_MAX;
+  if (failure->reason == kOSVADiagnosticFailureAlreadyStarted)
+    return failure->operation == kOSVADiagnosticAdmissionStart &&
+        failure->registry_index != UINT64_MAX;
+  if (failure->reason == kOSVADiagnosticFailureNotStarted)
+    return failure->operation == kOSVADiagnosticAdmissionStop &&
+        failure->registry_index != UINT64_MAX;
+  if (failure->reason == kOSVADiagnosticFailureRemoveWhileStarted)
+    return failure->operation == kOSVADiagnosticAdmissionRemove &&
+        failure->registry_index != UINT64_MAX;
+  if (failure->reason == kOSVADiagnosticFailureMissingRegistration)
+    return failure->operation != kOSVADiagnosticAdmissionAdd &&
+        failure->registry_index == UINT64_MAX;
+  return true;
+}
+
+static bool RTRecordFieldsAreExact(const OSVADiagnosticSnapshotV2State *s) {
+  const UInt32 knownRecordFlags = kOSVADiagnosticRecordPresent |
+      kOSVADiagnosticRecordLastSuccessTupleValid |
+      kOSVADiagnosticRecordLastCallValid | kOSVADiagnosticRecordUsedFallback |
+      kOSVADiagnosticRecordEpochMappingValid;
+  for (size_t index = 0; index < 2; ++index) {
+    const OSVADiagnosticZeroTimestampSnapshot *zero = &s->zero_timestamp[index];
+    const OSVADiagnosticIOSnapshot *io = &s->io[index];
+    const OSVADiagnosticIOWorkLoopSnapshot *loop = &s->io_work_loop[index];
+    if (zero->reserved != 0 || io->reserved != 0 ||
+        (zero->flags & ~knownRecordFlags) != 0 ||
+        (io->flags & ~knownRecordFlags) != 0 ||
+        (loop->flags & (UInt32)~(kOSVADiagnosticRecordPresent |
+                                 kOSVADiagnosticRecordLastCallValid)) != 0 ||
+        (zero->metadata_sequence & UINT64_C(1)) != 0 ||
+        (io->metadata_sequence & UINT64_C(1)) != 0 ||
+        (loop->metadata_sequence & UINT64_C(1)) != 0) return false;
+  }
+  return true;
+}
+
+static bool FlagMatches(UInt64 flags, UInt64 bit, bool condition) {
+  return ((flags & bit) != 0) == condition;
+}
+
+static bool V2InventoryIsExact(const DecodedV2Snapshot *snapshot) {
+  const OSVADiagnosticSnapshotV2Header *h = &snapshot->header;
+  const OSVADiagnosticSnapshotV2State *s = &h->state;
+  const UInt64 knownFlags = V2InvariantMask() |
+      kOSVADiagnosticSnapshotCoreInitialized | kOSVADiagnosticSnapshotTimelineActive;
+  if ((s->invariant_flags & ~knownFlags) != 0 ||
+      (s->invariant_flags & kOSVADiagnosticInvariantCompleteRegistryInventory) == 0 ||
+      (s->invariant_flags & kOSVADiagnosticSnapshotCoreInitialized) == 0 ||
+      s->snapshot_sequence == 0 || s->captured_host_ticks == 0 ||
+      s->driver_instance_generation == 0 || s->host_ticks_per_second == 0 ||
+      (s->core_lifecycle_sequence & UINT64_C(1)) != 0 ||
+      s->driver_registered_count != h->registry_record_count ||
+      !TransitionFieldsAreExact(&s->last_driver_transition, false) ||
+      !TransitionFieldsAreExact(&s->last_core_transition, true) ||
+      !FailureFieldsAreExact(&h->last_admission_failure) ||
+      !RTRecordFieldsAreExact(s)) return false;
+  UInt64 registered[2] = {0, 0}, started[2] = {0, 0};
+  UInt64 coreCount[2] = {0, 0}, coreBitmap = 0, references = 0;
+  bool currentSlots = true, leasesMatch = true;
+  for (size_t index = 0; index < kOSVADiagnosticClientSlotCapacity; ++index) {
+    const OSVADiagnosticCoreClientSlotSnapshot *core = &h->core_client_slots[index];
+    if (core->reserved != 0 || core->endpoint_role > 2) return false;
+    if (core->session_id == 0) continue; /* Retired slots retain their metadata. */
+    if (core->endpoint_role == 0) return false;
+    coreCount[core->endpoint_role - 1] += 1;
+    coreBitmap |= UINT64_C(1) << index;
+    if (core->timeline_seed != s->timeline_seed) currentSlots = false;
+  }
+  for (size_t index = 0; index < (size_t)h->registry_record_count; ++index) {
+    const OSVADiagnosticRegistryClientSnapshot *record = &snapshot->registry[index];
+    const OSVADiagnosticDriverClientSlotSnapshot *client = &record->client;
+    if (record->registry_index == UINT64_MAX ||
+        (index != 0 && record->registry_index <= snapshot->registry[index - 1].registry_index) ||
+        client->generation == 0 || client->registration_host_ticks == 0 ||
+        client->last_transition_host_ticks == 0 || client->reserved != 0 ||
+        (client->flags != kOSVADiagnosticDriverSlotRegistered &&
+         client->flags != (kOSVADiagnosticDriverSlotRegistered |
+                          kOSVADiagnosticDriverSlotStarted |
+                          kOSVADiagnosticDriverSlotLeaseValid)) ||
+        (client->device_object_id != kOSVAObjectIDVisibleInputDevice &&
+         client->device_object_id != kOSVAObjectIDHiddenWriterDevice) ||
+        client->endpoint_role !=
+            (client->device_object_id == kOSVAObjectIDVisibleInputDevice ? 1U : 2U))
+      return false;
+    /* Complete inventory also rejects duplicate key/generation provenance. */
+    for (size_t earlier = 0; earlier < index; ++earlier) {
+      const OSVADiagnosticDriverClientSlotSnapshot *other = &snapshot->registry[earlier].client;
+      if (other->generation == client->generation ||
+          (other->device_object_id == client->device_object_id &&
+           other->client_id == client->client_id)) return false;
+    }
+    const size_t role = client->endpoint_role - 1U;
+    registered[role] += 1;
+    if ((client->flags & kOSVADiagnosticDriverSlotStarted) == 0) {
+      if (client->lease_session_id != 0 || client->lease_timeline_seed != 0 ||
+          client->core_client_slot != UINT32_MAX || client->io_start_depth != 0)
+        return false;
+      continue;
+    }
+    started[role] += 1;
+    if (client->io_start_depth != 1 || client->start_host_ticks == 0 ||
+        client->lease_session_id == 0 || client->lease_timeline_seed == 0 ||
+        client->core_client_slot >= kOSVADiagnosticClientSlotCapacity) return false;
+    const OSVADiagnosticCoreClientSlotSnapshot *core =
+        &h->core_client_slots[client->core_client_slot];
+    const UInt64 bit = UINT64_C(1) << client->core_client_slot;
+    const UInt64 key = ((UInt64)client->device_object_id << 32U) | client->client_id;
+    if ((references & bit) != 0 || core->session_id != client->lease_session_id ||
+        core->client_id != key || core->timeline_seed != client->lease_timeline_seed ||
+        core->endpoint_role != client->endpoint_role) leasesMatch = false;
+    references |= bit;
+  }
+  if (registered[0] != s->visible_driver_registered_count ||
+      registered[1] != s->hidden_driver_registered_count ||
+      started[0] != s->visible_driver_started_count ||
+      started[1] != s->hidden_driver_started_count ||
+      started[0] + started[1] != s->driver_started_count ||
+      coreBitmap != s->core_active_slot_bitmap ||
+      coreCount[0] + coreCount[1] != s->core_active_slot_count) return false;
+  leasesMatch = leasesMatch && references == coreBitmap;
+  const bool ringMatches = s->timeline_seed == 0 ||
+      (s->timeline_seed == s->current_seed_generation &&
+       ((s->io[1].last_published_frame_seed == s->timeline_seed) ==
+        (s->io[1].last_published_seed_generation == s->current_seed_generation)) &&
+       ((s->io[0].last_consumed_frame_seed == s->timeline_seed) ==
+        (s->io[0].last_consumed_seed_generation == s->current_seed_generation)));
+  return FlagMatches(s->invariant_flags, kOSVADiagnosticSnapshotTimelineActive,
+                     s->timeline_seed != 0) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantGlobalMatchesCoreSlots,
+                  s->active_client_count == s->core_active_slot_count) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantEndpointsMatchCoreSlots,
+                  s->visible_input_active_count == coreCount[0] &&
+                  s->hidden_writer_active_count == coreCount[1]) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantDriverStartsMatchCoreSlots,
+                  leasesMatch) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantIdleImpliesClockCleared,
+                  s->active_client_count != 0 ||
+                  (s->timeline_seed == 0 && s->anchor_host_ticks == 0 &&
+                   s->current_seed_generation == 0)) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantActiveImpliesClockValid,
+                  s->active_client_count == 0 ||
+                  (s->timeline_seed != 0 && s->anchor_host_ticks != 0 &&
+                   s->current_seed_generation != 0)) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantActiveSlotCountsWithinCapacity,
+                  s->core_active_slot_count <= 64 && s->driver_started_count <= 64) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantStartStopBalancedAtIdle,
+                  s->active_client_count != 0 ||
+                  s->global_start_transition_count == s->global_stop_transition_count) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantSeedCreateClearBalancedAtIdle,
+                  s->active_client_count != 0 || s->seed_create_count == s->seed_clear_count) &&
+      FlagMatches(s->invariant_flags, kOSVADiagnosticInvariantRingGenerationMatchesCurrentSeed,
+                  ringMatches) &&
+      FlagMatches(s->invariant_flags,
+                  kOSVADiagnosticInvariantNoActiveSlotReferencesRetiredGeneration, currentSlots);
+}
+
+static SnapshotReadResult DecodeV2PropertyList(CFPropertyListRef propertyList,
+                                             DecodedV2Snapshot *out) {
+  memset(out, 0, sizeof(*out));
+  if (propertyList == NULL || CFGetTypeID(propertyList) != CFDataGetTypeID())
+    return kSnapshotReadSchemaMismatch;
+  CFDataRef data = (CFDataRef)propertyList;
+  const CFIndex length = CFDataGetLength(data);
+  if (length < (CFIndex)sizeof(out->header) ||
+      length > kOSVADiagnosticSnapshotV2MaximumByteCount)
+    return kSnapshotReadSchemaMismatch;
+  /* Only an aligned fixed header is decoded before checked geometry. */
+  CFDataGetBytes(data, CFRangeMake(0, sizeof(out->header)), (UInt8 *)&out->header);
+  if (!V2HeaderGeometryIsExact(&out->header, (size_t)length)) {
+    memset(out, 0, sizeof(*out));
+    return kSnapshotReadSchemaMismatch;
+  }
+  const size_t count = (size_t)out->header.registry_record_count;
+  if (count != 0) {
+    out->registry = calloc(count, sizeof(*out->registry));
+    if (out->registry == NULL) { ReleaseV2Snapshot(out); return kSnapshotReadFailed; }
+    CFDataGetBytes(data, CFRangeMake(sizeof(out->header),
+                   (CFIndex)(count * sizeof(*out->registry))), (UInt8 *)out->registry);
+  }
+  if (!V2InventoryIsExact(out)) {
+    ReleaseV2Snapshot(out);
+    return kSnapshotReadSchemaMismatch;
+  }
+  return kSnapshotReadOK;
+}
+
+static SnapshotReadResult ReadV2Snapshot(AudioDeviceID device,
+                                       DecodedV2Snapshot *out, OSStatus *statusOut) {
+  memset(out, 0, sizeof(*out));
+  *statusOut = noErr;
+  AudioObjectPropertyAddress address = PropertyAddress(kOSVADiagnosticSnapshotV2Property);
+  UInt32 size = 0;
+  OSStatus status = AudioObjectGetPropertyDataSize(device, &address, 0, NULL, &size);
+  if (status != noErr) { *statusOut = status; return ResultForPropertyStatus(status); }
+  if (size != sizeof(CFPropertyListRef)) return kSnapshotReadSchemaMismatch;
+  CFPropertyListRef propertyList = NULL;
+  UInt32 returnedSize = size;
+  status = AudioObjectGetPropertyData(device, &address, 0, NULL, &returnedSize, &propertyList);
+  SnapshotReadResult result;
+  if (status != noErr) { *statusOut = status; result = ResultForPropertyStatus(status); }
+  else if (returnedSize != size) result = kSnapshotReadSchemaMismatch;
+  else result = DecodeV2PropertyList(propertyList, out);
+  if (propertyList != NULL) CFRelease(propertyList);
+  return result;
+}
+
+static bool V2SharedStateEqual(const DecodedV2Snapshot *left,
+                               const DecodedV2Snapshot *right) {
+  OSVADiagnosticSnapshotV2Header l = left->header, r = right->header;
+  l.state.snapshot_sequence = r.state.snapshot_sequence = 0;
+  l.state.captured_host_ticks = r.state.captured_host_ticks = 0;
+  /* Like v1, compare lifecycle/identity, not independently advancing RT reads.
+   * Only local copies are normalized; final-read diagnostics remain intact. */
+  memset(l.state.zero_timestamp, 0, sizeof(l.state.zero_timestamp));
+  memset(r.state.zero_timestamp, 0, sizeof(r.state.zero_timestamp));
+  memset(l.state.io, 0, sizeof(l.state.io));
+  memset(r.state.io, 0, sizeof(r.state.io));
+  memset(l.state.io_work_loop, 0, sizeof(l.state.io_work_loop));
+  memset(r.state.io_work_loop, 0, sizeof(r.state.io_work_loop));
+  return memcmp(&l, &r, sizeof(l)) == 0 &&
+      (l.registry_record_count == 0 ||
+       memcmp(left->registry, right->registry,
+              (size_t)l.registry_record_count * sizeof(*left->registry)) == 0);
+}
+
+static void PrintV2JSON(AudioDeviceID visible, AudioDeviceID writer,
+                        const char *mode, const DecodedV2Snapshot *snapshot) {
+  const OSVADiagnosticSnapshotV2Header *h = &snapshot->header;
+  const OSVADiagnosticSnapshotV2State *s = &h->state;
+  printf("{\"readerSchema\":2,\"mode\":\"%s\",\"claim\":"
+         "\"read-only-complete-virtual-driver-diagnostic-snapshot\","
+         "\"visibleDeviceUID\":\"%s\",\"visibleDeviceID\":%" PRIu32
+         ",\"writerDeviceUID\":\"%s\",\"writerDeviceID\":%" PRIu32
+         ",\"endpointReadsCoherent\":true,\"snapshotSchemaVersion\":2,"
+         "\"totalByteCount\":%" PRIu64 ",\"registryRecordCount\":%" PRIu64
+         ",\"registryRecordSize\":%" PRIu64 ",\"registryRevision\":%" PRIu64
+         ",\"completeRegistryInventory\":true,\"coreSlotCapacity\":%" PRIu32
+         ",\"capacityInvariantScope\":\"active-core-resources-only\","
+         "\"allDeclaredInvariantsHold\":%s,\"invariantFlags\":\"%016" PRIx64 "\""
+         ",\"snapshotSequence\":%" PRIu64 ",\"capturedHostTicks\":%" PRIu64
+         ",\"driverInstanceGeneration\":%" PRIu64 ",\"timelineSeed\":%" PRIu64
+         ",\"currentSeedGeneration\":%" PRIu64 ",\"activeClientCount\":%" PRIu64
+         ",\"driverRegisteredCount\":%" PRIu64 ",\"driverStartedCount\":%" PRIu64,
+         mode, OSVA_VISIBLE_INPUT_DEVICE_UID, visible, OSVA_HIDDEN_WRITER_DEVICE_UID, writer,
+         h->total_byte_count, h->registry_record_count, h->registry_record_size,
+         h->registry_revision, h->core_slot_capacity,
+         BooleanJSON((s->invariant_flags & V2InvariantMask()) == V2InvariantMask()),
+         s->invariant_flags, s->snapshot_sequence, s->captured_host_ticks,
+         s->driver_instance_generation, s->timeline_seed, s->current_seed_generation,
+         s->active_client_count, s->driver_registered_count, s->driver_started_count);
+#define OSVA_PRINT_V2_SCALAR(field, key) printf(",\"" key "\":%" PRIu64, s->field)
+  OSVA_PRINT_V2_SCALAR(driver_lifecycle_sequence, "driverLifecycleSequence");
+  OSVA_PRINT_V2_SCALAR(core_lifecycle_sequence, "coreLifecycleSequence");
+  OSVA_PRINT_V2_SCALAR(host_ticks_per_second, "hostTicksPerSecond");
+  OSVA_PRINT_V2_SCALAR(anchor_host_ticks, "anchorHostTicks");
+  OSVA_PRINT_V2_SCALAR(last_issued_seed, "lastIssuedSeed");
+  OSVA_PRINT_V2_SCALAR(last_issued_session_id, "lastIssuedSessionID");
+  OSVA_PRINT_V2_SCALAR(visible_input_active_count, "visibleInputActiveCount");
+  OSVA_PRINT_V2_SCALAR(hidden_writer_active_count, "hiddenWriterActiveCount");
+  OSVA_PRINT_V2_SCALAR(core_active_slot_count, "coreActiveSlotCount");
+  OSVA_PRINT_V2_SCALAR(core_active_slot_bitmap, "coreActiveSlotBitmap");
+  OSVA_PRINT_V2_SCALAR(visible_driver_registered_count, "visibleDriverRegisteredCount");
+  OSVA_PRINT_V2_SCALAR(hidden_driver_registered_count, "hiddenDriverRegisteredCount");
+  OSVA_PRINT_V2_SCALAR(visible_driver_started_count, "visibleDriverStartedCount");
+  OSVA_PRINT_V2_SCALAR(hidden_driver_started_count, "hiddenDriverStartedCount");
+  OSVA_PRINT_V2_SCALAR(driver_client_add_attempt_count, "driverClientAddAttemptCount");
+  OSVA_PRINT_V2_SCALAR(driver_client_add_count, "driverClientAddCount");
+  OSVA_PRINT_V2_SCALAR(driver_client_remove_attempt_count, "driverClientRemoveAttemptCount");
+  OSVA_PRINT_V2_SCALAR(driver_client_remove_count, "driverClientRemoveCount");
+  OSVA_PRINT_V2_SCALAR(global_start_attempt_count, "globalStartAttemptCount");
+  OSVA_PRINT_V2_SCALAR(global_start_transition_count, "globalStartTransitionCount");
+  OSVA_PRINT_V2_SCALAR(global_stop_attempt_count, "globalStopAttemptCount");
+  OSVA_PRINT_V2_SCALAR(global_stop_transition_count, "globalStopTransitionCount");
+  OSVA_PRINT_V2_SCALAR(seed_create_count, "seedCreateCount");
+  OSVA_PRINT_V2_SCALAR(seed_clear_count, "seedClearCount");
+  OSVA_PRINT_V2_SCALAR(last_seed_create_host_ticks, "lastSeedCreateHostTicks");
+  OSVA_PRINT_V2_SCALAR(last_seed_clear_host_ticks, "lastSeedClearHostTicks");
+  OSVA_PRINT_V2_SCALAR(last_cleared_seed, "lastClearedSeed");
+  OSVA_PRINT_V2_SCALAR(last_cleared_seed_generation, "lastClearedSeedGeneration");
+  OSVA_PRINT_V2_SCALAR(last_cleared_anchor_host_ticks, "lastClearedAnchorHostTicks");
+#undef OSVA_PRINT_V2_SCALAR
+  printf(",\"lastAdmissionFailure\":");
+  const OSVADiagnosticAdmissionFailureSnapshot *f = &h->last_admission_failure;
+  printf("{\"sequence\":%" PRIu64 ",\"hostTicks\":%" PRIu64
+         ",\"registryIndex\":%" PRIu64 ",\"driverClientGeneration\":%" PRIu64
+         ",\"operation\":%" PRIu32 ",\"reason\":%" PRIu32
+         ",\"deviceObjectID\":%" PRIu32 ",\"clientID\":%" PRIu32
+         ",\"processID\":%" PRId32 ",\"status\":%" PRId32
+         ",\"coreStatus\":%" PRId32 "},\"lastDriverTransition\":",
+         f->sequence, f->host_ticks, f->registry_index, f->driver_client_generation,
+         f->operation, f->reason, f->device_object_id, f->client_id,
+         f->process_id, f->status, f->core_status);
+  PrintTransition(&s->last_driver_transition);
+  printf(",\"lastCoreTransition\":"); PrintTransition(&s->last_core_transition);
+  printf(",\"zeroTimestamp\":["); PrintZeroTimestamp(&s->zero_timestamp[0], 1);
+  putchar(','); PrintZeroTimestamp(&s->zero_timestamp[1], 2);
+  printf("],\"io\":["); PrintIO(&s->io[0], 1); putchar(','); PrintIO(&s->io[1], 2);
+  printf("],\"ioWorkLoop\":["); PrintIOWorkLoop(&s->io_work_loop[0], 1);
+  putchar(','); PrintIOWorkLoop(&s->io_work_loop[1], 2);
+  printf("],\"registry\":[");
+  for (size_t index = 0; index < (size_t)h->registry_record_count; ++index) {
+    const OSVADiagnosticRegistryClientSnapshot *r = &snapshot->registry[index];
+    const OSVADiagnosticDriverClientSlotSnapshot *c = &r->client;
+    if (index != 0) putchar(',');
+    printf("{\"registryIndex\":%" PRIu64 ",\"generation\":%" PRIu64
+           ",\"registrationHostTicks\":%" PRIu64 ",\"startHostTicks\":%" PRIu64
+           ",\"lastTransitionHostTicks\":%" PRIu64 ",\"leaseSessionID\":%" PRIu64
+           ",\"leaseTimelineSeed\":%" PRIu64 ",\"flags\":%" PRIu32
+           ",\"deviceObjectID\":%" PRIu32 ",\"clientID\":%" PRIu32
+           ",\"processID\":%" PRId32 ",\"endpointRole\":%" PRIu32
+           ",\"coreClientSlot\":%" PRIu32 ",\"ioStartDepth\":%" PRIu32 "}",
+           r->registry_index, c->generation, c->registration_host_ticks, c->start_host_ticks,
+           c->last_transition_host_ticks, c->lease_session_id, c->lease_timeline_seed,
+           c->flags, c->device_object_id, c->client_id, c->process_id,
+           c->endpoint_role, c->core_client_slot, c->io_start_depth);
+  }
+  printf("],\"coreClientSlots\":[");
+  for (size_t index = 0; index < kOSVADiagnosticClientSlotCapacity; ++index) {
+    const OSVADiagnosticCoreClientSlotSnapshot *c = &h->core_client_slots[index];
+    if (index != 0) putchar(',');
+    printf("{\"slotIndex\":%zu,\"sessionID\":%" PRIu64 ",\"clientID\":%" PRIu64
+           ",\"timelineSeed\":%" PRIu64 ",\"endpointRole\":%" PRIu32 "}",
+           index, c->session_id, c->client_id, c->timeline_seed, c->endpoint_role);
+  }
+  printf("]}\n");
+}
+
+static int RunV2Reader(void) {
+  AudioDeviceID visible = kAudioObjectUnknown, writer = kAudioObjectUnknown;
+  OSStatus status = TranslateExactDeviceUID(OSVA_VISIBLE_INPUT_DEVICE_UID, &visible);
+  if (status != noErr || visible == kAudioObjectUnknown) return kExitPropertyUnavailable;
+  status = TranslateExactDeviceUID(OSVA_HIDDEN_WRITER_DEVICE_UID, &writer);
+  if (status != noErr || writer == kAudioObjectUnknown || visible == writer ||
+      !DeviceUIDMatches(visible, OSVA_VISIBLE_INPUT_DEVICE_UID) ||
+      !DeviceUIDMatches(writer, OSVA_HIDDEN_WRITER_DEVICE_UID)) return kExitPropertyUnavailable;
+  for (size_t index = 0; index < 2; ++index) {
+    SnapshotReadResult declaration = ValidateCustomPropertyDeclarationForSelector(
+        index == 0 ? visible : writer, &status, kOSVADiagnosticSnapshotV2Property);
+    if (declaration != kSnapshotReadOK) {
+      fprintf(stderr, "osD2 v2 custom-property declaration unavailable or invalid\n");
+      return ExitCodeForReadFailure(declaration);
+    }
+  }
+  for (unsigned attempt = 0; attempt < kMaximumCoherenceAttempts; ++attempt) {
+    DecodedV2Snapshot first = {0}, middle = {0}, last = {0};
+    SnapshotReadResult result = ReadV2Snapshot(visible, &first, &status);
+    if (result == kSnapshotReadOK) result = ReadV2Snapshot(writer, &middle, &status);
+    if (result == kSnapshotReadOK) result = ReadV2Snapshot(visible, &last, &status);
+    const bool coherent = result == kSnapshotReadOK &&
+        V2SharedStateEqual(&first, &middle) && V2SharedStateEqual(&middle, &last) &&
+        ExactTranslationsRemainStable(visible, writer);
+    if (coherent) PrintV2JSON(visible, writer, "read-v2-once", &last);
+    ReleaseV2Snapshot(&first); ReleaseV2Snapshot(&middle); ReleaseV2Snapshot(&last);
+    if (coherent) return 0;
+    if (result != kSnapshotReadOK && result != kSnapshotReadRetry) {
+      fprintf(stderr, "osD2 v2 read unavailable, failed, or exact schema invalid; OSStatus %" PRId32 "\n", status);
+      return ExitCodeForReadFailure(result);
+    }
+  }
+  fprintf(stderr, "osD2 v2 complete snapshot unavailable or remained in transition\n");
+  return kExitRetry;
+}
+
+static SnapshotReadResult DecodeV2FixtureBytes(const void *bytes, size_t length,
+                                              DecodedV2Snapshot *out) {
+  CFDataRef data = CFDataCreate(kCFAllocatorDefault, bytes, (CFIndex)length);
+  if (data == NULL) return kSnapshotReadFailed;
+  SnapshotReadResult result = DecodeV2PropertyList(data, out);
+  CFRelease(data);
+  return result;
+}
+
+static int RunV2SelfTest(void) {
+  enum { kFixtureCount = 70 };
+  const size_t byteCount = sizeof(OSVADiagnosticSnapshotV2Header) +
+      kFixtureCount * sizeof(OSVADiagnosticRegistryClientSnapshot);
+  UInt8 *bytes = calloc(1, byteCount + 1);
+  if (bytes == NULL) return kExitInternalError;
+  OSVADiagnosticSnapshotV2Header *h = (void *)bytes;
+  OSVADiagnosticRegistryClientSnapshot *r = (void *)(bytes + sizeof(*h));
+  h->schema_version = 2;
+  h->header_size = sizeof(*h);
+  h->total_byte_count = byteCount;
+  h->registry_record_count = kFixtureCount;
+  h->registry_record_size = sizeof(*r);
+  h->registry_revision = kFixtureCount;
+  h->core_slot_capacity = 64;
+  h->state.snapshot_sequence = 1;
+  h->state.captured_host_ticks = 3;
+  h->state.driver_instance_generation = 1;
+  h->state.driver_lifecycle_sequence = kFixtureCount;
+  h->state.core_lifecycle_sequence = 2;
+  h->state.host_ticks_per_second = 1000000000;
+  h->state.invariant_flags = V2InvariantMask() | kOSVADiagnosticSnapshotCoreInitialized;
+  h->state.driver_registered_count = kFixtureCount;
+  h->state.visible_driver_registered_count = kFixtureCount / 2;
+  h->state.hidden_driver_registered_count = kFixtureCount / 2;
+  h->state.driver_client_add_attempt_count = kFixtureCount;
+  h->state.driver_client_add_count = kFixtureCount;
+  for (size_t index = 0; index < kFixtureCount; ++index) {
+    r[index].registry_index = index;
+    r[index].client.generation = index + 1;
+    r[index].client.registration_host_ticks = 1;
+    r[index].client.last_transition_host_ticks = 1;
+    r[index].client.flags = kOSVADiagnosticDriverSlotRegistered;
+    r[index].client.device_object_id = index % 2 == 0 ?
+        kOSVAObjectIDVisibleInputDevice : kOSVAObjectIDHiddenWriterDevice;
+    r[index].client.client_id = (UInt32)index + 1000U;
+    r[index].client.process_id = (SInt32)index + 2000;
+    r[index].client.endpoint_role = index % 2 == 0 ? 1U : 2U;
+    r[index].client.core_client_slot = UINT32_MAX;
+  }
+  DecodedV2Snapshot decoded = {0};
+  unsigned passed = 0;
+#define OSVA_V2_TEST(condition) do { \
+    if (!(condition)) { fprintf(stderr, "v2 self-test failed at line %d\n", __LINE__); \
+      ReleaseV2Snapshot(&decoded); free(bytes); return kExitInternalError; } \
+    passed += 1; \
+  } while (0)
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  OSVA_V2_TEST(decoded.header.registry_record_count == 70 &&
+               decoded.registry[69].registry_index == 69);
+  PrintV2JSON(kOSVAObjectIDVisibleInputDevice, kOSVAObjectIDHiddenWriterDevice,
+              "self-test-v2-fixture", &decoded);
+  ReleaseV2Snapshot(&decoded);
+#define OSVA_V2_REJECT_MUTATION(field, value) do { \
+    __typeof__(field) retained = (field); (field) = (value); \
+    OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadSchemaMismatch); \
+    (field) = retained; \
+  } while (0)
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, sizeof(*h) - 1, &decoded) == kSnapshotReadSchemaMismatch);
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount - 1, &decoded) == kSnapshotReadSchemaMismatch);
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount + 1, &decoded) == kSnapshotReadSchemaMismatch);
+  OSVA_V2_REJECT_MUTATION(h->schema_version, 1);
+  OSVA_V2_REJECT_MUTATION(h->header_size, sizeof(*h) - 8);
+  OSVA_V2_REJECT_MUTATION(h->registry_record_size, sizeof(*r) - 8);
+  OSVA_V2_REJECT_MUTATION(h->registry_record_count, UINT64_MAX);
+  OSVA_V2_REJECT_MUTATION(h->registry_record_count, kFixtureCount - 1);
+  OSVA_V2_REJECT_MUTATION(h->total_byte_count, byteCount + 1);
+  OSVA_V2_REJECT_MUTATION(h->total_byte_count, kOSVADiagnosticSnapshotV2MaximumByteCount + 1);
+  OSVA_V2_REJECT_MUTATION(h->core_slot_capacity, 65);
+  OSVA_V2_REJECT_MUTATION(h->reserved_header, 1);
+  OSVA_V2_REJECT_MUTATION(h->reserved[0], 1);
+  OSVA_V2_REJECT_MUTATION(h->state.invariant_flags,
+      h->state.invariant_flags | (UINT64_C(1) << 63));
+  OSVA_V2_REJECT_MUTATION(h->state.invariant_flags,
+      h->state.invariant_flags & (UInt64)~(UInt64)kOSVADiagnosticInvariantCompleteRegistryInventory);
+  OSVA_V2_REJECT_MUTATION(h->state.driver_registered_count, 69);
+  OSVA_V2_REJECT_MUTATION(h->state.visible_driver_registered_count, 34);
+  OSVA_V2_REJECT_MUTATION(h->state.core_active_slot_count, 1);
+  OSVA_V2_REJECT_MUTATION(h->state.active_client_count, 1); /* False green is rejected. */
+  OSVA_V2_REJECT_MUTATION(h->state.core_lifecycle_sequence, 3);
+  OSVA_V2_REJECT_MUTATION(h->core_client_slots[0].reserved, 1);
+  OSVA_V2_REJECT_MUTATION(r[69].registry_index, 68);
+  OSVA_V2_REJECT_MUTATION(r[69].registry_index, UINT64_MAX);
+  OSVA_V2_REJECT_MUTATION(r[69].client.generation, r[0].client.generation);
+  OSVA_V2_REJECT_MUTATION(r[68].client.client_id, r[0].client.client_id);
+  OSVA_V2_REJECT_MUTATION(r[69].client.endpoint_role, 1);
+  OSVA_V2_REJECT_MUTATION(r[69].client.device_object_id, 999);
+  OSVA_V2_REJECT_MUTATION(r[69].client.flags, 0);
+  OSVA_V2_REJECT_MUTATION(r[69].client.flags, 8);
+  OSVA_V2_REJECT_MUTATION(r[69].client.core_client_slot, 0);
+  OSVA_V2_REJECT_MUTATION(r[69].client.lease_session_id, 1);
+  OSVA_V2_REJECT_MUTATION(r[69].client.io_start_depth, 1);
+  OSVA_V2_REJECT_MUTATION(r[69].client.reserved, 1);
+  OSVA_V2_REJECT_MUTATION(h->state.io[0].reserved, 1);
+  OSVA_V2_REJECT_MUTATION(h->state.io[0].flags, 32);
+  OSVA_V2_REJECT_MUTATION(h->state.last_driver_transition.type, 7);
+  OSVA_V2_REJECT_MUTATION(h->state.last_driver_transition.slot_index, 64);
+  h->last_admission_failure = (OSVADiagnosticAdmissionFailureSnapshot){
+      .sequence = 1, .host_ticks = 2, .registry_index = UINT64_MAX,
+      .operation = kOSVADiagnosticAdmissionAdd,
+      .reason = kOSVADiagnosticFailureRegistrationAllocation,
+      .device_object_id = kOSVAObjectIDVisibleInputDevice, .client_id = 2345,
+      .process_id = 3456, .status = kAudioHardwareUnspecifiedError,
+  };
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  ReleaseV2Snapshot(&decoded);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.operation, 5);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.reason, 10);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.status, noErr);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.core_status, 99);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.reserved, 1);
+  h->last_admission_failure = (OSVADiagnosticAdmissionFailureSnapshot){
+      .sequence = 2, .host_ticks = 3, .registry_index = 1,
+      .driver_client_generation = 2, .operation = kOSVADiagnosticAdmissionStart,
+      .reason = kOSVADiagnosticFailureCoreRejected,
+      .device_object_id = kOSVAObjectIDHiddenWriterDevice, .client_id = 1001,
+      .process_id = 2001, .status = kAudioHardwareUnspecifiedError,
+      .core_status = 6, /* Frozen OSVA_STATUS_CLIENT_CAPACITY_EXHAUSTED. */
+  };
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  ReleaseV2Snapshot(&decoded);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.core_status, 0);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.core_status, 16);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.status, kAudioHardwareIllegalOperationError);
+  OSVA_V2_REJECT_MUTATION(h->last_admission_failure.driver_client_generation, 0);
+  UInt8 *oversized = calloc(1, kOSVADiagnosticSnapshotV2MaximumByteCount + 1U);
+  OSVA_V2_TEST(oversized != NULL);
+  SnapshotReadResult oversizedResult = DecodeV2FixtureBytes(
+      oversized, kOSVADiagnosticSnapshotV2MaximumByteCount + 1U, &decoded);
+  free(oversized);
+  OSVA_V2_TEST(oversizedResult == kSnapshotReadSchemaMismatch);
+  /* Lifetime failure counts remain readable evidence, never schema errors. */
+  h->state.zero_timestamp[0].epoch_mapping_unavailable_count = 2;
+  h->state.io[1].epoch_mapping_unavailable_count = 3;
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  ReleaseV2Snapshot(&decoded);
+  /* Positive active writer+reader fixture checks the full lease/seed mapping. */
+  h->state.active_client_count = h->state.core_active_slot_count = 2;
+  h->state.visible_input_active_count = h->state.hidden_writer_active_count = 1;
+  h->state.driver_started_count = 2;
+  h->state.visible_driver_started_count = h->state.hidden_driver_started_count = 1;
+  h->state.timeline_seed = h->state.current_seed_generation = 5;
+  h->state.anchor_host_ticks = 1;
+  h->state.last_issued_seed = 5;
+  h->state.last_issued_session_id = 11;
+  h->state.core_active_slot_bitmap = 3;
+  h->state.global_start_attempt_count = h->state.global_start_transition_count = 2;
+  h->state.seed_create_count = 1;
+  h->state.invariant_flags |= kOSVADiagnosticSnapshotTimelineActive;
+  for (size_t index = 0; index < 2; ++index) {
+    r[index].client.flags = kOSVADiagnosticDriverSlotRegistered |
+        kOSVADiagnosticDriverSlotStarted | kOSVADiagnosticDriverSlotLeaseValid;
+    r[index].client.start_host_ticks = 2;
+    r[index].client.lease_session_id = index + 10;
+    r[index].client.lease_timeline_seed = 5;
+    r[index].client.core_client_slot = (UInt32)index;
+    r[index].client.io_start_depth = 1;
+    h->core_client_slots[index] = (OSVADiagnosticCoreClientSlotSnapshot){
+        .session_id = index + 10,
+        .client_id = ((UInt64)r[index].client.device_object_id << 32U) |
+                     r[index].client.client_id,
+        .timeline_seed = 5, .endpoint_role = r[index].client.endpoint_role,
+    };
+  }
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  DecodedV2Snapshot second = {0};
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &second) == kSnapshotReadOK);
+  OSVA_V2_TEST(V2SharedStateEqual(&decoded, &second));
+  second.header.state.snapshot_sequence += 1;
+  second.header.state.captured_host_ticks += 1;
+  OSVA_V2_TEST(V2SharedStateEqual(&decoded, &second));
+  /* Healthy active callbacks advance observational records, not lifecycle. */
+  const OSVADiagnosticSnapshotV2State retainedState = h->state;
+  for (size_t index = 0; index < 2; ++index) {
+    h->state.zero_timestamp[index].sequence += 1;
+    h->state.zero_timestamp[index].metadata_sequence += 2;
+    h->state.zero_timestamp[index].call_count += 1;
+    h->state.zero_timestamp[index].successful_return_count += 1;
+    h->state.zero_timestamp[index].last_call_host_ticks += 1;
+    h->state.io[index].sequence += 1;
+    h->state.io[index].metadata_sequence += 2;
+    h->state.io[index].operation_call_count += 1;
+    h->state.io[index].valid_cycle_count += 1;
+    h->state.io[index].core_ok_count += 1;
+    h->state.io[index].requested_frame_count += 1;
+    h->state.io[index].transferred_frame_count += 1;
+    h->state.io_work_loop[index].sequence += 2;
+    h->state.io_work_loop[index].metadata_sequence += 2;
+    h->state.io_work_loop[index].begin_count += 1;
+    h->state.io_work_loop[index].end_count += 1;
+    h->state.io_work_loop[index].last_transition_host_ticks += 1;
+  }
+  ReleaseV2Snapshot(&second);
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &second) == kSnapshotReadOK);
+  OSVA_V2_TEST(V2SharedStateEqual(&decoded, &second));
+  /* Coherence comparison must not erase the final read's diagnostic evidence. */
+  OSVA_V2_TEST(memcmp(second.header.state.zero_timestamp, h->state.zero_timestamp,
+                     sizeof(h->state.zero_timestamp)) == 0 &&
+               memcmp(second.header.state.io, h->state.io,
+                      sizeof(h->state.io)) == 0 &&
+               memcmp(second.header.state.io_work_loop, h->state.io_work_loop,
+                      sizeof(h->state.io_work_loop)) == 0);
+  h->state = retainedState;
+  second.registry[69].client.process_id += 1;
+  OSVA_V2_TEST(!V2SharedStateEqual(&decoded, &second));
+  second.registry[69].client.process_id -= 1;
+#define OSVA_V2_REJECT_COHERENCE_MUTATION(field) do { \
+    __typeof__(field) retained = (field); (field) += 1; \
+    OSVA_V2_TEST(!V2SharedStateEqual(&decoded, &second)); \
+    (field) = retained; \
+  } while (0)
+  OSVA_V2_REJECT_COHERENCE_MUTATION(second.header.registry_revision);
+  OSVA_V2_REJECT_COHERENCE_MUTATION(second.header.state.timeline_seed);
+  OSVA_V2_REJECT_COHERENCE_MUTATION(second.header.core_client_slots[0].session_id);
+  OSVA_V2_REJECT_COHERENCE_MUTATION(second.header.state.driver_lifecycle_sequence);
+  OSVA_V2_REJECT_COHERENCE_MUTATION(second.header.state.core_lifecycle_sequence);
+  OSVA_V2_REJECT_COHERENCE_MUTATION(second.header.last_admission_failure.sequence);
+#undef OSVA_V2_REJECT_COHERENCE_MUTATION
+  ReleaseV2Snapshot(&decoded); ReleaseV2Snapshot(&second);
+  OSVA_V2_REJECT_MUTATION(r[0].client.lease_session_id, 99);
+  OSVA_V2_REJECT_MUTATION(r[0].client.lease_timeline_seed, 4);
+  OSVA_V2_REJECT_MUTATION(r[0].client.core_client_slot, 64);
+  OSVA_V2_REJECT_MUTATION(r[0].client.io_start_depth, 2);
+  OSVA_V2_REJECT_MUTATION(h->core_client_slots[0].timeline_seed, 4);
+  OSVA_V2_REJECT_MUTATION(h->state.io[1].last_published_frame_seed, 5);
+  /* The mismatch above is representable when its invariant is truthfully clear. */
+  r[0].client.lease_session_id = 99;
+  h->state.invariant_flags &= (UInt64)~(UInt64)kOSVADiagnosticInvariantDriverStartsMatchCoreSlots;
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  ReleaseV2Snapshot(&decoded);
+  r[0].client.lease_session_id = 10;
+  h->state.invariant_flags |= kOSVADiagnosticInvariantDriverStartsMatchCoreSlots;
+  /* A truthful non-green inventory is reportable; false-green was rejected above. */
+  h->state.active_client_count = 3;
+  h->state.timeline_seed = 0;
+  h->state.invariant_flags &= (UInt64)~(UInt64)(kOSVADiagnosticSnapshotTimelineActive |
+      kOSVADiagnosticInvariantNoActiveSlotReferencesRetiredGeneration);
+  h->state.invariant_flags &= (UInt64)~(UInt64)(kOSVADiagnosticInvariantGlobalMatchesCoreSlots |
+                                              kOSVADiagnosticInvariantActiveImpliesClockValid);
+  OSVA_V2_TEST(DecodeV2FixtureBytes(bytes, byteCount, &decoded) == kSnapshotReadOK);
+  ReleaseV2Snapshot(&decoded);
+#undef OSVA_V2_REJECT_MUTATION
+#undef OSVA_V2_TEST
+  free(bytes);
+  printf("{\"schema\":2,\"mode\":\"self-test-v2\",\"passed\":true,\"tests\":%u,"
+         "\"coreAudioIOStarted\":false,\"routesMutated\":false}\n", passed);
+  return 0;
+}
+
 int main(int argc, char *argv[]) {
   if (argc == 2 && strcmp(argv[1], "--self-test") == 0) {
     return RunSelfTest();
@@ -1197,6 +1930,8 @@ int main(int argc, char *argv[]) {
   if (argc == 2 && strcmp(argv[1], "--read-once") == 0) {
     return RunReader();
   }
-  fprintf(stderr, "usage: %s --self-test | --read-once\n", argv[0]);
+  if (argc == 2 && strcmp(argv[1], "--read-v2-once") == 0) return RunV2Reader();
+  if (argc == 2 && strcmp(argv[1], "--self-test-v2") == 0) return RunV2SelfTest();
+  fprintf(stderr, "usage: %s --self-test-v2 | --read-v2-once | --self-test | --read-once\n", argv[0]);
   return kExitUsage;
 }

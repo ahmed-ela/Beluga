@@ -9,6 +9,18 @@ The public surface is deliberately small:
 - `WSS /v2/availability` carries only persistent paired-device availability. The distinct path makes new clients fail closed against an old Worker instead of being interpreted as invitation traffic.
 - Channel, role, and the joining role's proof are accepted only in bounded `X-AudioStreamer-Channel`, `X-AudioStreamer-Role`, and `X-AudioStreamer-Admission` upgrade headers. Availability hosts additionally register the independently derived viewer capability in `X-AudioStreamer-Viewer-Admission`, send exact mode `availability`, and require the Worker to echo `Sec-WebSocket-Protocol: audiostreamer.availability.v1`; viewers never send the registration header. Pairing clients require an exact `audiostreamer.pairing.v1` echo. Query strings, missing/unknown required subprotocols, role-swapped proofs, availability headers on v1, and alternate paths are rejected.
 
+The additive browser audio-share registry and static receiver are **production disabled**
+(`AUDIO_SHARE_ENABLED="false"`), undeployed, and not a native audio sender. They use a
+separate `/v3/audio-share/<publicID>` first-frame-authenticated protocol and
+`AudioShareSession` Durable Object and fixed global `AudioShareBudget` authority,
+never the phone invitation/availability modes. Creation defaults to 100 per
+rolling day and 32 unexpired grants; each share allows at most 64 cumulative
+listener/ICE issuances and eight active listeners. Birth-fenced public locators
+permit safe finite tombstone collection without admitting an old link again.
+See [the exact protocol and integration gates](../../browser/beluga-audio/README.md).
+Do not enable/deploy these routes before native sender integration and live expiry,
+revocation, and phone-coexistence validation. Existing v1/v2 joins remain unchanged.
+
 The `X-AudioStreamer-*`, `audiostreamer.pairing.v1`, and
 `audiostreamer.availability.v1` spellings are deployed v1 compatibility ABI. They intentionally
 retain the former product name so Beluga clients remain compatible with existing releases.
@@ -61,9 +73,23 @@ npx wrangler secret put CLOUDFLARE_TURN_API_TOKEN
 
 If exactly one secret is present, or credential provisioning times out or returns an invalid response, the viewer is rejected with `turn_unavailable`; the invitation is not consumed. The Worker accepts only a bounded `201 application/json` response, restricts provisioned ICE URLs to Cloudflare's expected `stun.cloudflare.com` and `turn.cloudflare.com` hosts and STUN/TURN transports, normalizes strict password-credential schemas, and never persists generated credentials. `.dev.vars.example` documents local secret names; `.dev.vars` is ignored.
 
+Sharing uses **separate** server-side `AUDIO_SHARE_TURN_KEY_ID` and
+`AUDIO_SHARE_TURN_API_TOKEN` secrets and `AUDIO_SHARE_TURN_*` configuration. It
+never reuses the existing phone TURN secrets. Without both sharing secrets,
+sharing stays direct-STUN-only; a partial configuration rejects listener grants.
+Review the sharing key's relay bandwidth/billing ceiling independently before
+enabling the feature. Anonymous global capacity exhaustion remains possible; the
+conservative budget protects bounded aggregate work, not per-user fairness.
+
 ## Deployment
 
-Review the account and TURN billing configuration first, then deploy explicitly:
+The default production Worker name preserves the existing installed-client origin.
+Do not override it with a renamed Worker: existing pairing and media clients do not
+discover a second origin. Before any deployment or secret write, verify the personal
+Cloudflare account and TURN billing configuration; do not select a different organization.
+Account selection and credentials remain private deployment inputs, not source files.
+
+After the sharing integration gates above pass, deploy explicitly:
 
 ```sh
 npm ci
@@ -72,10 +98,13 @@ npm run check
 npm run deploy
 ```
 
-Wrangler creates the `RendezvousSession` class with the `new_sqlite_classes` migration, which is compatible with Workers Free Durable Objects. With the default name, the stable endpoint is:
+Wrangler's migrations retain `RendezvousSession` and add the separate sharing classes.
+Keep existing bindings, stored objects and phone TURN secrets intact. The production
+default remains sharing-disabled until the separately authorized enablement step.
+For the existing installation, the stable endpoint is:
 
 ```text
-wss://opensteamer-rendezvous.<workers-subdomain>.workers.dev
+wss://audiostreamer-rendezvous.elaminahmed03.workers.dev
 ```
 
 Configure the Mac and iOS clients with that origin only; their shared Swift clients append `/v1/rendezvous` for invitation/media sessions and `/v2/availability` for durable paired reconnect coordination. Do not put a channel, role, proof, or pairing code in the URL. Deploy this Worker contract before the matching Mac and iOS clients. The media path prefers direct WebRTC ICE and uses TURN only when direct connectivity fails.

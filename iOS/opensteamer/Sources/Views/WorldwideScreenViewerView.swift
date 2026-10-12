@@ -93,6 +93,9 @@ struct WorldwideScreenViewerView: View {
                                     for: lease
                                 )
                             },
+                            onRendererMounted: { view in
+                                viewModel.screenRendererDidMount(view, for: lease)
+                            },
                             onPresentationCoverInstalled: { coverID in
                                 // The UIKit bridge has synchronously placed its opaque cover. Hop
                                 // out of UIViewRepresentable reconciliation before publishing the
@@ -240,18 +243,50 @@ struct WorldwideScreenViewerView: View {
                         }
                         .overlay(alignment: .top) {
                             if let statusText = screenPipelineFailureText {
-                                Text(statusText)
-                                    .font(.callout.weight(.semibold))
-                                    .foregroundStyle(.white)
-                                    .multilineTextAlignment(.center)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 10)
-                                    .background(.black.opacity(0.82), in: Capsule())
-                                    .padding(.top, 12)
-                                    .allowsHitTesting(false)
-                                    .accessibilityIdentifier(
-                                        "worldwideScreenClientPipelineStatus"
-                                    )
+                                VStack(spacing: 8) {
+                                    Text(statusText)
+                                        .font(.callout.weight(.semibold))
+                                        .foregroundStyle(.white)
+                                        .multilineTextAlignment(.center)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 10)
+                                        .background(.black.opacity(0.82), in: Capsule())
+                                        .accessibilityIdentifier(
+                                            "worldwideScreenClientPipelineStatus"
+                                        )
+
+                                    if viewModel.screenLivenessBridgeError == nil,
+                                       viewModel.screenLivenessDiagnosticSnapshot.state
+                                        == .presentationStalled,
+                                       !requiresLocalPrivacyCover {
+                                        Text(
+                                            viewModel.screenRendererPathDiagnosticLines
+                                                .joined(separator: "\n")
+                                        )
+                                        .font(.system(
+                                            size: 11,
+                                            weight: .medium,
+                                            design: .monospaced
+                                        ))
+                                        .foregroundStyle(.white)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .padding(10)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(
+                                            .black.opacity(0.88),
+                                            in: RoundedRectangle(cornerRadius: 10)
+                                        )
+                                        .accessibilityIdentifier(
+                                            "worldwideScreenRendererPathDiagnostics"
+                                        )
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                // This viewer ignores the safe area for the video. Keep status
+                                // evidence below the iPhone's Dynamic Island even so.
+                                .padding(.top, max(geometry.safeAreaInsets.top, 72))
+                                .allowsHitTesting(false)
                             }
                         }
                         .overlay(alignment: .bottomTrailing) {
@@ -303,6 +338,14 @@ struct WorldwideScreenViewerView: View {
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
+        .modifier(ScreenVideoIdleTimerModifier(
+            playback: viewModel.screenVideoPlaybackEvidence,
+            isViewingScreen: allowsRemoteInputPresentation
+                && viewModel.screenPresentationIsVisible(lease)
+                && presentedRemoteVideoTrack != nil
+                && renderedVideoSize != nil
+                && screenMediaFence?.forceCover != true
+        ))
         .task {
             guard Self.allowsScreenPresentation(in: scenePhase) else {
                 rejectPresentationAndDismiss()
@@ -409,7 +452,10 @@ struct WorldwideScreenViewerView: View {
     }
 
     private var screenPipelineFailureText: String? {
-        switch viewModel.screenLivenessDiagnosticSnapshot.state {
+        if viewModel.screenLivenessBridgeError != nil {
+            return viewModel.screenLivenessStatusText
+        }
+        return switch viewModel.screenLivenessDiagnosticSnapshot.state {
         case .inboundRTPStalled, .decodeStalled, .presentationStalled:
             viewModel.screenLivenessStatusText
         case .intentionallyCovered, .covered, .trackMissing,

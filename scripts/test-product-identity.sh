@@ -2,12 +2,20 @@
 # Mutation tests for check-product-identity.sh. Every case starts from the same valid fixture and
 # changes exactly one identity boundary, preventing one broad failure from masking a weak oracle.
 set -euo pipefail
+if [[ "${OPENSTEAMER_IDENTITY_WORKER_ONLY:-0}" == 1 && \
+    ("${OPENSTEAMER_IDENTITY_LOCATOR_ONLY:-0}" == 1 || \
+     "${OPENSTEAMER_IDENTITY_BEHAVIOR_ONLY:-0}" == 1 || \
+     "${OPENSTEAMER_IDENTITY_NOTIFICATION_ONLY:-0}" == 1) ]]; then
+  print -u2 -r -- 'identity regression setup failed: Worker-only mode cannot be combined with another mode'
+  exit 1
+fi
 zmodload zsh/system || {
   print -u2 -r -- 'identity regression setup failed: zsh/system is unavailable'
   exit 1
 }
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+node "$ROOT_DIR/scripts/test-product-identity-literals.mjs"
 readonly IDENTITY_TEST_TEMP_ROOT='/Volumes/t7'
 [[ "${IDENTITY_TEST_TEMP_ROOT:A}" == "${IDENTITY_TEST_TEMP_ROOT}" \
     && "${IDENTITY_TEST_TEMP_ROOT:h}" == '/Volumes' \
@@ -88,6 +96,7 @@ mkdir -p \
   "$BASELINE/macOS/scripts" \
   "$BASELINE/macOS/Sources/CaptureCore" \
   "$BASELINE/macOS/Sources/CaptureServer" \
+  "$BASELINE/macOS/Sources/BelugaUpdateCore" \
   "$BASELINE/macOS/LaunchAgents" \
   "$BASELINE/macOS/RelayBridge" \
   "$BASELINE/macOS/VirtualAudioDriver/Driver" \
@@ -136,6 +145,8 @@ targets:
         PRODUCT_NAME: Beluga
         PRODUCT_MODULE_NAME: opensteamer
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/MediaNotification.entitlements
+        BELUGA_MEDIA_APP_GROUP: group.org.example.AudioStreamer.dev.media
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev
@@ -143,6 +154,32 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer
         TestFlight:
           PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer
+          BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
+  MediaNotificationContent:
+    type: app-extension
+    dependencies:
+      - sdk: UserNotificationsUI.framework
+    settings:
+      base:
+        PRODUCT_NAME: MediaNotificationContent
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev.MediaNotificationContent
+        CODE_SIGN_ENTITLEMENTS: Sources/Support/MediaNotification.entitlements
+        BELUGA_MEDIA_APP_GROUP: group.org.example.AudioStreamer.dev.media
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_STYLE: Automatic
+      configs:
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer.MediaNotificationContent
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 36
+        TestFlight:
+          PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer.MediaNotificationContent
+          BELUGA_MEDIA_APP_GROUP: group.com.elamin.opensteamer.media
+          DEVELOPMENT_TEAM: MSMG8CJLB3
+          CURRENT_PROJECT_VERSION: 95
   opensteamerTests:
     type: bundle.unit-test
     settings:
@@ -161,11 +198,24 @@ print -r -- '// !$*UTF8*$!
   classes = {};
   objectVersion = 56;
   objects = {
+/* Begin PBXBuildFile section */
+    EA /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E5 /* UserNotificationsUI.framework */; };
+/* End PBXBuildFile section */
 /* Begin PBXFileReference section */
     E1 /* Beluga.app */ = {isa = PBXFileReference; lastKnownFileType = wrapper.application; path = Beluga.app; sourceTree = BUILT_PRODUCTS_DIR; };
     E2 /* opensteamerTests.xctest */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = opensteamerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
     E3 /* opensteamerUITests.xctest */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = opensteamerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+    E4 /* MediaNotificationContent.appex */ = {isa = PBXFileReference; lastKnownFileType = wrapper.app-extension; path = MediaNotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+    E5 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+/* Begin PBXFrameworksBuildPhase section */
+    EB /* Frameworks */ = {
+      isa = PBXFrameworksBuildPhase;
+      files = (
+        EA /* UserNotificationsUI.framework in Frameworks */,
+      );
+    };
+/* End PBXFrameworksBuildPhase section */
 /* Begin PBXNativeTarget section */
     A1 /* opensteamer */ = {
       isa = PBXNativeTarget;
@@ -191,6 +241,17 @@ print -r -- '// !$*UTF8*$!
       productReference = E3 /* opensteamerUITests.xctest */;
       productType = "com.apple.product-type.bundle.ui-testing";
     };
+    A4 /* MediaNotificationContent */ = {
+      isa = PBXNativeTarget;
+      buildPhases = (
+        EB /* Frameworks */,
+      );
+      buildConfigurationList = D4 /* Build configuration list for MediaNotificationContent */;
+      name = MediaNotificationContent;
+      productName = MediaNotificationContent;
+      productReference = E4 /* MediaNotificationContent.appex */;
+      productType = "com.apple.product-type.app-extension";
+    };
 /* End PBXNativeTarget section */
 /* Begin XCBuildConfiguration section */
     B1 /* Debug */ = {
@@ -200,6 +261,8 @@ print -r -- '// !$*UTF8*$!
         PRODUCT_MODULE_NAME = opensteamer;
         ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
         PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
       };
       name = Debug;
     };
@@ -210,6 +273,8 @@ print -r -- '// !$*UTF8*$!
         PRODUCT_MODULE_NAME = opensteamer;
         ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
         PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
       };
       name = Release;
     };
@@ -248,6 +313,8 @@ print -r -- '// !$*UTF8*$!
         PRODUCT_MODULE_NAME = opensteamer;
         ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
         PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
       };
       name = TestFlight;
     };
@@ -286,6 +353,53 @@ print -r -- '// !$*UTF8*$!
       };
       name = TestFlight;
     };
+    C1 /* Debug */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = MediaNotificationContent;
+        PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev.MediaNotificationContent;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
+        SKIP_INSTALL = YES;
+        APPLICATION_EXTENSION_API_ONLY = YES;
+        MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 1;
+        CODE_SIGN_STYLE = Automatic;
+      };
+      name = Debug;
+    };
+    C2 /* Release */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = MediaNotificationContent;
+        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.AudioStreamer.MediaNotificationContent;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;
+        SKIP_INSTALL = YES;
+        APPLICATION_EXTENSION_API_ONLY = YES;
+        MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 36;
+        DEVELOPMENT_TEAM = MSMG8CJLB3;
+        CODE_SIGN_STYLE = Automatic;
+      };
+      name = Release;
+    };
+    C3 /* TestFlight */ = {
+      isa = XCBuildConfiguration;
+      buildSettings = {
+        PRODUCT_NAME = MediaNotificationContent;
+        PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer.MediaNotificationContent;
+        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;
+        BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;
+        SKIP_INSTALL = YES;
+        APPLICATION_EXTENSION_API_ONLY = YES;
+        MARKETING_VERSION = 0.1.0;
+        CURRENT_PROJECT_VERSION = 95;
+        DEVELOPMENT_TEAM = MSMG8CJLB3;
+        CODE_SIGN_STYLE = Automatic;
+      };
+      name = TestFlight;
+    };
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
     D1 /* Build configuration list for PBXNativeTarget "opensteamer" */ = {
@@ -310,6 +424,14 @@ print -r -- '// !$*UTF8*$!
         B5 /* Debug */,
         B6 /* Release */,
         B9 /* TestFlight */,
+      );
+    };
+    D4 /* MediaNotificationContent */ = {
+      isa = XCConfigurationList;
+      buildConfigurations = (
+        C1 /* Debug */,
+        C2 /* Release */,
+        C3 /* TestFlight */,
       );
     };
 /* End XCConfigurationList section */
@@ -355,7 +477,12 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>destination</key><string>upload</string>
 <key>manageAppVersionAndBuildNumber</key><false/>
 <key>method</key><string>app-store-connect</string>
-<key>signingStyle</key><string>automatic</string>
+<key>signingStyle</key><string>manual</string>
+<key>signingCertificate</key><string>CEB61B792A7A5848E9E797BB2E44EA2642611A6F</string>
+<key>provisioningProfiles</key><dict>
+<key>com.elamin.opensteamer</key><string>66eb4be5-07eb-49a3-a70f-fcbb76a2a849</string>
+<key>com.elamin.opensteamer.MediaNotificationContent</key><string>9401f67d-3ef2-4b0e-af11-9603de6698c2</string>
+</dict>
 <key>teamID</key><string>MSMG8CJLB3</string>
 <key>testFlightInternalTestingOnly</key><true/>
 <key>uploadSymbols</key><true/>
@@ -368,7 +495,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <key>CFBundleName</key><string>Beluga</string>
 <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
 <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-<key>NSCameraUsageDescription</key><string>Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>
+<key>NSCameraUsageDescription</key><string>Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.</string>
 <key>NSLocalNetworkUsageDescription</key><string>Beluga finds the Mac capture server on your local Wi-Fi network.</string>
 </dict></plist>' >"$BASELINE/iOS/opensteamer/Sources/Support/Info.plist"
 print -r -- 'struct BrowserViewFixture {
@@ -404,11 +531,10 @@ print -r -- 'static let opensteamerPairingService =
 print -r -- 'let store = WorldwidePairingStore(
     dataStore: WorldwideKeychainDataStore()
 )
-fflush(stdout)
 fflush(stdout)' >"$BASELINE/macOS/Sources/CaptureServer/CaptureServerMain.swift"
 print -r -- 'static let legacyRuntimeDirectoryName =
     "com.elamin.AudioStreamer.CaptureServer.runtime"' \
-  >"$BASELINE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"
+  >"$BASELINE/macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift"
 print -r -- 'codesign --identifier com.elamin.AudioStreamer.CaptureServer executable' \
   >"$BASELINE/macOS/scripts/build-opensteamer-host-app.sh"
 print -r -- 'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' \
@@ -508,7 +634,7 @@ print -r -- '{"name":"@opensteamer/rendezvous-worker","packages":{"":{"name":"@o
 print -r -- '{"name":"opensteamer-relay-bridge"}' >"$BASELINE/macOS/RelayBridge/package.json"
 print -r -- '{"name":"opensteamer-relay-bridge","packages":{"":{"name":"opensteamer-relay-bridge"}}}' \
   >"$BASELINE/macOS/RelayBridge/package-lock.json"
-print -r -- 'name = "opensteamer-rendezvous"
+print -r -- 'name = "audiostreamer-rendezvous"
 main = "src/index.js"' >"$BASELINE/services/RendezvousWorker/wrangler.toml"
 print -r -- 'name = "opensteamer-rendezvous-test"
 main = "src/index.js"' >"$BASELINE/services/RendezvousWorker/wrangler.test.toml"
@@ -558,6 +684,110 @@ require_rejection() {
 }
 
 if [[ "${OPENSTEAMER_IDENTITY_BEHAVIOR_ONLY:-0}" != 1 ]]; then
+
+CASE=$(new_case worker-name)
+replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
+  'name = "audiostreamer-rendezvous"' 'name = "opensteamer-rendezvous"'
+require_rejection "$CASE" 'production Worker name'
+
+CASE=$(new_case worker-name-duplicate)
+replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
+  'name = "audiostreamer-rendezvous"' \
+  $'name = "audiostreamer-rendezvous"\nname = "opensteamer-rendezvous"'
+require_rejection "$CASE" 'production Worker name'
+
+CASE=$(new_case worker-name-nested)
+replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
+  'name = "audiostreamer-rendezvous"' $'[vars]\nname = "audiostreamer-rendezvous"'
+require_rejection "$CASE" 'production Worker name'
+
+if [[ "${OPENSTEAMER_IDENTITY_WORKER_ONLY:-0}" == 1 ]]; then
+  print -r -- 'PASS: Worker identity baseline and three focused mutations'
+  exit 0
+fi
+
+for notification_setting in SKIP_INSTALL APPLICATION_EXTENSION_API_ONLY; do
+  CASE=$(new_case "notification-yml-${notification_setting:l}")
+  replace_once "$CASE/iOS/opensteamer/project.yml" \
+    "${notification_setting}: YES" "${notification_setting}: NO"
+  require_rejection "$CASE" 'project.yml notification storage/signing/install contract'
+done
+
+CASE=$(new_case notification-yml-team)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  $'          DEVELOPMENT_TEAM: MSMG8CJLB3\n          CURRENT_PROJECT_VERSION: 95' \
+  $'          DEVELOPMENT_TEAM: OTHER\n          CURRENT_PROJECT_VERSION: 95'
+require_rejection "$CASE" 'project.yml notification storage/signing/install contract'
+
+CASE=$(new_case notification-yml-sdk)
+replace_once "$CASE/iOS/opensteamer/project.yml" \
+  '- sdk: UserNotificationsUI.framework' '- sdk: UserNotifications.framework'
+require_rejection "$CASE" 'project.yml notification extension framework link'
+
+CASE=$(new_case notification-pbx-group)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  $'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer.MediaNotificationContent;\n        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;\n        BELUGA_MEDIA_APP_GROUP = group.com.elamin.opensteamer.media;' \
+  $'PRODUCT_BUNDLE_IDENTIFIER = com.elamin.opensteamer.MediaNotificationContent;\n        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;\n        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;'
+require_rejection "$CASE" 'generated Xcode notification storage isolation'
+
+CASE=$(new_case notification-pbx-version)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'CURRENT_PROJECT_VERSION = 95;' 'CURRENT_PROJECT_VERSION = 89;'
+require_rejection "$CASE" 'generated Xcode notification signing/install contract'
+
+CASE=$(new_case notification-pbx-framework-target)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  '        EB /* Frameworks */,' '        EC /* Unrelated */,'
+require_rejection "$CASE" 'could not parse generated Xcode target/product/configuration mappings'
+
+CASE=$(new_case notification-pbx-weak-framework)
+replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
+  'fileRef = E5 /* UserNotificationsUI.framework */;' \
+  'fileRef = E5 /* UserNotificationsUI.framework */; settings = { ATTRIBUTES = (Weak,); };'
+require_rejection "$CASE" 'could not parse generated Xcode target/product/configuration mappings'
+
+CASE=$(new_case notification-binary-framework-call)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'verify_media_notification_framework_link "${extension_path}/MediaNotificationContent" || return 1' \
+  'true # notification dynamic-loader proof omitted'
+require_rejection "$CASE" 'side-by-side TestFlight notification binary framework validation'
+
+CASE=$(new_case notification-export-style)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '<key>signingStyle</key><string>manual</string>' '<key>signingStyle</key><string>automatic</string>'
+require_rejection "$CASE" 'side-by-side TestFlight export signing style'
+
+CASE=$(new_case notification-export-certificate)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  'CEB61B792A7A5848E9E797BB2E44EA2642611A6F' '0000000000000000000000000000000000000000'
+require_rejection "$CASE" 'side-by-side TestFlight export certificate'
+
+CASE=$(new_case notification-export-main-profile)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '66eb4be5-07eb-49a3-a70f-fcbb76a2a849' '00000000-0000-4000-8000-000000000000'
+require_rejection "$CASE" 'side-by-side TestFlight main export profile'
+
+CASE=$(new_case notification-export-extension-profile)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '9401f67d-3ef2-4b0e-af11-9603de6698c2' '00000000-0000-4000-8000-000000000000'
+require_rejection "$CASE" 'side-by-side TestFlight extension export profile'
+
+CASE=$(new_case notification-export-extra-profile)
+replace_once "$CASE/iOS/opensteamer/TestFlightExportOptions.plist" \
+  '<key>provisioningProfiles</key><dict>' \
+  '<key>provisioningProfiles</key><dict><key>com.example.other</key><string>other</string>'
+require_rejection "$CASE" 'side-by-side TestFlight export profile count'
+
+CASE=$(new_case notification-export-gate-call)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  'verify_reviewed_export_signing_options "${EXPORT_OPTIONS_PATH}"' \
+  'true # export signing gate omitted'
+require_rejection "$CASE" 'side-by-side TestFlight exact local signing export gate'
+
+if [[ "${OPENSTEAMER_IDENTITY_NOTIFICATION_ONLY:-0}" == 1 ]]; then
+  print -r -- 'PASS: notification identity baseline and 15 focused mutations'
+  exit 0
+fi
 
 CASE=$(new_case beluga-root-package)
 replace_once "$CASE/Package.swift" 'name: "Beluga"' 'name: "opensteamer"'
@@ -610,7 +840,7 @@ require_rejection "$CASE" 'iOS CFBundleDisplayName identity'
 
 CASE=$(new_case camera-usage-description)
 replace_once "$CASE/iOS/opensteamer/Sources/Support/Info.plist" \
-  '<key>NSCameraUsageDescription</key><string>Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.</string>' \
+  '<key>NSCameraUsageDescription</key><string>Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.</string>' \
   '<key>NSCameraUsageDescription</key><string>Beluga uses the camera during ordinary audio streaming.</string>'
 require_rejection "$CASE" 'iOS camera usage description'
 
@@ -642,14 +872,14 @@ require_rejection "$CASE" 'project.yml target/product-type mapping'
 
 CASE=$(new_case project-product-name-override)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev' \
-  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev\n          PRODUCT_NAME: Opensteamer'
+  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev\n' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev\n          PRODUCT_NAME: Opensteamer\n'
 require_rejection "$CASE" 'project.yml product-name override count'
 
 CASE=$(new_case project-code-sign-identity-override)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer' \
-  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n          CODE_SIGN_IDENTITY: "Apple Distribution"'
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n          CODE_SIGN_IDENTITY: "Apple Distribution"\n'
 require_rejection "$CASE" 'project.yml code-sign identity override count'
 
 CASE=$(new_case project-retired-rendezvous-build-setting)
@@ -660,20 +890,20 @@ require_rejection "$CASE" 'project.yml retired rendezvous build-setting count'
 
 CASE=$(new_case project-debug-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev' \
-  'PRODUCT_BUNDLE_IDENTIFIER: org.example.opensteamer.dev'
+  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.AudioStreamer.dev\n' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: org.example.opensteamer.dev\n'
 require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
 
 CASE=$(new_case project-release-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer' \
-  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer'
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer\n' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n'
 require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
 
 CASE=$(new_case project-testflight-bundle-id)
 replace_once "$CASE/iOS/opensteamer/project.yml" \
-  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer' \
-  'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer'
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.opensteamer\n' \
+  $'PRODUCT_BUNDLE_IDENTIFIER: com.elamin.AudioStreamer\n'
 require_rejection "$CASE" 'project.yml target/configuration bundle-ID mapping'
 
 CASE=$(new_case project-unit-test-bundle-id)
@@ -1490,8 +1720,8 @@ require_rejection "$CASE" 'side-by-side TestFlight sparse-image creation'
 
 CASE=$(new_case testflight-archive-action-settings-proof)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'archive -showBuildSettings -json' \
-  'build -showBuildSettings -json'
+  '    archive -showBuildSettings -json || return 2' \
+  '    build -showBuildSettings -json || return 2'
 require_rejection "$CASE" 'side-by-side TestFlight archive-action settings proof'
 
 CASE=$(new_case testflight-build-image-size)
@@ -1969,15 +2199,33 @@ require_rejection "$CASE" 'side-by-side TestFlight package update suppression'
 
 CASE=$(new_case testflight-package-manifest-pin)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_PACKAGE_MANIFEST_SHA256="443fe7a76bfbe8cda2d193c047cc04122c01479f8763ccd9e2d5871b7e504f82"' \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="c518eda5d6313c66fd38d8e8b4ae5ab537f276edccc5149f19b29dfef3c0c5aa"' \
   'EXPECTED_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
 require_rejection "$CASE" 'side-by-side TestFlight exact package manifest pin'
 
-CASE=$(new_case testflight-package-resolved-state)
+CASE=$(new_case testflight-package-resolved-pin)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  'EXPECTED_PACKAGE_RESOLVED_STATE="absent"' \
-  'EXPECTED_PACKAGE_RESOLVED_STATE="allow-stale-remote-lock"'
-require_rejection "$CASE" 'side-by-side TestFlight exact absent-lock state'
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="b3ab744638912653cdcd8d3890a460390e651343720897a8a24ba84273ec83c7"' \
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="0000000000000000000000000000000000000000000000000000000000000000"'
+require_rejection "$CASE" 'side-by-side TestFlight exact resolved-package pin'
+
+CASE=$(new_case testflight-package-resolved-regular)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '&& -f "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}"' \
+  '&& -e "${PACKAGE_RESOLVED_PATH}" # allow a symlink lock'
+require_rejection "$CASE" 'side-by-side TestFlight requires regular non-symlink dependency lock'
+
+CASE=$(new_case testflight-package-manifest-bytes)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '"$(sha256_private_file_contents "${PACKAGE_MANIFEST_PATH}")"' \
+  '"${EXPECTED_PACKAGE_MANIFEST_SHA256}" # skip actual manifest bytes'
+require_rejection "$CASE" 'side-by-side TestFlight exact manifest bytes'
+
+CASE=$(new_case testflight-package-resolved-bytes)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  '"$(sha256_private_file_contents "${PACKAGE_RESOLVED_PATH}")"' \
+  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}" # skip actual resolved bytes'
+require_rejection "$CASE" 'side-by-side TestFlight exact resolved-package bytes'
 
 CASE=$(new_case testflight-vendor-missing-contract)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2020,10 +2268,24 @@ require_rejection "$CASE" \
 
 CASE=$(new_case testflight-entrypoint-current-package-verification)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
-  $'verify_static_contract\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' \
-  $'verify_static_contract\ntrue # current package inputs not verified at entrypoint\npin_export_options_identity'
+  $'esac\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' \
+  $'esac\ntrue # current package inputs not verified at entrypoint\npin_export_options_identity'
 require_rejection "$CASE" \
   'side-by-side TestFlight entrypoint current-package verification'
+
+CASE=$(new_case testflight-microphone-receipt-upload-boundary)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'  verify_microphone_regression_receipt \\\n    || fail "microphone regression evidence changed or expired before upload"' \
+  $'  true # microphone receipt not checked before upload'
+require_rejection "$CASE" \
+  'side-by-side TestFlight mandatory microphone receipt boundaries'
+
+CASE=$(new_case testflight-microphone-receipt-independent-digest)
+replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
+  $'    --receipt-sha256 "${expected_receipt_sha256}" || return 1' \
+  $'    --receipt-sha256 "${receipt_sha256}" || return 1'
+require_rejection "$CASE" \
+  'side-by-side TestFlight independently bound microphone receipt verification'
 
 CASE=$(new_case testflight-xcode-sandbox-profile-consumption)
 replace_once "$CASE/iOS/opensteamer/scripts/archive-upload-side-by-side-testflight.sh" \
@@ -2441,8 +2703,8 @@ require_rejection "$CASE" 'generated Xcode target/product mapping'
 
 CASE=$(new_case generated-configuration-name)
 replace_once "$CASE/iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj" \
-  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;\n      };\n      name = Debug;' \
-  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;\n      };\n      name = Release;'
+  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;\n        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;\n        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;\n      };\n      name = Debug;' \
+  $'PRODUCT_BUNDLE_IDENTIFIER = org.example.AudioStreamer.dev;\n        CODE_SIGN_ENTITLEMENTS = Sources/Support/MediaNotification.entitlements;\n        BELUGA_MEDIA_APP_GROUP = group.org.example.AudioStreamer.dev.media;\n      };\n      name = Release;'
 require_rejection "$CASE" 'could not parse generated Xcode target/product/configuration mappings'
 
 CASE=$(new_case scheme-buildable-pairing)
@@ -2820,12 +3082,12 @@ require_rejection "$CASE" 'explicit opensteamer pairing-store composition'
 
 CASE=$(new_case mac-pairing-code-flush)
 replace_once "$CASE/macOS/Sources/CaptureServer/CaptureServerMain.swift" \
-  $'fflush(stdout)\nfflush(stdout)' \
-  $'/* missing primary pairing-code flush */\nfflush(stdout)'
-require_rejection "$CASE" 'immediate primary and secondary one-time pairing-code flushes'
+  'fflush(stdout)' \
+  '/* missing primary pairing-code flush */'
+require_rejection "$CASE" 'immediate primary one-time pairing-code flush'
 
 CASE=$(new_case mac-runtime-lock-namespace)
-replace_once "$CASE/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift" \
+replace_once "$CASE/macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift" \
   '"com.elamin.AudioStreamer.CaptureServer.runtime"' \
   '"org.example.AudioStreamer.CaptureServer.runtime"'
 require_rejection "$CASE" 'preserved cross-version runtime lock namespace'
@@ -2871,11 +3133,6 @@ replace_once "$CASE/services/Rendezvous/package.json" \
   '@opensteamer/rendezvous' '@opensteamer/signaling'
 require_rejection "$CASE" 'Rendezvous npm package name'
 
-CASE=$(new_case worker-name)
-replace_once "$CASE/services/RendezvousWorker/wrangler.toml" \
-  'name = "opensteamer-rendezvous"' 'name = "opensteamer-signaling"'
-require_rejection "$CASE" 'production Worker name'
-
 fi
 
 if [[ "${OPENSTEAMER_IDENTITY_LOCATOR_ONLY:-0}" == 1 ]]; then
@@ -2913,7 +3170,7 @@ mkdir -p "$VENDOR_FIXTURE_ROOT"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" VENDOR_FIXTURE_ROOT="$VENDOR_FIXTURE_ROOT" \
 /bin/zsh <<'VENDORARCHIVETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset archive="$VENDOR_FIXTURE_ROOT/fixture.zip"
 typeset original="$VENDOR_FIXTURE_ROOT/original.zip"
@@ -2988,7 +3245,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" DOTTED_KEY_FIXTURE="$DOTTED_KEY_FIXTURE" \
 /bin/zsh <<'DOTTEDKEYTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset document
 document=$(<"$DOTTED_KEY_FIXTURE")
@@ -3015,7 +3272,7 @@ HELD_DIRECTORY="$BEHAVIOR_ROOT/held-certificate-directory"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" HELD_DIRECTORY="$HELD_DIRECTORY" \
 /bin/zsh <<'HELDDIRECTORYTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset -i held_fd=-1
 sysopen -r -o nofollow -u held_fd "$HELD_DIRECTORY"
@@ -3150,7 +3407,7 @@ SNAP_EFI_FIRST="$HDIEFIFIRST" \
 SNAP_MALFORMED_TAIL="$HDIMALFORMEDTAIL" \
 /bin/zsh <<'HDITEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=$CONTROL_PATH
 TESTFLIGHT_BUILD_IMAGE_PATH=$TARGET_IMAGE
@@ -3280,7 +3537,7 @@ STORE_FIXTURE="$T7_STORE_FIXTURE" \
 DISK_FIXTURE="$T7_DISK_FIXTURE" \
 /bin/zsh <<'T7TEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=$CONTROL_PATH
 TESTFLIGHT_BUILD_ROOT_PARENT_IDENTITY=$(stat_identity "${TESTFLIGHT_BUILD_ROOT:h}")
@@ -3354,14 +3611,39 @@ T7TEST
 MANIFEST_ARCHIVE="$BEHAVIOR_ROOT/manifest.xcarchive"
 MANIFEST_APP="$MANIFEST_ARCHIVE/Products/Applications/Beluga.app"
 MANIFEST_FRAMEWORK="$MANIFEST_APP/Frameworks/LiveKitWebRTC.framework"
-mkdir -p "$MANIFEST_FRAMEWORK"
+MANIFEST_EXTENSION="$MANIFEST_APP/PlugIns/MediaNotificationContent.appex"
+mkdir -p "$MANIFEST_FRAMEWORK" "$MANIFEST_EXTENSION"
 /bin/cp -- /usr/bin/true "$MANIFEST_APP/Beluga"
 /bin/cp -- /usr/bin/true "$MANIFEST_FRAMEWORK/LiveKitWebRTC"
+/bin/cp -- /usr/bin/true "$MANIFEST_EXTENSION/MediaNotificationContent"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>com.elamin.opensteamer</string>
 <key>CFBundleExecutable</key><string>Beluga</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>BelugaMediaAppGroup</key><string>group.com.elamin.opensteamer.media</string>
 </dict></plist>' >"$MANIFEST_APP/Info.plist"
+MANIFEST_BUILD_NUMBER=$(/usr/bin/sed -n \
+  's/^readonly EXPECTED_BUILD_NUMBER="\([1-9][0-9]*\)"$/\1/p' "$BEHAVIOR_WRAPPER")
+[[ "$MANIFEST_BUILD_NUMBER" == <-> && "$MANIFEST_BUILD_NUMBER" != *$'\n'* ]]
+/usr/bin/plutil -insert CFBundleVersion -string "$MANIFEST_BUILD_NUMBER" "$MANIFEST_APP/Info.plist"
+print -r -- '<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.elamin.opensteamer.MediaNotificationContent</string>
+<key>CFBundleExecutable</key><string>MediaNotificationContent</string>
+<key>CFBundlePackageType</key><string>XPC!</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>BelugaMediaAppGroup</key><string>group.com.elamin.opensteamer.media</string>
+<key>NSExtension</key><dict>
+<key>NSExtensionPointIdentifier</key><string>com.apple.usernotifications.content-extension</string>
+<key>NSExtensionPrincipalClass</key><string>MediaNotificationContent.NotificationViewController</string>
+<key>NSExtensionAttributes</key><dict>
+<key>UNNotificationExtensionCategory</key><string>BelugaMediaControls</string>
+<key>UNNotificationExtensionUserInteractionEnabled</key><true/>
+<key>UNNotificationExtensionDefaultContentHidden</key><true/>
+</dict></dict>
+</dict></plist>' >"$MANIFEST_EXTENSION/Info.plist"
+/usr/bin/plutil -insert CFBundleVersion -string "$MANIFEST_BUILD_NUMBER" "$MANIFEST_EXTENSION/Info.plist"
 print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
 <key>CFBundleIdentifier</key><string>io.livekit.LiveKitWebRTC</string>
@@ -3371,7 +3653,7 @@ print -r -- '<?xml version="1.0" encoding="UTF-8"?>
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" MANIFEST_ARCHIVE="$MANIFEST_ARCHIVE" \
 /bin/zsh <<'MANIFESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function expect_manifest_rejection() {
   if verify_reviewed_archive_product_manifest "$MANIFEST_ARCHIVE" \
@@ -3432,7 +3714,7 @@ print -r -- baseline-symbols >"$TREE_DIGEST_ROOT/dSYMs/opensteamer.symbols"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" TREE_DIGEST_ROOT="$TREE_DIGEST_ROOT" \
 /bin/zsh <<'TREEDIGESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset full_baseline
 typeset excluded_baseline
@@ -3519,7 +3801,7 @@ BASELINE_ARCHIVE_INFO="$BASELINE_ARCHIVE_INFO" \
 POSTUPLOAD_ARCHIVE_INFO="$POSTUPLOAD_ARCHIVE_INFO" \
 /bin/zsh <<'DISTRIBUTIONTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function expect_distribution_rejection() {
   if verify_successful_upload_distribution_record "$POSTUPLOAD_ARCHIVE_INFO" \
@@ -3613,7 +3895,7 @@ for BUILD_OVERRIDE in \
     'SYMROOT=/Applications/AudioStreamer Host.app' \
     'CACHE_ROOT=/Applications/AudioStreamer Host.app'; do
   if /usr/bin/env "$BUILD_OVERRIDE" WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
-      /bin/zsh -c 'source <(/usr/bin/sed "/^verify_static_contract$/,$d" "$WRAPPER_PATH"); trap - EXIT HUP INT QUIT TERM; reject_unsafe_build_environment' \
+      /bin/zsh -c 'source <(/usr/bin/sed "/^verify_static_contract$/,$d" "$WRAPPER_PATH"); trap - EXIT ZERR HUP INT QUIT TERM; reject_unsafe_build_environment' \
       >/dev/null 2>&1; then
     print -u2 -r -- "unsafe inherited build override passed: $BUILD_OVERRIDE"
     exit 1
@@ -3635,7 +3917,7 @@ DIGEST_RUN_TMP_PARENT="$DIGEST_RUN_TMP_PARENT" \
 DIGEST_RUN_TMP="$DIGEST_RUN_TMP" \
 /bin/zsh <<'DIGESTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 function reject_unsafe_build_environment() { return 0 }
 function verify_reviewed_xcode_toolchain_identity() { return 0 }
 function verify_private_build_volume_identity() { return 0 }
@@ -3681,7 +3963,7 @@ DIGESTTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'XCODECONTRACTTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset -gi PINNED_CONTRACT_CALLS=0
 function verify_pinned_xcodebuild_filesystem_contract() {
@@ -3708,7 +3990,7 @@ XCODECONTRACTTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DESTINATIONROUTINGTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 typeset -gi OUTER_SANDBOX_CALLS=0
 typeset -ga OUTER_SANDBOX_CONTRACTS=()
@@ -3732,7 +4014,7 @@ DESTINATIONROUTINGTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'EXPORTACTIONARGUMENTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_ARCHIVE_PATH=/private/tmp/opensteamer-action-contract.xcarchive
 TESTFLIGHT_EXPORT_DIRECTORY=/private/tmp/opensteamer-action-contract-export
@@ -3795,7 +4077,7 @@ EXPORTACTIONARGUMENTSTEST
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'ARCHIVEROOTSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=/private/tmp/opensteamer-archive-roots-behavior/control
 TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=/private/tmp/opensteamer-archive-roots-behavior/BuildSandbox
@@ -3820,6 +4102,7 @@ typeset ROOTS_OBJROOT=$ROOTS_ARCHIVE_INTERMEDIATES/IntermediateBuildFilesPath
 typeset WRONG_ROOTS_DSTROOT="${XCODE_TMP_ALIAS_ROOT}/${TESTFLIGHT_BUILD_SANDBOX_DIRECTORY#${PRIVATE_TEMPORARY_ROOT}/}/DSTRoot"
 
 function write_private_plist() { return 0 }
+function verify_effective_media_extension_build_settings() { return 0 }
 function plist_root_array_count() { print -r -- 1 }
 function plist_typed_raw_value() {
   [[ "$2" == 0.target && "$3" == string ]] || return 1
@@ -3828,6 +4111,17 @@ function plist_typed_raw_value() {
 function build_settings_entry_value() {
   local key=$3
   case "$key" in
+    PROJECT_NAME|TARGET_NAME) print -r -- opensteamer ;;
+    CONFIGURATION) print -r -- "$EXPECTED_CONFIGURATION" ;;
+    EFFECTIVE_PLATFORM_NAME) print -r -- -iphoneos ;;
+    DERIVED_FILE_DIR|DERIVED_FILES_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/DerivedFiles" ;;
+    DERIVED_SOURCES_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/DerivedSources" ;;
+    PROJECT_DERIVED_FILE_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/ProjectDerivedFiles" ;;
+    PROJECT_DERIVED_DATA_DIR)
+      print -r -- "$TESTFLIGHT_BUILD_INTERMEDIATES_DIRECTORY/Targets/opensteamer/opensteamer/$EXPECTED_CONFIGURATION-iphoneos/ProjectDerivedData" ;;
     BUILD_DIR) print -r -- "$ROOTS_BUILD_DIR" ;;
     BUILD_ROOT|SYMROOT) print -r -- "$ROOTS_BUILD_PRODUCTS_PATH" ;;
     BUILT_PRODUCTS_DIR|CONFIGURATION_BUILD_DIR|DWARF_DSYM_FOLDER_PATH)
@@ -3914,7 +4208,7 @@ print -r -- '(version 1)
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" PROFILE_CONTROL="$PROFILE_CONTROL" \
 PROFILE_PATH="$PROFILE_PATH" /bin/zsh <<'PROFILETEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
 TESTFLIGHT_CONTROL_DIRECTORY=$PROFILE_CONTROL
 TESTFLIGHT_XCODE_SANDBOX_PROFILE_PATH=$PROFILE_PATH
@@ -3957,7 +4251,7 @@ print -r -- 'repeatable-secret' >"$FD_CONTROL/image.key"
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" FD_CONTROL="$FD_CONTROL" \
 /bin/zsh <<'FDCONSUMERTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 function verify_control_directory_identity() { return 0 }
 function verify_build_key_identity() { return 0 }
 
@@ -3984,7 +4278,7 @@ WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
 CLEANUP_MARKER="$BEHAVIOR_ROOT/cleanup-tristate.log" \
 /bin/zsh <<'CLEANUPTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=''
 TESTFLIGHT_BUILD_IMAGE_CONTAINER=''
@@ -4033,7 +4327,7 @@ LATE_IMAGE="$LATE_CLEANUP_IMAGE" \
 LATE_MARKER="$LATE_CLEANUP_MARKER" \
 /bin/zsh <<'LATECLEANUPTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_CONTROL_DIRECTORY=$LATE_CONTROL
 TESTFLIGHT_CONTROL_DIRECTORY_IDENTITY=control
@@ -4121,7 +4415,7 @@ IMAGE_INFO_CONTROL="$IMAGE_INFO_CONTROL" \
 IMAGE_INFO_FIXTURE="$IMAGE_INFO_FIXTURE" \
 /bin/zsh <<'IMAGEINFOTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_image_storage_identity() { return 0 }
 function verify_build_key_identity() { return 0 }
@@ -4193,7 +4487,7 @@ source <(/usr/bin/sed \
   -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${STALE_RECOVERY_ROOT}"|' \
   -e 's|/usr/bin/hdiutil detach "${TESTFLIGHT_IMAGE_DEVICE}"|mock_hdiutil_detach "${TESTFLIGHT_IMAGE_DEVICE}"|g' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_build_cache_lock_identity() { return 0 }
 function verify_image_storage_identity() { return 0 }
@@ -4233,7 +4527,7 @@ WRAPPER_PATH="$BEHAVIOR_WRAPPER" \
 WORKSPACE_ATOMIC_PARENT="$WORKSPACE_ATOMIC_PARENT" \
 /bin/zsh <<'WORKSPACEATOMICTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
 typeset -i WORKSPACE_LOCK_CHECKS=0
@@ -4495,7 +4789,7 @@ RUN_TMP_MIGRATION_PARENT="$RUN_TMP_MIGRATION_PARENT" \
 RUN_TMP_MIGRATION_TARGET="$RUN_TMP_MIGRATION_TARGET" \
 /bin/zsh <<'RUNTMPMIGRATIONTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_BUILD_CACHE_INITIALIZE_MODE=0
 function verify_build_cache_lock_identity() { return 0 }
@@ -4547,7 +4841,7 @@ RUN_TMP_CURRENT="$RUN_TMP_CURRENT" \
 RUN_TMP_SIBLING="$RUN_TMP_SIBLING" \
 /bin/zsh <<'RUNTMPCLEANUPTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 TESTFLIGHT_BUILD_SANDBOX_DIRECTORY=$RUN_TMP_SANDBOX
 TESTFLIGHT_BUILD_RUN_TMP_PARENT_DIRECTORY=$RUN_TMP_PARENT
@@ -4588,7 +4882,7 @@ source <(/usr/bin/sed \
   -e 's|^readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=5$|readonly -i APP_STORE_PROCESSING_WAIT_POLL_SECONDS=1|' \
   -e 's|^readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=5$|readonly -i APP_STORE_PROCESSING_TERMINATION_GRACE_SECONDS=1|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_app_store_connect_api_key_identity() { return 0 }
 function verify_reviewed_xcode_toolchain_identity() { return 0 }
@@ -4659,7 +4953,7 @@ ENROLLMENT_DIVERGENCE_MARKER="$ENROLLMENT_DIVERGENCE_MARKER" \
 source <(/usr/bin/sed \
   -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="0000000000000000000000000000000000000000000000000000000000000000"|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_package_dependency_contract() { return 0 }
 function initialize_private_testflight_build_volume() {
@@ -4694,9 +4988,9 @@ source <(/usr/bin/sed \
   -e 's|^readonly TESTFLIGHT_BUILD_ROOT=.*$|readonly TESTFLIGHT_BUILD_ROOT="${ENROLLMENT_RECOVERY_BUILD_ROOT}"|' \
   -e 's|^readonly TESTFLIGHT_BUILD_MOUNT_ROOT=.*$|readonly TESTFLIGHT_BUILD_MOUNT_ROOT="${ENROLLMENT_RECOVERY_MOUNT_ROOT}"|' \
   -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256="${EXPECTED_PACKAGE_MANIFEST_SHA256}"|' \
-  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="${EXPECTED_PACKAGE_RESOLVED_STATE}"|' \
+  -e 's|^readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256=.*$|readonly EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_RESOLVED_SHA256="${EXPECTED_PACKAGE_RESOLVED_SHA256}"|' \
   -e '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_package_dependency_contract() { return 0 }
 function find_current_attachment_record() { return 1 }
@@ -4894,7 +5188,7 @@ ROLLBACK_LOCK="$ROLLBACK_LOCK" \
 ROLLBACK_SENTINEL="$ROLLBACK_SENTINEL" \
 /bin/zsh <<'ENROLLMENTROLLBACKTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function verify_control_directory_identity() {
   [[ -d "$TESTFLIGHT_CONTROL_DIRECTORY" \
@@ -5086,7 +5380,7 @@ print -r -- '{
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" PROCESSING_STATUS="$PROCESSING_STATUS" \
 /bin/zsh <<'PROCESSINGSTATUSTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function repin_processing_status() {
   /bin/chmod 600 "$PROCESSING_STATUS"
@@ -5187,7 +5481,7 @@ fi
 
 WRAPPER_PATH="$BEHAVIOR_WRAPPER" /bin/zsh <<'DESTINATIONTEST'
 source <(/usr/bin/sed '/^verify_static_contract$/,$d' "$WRAPPER_PATH")
-trap - EXIT HUP INT QUIT TERM
+trap - EXIT ZERR HUP INT QUIT TERM
 
 function expect_rejection() {
   if "$@" >/dev/null 2>&1; then

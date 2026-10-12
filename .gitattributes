@@ -1,0 +1,16 @@
+# Preserve exact upstream notice bytes, including their original line endings/spaces.
+android/app/src/main/assets/third-party/bouncycastle-1.86.txt whitespace=-blank-at-eol
+android/app/src/main/assets/third-party/netty-4.2.18.Final/jctools-4.0.7-LICENSE.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.bouncycastle.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.commons-lang.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.commons-logging.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.dnsinfo.txt whitespace=-blank-at-eol
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.harmony.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.jboss-marshalling.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.jctools.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.jzlib.txt whitespace=-blank-at-eol,-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.log4j.txt whitespace=-blank-at-eof
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.slf4j.txt whitespace=-blank-at-eol
+android/app/src/main/assets/third-party/netty-4.2.18.Final/license/LICENSE.webbit.txt whitespace=-blank-at-eol
+# Empty captured values require the final TSV delimiter; fixture hashes stay exact.
+shared/ProtocolFixtures/public-foundation-unicode-name-v1.tsv whitespace=-blank-at-eol

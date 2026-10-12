@@ -6,6 +6,28 @@ import RemoteSessionCore
 import UIKit
 import WebRTCTransport
 
+struct IOSAudioClientDiagnosticsSchedule {
+    private var lastSentAt: UInt64?
+    private var lastEventSequence: UInt64 = 0
+    private var fastUntil: UInt64 = 0
+
+    mutating func shouldSend(at now: UInt64, latestEventSequence: UInt64?) -> Bool {
+        if let latestEventSequence, latestEventSequence != lastEventSequence {
+            lastEventSequence = latestEventSequence
+            fastUntil = now.addingReportingOverflow(30_000_000_000).partialValue
+        }
+        // Leave room inside the host's five-second native-evidence lifetime for the
+        // independently sampled snapshot, the one-second poll and delivery delay.
+        let interval: UInt64 = now <= fastUntil ? 1_000_000_000 : 2_000_000_000
+        if let lastSentAt, now >= lastSentAt, now - lastSentAt < interval { return false }
+        return true
+    }
+
+    mutating func recordSendAttempt(at now: UInt64) {
+        lastSentAt = now
+    }
+}
+
 /// Session-local evidence only. A successful send never consumes the retained failure/history.
 struct IOSAudioDiagnosticsJournal {
     private(set) var sessionID = UUID()
@@ -1171,14 +1193,27 @@ enum RemoteMediaCommandAdmission {
         _ command: WebRTCRemoteMediaCommand,
         contextID: String,
         observedRevision: UInt64,
-        currentUpdate: WebRTCRemoteMediaStateUpdate?
+        currentUpdate: WebRTCRemoteMediaStateUpdate?,
+        positionSeconds: TimeInterval? = nil,
+        expectedDurationSeconds: TimeInterval? = nil
     ) -> Bool {
         guard observedRevision > 0,
               let currentUpdate,
               currentUpdate.revision >= observedRevision,
-              let item = currentUpdate.item,
-              item.contextID == contextID,
-              item.capabilities.permits(command) else {
+              let item = currentUpdate.item(contextID: contextID),
+              item.capabilities.permits(command),
+              WebRTCRemoteMediaCommandRequest(id: 1, contextID: contextID,
+                  observedRevision: observedRevision, command: command,
+                  positionSeconds: positionSeconds).isValid else {
+            return false
+        }
+        if command == .seekToPosition {
+            guard let elapsed = item.elapsedTime, elapsed.isFinite, elapsed >= 0,
+                  let duration = item.duration, duration.isFinite,
+                  duration > 0, duration <= 31_536_000,
+                  let positionSeconds, positionSeconds <= duration else { return false }
+            if let expectedDurationSeconds, expectedDurationSeconds != duration { return false }
+        } else if expectedDurationSeconds != nil {
             return false
         }
         return true
@@ -1378,6 +1413,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
     @Published private(set) var screenLivenessDiagnosticSnapshot =
         WorldwideScreenLivenessDiagnosticSnapshot.unobserved
+    @Published private(set) var screenLivenessBridgeError:
+        WorldwideScreenLivenessBridgeError?
     @Published private(set) var screenClientDiagnosticsDeliveryText = "Idle"
     @Published private(set) var audioStateText = "Inactive"
     @Published private(set) var isRemoteAudioAvailable = false
@@ -1404,6 +1441,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     @Published private(set) var focusedInputGeneration: UInt64?
     @Published private(set) var focusedInputIsSecure = false
     @Published private(set) var focusedWindowResizeState: FocusedWindowResizeState = .inactive
+    let mediaHandoff: YouTubeHandoffCoordinator
 
     var focusedWindowInteractionState: FocusedWindowResizeState { focusedWindowResizeState }
 
@@ -1471,6 +1509,8 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var transportAuthorizationGeneration = UUID() {
         didSet {
             guard oldValue != transportAuthorizationGeneration else { return }
+            mediaHandoff.invalidate()
+            retireStatisticsProofWork()
             // ICE may recover on the already-forwarded SDP without another offer. Retire sends
             // tied to the old transport generation while preserving the negotiation proof.
             retireMacHostedCallChallengeSendAttempt()
@@ -1482,10 +1522,12 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var remoteMediaCommandOwner: RemoteMediaCommandOwnerToken?
     private var remoteMediaControlsNegotiated = false
     private var currentRemoteMediaState: WebRTCReceivedRemoteMediaState?
+    @Published private(set) var screenVideoPlaybackEvidence: ScreenVideoPlaybackEvidence?
     private var currentRemoteMediaUpdate: WebRTCRemoteMediaStateUpdate? {
         currentRemoteMediaState?.update
     }
     private var remoteMediaStateTransportAuthorizationGeneration: UUID?
+    private var lastRemoteMediaDiagnosticEvent: (generation: UUID, revision: UInt64, admitted: Bool)?
     private var remoteMediaRefresh = RemoteMediaRefreshGate()
     private var remoteMediaRefreshTask: Task<Void, Never>?
     private var recoveryCoordinator: ICERecoveryCoordinator?
@@ -1537,6 +1579,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var audioPolicyGeneration = UUID() {
         didSet {
             if oldValue != audioPolicyGeneration {
+                retireStatisticsProofWork()
                 audioDiagnostics.policyChanged(audioPolicyGeneration, at: Self.audioDiagnosticsNow())
                 invalidateRawMicrophoneOracle()
                 retireIOSHostedCallPlayoutAttempt()
@@ -1663,14 +1706,26 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var latestScreenVideoRenderObservation:
         WebRTCVideoRenderObservation?
     private var latestScreenVideoPresentationUptimeNanoseconds: UInt64?
+    private weak var screenRendererDiagnosticsView: WebRTCRemoteVideoView?
+    private var screenRendererDiagnosticsLease: WorldwideScreenPresentationLease?
     private var nextScreenClientDiagnosticsSequence: UInt64 = 1
     private var audioDiagnostics = IOSAudioDiagnosticsJournal()
     private var audioClientDiagnosticsTask: Task<Void, Never>?
     private var audioDiagnosticsSampleTask: Task<Void, Never>?
     private var audioDiagnosticsSampleID: UUID?
-    private var audioDiagnosticsLastSentAt: UInt64?
-    private var audioDiagnosticsLastEventSequence: UInt64 = 0
-    private var audioDiagnosticsFastUntil: UInt64 = 0
+    /// Native reads cannot hold the ordered control-event consumer. Retain one in-flight
+    /// operation even after cancellation, plus only the newest waiting statistics sample.
+    private struct StatisticsProofRequest {
+        let snapshot: WebRTCStatisticsSnapshot
+        let peer: WebRTCPeer
+        let session: UUID
+        let policy: UUID
+        let transport: UUID
+    }
+    private var statisticsProofTask: Task<Void, Never>?
+    private var statisticsProofTaskID: UUID?
+    private var pendingStatisticsProof: StatisticsProofRequest?
+    private var audioDiagnosticsSchedule = IOSAudioClientDiagnosticsSchedule()
     private var screenMediaViewerAttempt: WorldwideScreenMediaViewerAttempt?
     private var screenMediaCoveredHideTask: Task<Void, Never>?
     private var screenMediaMarkerPresentationTask: Task<Void, Never>?
@@ -1701,6 +1756,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     private var debugCurrentScreenPresentationLease: WorldwideScreenPresentationLease?
     private var debugActiveScreenPresentationLease: WorldwideScreenPresentationLease?
     private var debugStatisticsStarter: (@MainActor (WebRTCPeer) async throws -> Void)?
+    private var debugPeerEventStream: AsyncStream<WebRTCTransportEvent>?
     private var debugSessionRunner: (@MainActor () async -> Void)?
     private var debugIPhoneMicrophonePermissionRequester: (@MainActor () async -> Bool)?
     private var debugIPhoneMicrophoneEnableAttemptObserver: (@MainActor () -> Void)?
@@ -1787,12 +1843,18 @@ final class WorldwideSessionViewModel: ObservableObject {
         (@MainActor (WebRTCPeer, String) -> Void)?
     private var debugScreenLivenessUptimeClock:
         (@MainActor () -> UInt64)?
+    private var debugScreenClientDiagnosticsNegotiatedReader:
+        (@MainActor (WebRTCPeer) async -> Bool)?
+    private var debugScreenClientDiagnosticsHeartbeatSender:
+        (@MainActor (WebRTCPeer, WebRTCScreenClientDiagnosticsHeartbeat) async throws -> Void)?
     private var debugRemoteMediaCommandSender:
         (@MainActor (RemoteMediaCommandDispatch) async throws -> Void)?
     #endif
 
-    init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController()) {
+    init(audioLifecycle: WorldwideAudioLifecycleController = WorldwideAudioLifecycleController(),
+         mediaHandoff: YouTubeHandoffCoordinator = YouTubeHandoffCoordinator()) {
         self.audioLifecycle = audioLifecycle
+        self.mediaHandoff = mediaHandoff
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(applicationWillResignActive),
@@ -1909,10 +1971,13 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     deinit {
+        let mediaHandoff = mediaHandoff
+        Task { @MainActor in mediaHandoff.invalidate() }
         microphonePermissionReconciliationTask?.cancel()
         audioClientDiagnosticsTask?.cancel()
         audioDiagnosticsSampleTask?.cancel()
         let remoteMediaCommandOwner = remoteMediaCommandOwner
+        statisticsProofTask?.cancel()
         audioTransactionEventTask?.cancel()
         remoteMediaRefreshTask?.cancel()
         focusedWindowInteractionPresentationTimeoutTask?.cancel()
@@ -1938,7 +2003,35 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     var screenLivenessStatusText: String {
-        screenLivenessDiagnosticSnapshot.statusText
+        screenLivenessBridgeError == nil
+            ? screenLivenessDiagnosticSnapshot.statusText
+            : "Client screen evidence unavailable"
+    }
+
+    /// Current, content-free Metal path evidence for the exact screen lease and track. Reading
+    /// the renderer here also lets the iPhone show this evidence when an older Mac host ignores
+    /// the optional renderer-path field in its heartbeat.
+    var screenRendererPathDiagnosticLines: [String] {
+        Self.screenRendererPathDiagnosticLines(
+            for: currentScreenRendererPathDiagnostics
+        )
+    }
+
+    static func screenRendererPathDiagnosticLines(
+        for path: WebRTCVideoRendererPathDiagnostics?
+    ) -> [String] {
+        guard let path else { return ["Renderer path unavailable"] }
+        let epoch = String(path.rendererEpoch, radix: 16).suffix(6)
+        let timeGetter = path.presentedTimeReadable.map { String($0) } ?? "n/a"
+        return [
+            "epoch \(epoch)  delegate \(path.metalDelegateInstalled ? "yes" : "no")"
+                + "  cover \(path.nativeCoverVisible ? "yes" : "no")",
+            "frames \(path.renderFrameEntries)  draws \(path.mtkDrawEntries)"
+                + "  nil \(path.nilDrawable)  busy \(path.producerBusy)",
+            "registered \(path.registrarRegistered)  old \(path.registrarAlreadyPresented)"
+                + "  unsupported \(path.registrarUnsupported)  timeGetter=\(timeGetter)",
+            "callback valid \(path.callbackValid)  early \(path.callbackEarly)  fence \(path.callbackFenceRejected)"
+        ]
     }
 
     var isRemoteInputAvailable: Bool {
@@ -2390,6 +2483,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func handleAppBecameInactive() {
+        mediaHandoff.invalidate()
         guard lastHandledApplicationLifecyclePhase != .inactive else {
             return
         }
@@ -2410,6 +2504,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     func handleAppEnteredBackground() {
+        mediaHandoff.invalidate()
         guard lastHandledApplicationLifecyclePhase != .background else {
             return
         }
@@ -2432,6 +2527,7 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     @objc private func applicationWillResignActive() {
+        mediaHandoff.invalidate()
         suspendRemoteInputForApplicationLifecycle()
     }
 
@@ -4014,16 +4110,24 @@ final class WorldwideSessionViewModel: ObservableObject {
             } else {
                 nil
             }
-        screenLivenessDiagnosticSnapshot = screenLivenessClassifier.observe(
-            WorldwideScreenLivenessSample(
-                generation: screenLivenessGeneration,
-                observedAtUptimeNanoseconds: observedAt,
-                hasRemoteVideoTrack: remoteVideoTrack != nil,
-                coverState: currentScreenLivenessCoverState,
-                inboundVideo: statistics?.inboundVideo,
-                renderObservation: renderObservation
+        do {
+            let snapshot = try screenLivenessClassifier.observe(
+                WorldwideScreenLivenessSample(
+                    generation: screenLivenessGeneration,
+                    observedAtUptimeNanoseconds: observedAt,
+                    hasRemoteVideoTrack: remoteVideoTrack != nil,
+                    coverState: currentScreenLivenessCoverState,
+                    inboundVideo: statistics?.inboundVideo,
+                    renderObservation: renderObservation
+                )
             )
-        )
+            screenLivenessDiagnosticSnapshot = snapshot
+            screenLivenessBridgeError = nil
+        } catch {
+            // Retain explicitly stale diagnostics only; never change screen/input authority.
+            screenLivenessBridgeError = .invalidBridge
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
+        }
     }
 
     private static func audioDiagnosticsNow() -> UInt64 {
@@ -4047,9 +4151,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         audioClientDiagnosticsTask = nil
         // Keep the one in-flight slot until its reader actually returns, even across reconnects.
         audioDiagnosticsSampleTask?.cancel()
-        audioDiagnosticsLastSentAt = nil
-        audioDiagnosticsLastEventSequence = 0
-        audioDiagnosticsFastUntil = 0
+        audioDiagnosticsSchedule = IOSAudioClientDiagnosticsSchedule()
         guard let sourcePeer else { return }
         let generation = sessionGeneration
         audioDiagnostics.reset(
@@ -4071,21 +4173,27 @@ final class WorldwideSessionViewModel: ObservableObject {
     private func sendAudioClientDiagnostics(through sourcePeer: WebRTCPeer, generation: UUID) async {
         guard !Task.isCancelled, peer === sourcePeer, sessionGeneration == generation else { return }
         let now = Self.audioDiagnosticsNow()
-        if let latestEvent = audioDiagnostics.events.last,
-           latestEvent.sequence != audioDiagnosticsLastEventSequence {
-            audioDiagnosticsLastEventSequence = latestEvent.sequence
-            audioDiagnosticsFastUntil = now.addingReportingOverflow(30_000_000_000).partialValue
-        }
-        let interval: UInt64 = now <= audioDiagnosticsFastUntil ? 1_000_000_000 : 5_000_000_000
-        if let last = audioDiagnosticsLastSentAt, now >= last, now - last < interval { return }
-        guard let context = await sourcePeer.audioClientDiagnosticsContext() else { return }
+        guard audioDiagnosticsSchedule.shouldSend(
+            at: now, latestEventSequence: audioDiagnostics.events.last?.sequence
+        ) else { return }
+        guard let observation = await sourcePeer.audioClientDiagnosticsObservation() else { return }
+        let context = observation.context
         guard !Task.isCancelled, context.isValid,
               peer === sourcePeer, sessionGeneration == generation else { return }
         updateAudioDiagnosticsPolicyFacts()
-        guard let heartbeat = audioDiagnostics.heartbeat(
+        guard var heartbeat = audioDiagnostics.heartbeat(
             build: Self.audioDiagnosticsBuild, at: Self.audioDiagnosticsNow()
         ) else { return }
-        audioDiagnosticsLastSentAt = now
+        if observation.supportsMediaPipeline {
+            let pipeline = mediaPipelineDiagnostics(received: observation.receivedMedia)
+            // Optional instrumentation must not disable the existing audio diagnostics lane.
+            heartbeat.mediaPipeline = pipeline.isValid ? pipeline : nil
+        }
+        if observation.supportsMediaSurface {
+            let surface = backgroundPlayback.mediaSurfaceDiagnostics(owner: remoteMediaCommandOwner)
+            heartbeat.mediaSurface = surface.isValid ? surface : nil
+        }
+        audioDiagnosticsSchedule.recordSendAttempt(at: now)
         do {
             try await sourcePeer.sendAudioClientDiagnosticsHeartbeat(heartbeat, context: context)
         } catch {
@@ -4101,6 +4209,21 @@ final class WorldwideSessionViewModel: ObservableObject {
             microphonePermissionGranted: microphonePermissionGranted,
             microphoneBlockedByCall: microphoneIsBlockedByCall
         )
+    }
+
+    private func mediaPipelineDiagnostics(received: WebRTCRemoteMediaPipelineDiagnostics.Stage?)
+        -> WebRTCRemoteMediaPipelineDiagnostics {
+        var result = backgroundPlayback.mediaPipelineDiagnostics(owner: remoteMediaCommandOwner)
+        result.received = received
+        if remoteMediaStateTransportAuthorizationGeneration == transportAuthorizationGeneration,
+           let state = currentRemoteMediaState {
+            result.applied = .init(update: state.update)
+        }
+        if let event = lastRemoteMediaDiagnosticEvent, event.generation == transportAuthorizationGeneration {
+            result.lastEventRevision = event.revision
+            result.lastEventAdmitted = event.admitted
+        }
+        return result
     }
 
     private func scheduleAudioDiagnosticsSample(from sourcePeer: WebRTCPeer, generation: UUID) {
@@ -4157,21 +4280,33 @@ final class WorldwideSessionViewModel: ObservableObject {
         through sourcePeer: WebRTCPeer,
         generation: UUID
     ) async {
+        guard !Task.isCancelled else { return }
+        let expectedTransport = transportAuthorizationGeneration
         guard generation == sessionGeneration,
               peer === sourcePeer,
               let screenRequestID = activeScreenRequestID else {
             screenClientDiagnosticsDeliveryText = "Idle"
             return
         }
+        guard screenLivenessBridgeError == nil else {
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
+            return
+        }
         guard nextScreenClientDiagnosticsSequence < UInt64.max else {
             screenClientDiagnosticsDeliveryText = "Local only"
             return
         }
-        let isNegotiated = await sourcePeer
-            .screenClientDiagnosticsIsNegotiated()
-        guard generation == sessionGeneration,
+        let isNegotiated = await screenClientDiagnosticsIsNegotiated(
+            through: sourcePeer
+        )
+        guard !Task.isCancelled, generation == sessionGeneration,
               peer === sourcePeer,
+              transportAuthorizationGeneration == expectedTransport,
               activeScreenRequestID == screenRequestID else {
+            return
+        }
+        guard screenLivenessBridgeError == nil else {
+            screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
             return
         }
         guard isNegotiated else {
@@ -4180,6 +4315,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
 
         let snapshot = screenLivenessDiagnosticSnapshot
+        let rendererPath = currentScreenRendererPathDiagnostics
         let heartbeat = WebRTCScreenClientDiagnosticsHeartbeat(
             sequence: nextScreenClientDiagnosticsSequence,
             screenRequestID: screenRequestID,
@@ -4197,26 +4333,73 @@ final class WorldwideSessionViewModel: ObservableObject {
                 snapshot.lastPresentationAgeMilliseconds,
             frameWidth: snapshot.frameWidth,
             frameHeight: snapshot.frameHeight,
-            framesPerSecond: snapshot.framesPerSecond
+            framesPerSecond: snapshot.framesPerSecond,
+            rendererPath: rendererPath
         )
         guard heartbeat.isValid else {
             screenClientDiagnosticsDeliveryText = "Local evidence unavailable"
             return
         }
+        // Reserve before suspension: native acceptance can precede cancellation. Never reuse
+        // an accepted sequence merely because its completion no longer owns the presentation.
+        nextScreenClientDiagnosticsSequence += 1
         do {
-            try await sourcePeer.sendScreenClientDiagnosticsHeartbeat(
-                heartbeat
+            try await sendScreenClientDiagnosticsHeartbeatPayload(
+                heartbeat, through: sourcePeer
             )
-            nextScreenClientDiagnosticsSequence += 1
-            guard generation == sessionGeneration,
-                  peer === sourcePeer else { return }
+            guard !Task.isCancelled, generation == sessionGeneration,
+                  peer === sourcePeer,
+                  transportAuthorizationGeneration == expectedTransport,
+                  activeScreenRequestID == screenRequestID,
+                  screenLivenessBridgeError == nil else { return }
             screenClientDiagnosticsDeliveryText = "Reporting to Mac"
         } catch {
-            guard generation == sessionGeneration,
-                  peer === sourcePeer else { return }
+            guard !Task.isCancelled, generation == sessionGeneration,
+                  peer === sourcePeer,
+                  transportAuthorizationGeneration == expectedTransport,
+                  activeScreenRequestID == screenRequestID,
+                  screenLivenessBridgeError == nil else { return }
             // This best-effort lane never changes the user-visible media or control state.
             screenClientDiagnosticsDeliveryText = "Heartbeat unavailable"
         }
+    }
+
+    private func screenClientDiagnosticsIsNegotiated(
+        through sourcePeer: WebRTCPeer
+    ) async -> Bool {
+        #if DEBUG
+        if let debugScreenClientDiagnosticsNegotiatedReader {
+            return await debugScreenClientDiagnosticsNegotiatedReader(sourcePeer)
+        }
+        #endif
+        return await sourcePeer.screenClientDiagnosticsIsNegotiated()
+    }
+
+    private func sendScreenClientDiagnosticsHeartbeatPayload(
+        _ heartbeat: WebRTCScreenClientDiagnosticsHeartbeat,
+        through sourcePeer: WebRTCPeer
+    ) async throws {
+        #if DEBUG
+        if let debugScreenClientDiagnosticsHeartbeatSender {
+            try await debugScreenClientDiagnosticsHeartbeatSender(sourcePeer, heartbeat)
+            return
+        }
+        #endif
+        try await sourcePeer.sendScreenClientDiagnosticsHeartbeat(heartbeat)
+    }
+
+    private var currentScreenRendererPathDiagnostics:
+        WebRTCVideoRendererPathDiagnostics? {
+        if
+            let rendererLease = screenRendererDiagnosticsLease,
+            screenPresentationIsCurrent(rendererLease),
+            let remoteVideoTrack,
+            let screenRendererDiagnosticsView {
+            return screenRendererDiagnosticsView.rendererPathDiagnostics(
+                matching: remoteVideoTrack
+            )
+        }
+        return nil
     }
 
     private static func wireLiveness(
@@ -4245,6 +4428,15 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .resuming: .resuming
         case .screenHidden: .screenHidden
         }
+    }
+
+    func screenRendererDidMount(
+        _ view: WebRTCRemoteVideoView,
+        for lease: WorldwideScreenPresentationLease
+    ) {
+        guard screenPresentationIsCurrent(lease) else { return }
+        screenRendererDiagnosticsView = view
+        screenRendererDiagnosticsLease = lease
     }
 
     private func recordScreenVideoRenderObservation(
@@ -6982,6 +7174,24 @@ final class WorldwideSessionViewModel: ObservableObject {
         }
     }
 
+    /// Full sessions own the local player/audio coexistence transaction. Auxiliary
+    /// screen viewers must not advertise that authority or allocate its media path.
+    static func makePeerConfiguration(
+        iceServers: [RemoteICEServer],
+        mediaTopology: WebRTCTransportMediaTopology
+    ) -> WebRTCTransportConfiguration {
+        let ownsAudio = mediaTopology == .full
+        return WebRTCTransportConfiguration(
+            role: .viewer,
+            iceServers: iceServers,
+            icePolicy: .directPreferred,
+            mediaTopology: mediaTopology,
+            supportsRemoteMediaControls: ownsAudio,
+            supportsMediaHandoff: ownsAudio,
+            supportsAudioClientDiagnostics: ownsAudio
+        )
+    }
+
     private func handleSignalingEvent(
         _ event: RendezvousSignalingEvent,
         client: RendezvousSignalingClient,
@@ -6999,13 +7209,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             // either device and therefore cannot clear the one-time invitation.
 
             let newPeer = try WebRTCPeer(
-                configuration: WebRTCTransportConfiguration(
-                    role: .viewer,
+                configuration: Self.makePeerConfiguration(
                     iceServers: iceServers,
-                    icePolicy: .directPreferred,
-                    mediaTopology: sessionMediaTopology,
-                    supportsRemoteMediaControls: sessionOwnsAudio,
-                    supportsAudioClientDiagnostics: sessionOwnsAudio
+                    mediaTopology: sessionMediaTopology
                 )
             )
             if sessionOwnsAudio {
@@ -7020,16 +7226,14 @@ final class WorldwideSessionViewModel: ObservableObject {
                     )
                 }
             }
-            let coordinator = ICERecoveryCoordinator(
+            let coordinator = makeICERecoveryCoordinator(
+                generation: generation,
                 restart: { [weak self] in
                     guard let self else { throw CancellationError() }
                     try await self.sendICERestartRequest(
                         client: client,
                         generation: generation
                     )
-                },
-                exhausted: { [weak self] in
-                    await self?.iceRecoveryDidExhaust(generation: generation)
                 }
             )
             peer = newPeer
@@ -7129,8 +7333,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         generation: UUID
     ) {
         peerEventTask?.cancel()
+        #if DEBUG
+        let events = debugPeerEventStream ?? peer.events
+        #else
+        let events = peer.events
+        #endif
         peerEventTask = Task { [weak self] in
-            for await event in peer.events {
+            for await event in events {
                 guard !Task.isCancelled else { return }
                 await self?.handlePeerEvent(
                     event,
@@ -7298,6 +7507,55 @@ final class WorldwideSessionViewModel: ObservableObject {
         failSession("The secure media event stream closed.", generation: generation)
     }
 
+    private func receiveMediaHandoffOffer(_ offer: WebRTCReceivedMediaHandoffOffer,
+                                          peer sourcePeer: WebRTCPeer, generation: UUID) {
+        let transportGeneration = transportAuthorizationGeneration
+        let isCurrent: @MainActor () -> Bool = { [weak self, sourcePeer] in
+            guard let self else { return false }
+            return self.peer === sourcePeer && self.sessionGeneration == generation
+                && self.transportAuthorizationGeneration == transportGeneration
+                && self.sessionOwnsAudio && self.applicationIsActive
+                && RemoteMediaTransportAdmission.permitsIncomingState(
+                    isNegotiated: self.remoteMediaControlsNegotiated,
+                    isPeerConnected: self.isPeerConnected, isICEConnected: self.iceIsConnected,
+                    isControlChannelReady: self.isControlChannelReady,
+                    recoveryProofRequired: self.recoveryProofRequired)
+        }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard isCurrent(), let item = currentRemoteMediaUpdate?.item,
+              remoteMediaStateTransportAuthorizationGeneration == transportGeneration,
+              item.contextID == offer.contextID, item.artwork?.videoID == offer.videoID,
+              item.playbackState == .playing,
+              let request = try? YouTubeHandoffRequest(operationID: offer.id, videoID: offer.videoID,
+                  positionSeconds: offer.positionSeconds, durationSeconds: offer.durationSeconds,
+                  playbackRate: offer.playbackRate, deadlineUptime: offer.deadlineUptime,
+                  now: now, positionObservedAtUptime: offer.receivedAtUptime) else {
+            Task { await sourcePeer.discardMediaHandoffOffer(offer) }; return
+        }
+        mediaHandoff.receive(request, connection: .init(isCurrent: isCurrent,
+            acquireAudio: { [audioLifecycle] invalidated in
+                // begin can synchronously invalidate while publishing its mute snapshot.
+                // Preserve that exact cleanup receipt even when begin consequently returns nil.
+                var observed: WorldwideMediaHandoffAudioLease?
+                let admitted = audioLifecycle.beginMediaHandoffPlayback { lease in
+                    observed = lease; invalidated()
+                }
+                guard let lease = admitted ?? observed else { return nil }
+                return .init(isValid: { lease.isValid },
+                             release: { audioLifecycle.endMediaHandoffPlayback(lease) })
+            }, commit: { evidence, authorization in
+                let observed = evidence.observedAtUptime
+                let deadline = min(request.deadlineUptime, observed + 0.75)
+                try await sourcePeer.requestMediaHandoffCommit(offer,
+                    phonePositionSeconds: evidence.positionSeconds, observedAtUptime: observed,
+                    playbackAuthorization: authorization, playbackIsCurrent: {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        return now >= observed && now < deadline
+                    })
+            }, cancel: { await sourcePeer.cancelMediaHandoffCommit(id: offer.id) },
+            discard: { await sourcePeer.discardMediaHandoffOffer(offer) }))
+    }
+
     private func handlePeerEvent(
         _ event: WebRTCTransportEvent,
         peer sourcePeer: WebRTCPeer,
@@ -7425,12 +7683,13 @@ final class WorldwideSessionViewModel: ObservableObject {
         case .remoteMediaControlsAvailabilityChanged(let isAvailable):
             remoteMediaControlsNegotiated = isAvailable
             if !isAvailable {
+                mediaHandoff.invalidate()
                 clearRemoteMediaPresentation()
             }
             reconcileRemoteMediaCommandAvailability()
 
         case .remoteMediaStateChanged(let receivedState):
-            guard RemoteMediaStateAdmission.accept(
+            let admitted = RemoteMediaStateAdmission.accept(
                 receivedState,
                 currentState: currentRemoteMediaState,
                 refresh: &remoteMediaRefresh,
@@ -7442,10 +7701,17 @@ final class WorldwideSessionViewModel: ObservableObject {
                     isControlChannelReady: isControlChannelReady,
                     recoveryProofRequired: recoveryProofRequired
                 )
-            ) else { break }
+            )
+            lastRemoteMediaDiagnosticEvent = (transportAuthorizationGeneration,
+                receivedState.update.revision, admitted)
+            guard admitted else { break }
             remoteMediaRefreshTask?.cancel()
             remoteMediaRefreshTask = nil
             currentRemoteMediaState = receivedState
+            screenVideoPlaybackEvidence = ScreenVideoPlaybackEvidence(
+                update: receivedState.update,
+                receivedAtUptime: ProcessInfo.processInfo.systemUptime
+            )
             remoteMediaStateTransportAuthorizationGeneration =
                 transportAuthorizationGeneration
             if let remoteMediaCommandOwner {
@@ -7455,6 +7721,16 @@ final class WorldwideSessionViewModel: ObservableObject {
                 )
             }
             reconcileRemoteMediaCommandAvailability()
+
+        case .mediaHandoffOfferReceived(let offer):
+            receiveMediaHandoffOffer(offer, peer: sourcePeer, generation: generation)
+
+        case .mediaHandoffCompleted(let completion):
+            mediaHandoff.receiveCompletion(completion)
+
+        case .mediaHandoffCommitReceived:
+            // A viewer never accepts host-originated Pause commands.
+            break
 
         case .remoteMediaCommandAcknowledgementReceived:
             // The host state stream remains authoritative; acknowledgements only terminate the
@@ -7627,32 +7903,77 @@ final class WorldwideSessionViewModel: ObservableObject {
 
         statistics = snapshot
         refreshScreenLivenessDiagnostic()
-        await sendScreenClientDiagnosticsHeartbeat(
-            through: sourcePeer,
-            generation: generation
+        if sessionOwnsAudio {
+            audioDiagnostics.observeStatistics(
+                snapshot,
+                at: Self.audioDiagnosticsNow(),
+                wallNow: Date()
+            )
+            scheduleAudioDiagnosticsSample(from: sourcePeer, generation: generation)
+        }
+        pendingStatisticsProof = StatisticsProofRequest(
+            snapshot: snapshot, peer: sourcePeer, session: generation,
+            policy: audioPolicyGeneration, transport: transportAuthorizationGeneration
         )
-        guard sessionOwnsAudio else { return }
-        audioDiagnostics.observeStatistics(
-            snapshot,
-            at: Self.audioDiagnosticsNow(),
-            wallNow: Date()
-        )
-        // Optional native telemetry must never suspend the sequential peer-event consumer.
-        scheduleAudioDiagnosticsSample(from: sourcePeer, generation: generation)
+        startPendingStatisticsProof()
+    }
+
+    private func retireStatisticsProofWork() {
+        pendingStatisticsProof = nil
+        // A native reader may ignore cancellation. Do not release its slot until it returns:
+        // reconnect/policy churn must not create an unbounded number of retired reads.
+        statisticsProofTask?.cancel()
+    }
+
+    private func statisticsProofRequestIsCurrent(_ request: StatisticsProofRequest) -> Bool {
+        !Task.isCancelled
+            && sessionGeneration == request.session && peer === request.peer
+            && audioPolicyGeneration == request.policy
+            && transportAuthorizationGeneration == request.transport
+    }
+
+    private func startPendingStatisticsProof() {
+        guard statisticsProofTask == nil, let request = pendingStatisticsProof else { return }
+        pendingStatisticsProof = nil
+        let taskID = UUID()
+        statisticsProofTaskID = taskID
+        statisticsProofTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if statisticsProofTaskID == taskID {
+                    statisticsProofTask = nil
+                    statisticsProofTaskID = nil
+                    startPendingStatisticsProof()
+                }
+            }
+            await performStatisticsProof(request)
+        }
+    }
+
+    private func performStatisticsProof(_ request: StatisticsProofRequest) async {
+        guard statisticsProofRequestIsCurrent(request) else { return }
+        let sourcePeer = request.peer
+        let generation = request.session
+        await sendScreenClientDiagnosticsHeartbeat(through: sourcePeer, generation: generation)
+        guard statisticsProofRequestIsCurrent(request), sessionOwnsAudio else { return }
         if hasOwnedIOSHostedCallPlayoutPolicy {
             await refreshIOSHostedCallPlayoutProof(
                 from: sourcePeer,
                 generation: generation,
-                statistics: snapshot
+                statistics: request.snapshot
             )
         } else if !ordinaryIOSPlayoutProofIsSuppressedByHostedCall {
             await refreshIOSPlayoutOracle(
                 from: sourcePeer,
                 generation: generation,
-                statistics: snapshot
+                statistics: request.snapshot
             )
-            refreshIOSPlayoutProof()
+            guard statisticsProofRequestIsCurrent(request) else { return }
+            if let attempt = iosPlayoutProofAttempt, attempt.expectedPeer === sourcePeer {
+                await refreshIOSPlayoutProof(for: attempt, from: sourcePeer)
+            }
         }
+        guard statisticsProofRequestIsCurrent(request) else { return }
         await refreshIOSRawMicrophoneOracle(
             from: sourcePeer,
             generation: generation
@@ -7663,6 +7984,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         from sourcePeer: WebRTCPeer,
         generation: UUID
     ) async {
+        guard !Task.isCancelled else { return }
         guard automaticMicrophoneEligibleSessionGeneration
                 == generation,
               generation == sessionGeneration,
@@ -7717,7 +8039,8 @@ final class WorldwideSessionViewModel: ObservableObject {
             await readIPhoneMicrophoneSenderStatistics(
                 from: sourcePeer
             )
-        guard automaticMicrophoneEligibleSessionGeneration
+        guard !Task.isCancelled,
+              automaticMicrophoneEligibleSessionGeneration
                 == generation,
               generation == sessionGeneration,
               peer === sourcePeer,
@@ -8791,17 +9114,23 @@ final class WorldwideSessionViewModel: ObservableObject {
         statistics: WebRTCStatisticsSnapshot
     ) async {
         let expectedPolicyGeneration = audioPolicyGeneration
-        guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
+        let expectedTransportGeneration = transportAuthorizationGeneration
+        let expectedHandoffSuppressionID = audioLifecycle.mediaHandoffAudioSuppressionID
+        let expectedHandoffGeneration = audioLifecycle.mediaHandoffAudioGeneration
+        guard !Task.isCancelled, !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
               generation == sessionGeneration,
               peer === sourcePeer,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let diagnostics = await readIOSPlayoutDiagnostics(from: sourcePeer) else {
             return
         }
-        guard !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
+        guard !Task.isCancelled, !ordinaryIOSPlayoutProofIsSuppressedByHostedCall,
               generation == sessionGeneration,
               peer === sourcePeer,
               audioPolicyGeneration == expectedPolicyGeneration,
+              transportAuthorizationGeneration == expectedTransportGeneration,
+              audioLifecycle.mediaHandoffAudioSuppressionID == expectedHandoffSuppressionID,
+              audioLifecycle.mediaHandoffAudioGeneration == expectedHandoffGeneration,
               verifiedAudioPolicyGeneration == expectedPolicyGeneration else { return }
         guard let oracle = publishIOSPlayoutOracle(
             diagnostics,
@@ -8815,7 +9144,9 @@ final class WorldwideSessionViewModel: ObservableObject {
             from: sourcePeer,
             generation: generation,
             policyGeneration: expectedPolicyGeneration,
-            collectedAt: statistics.collectedAt
+            collectedAt: statistics.collectedAt,
+            mediaHandoffAudioSuppressionID: expectedHandoffSuppressionID,
+            mediaHandoffAudioGeneration: expectedHandoffGeneration
         )
     }
 
@@ -8854,14 +9185,18 @@ final class WorldwideSessionViewModel: ObservableObject {
         from sourcePeer: WebRTCPeer,
         generation: UUID,
         policyGeneration: UUID,
-        collectedAt: Date
+        collectedAt: Date,
+        mediaHandoffAudioSuppressionID: UUID?,
+        mediaHandoffAudioGeneration: UUID
     ) {
         let result = ordinaryPlayoutLivenessTracker.observe(
             sessionGeneration: generation,
             audioPolicyGeneration: policyGeneration,
             peerIdentity: ObjectIdentifier(sourcePeer),
             collectedAt: collectedAt,
-            oracle: oracle
+            oracle: oracle,
+            mediaHandoffAudioSuppressionID: mediaHandoffAudioSuppressionID,
+            mediaHandoffAudioGeneration: mediaHandoffAudioGeneration
         )
         switch result {
         case .waiting:
@@ -11505,6 +11840,19 @@ final class WorldwideSessionViewModel: ObservableObject {
         debugStatisticsStarter = starter
     }
 
+    func debugStartPeerEventLoopForTests(
+        events: AsyncStream<WebRTCTransportEvent>,
+        signaling: RendezvousSignalingClient
+    ) -> Task<Void, Never>? {
+        guard let peer else { return nil }
+        // Arm the existing statistics read fence without acquiring native audio ownership.
+        verifiedAudioPolicyGeneration = audioPolicyGeneration
+        debugPeerEventStream = events
+        startPeerEventLoop(peer: peer, signaling: signaling, generation: sessionGeneration)
+        debugPeerEventStream = nil
+        return peerEventTask
+    }
+
     func debugInstallMacHostedCallChallengeSender(
         _ sender: @escaping @MainActor (
             WebRTCPeer,
@@ -11755,6 +12103,12 @@ final class WorldwideSessionViewModel: ObservableObject {
             from: sourcePeer,
             generation: generation
         )
+        await debugWaitForStatisticsProofWorkForTests()
+    }
+
+    func debugWaitForStatisticsProofWorkForTests() async {
+        // Completion can start the latest pending request; drain that successor too.
+        while let task = statisticsProofTask { await task.value }
     }
 
     func debugIOSHostedCallPlayoutProjectionForTests()
@@ -11865,6 +12219,10 @@ final class WorldwideSessionViewModel: ObservableObject {
     func debugAudioDiagnosticsHeartbeatForTests(at now: UInt64? = nil)
         -> WebRTCAudioClientDiagnosticsHeartbeat? {
         audioDiagnostics.heartbeat(build: Self.audioDiagnosticsBuild, at: now ?? Self.audioDiagnosticsNow())
+    }
+
+    func debugMediaPipelineDiagnosticsForTests() -> WebRTCRemoteMediaPipelineDiagnostics {
+        mediaPipelineDiagnostics(received: nil)
     }
 
     func debugCaptureAudioDiagnosticsForTests(from sourcePeer: WebRTCPeer,
@@ -12126,6 +12484,34 @@ final class WorldwideSessionViewModel: ObservableObject {
     /// Routes tests through the production terminal-session path without requiring live media.
     func debugFailSessionForTests(_ message: String) {
         failSession(message, generation: sessionGeneration)
+    }
+
+    private var debugCheckingICERecoveryFaultInjection:
+        ICERecoveryCoordinator.CheckingFaultInjectionForTesting?
+
+    /// Requires the existing synthetic active peer/session fixture; no signaling or audio IO.
+    /// A replaced actor must be retained and explicitly cancelled by its test owner.
+    func debugInstallActualICERecoveryCoordinatorForTests(
+        generation: UUID,
+        checkingFaultInjection: ICERecoveryCoordinator.CheckingFaultInjectionForTesting? = nil,
+        restart: @escaping ICERecoveryCoordinator.RestartAction
+    ) -> ICERecoveryCoordinator {
+        precondition(sessionGeneration == generation && hasActiveSession && peer != nil)
+        precondition(signaling == nil && sessionTask == nil && !isConnecting)
+        precondition(debugCheckingICERecoveryFaultInjection == nil)
+        debugCheckingICERecoveryFaultInjection = checkingFaultInjection
+        defer { debugCheckingICERecoveryFaultInjection = nil }
+        let coordinator = makeICERecoveryCoordinator(generation: generation, restart: restart)
+        recoveryCoordinator = coordinator
+        return coordinator
+    }
+
+    func debugICERecoveryCoordinatorIsForTests(_ candidate: ICERecoveryCoordinator) -> Bool {
+        recoveryCoordinator === candidate
+    }
+    /// Receiver-level test delivery; the captured generation passes through the real fence.
+    func debugDeliverICERecoveryPolicyFaultForTests(generation: UUID) {
+        iceRecoveryPolicyDidFail(generation: generation)
     }
 
     /// Installs non-sensitive synthetic state for lifecycle ordering tests only. Release builds
@@ -12438,6 +12824,41 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ clock: @escaping @MainActor () -> UInt64
     ) {
         debugScreenLivenessUptimeClock = clock
+    }
+
+    func debugInstallScreenLivenessClassifier(
+        _ classifier: WorldwideScreenLivenessClassifier
+    ) {
+        screenLivenessClassifier = classifier
+    }
+
+    func debugRefreshScreenLivenessDiagnosticForTests() {
+        refreshScreenLivenessDiagnostic()
+    }
+
+    var debugScreenClientDiagnosticsNextSequence: UInt64 {
+        nextScreenClientDiagnosticsSequence
+    }
+
+    func debugInstallScreenClientDiagnosticsNegotiatedReader(
+        _ reader: @escaping @MainActor (WebRTCPeer) async -> Bool
+    ) {
+        debugScreenClientDiagnosticsNegotiatedReader = reader
+    }
+
+    func debugInstallScreenClientDiagnosticsHeartbeatSender(
+        _ sender: @escaping @MainActor (
+            WebRTCPeer, WebRTCScreenClientDiagnosticsHeartbeat
+        ) async throws -> Void
+    ) {
+        debugScreenClientDiagnosticsHeartbeatSender = sender
+    }
+
+    func debugSendScreenClientDiagnosticsHeartbeatForTests() async {
+        guard let peer else { return }
+        await sendScreenClientDiagnosticsHeartbeat(
+            through: peer, generation: sessionGeneration
+        )
     }
 
     func debugDeliverScreenMediaSuspensionForTests(
@@ -12861,8 +13282,9 @@ final class WorldwideSessionViewModel: ObservableObject {
         _ dispatch: RemoteMediaCommandDispatch
     ) -> Task<Void, Never>? {
         let command = dispatch.command
-        guard dispatch.authorization.isValid,
-              let contextID = dispatch.state.update.item?.contextID,
+        guard dispatch.isWithinDeadline(at: ProcessInfo.processInfo.systemUptime),
+              dispatch.authorization.isValid,
+              let contextID = dispatch.contextID ?? dispatch.state.update.item?.contextID,
               let currentRemoteMediaState,
               currentRemoteMediaState.isSameNegotiation(as: dispatch.state),
               remoteMediaControlsNegotiated,
@@ -12877,8 +13299,11 @@ final class WorldwideSessionViewModel: ObservableObject {
                 command,
                 contextID: contextID,
                 observedRevision: dispatch.state.update.revision,
-                currentUpdate: currentRemoteMediaUpdate
+                currentUpdate: currentRemoteMediaUpdate,
+                positionSeconds: dispatch.positionSeconds,
+                expectedDurationSeconds: dispatch.expectedDurationSeconds
               ) else {
+            dispatch.completion?(.staleContext)
             reconcileRemoteMediaCommandAvailability()
             return nil
         }
@@ -12886,6 +13311,7 @@ final class WorldwideSessionViewModel: ObservableObject {
         let sourceTransportGeneration = transportAuthorizationGeneration
         return Task { @MainActor [weak self, weak sourcePeer] in
             guard let self, let sourcePeer,
+                  dispatch.isWithinDeadline(at: ProcessInfo.processInfo.systemUptime),
                   dispatch.authorization.isValid,
                   self.peer === sourcePeer,
                   self.sessionGeneration == sourceGeneration,
@@ -12904,29 +13330,45 @@ final class WorldwideSessionViewModel: ObservableObject {
                     command,
                     contextID: contextID,
                     observedRevision: dispatch.state.update.revision,
-                    currentUpdate: self.currentRemoteMediaUpdate
+                    currentUpdate: self.currentRemoteMediaUpdate,
+                    positionSeconds: dispatch.positionSeconds,
+                    expectedDurationSeconds: dispatch.expectedDurationSeconds
                   ) else {
+                dispatch.completion?(.staleContext)
                 return
             }
             do {
                 #if DEBUG
                 if let sender = self.debugRemoteMediaCommandSender {
                     try await sender(dispatch)
+                    // Test send hooks do not establish a host acknowledgement.
+                    dispatch.completion?(.failed)
                 } else {
                     try await sourcePeer.requestRemoteMediaCommand(
                         command,
                         state: dispatch.state,
-                        authorization: dispatch.authorization
+                        authorization: dispatch.authorization,
+                        contextID: contextID,
+                        positionSeconds: dispatch.positionSeconds,
+                        deadlineUptime: dispatch.deadlineUptime,
+                        expectedDurationSeconds: dispatch.expectedDurationSeconds,
+                        acknowledgementHandler: dispatch.completion
                     )
                 }
                 #else
                 try await sourcePeer.requestRemoteMediaCommand(
                     command,
                     state: dispatch.state,
-                    authorization: dispatch.authorization
+                    authorization: dispatch.authorization,
+                    contextID: contextID,
+                    positionSeconds: dispatch.positionSeconds,
+                    deadlineUptime: dispatch.deadlineUptime,
+                    expectedDurationSeconds: dispatch.expectedDurationSeconds,
+                    acknowledgementHandler: dispatch.completion
                 )
                 #endif
             } catch {
+                dispatch.completion?(.failed)
                 guard self.peer === sourcePeer,
                       self.sessionGeneration == sourceGeneration,
                       self.transportAuthorizationGeneration == sourceTransportGeneration,
@@ -12975,11 +13417,13 @@ final class WorldwideSessionViewModel: ObservableObject {
     }
 
     private func clearRemoteMediaPresentation() {
+        screenVideoPlaybackEvidence = nil
         remoteMediaRefreshTask?.cancel()
         remoteMediaRefreshTask = nil
         remoteMediaRefresh.invalidate()
         currentRemoteMediaState = nil
         remoteMediaStateTransportAuthorizationGeneration = nil
+        lastRemoteMediaDiagnosticEvent = nil
         guard let remoteMediaCommandOwner else { return }
         backgroundPlayback.clearRemoteMedia(owner: remoteMediaCommandOwner)
     }
@@ -13067,6 +13511,10 @@ final class WorldwideSessionViewModel: ObservableObject {
         let ticket = remoteMediaRefresh.begin(generation: transportAuthorizationGeneration)!
         _ = remoteMediaRefresh.accept(refreshID: ticket.id, generation: ticket.generation)
         currentRemoteMediaState = state
+        screenVideoPlaybackEvidence = ScreenVideoPlaybackEvidence(
+            update: state.update,
+            receivedAtUptime: ProcessInfo.processInfo.systemUptime
+        )
         remoteMediaStateTransportAuthorizationGeneration = transportAuthorizationGeneration
         debugRemoteMediaCommandSender = sender
         if let remoteMediaCommandOwner {
@@ -13438,6 +13886,32 @@ final class WorldwideSessionViewModel: ObservableObject {
         let requestID = nextICERestartRequestID
         nextICERestartRequestID += 1
         try await client.send(.iceRestartRequest(.init(requestID: requestID)))
+    }
+
+    /// Fail the current session through its existing native teardown, never policy fallback.
+    /// Both real setup and the DEBUG chain fixture use these exact captured callbacks.
+    private func makeICERecoveryCoordinator(
+        generation: UUID,
+        restart: @escaping ICERecoveryCoordinator.RestartAction
+    ) -> ICERecoveryCoordinator {
+        let exhausted: ICERecoveryCoordinator.ExhaustedAction = { [weak self] in
+            await self?.iceRecoveryDidExhaust(generation: generation)
+        }
+        let policyFailed: ICERecoveryCoordinator.PolicyFailureAction = { [weak self] _ in
+            await self?.iceRecoveryPolicyDidFail(generation: generation)
+        }
+        #if DEBUG
+        if let injection = debugCheckingICERecoveryFaultInjection {
+            return ICERecoveryCoordinator(restart: restart, exhausted: exhausted,
+                policyFailed: policyFailed, checkingFaultInjectionForTesting: injection)
+        }
+        #endif
+        return ICERecoveryCoordinator(restart: restart, exhausted: exhausted, policyFailed: policyFailed)
+    }
+
+    private func iceRecoveryPolicyDidFail(generation: UUID) {
+        guard generation == sessionGeneration, hasActiveSession else { return }
+        failSession("Secure media recovery evidence is unavailable.", generation: generation)
     }
 
     private func iceRecoveryDidExhaust(generation: UUID) {

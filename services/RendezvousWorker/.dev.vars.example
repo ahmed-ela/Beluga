@@ -2,3 +2,8 @@
 # Omit both entries entirely to run in direct-STUN-only mode.
 CLOUDFLARE_TURN_KEY_ID="replace-with-a-server-side-turn-key-id"
 CLOUDFLARE_TURN_API_TOKEN="replace-with-the-matching-server-side-api-token"
+
+# Audio sharing has a separate key/billing boundary. Omit both to keep sharing
+# direct-STUN-only; never copy the phone's production key here.
+# AUDIO_SHARE_TURN_KEY_ID="replace-with-a-separate-sharing-turn-key-id"
+# AUDIO_SHARE_TURN_API_TOKEN="replace-with-the-matching-sharing-api-token"

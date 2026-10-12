@@ -14,6 +14,10 @@ protocol ViewerPairingStoring {
     func deletePairedMac() throws
 }
 
+protocol ViewerPairingIdentityReading {
+    func loadExistingViewerIdentity() throws -> RemoteDeviceIdentity?
+}
+
 /// Stores proof that a one-time invitation crossed the rendezvous admission boundary.
 /// The proof is separate from the durable paired-device record because a crash may occur between
 /// those two persistence phases.
@@ -114,6 +118,7 @@ protocol ViewerPairingNamespaceStoring {
 struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceStoring {
     private let identityStore: KeychainStore
     private let pairedMacStore: KeychainStore
+    private let pairedRecordDecodeFault: UInt32?
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
@@ -126,10 +131,12 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
 
     init(
         identityItem: KeychainStore.Item,
-        pairedMacItem: KeychainStore.Item
+        pairedMacItem: KeychainStore.Item,
+        pairedRecordDecodeFault: UInt32? = nil
     ) {
         identityStore = KeychainStore(item: identityItem)
         pairedMacStore = KeychainStore(item: pairedMacItem)
+        self.pairedRecordDecodeFault = pairedRecordDecodeFault
         encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         decoder = JSONDecoder()
@@ -280,7 +287,10 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
 
     private func decodePairedMacRecord(_ data: Data) throws -> RemotePairedDeviceRecord {
         do {
-            return try decoder.decode(RemotePairedDeviceRecord.self, from: data)
+            return try belugaPairingRecordDecoder(faultSelection: pairedRecordDecodeFault)
+                .decode(RemotePairedDeviceRecord.self, from: data)
+        } catch let error as RemoteSessionCoreError where error == .invalidPairingCommitBridge {
+            throw error
         } catch {
             throw ViewerPairingStoreError.invalidPairedMacRecord
         }
@@ -297,8 +307,17 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
         _ record: RemotePairedDeviceRecord,
         for identity: RemoteDeviceIdentity
     ) throws {
+        try Self.validateRecord(record, for: identity)
+    }
+
+    static func validateRecord(
+        _ record: RemotePairedDeviceRecord,
+        for identity: RemoteDeviceIdentity
+    ) throws {
         // Public-key and device identifiers must agree before interpreting the recovery phase.
-        guard record.version == RemotePairedDeviceRecord.currentVersion,
+        guard identity.version == RemoteDeviceIdentity.currentVersion,
+              identity.role == .viewer,
+              record.version == RemotePairedDeviceRecord.currentVersion,
               record.localRole == .viewer,
               record.remoteRole == .host,
               record.localDeviceID == identity.deviceID,
@@ -306,16 +325,20 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
             throw ViewerPairingStoreError.invalidPairedMacRecord
         }
 
+        let recoveryAction = record.recoveryAction
+        guard recoveryAction != .invalidBridge else {
+            throw RemoteSessionCoreError.invalidPairingCommitBridge
+        }
         // A viewer may crash between the durable pairing phases, so pending and ACK-issued
         // records are valid recovery state. Host-only state and internally inconsistent
         // recovery actions must never be surfaced as an iPhone pairing.
         switch record.pairingState {
         case .pending:
-            guard record.recoveryAction == .awaitProposal else {
+            guard recoveryAction == .awaitProposal else {
                 throw ViewerPairingStoreError.invalidPairedMacRecord
             }
         case .acceptedIssued:
-            guard case .resend(let acknowledgement) = record.recoveryAction,
+            guard case .resend(let acknowledgement) = recoveryAction,
                   validLocalRecoveryCommit(
                     acknowledgement,
                     expectedPhase: .acknowledgement,
@@ -324,7 +347,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
                 throw ViewerPairingStoreError.invalidPairedMacRecord
             }
         case .active:
-            switch record.recoveryAction {
+            switch recoveryAction {
             case .resend(let activation):
                 guard validLocalRecoveryCommit(
                     activation,
@@ -333,6 +356,8 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
                 ) else {
                     throw ViewerPairingStoreError.invalidPairedMacRecord
                 }
+            case .invalidBridge:
+                throw RemoteSessionCoreError.invalidPairingCommitBridge
             case .none, .awaitProposal, .issueProposal, .issueCompletion:
                 throw ViewerPairingStoreError.invalidPairedMacRecord
             }
@@ -341,7 +366,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
         }
     }
 
-    private func validLocalRecoveryCommit(
+    private static func validLocalRecoveryCommit(
         _ commit: RemotePairingCommit,
         expectedPhase: RemotePairingCommitPhase,
         record: RemotePairedDeviceRecord
@@ -362,7 +387,7 @@ struct ViewerPairingKeychainStore: ViewerPairingStoring, ViewerPairingNamespaceS
 /// of the app state. A primary identity by itself is an explicit unpaired state, so legacy data is
 /// consulted only when the primary namespace is entirely empty. No method ever combines an
 /// identity from one service with a record from the other.
-final class ViewerPairingNamespaceSelectorStore: ViewerPairingStoring {
+final class ViewerPairingNamespaceSelectorStore: ViewerPairingStoring, ViewerPairingIdentityReading {
     private enum Namespace {
         case primary
         case legacy
@@ -405,6 +430,10 @@ final class ViewerPairingNamespaceSelectorStore: ViewerPairingStoring {
             throw ViewerPairingStoreError.identityPersistenceFailed
         }
         return selection.identity
+    }
+
+    func loadExistingViewerIdentity() throws -> RemoteDeviceIdentity? {
+        try resolveSelection(createPrimaryIdentityWhenEmpty: false)?.identity
     }
 
     func loadPairedMac(
@@ -555,4 +584,16 @@ enum ViewerPairingStoreError: Error, Equatable {
 /// Corruption of the fixed-width admission digest stored in Keychain.
 enum WorldwideInvitationAdmissionStoreError: Error, Equatable {
     case invalidStoredDigest
+}
+
+/// Fresh decoder owned by this one synchronous decode; selection is an immutable test dependency.
+/// No caller-supplied mutable JSONDecoder or active-runtime setting can reach this factory.
+internal func belugaPairingRecordDecoder(faultSelection: UInt32?) -> JSONDecoder {
+    let decoder = JSONDecoder()
+    if let faultSelection {
+        decoder.userInfo[CodingUserInfoKey(
+            rawValue: "com.elamin.beluga.testing.pairing-commit-decode-v1"
+        )!] = faultSelection
+    }
+    return decoder
 }

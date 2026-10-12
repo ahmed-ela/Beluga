@@ -203,8 +203,115 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             policy.nextHigherTierMinimumDirectUpgradeBitrateBps,
-            3_743_281
+            3_466_000
         )
+    }
+
+    func testDirectUpgradeAdmissionMarginIsIndependentFromTotalRTPHeadroomAcrossLadder() {
+        let cases: [(
+            origin: WorldwideScreenVideoAdaptationTier,
+            target: WorldwideScreenVideoAdaptationTier,
+            admissionBps: Int,
+            targetTotalRTPCapBps: Int
+        )] = [
+            (.high, .full, 15_000_000, 16_200_001),
+            (.balanced, .high, 10_182_000, 10_996_560),
+            (.constrained, .balanced, 6_532_000, 7_054_560),
+            (.critical, .constrained, 3_466_000, 3_743_281),
+            (.survival, .critical, 1_568_000, 1_693_440),
+            (.emergency, .survival, 838_000, 905_041),
+            (.audioPriority, .emergency, 546_000, 589_680),
+        ]
+
+        for testCase in cases {
+            var policy = makeFiftyMegabitPolicyAtFull()
+            move(&policy, to: testCase.origin)
+
+            XCTAssertEqual(
+                policy.nextHigherTierMinimumDirectUpgradeBitrateBps,
+                testCase.admissionBps,
+                "\(testCase.origin) -> \(testCase.target)"
+            )
+            XCTAssertEqual(
+                policy.recommendation(for: testCase.target)
+                    .maximumTotalRTPBitrateBps,
+                testCase.targetTotalRTPCapBps,
+                "Admission tuning must not shrink \(testCase.target) sender headroom."
+            )
+        }
+    }
+
+    func testNewSurvivalAdmissionBoundaryStillNeedsTwoHealthyReports() {
+        var belowBoundary = makePolicy()
+        move(&belowBoundary, to: .emergency)
+
+        _ = belowBoundary.update(
+            peerGeneration: 1,
+            isCaptureActive: true,
+            availableOutgoingBitrateBps: 837_999,
+            currentRoundTripTimeSeconds: 0.050
+        )
+        XCTAssertEqual(belowBoundary.currentTier, .emergency)
+        XCTAssertEqual(belowBoundary.healthyUpgradeSampleCount, 0)
+
+        var atBoundary = makePolicy()
+        move(&atBoundary, to: .emergency)
+        XCTAssertNil(
+            atBoundary.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: 838_000,
+                currentRoundTripTimeSeconds: 0.050
+            )
+        )
+        XCTAssertEqual(atBoundary.currentTier, .emergency)
+        XCTAssertEqual(atBoundary.healthyUpgradeSampleCount, 1)
+        XCTAssertEqual(
+            atBoundary.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: 838_000,
+                currentRoundTripTimeSeconds: 0.050
+            )?.tier,
+            .survival
+        )
+        XCTAssertEqual(atBoundary.currentTier, .survival)
+        XCTAssertEqual(
+            atBoundary.currentRecommendation.maximumTotalRTPBitrateBps,
+            905_041
+        )
+    }
+
+    func testFreshQueuePressureStillOverridesNewSurvivalAdmissionBoundary() {
+        var policy = makePolicy()
+        move(&policy, to: .emergency)
+
+        XCTAssertNil(
+            policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: 838_000,
+                currentRoundTripTimeSeconds: 0.050,
+                outboundVideoPacketsSent: 100,
+                outboundVideoTotalPacketSendDelaySeconds: 0.1
+            )
+        )
+        XCTAssertEqual(policy.healthyUpgradeSampleCount, 1)
+
+        XCTAssertEqual(
+            policy.update(
+                peerGeneration: 1,
+                isCaptureActive: true,
+                availableOutgoingBitrateBps: 838_000,
+                currentRoundTripTimeSeconds: 0.050,
+                outboundVideoPacketsSent: 200,
+                outboundVideoTotalPacketSendDelaySeconds: 25.1
+            )?.tier,
+            .audioPriority
+        )
+        XCTAssertEqual(policy.currentTier, .audioPriority)
+        XCTAssertTrue(policy.lastSampleHasLatencyPressure)
+        XCTAssertEqual(policy.healthyUpgradeSampleCount, 0)
     }
 
     func testSenderLimitedFullTierHoldsUntilCapacityLeavesItsHealthyBand() {
@@ -1572,7 +1679,7 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
         _ = policy.update(
             peerGeneration: 1,
             isCaptureActive: true,
-            availableOutgoingBitrateBps: 853_000,
+            availableOutgoingBitrateBps: 800_000,
             currentRoundTripTimeSeconds: 0.050,
             outboundVideoPacketsSent: packetsSent,
             outboundVideoTotalPacketSendDelaySeconds: totalPacketSendDelay
@@ -1583,7 +1690,7 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
             _ = policy.update(
                 peerGeneration: 1,
                 isCaptureActive: true,
-                availableOutgoingBitrateBps: 853_000,
+                availableOutgoingBitrateBps: 800_000,
                 currentRoundTripTimeSeconds: 0.050,
                 outboundVideoPacketsSent: packetsSent,
                 outboundVideoTotalPacketSendDelaySeconds:
@@ -2614,9 +2721,56 @@ final class WorldwideScreenVideoAdaptationPolicyTests: XCTestCase {
                 "automaticSuspensionDecision(\n            isCaptureActive: true"
             )
         )
-        XCTAssertTrue(
-            adaptationMethod.contains("screenVideoAdaptationPolicy = proposedPolicy")
+        let tokens = sourceTokens(adaptationMethod)
+        let proposalCopy = try XCTUnwrap(
+            tokens.range(of: "var proposedPolicy = screenVideoAdaptationPolicy")
         )
+        let regularMutation = try XCTUnwrap(
+            tokens.range(of: "changedRecommendation = proposedPolicy.update(",
+                range: proposalCopy.upperBound..<tokens.endIndex)
+        )
+        let finalFence = try XCTUnwrap(
+            tokens.range(
+                of: "guard peer === sourcePeer, peerGeneration == sourcePeerGeneration, "
+                    + "screenVideoAdaptationPolicyRevision == applyingPolicyRevision else { return }",
+                options: .backwards
+            )
+        )
+        let policyPublication = try XCTUnwrap(
+            tokens.range(of: ownerPublicationTokens(policy: "proposedPolicy"),
+                range: finalFence.upperBound..<tokens.endIndex)
+        )
+        let revisionPublication = try XCTUnwrap(
+            tokens.range(of: ownerPublicationTokens(revision: "screenVideoAdaptationPolicyRevision &+ 1"),
+                range: policyPublication.upperBound..<tokens.endIndex)
+        )
+        XCTAssertLessThan(proposalCopy.upperBound, regularMutation.lowerBound)
+        XCTAssertLessThan(regularMutation.upperBound, finalFence.lowerBound)
+        XCTAssertLessThan(finalFence.upperBound, policyPublication.lowerBound)
+        XCTAssertLessThan(policyPublication.upperBound, revisionPublication.lowerBound)
+    }
+
+
+    private func sourceTokens(_ text: String) -> String {
+        text.components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private func ownerPublicationTokens(
+        policy: String = "screenVideoAdaptationPolicy",
+        revision: String = "screenVideoAdaptationPolicyRevision",
+        fast: String = "screenVideoAdaptationFastStatisticsAreAvailable",
+        lane: String = "screenVideoAdaptationOwner.lane",
+        evidence: String = "screenVideoAdaptationLastEvidenceTime",
+        minimum: String = "screenVideoAdaptationOwner.minimumCollectionSequence",
+        applied: String = "appliedScreenVideoRecommendation"
+    ) -> String {
+        sourceTokens("""
+        screenVideoAdaptationOwner = .init(policy: \(policy),
+            revision: \(revision), fastStatisticsAvailable: \(fast),
+            lane: \(lane), evidenceTime: \(evidence),
+            minimumCollectionSequence: \(minimum), applied: \(applied))
+        """)
     }
 
     func testSenderLimitedFloorEstimateProbesUpWithoutBlackoutWhenCapacityExpands() {

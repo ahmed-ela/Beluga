@@ -10,19 +10,6 @@ enum WorldwideScreenVideoAdaptationTier: Int, CaseIterable, Equatable, Sendable 
     case emergency
     case audioPriority
 
-    fileprivate var bitrateBasisPoints: Int {
-        switch self {
-        case .full: 10_000
-        case .high: 6_700
-        case .balanced: 4_200
-        case .constrained: 2_100
-        case .critical: 800
-        case .survival: 300
-        case .emergency: 100
-        case .audioPriority: 25
-        }
-    }
-
     fileprivate var framesPerSecond: Int {
         switch self {
         case .full: 60
@@ -82,11 +69,7 @@ enum WorldwideScreenVideoAutomaticSuspensionDecision: Equatable, Sendable {
 
 /// Converts transport capacity into a stable, single-layer screen-video encoding ceiling.
 struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
-    private enum PacketQueueObservation: Equatable, Sendable {
-        case measured(Double)
-        case noNewPackets
-        case unavailableOrReset
-    }
+    private typealias PacketQueueObservation = PacketSendQueueObservation
 
     enum RoundTripTimeDisposition: String, Equatable, Sendable {
         case legacy
@@ -103,17 +86,6 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
 
     private enum NativeRoundTripTimeHealth: Equatable, Sendable {
         case unknown, healthy, inflated
-    }
-
-    private struct RoundTripTimeEvidence {
-        let hasFreshPressure: Bool
-        let allowsUpgrade: Bool
-        let permitsLegacyMissingValue: Bool
-    }
-
-    private struct RoundTripTimeObservationFence: Equatable, Sendable {
-        let measurement: WebRTCRoundTripTimeMeasurement
-        let current: Double?
     }
 
     private struct AutomaticResumeProbeRestoration: Equatable, Sendable {
@@ -184,25 +156,16 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     /// treating queue delay as congestion; RTT inflation and bandwidth collapse remain immediate.
     static let requiredQueuePressureSampleCount = sampleCount(for: 1_000)
 
-    private static let minimumVideoBitrateBps = 32_000
     private static let audioAndControlReserveBps = 320_000.0
-    private static let baselineReferenceMaximumVideoBitrateBps = 9_344_000
-    private static let downgradeHeadroomMultiplier = 1.25
-    private static let upgradeMarginMultiplier = 1.35
     /// The native controller is capped at the same configured total. Treat a small estimator gap
     /// at that ceiling as cap saturation rather than requiring an exact floating-point sample.
     private static let configuredCapacitySaturationRatio = 0.95
     private static let applicationLimitedSaturationRatio = 0.80
     private static let applicationLimitedProbeImmediateAbortRatio = 0.75
-    private static let roundTripTimeRelativeInflationMultiplier = 1.5
-    private static let roundTripTimeAbsoluteInflationSeconds = 0.050
-    private static let maximumRoundTripTimeBaselineFallPerSample = 0.010
     static let roundTripTimeBootstrapSampleCount = 3
     /// Observation age, not the exact ping age: only a distinct cumulative watermark renews it.
     /// This spans the pinned native stable-pair ping interval without granting indefinite health.
     static let roundTripTimeObservationValidity = Duration.seconds(4)
-    private static let maximumAveragePacketSendDelaySeconds = 0.100
-    private static let immediateAveragePacketSendDelaySeconds = 0.200
     private static let maximumUpgradePacketSendDelaySeconds = 0.020
     private static let lowDelayPacketQueueObservationValidity =
         Duration.milliseconds(1_500)
@@ -232,7 +195,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var currentTier: WorldwideScreenVideoAdaptationTier
     private(set) var healthyUpgradeSampleCount = 0
     private(set) var bandwidthOnlyDowngradeSampleCount = 0
-    private(set) var queuePressureSampleCount = 0
+    var queuePressureSampleCount: Int { packetQueue.pressureCount }
     private(set) var unavailableBandwidthSampleCount = 0
     private(set) var positiveBandwidthBootstrapSampleCount = 0
     private(set) var applicationLimitedUpgradeSampleCount = 0
@@ -262,27 +225,39 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private(set) var lastSampleHasLatencyPressure = false
     private(set) var lastSampleHasPositiveSuspensionPressure = false
     private(set) var lastAveragePacketSendDelaySeconds: Double?
-    private var lastLowDelayPacketQueueObservation:
-        ContinuousClock.Instant?
-    private var lastSoftPacketQueuePressureObservation:
-        ContinuousClock.Instant?
-    private(set) var roundTripTimeBaselineSeconds: Double?
-    private var roundTripTimeBootstrapSamples: [Double] = []
-    private(set) var roundTripTimeDisposition: RoundTripTimeDisposition = .unavailable
-    private(set) var roundTripTimeObservationAge: Duration?
-    private(set) var roundTripTimeReferenceIsProvisional = false
+    private var packetQueue = BelugaRustPacketSendQueue()
+    private var roundTripTime = BelugaRustRoundTripTimeEvidence()
+    var hasNativeRoundTripTimeFault: Bool { roundTripTime.hasNativeFault }
+    private var tierDemand: BelugaRustTierDemand
+    var hasNativeTierDemandFault: Bool { tierDemand.hasNativeFault }
+    var hasNativeAdaptationPolicyFault: Bool { hasNativeRoundTripTimeFault || hasNativeTierDemandFault }
+    var roundTripTimeBaselineSeconds: Double? { roundTripTime.baseline }
+    var roundTripTimeDisposition: RoundTripTimeDisposition {
+        switch roundTripTime.disposition {
+        case 0: return .legacy
+        case 1: return .provisionalHealthy
+        case 2: return .freshHealthy
+        case 3: return .freshInflated
+        case 4: return .retainedHealthy
+        case 5: return .retainedInflated
+        case 7: return .expired
+        case 8: return .reseeded
+        case 9: return .reordered
+        default: return .unavailable
+        }
+    }
+    var roundTripTimeObservationAge: Duration? { roundTripTime.observationAge }
+    var roundTripTimeReferenceIsProvisional: Bool { roundTripTime.provisional }
     private(set) var lastConsumedCollectionSequence: UInt64?
-    private var roundTripTimeWatermark: WebRTCRoundTripTimeMeasurement?
-    private var roundTripTimeObservationFence: RoundTripTimeObservationFence?
-    private var nativeRoundTripTimeHealth: NativeRoundTripTimeHealth = .unknown
-    private var usesNativeRoundTripTimeEvidence = false
-    private var lastRoundTripTimeAdvancement: ContinuousClock.Instant?
-    private var lastMeasuredRoundTripTimeSeconds: Double?
-    private var permitsInitialRoundTripTimeReference = true
-    private var distinctHealthyRoundTripTimeReferenceCount = 0
+    private var nativeRoundTripTimeHealth: NativeRoundTripTimeHealth {
+        switch roundTripTime.health {
+        case 1: return .healthy
+        case 2: return .inflated
+        default: return .unknown
+        }
+    }
+    private var usesNativeRoundTripTimeEvidence: Bool { roundTripTime.usesNative }
     private(set) var selectedRoute: WebRTCICERouteDiagnostics?
-    private var lastOutboundVideoPacketsSent: UInt64?
-    private var lastOutboundVideoTotalPacketSendDelaySeconds: Double?
     private var capacityProbeSample: CapacityProbeSample?
     private var capacityProbeBandwidthHighWatermark: Double?
     private var capacityProbeNativeReportTimestamp: Double?
@@ -330,25 +305,26 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
 
     init(
         configuredTotalRTPBitrateBps: Int,
-        baseFramesPerSecond: Int
+        baseFramesPerSecond: Int,
+        roundTripTimeProducer: BelugaRustRoundTripTimeEvidence.Producer? = nil,
+        tierDemandProducer: BelugaRustTierDemand.Producer? = nil
     ) {
+        if let roundTripTimeProducer {
+            roundTripTime = BelugaRustRoundTripTimeEvidence(producer: roundTripTimeProducer)
+        }
         self.configuredTotalRTPBitrateBps = min(
             Int(UInt32.max),
             max(1, configuredTotalRTPBitrateBps)
         )
-        let videoBudget = max(
-            0,
-            Double(self.configuredTotalRTPBitrateBps)
-                - Self.audioAndControlReserveBps
-        ) / Self.downgradeHeadroomMultiplier
-        maximumTierVideoBitrateBps = min(
-            self.configuredTotalRTPBitrateBps,
-            max(Self.minimumVideoBitrateBps, Int(videoBudget.rounded(.down)))
-        )
+        if let tierDemandProducer {
+            tierDemand = BelugaRustTierDemand(configuredCap: self.configuredTotalRTPBitrateBps,
+                                             producer: tierDemandProducer)
+        } else {
+            tierDemand = BelugaRustTierDemand(configuredCap: self.configuredTotalRTPBitrateBps)
+        }
+        maximumTierVideoBitrateBps = tierDemand.maximumTierVideoBitrateBps
         self.baseFramesPerSecond = max(1, baseFramesPerSecond)
-        currentTier = Self.initialTier(
-            configuredTotalRTPBitrateBps: self.configuredTotalRTPBitrateBps
-        )
+        currentTier = tierDemand.initialTier
     }
 
     var currentRecommendation: WorldwideScreenVideoEncodingRecommendation {
@@ -406,32 +382,17 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     }
 
     var currentTierMinimumSustainableBitrateBps: Int {
-        Int(requiredOutgoingBitrateBps(for: currentTier).rounded(.up))
+        tierDemand.profile(for: currentTier)?.minimumSustainableBitrateBps ?? Int.max
     }
 
     var nextHigherTierMinimumDirectUpgradeBitrateBps: Int? {
-        guard let nextHigherTier = currentTier.nextHigherQuality else {
-            return nil
-        }
-        let requiredBitrate = requiredOutgoingBitrateBps(for: nextHigherTier)
-        guard requiredBitrate <= Double(configuredTotalRTPBitrateBps) else {
-            return nil
-        }
-        return Int(
-            min(
-                Double(configuredTotalRTPBitrateBps),
-                requiredBitrate * Self.upgradeMarginMultiplier
-            ).rounded(.up)
-        )
+        tierDemand.profile(for: currentTier)?.nextHigherTierMinimumDirectUpgradeBitrateBps
     }
 
     func recommendation(
         for tier: WorldwideScreenVideoAdaptationTier
     ) -> WorldwideScreenVideoEncodingRecommendation {
-        let maximumBitrateBps = min(
-            maximumTierVideoBitrateBps,
-            referenceVideoBitrateBps(for: tier)
-        )
+        let maximumBitrateBps = tierDemand.profile(for: tier)?.maximumVideoBitrateBps ?? 1
         return WorldwideScreenVideoEncodingRecommendation(
             tier: tier,
             maximumBitrateBps: maximumBitrateBps,
@@ -451,9 +412,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         guard peerGeneration != generation else { return false }
         clearStartupSpatialMode()
         peerGeneration = generation
-        currentTier = Self.initialTier(
-            configuredTotalRTPBitrateBps: configuredTotalRTPBitrateBps
-        )
+        currentTier = tierDemand.initialTier
         selectedRoute = nil
         resetPathMeasurements()
         // Collection order and native measurement identity belong to the peer, not the sampler
@@ -471,12 +430,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         floorRecoveryLastCooldownObservation = nil
         lastCapacityProbeCollectionSequence = nil
         capacityProbeNativeReportTimestamp = nil
-        roundTripTimeWatermark = nil
-        roundTripTimeObservationFence = nil
-        lastRoundTripTimeAdvancement = nil
-        lastMeasuredRoundTripTimeSeconds = nil
-        roundTripTimeObservationAge = nil
-        permitsInitialRoundTripTimeReference = true
+        roundTripTime.resetPeer()
         resetAutomaticSuspensionMeasurements()
         return true
     }
@@ -527,6 +481,39 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
     }
 
+    /// Persist a same-peer terminal denial before a native cap reduction can suspend. This
+    /// imports no proposed quality, reference, clock or identity, and cannot fault a successor.
+    mutating func retainRoundTripTimeFault(from observed: Self) {
+        guard observed.hasNativeRoundTripTimeFault else { return }
+        retainNativeAdaptationPolicyFault(from: observed)
+    }
+
+    mutating func retainNativeAdaptationPolicyFault(from observed: Self) {
+        guard let generation = peerGeneration,
+              generation == observed.peerGeneration,
+              observed.hasNativeAdaptationPolicyFault else { return }
+        roundTripTime.retainFault(from: observed.roundTripTime)
+        tierDemand.retainFault(from: observed.tierDemand)
+        _ = nativePolicyFaultRecommendation(isCaptureActive: false)
+    }
+
+    /// A native rejection cannot commit a qualified probe, or leave its temporary raised cap
+    /// armed indefinitely. Retire only positive limits; the service retries only while the
+    /// applied sender limits differ from this restrictive state. This is not RTT fallback.
+    private mutating func nativePolicyFaultRecommendation(
+        isCaptureActive: Bool
+    ) -> WorldwideScreenVideoEncodingRecommendation? {
+        guard hasNativeAdaptationPolicyFault else { return nil }
+        let previousRecommendation = currentRecommendation
+        revertApplicationLimitedProbeIfActive()
+        promotionCapacityContinuity = nil
+        _ = disproveStartupSpatialMode()
+        healthyUpgradeSampleCount = 0
+        applicationLimitedUpgradeSampleCount = 0
+        return isCaptureActive && currentRecommendation != previousRecommendation
+            ? currentRecommendation : nil
+    }
+
     /// Clears latency history when ICE invalidates the selected path, while retaining the
     /// conservative quality tier learned for this peer lifetime.
     mutating func invalidateSelectedRoute() {
@@ -562,7 +549,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         peerGeneration generation: UInt64,
         showEpoch: UInt64
     ) {
-        guard peerGeneration == generation,
+        guard !hasNativeAdaptationPolicyFault,
+              peerGeneration == generation,
               floorRecoveryShowEpoch == showEpoch,
               floorRecoveryVisibilityIsReserved,
               currentTier == .survival,
@@ -593,12 +581,13 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
 
     private mutating func observeStartupSelectedPairGap(
         route: WebRTCICERouteDiagnostics?, bandwidth: Double?, rtt: Double?,
-        observation: WebRTCRoundTripTimeObservation?
+        observation: WebRTCRoundTripTimeObservation?, primaryWasHealthy: Bool? = nil
     ) {
         guard startupSpatialModeIsActive,
               let deadline = applicationLimitedProbeDeadline,
               route == nil, bandwidth == nil, rtt == nil, observation == .unavailable,
-              nativeRoundTripTimeHealth == .healthy || startupSparseProbeDeadline == deadline else {
+              (primaryWasHealthy ?? (nativeRoundTripTimeHealth == .healthy))
+                || startupSparseProbeDeadline == deadline else {
             startupSparseProbeDeadline = nil
             return
         }
@@ -615,8 +604,10 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             revertApplicationLimitedProbeIfActive()
         }
         applicationLimitedProbeHealthySampleCount = 0
-        revokeRoundTripTimeHealth()
-        permitsInitialRoundTripTimeReference = false
+        roundTripTime.revoke(hide: true)
+        if hasNativeAdaptationPolicyFault {
+            _ = nativePolicyFaultRecommendation(isCaptureActive: false)
+        }
     }
 
     /// Prevents threshold evidence collected on one cadence, or before a long observation gap,
@@ -629,9 +620,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         promotionCapacityContinuity = nil
         healthyUpgradeSampleCount = 0
         bandwidthOnlyDowngradeSampleCount = 0
-        queuePressureSampleCount = 0
-        lastLowDelayPacketQueueObservation = nil
-        lastSoftPacketQueuePressureObservation = nil
+        packetQueue.reset(path: false)
         unavailableBandwidthSampleCount = 0
         positiveBandwidthBootstrapSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
@@ -675,10 +664,16 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             evaluation.proposedTotalCapBps = currentRecommendation.maximumTotalRTPBitrateBps
             diagnostics?(evaluation)
         }
+        // An already-denied owner may retire speculative permission, but cannot mutate another
+        // policy's evidence history. Keep the post-age guard for a new RTT rejection.
+        guard !hasNativeAdaptationPolicyFault else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
+        }
         // Time still passes when a report is rejected. Aging an existing lease is not renewing
         // it or consuming the report, and prevents stale stable-resume authorization.
-        roundTripTimeObservationAge = lastRoundTripTimeAdvancement.map {
-            $0.duration(to: observedAt)
+        roundTripTime.age(at: observedAt)
+        guard !hasNativeAdaptationPolicyFault else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
         }
         if requireRoundTripTimeObservation, collectionSequence == nil {
             evaluation.identity = .rejectedOrder
@@ -687,8 +682,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             applicationLimitedProbeHealthySampleCount = 0
             // Native request ordering is part of the evidence boundary. Unordered metadata may
             // expire a wall-clock lease, but cannot change BWE/queue/RTT measurement state.
-            revokeRoundTripTimeHealth()
-            usesNativeRoundTripTimeEvidence = true
+            roundTripTime.strictUnordered()
             lastSampleHasLatencyPressure = false
             lastSampleHasPositiveSuspensionPressure = false
             return expireApplicationLimitedProbeWithoutReport(
@@ -718,7 +712,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                 applicationLimitedProbeHealthySampleCount = 0
                 // A slower fallback request may finish after a newer fast-lane report. Reject
                 // the entire older report, including BWE/queue/cap changes, before consuming it.
-                roundTripTimeDisposition = .reordered
+                roundTripTime.reordered()
                 lastSampleHasLatencyPressure = false
                 lastSampleHasPositiveSuspensionPressure = false
                 return expireApplicationLimitedProbeWithoutReport(
@@ -823,7 +817,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
         lastCapacityProbeCollectionSequence = sequence
         capacityProbeNativeReportTimestamp = observed.capacityProbeNativeReportTimestamp
-        roundTripTimeObservationFence = observed.roundTripTimeObservationFence
+        roundTripTime.copyFence(from: observed.roundTripTime)
+        tierDemand.retainFault(from: observed.tierDemand)
+        if hasNativeAdaptationPolicyFault {
+            _ = nativePolicyFaultRecommendation(isCaptureActive: false)
+        }
     }
 
     /// Intermediate reports can grow or revoke speculative capacity, never qualify geometry.
@@ -885,50 +883,39 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             packetsSent: outboundVideoPacketsSent,
             totalPacketSendDelaySeconds: outboundVideoTotalPacketSendDelaySeconds
         )
-        let primaryRTTLeaseIsCurrent = lastRoundTripTimeAdvancement.map {
-            let age = $0.duration(to: observedAt)
-            return age >= .zero && age <= Self.roundTripTimeObservationValidity
-        } ?? false
         // Positive fast observations advance only the identity fence, never the ordinary
         // reference or health lease. Negative identities must poison subsequent ordinary use.
-        var validation = self
-        let rtt = validation.consumeRoundTripTimeEvidence(
-            current: validRoundTripTime(currentRoundTripTimeSeconds),
+        // The startup gap marker historically inspected primary health before fast revocation.
+        let primaryWasHealthy = nativeRoundTripTimeHealth == .healthy
+        let rtt = roundTripTime.observe(
+            current: currentRoundTripTimeSeconds,
             observation: roundTripTimeObservation ?? .unavailable,
-            observedAt: observedAt
+            at: observedAt, fast: true, routeChanged: selectedRoute != self.selectedRoute
         )
-        roundTripTimeObservationFence = validation.roundTripTimeObservationFence
+        guard !hasNativeAdaptationPolicyFault else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
+        }
+        let primaryRTTLeaseIsCurrent = rtt.primaryLeaseCurrent
         guard rtt.allowsUpgrade else {
             observeStartupSelectedPairGap(
                 route: selectedRoute, bandwidth: availableOutgoingBitrateBps,
-                rtt: currentRoundTripTimeSeconds, observation: roundTripTimeObservation)
+                rtt: currentRoundTripTimeSeconds, observation: roundTripTimeObservation,
+                primaryWasHealthy: primaryWasHealthy)
             evaluation.reason = .roundTripTime
             if rtt.hasFreshPressure {
                 _ = disproveStartupSpatialMode()
-            }
-            revokeRoundTripTimeHealth()
-            permitsInitialRoundTripTimeReference = false
-            if !rtt.hasFreshPressure {
-                roundTripTimeWatermark = validation.roundTripTimeWatermark
-                roundTripTimeDisposition = validation.roundTripTimeDisposition
-                if validation.roundTripTimeBaselineSeconds == nil {
-                    roundTripTimeBaselineSeconds = nil
-                    roundTripTimeBootstrapSamples = []
-                    distinctHealthyRoundTripTimeReferenceCount = 0
-                    roundTripTimeReferenceIsProvisional = false
-                }
             }
             evaluation.recordQueue(
                 previousPackets: baseline?.packetsSent,
                 previousDelay: baseline?.totalPacketSendDelaySeconds,
                 packets: outboundVideoPacketsSent,
                 delay: outboundVideoTotalPacketSendDelaySeconds)
-            validation.lastOutboundVideoPacketsSent = baseline?.packetsSent
-            validation.lastOutboundVideoTotalPacketSendDelaySeconds =
-                baseline?.totalPacketSendDelaySeconds
-            let queue = validation.packetQueueObservationSinceLastSample(
-                packetsSent: outboundVideoPacketsSent,
-                totalPacketSendDelaySeconds: outboundVideoTotalPacketSendDelaySeconds)
+            let queueDecision = packetQueue.capacityObservation(
+                previousPackets: baseline?.packetsSent,
+                previousDelay: baseline?.totalPacketSendDelaySeconds,
+                packets: outboundVideoPacketsSent,
+                delay: outboundVideoTotalPacketSendDelaySeconds, at: observedAt)
+            let queue = queueDecision.observation
             let queueIsObservable: Bool
             switch queue {
             case .measured, .noNewPackets: queueIsObservable = true
@@ -939,8 +926,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                 if let selectedRoute, let previousRoute = self.selectedRoute,
                    selectedRoute != previousRoute {
                     negativeReason = .routeChanged
-                } else if case let .measured(delay) = queue,
-                          delay >= Self.immediateAveragePacketSendDelaySeconds {
+                } else if queueDecision.requiresImmediateResponse {
                     negativeReason = .immediateQueue
                 } else if let bandwidth = availableOutgoingBitrateBps,
                           bandwidth.isFinite, bandwidth > 0,
@@ -982,9 +968,6 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             _ = disproveStartupSpatialMode()
             // Sender-filtered stats can reveal a route change before the ordinary route event.
             // Its RTT tuple must not become new health when the next regular report reuses it.
-            revokeRoundTripTimeHealth()
-            permitsInitialRoundTripTimeReference = false
-            roundTripTimeWatermark = validation.roundTripTimeWatermark
             failApplicationLimitedProbe(revertingTo: origin)
             return currentRecommendation
         }
@@ -993,7 +976,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             && startupSparseProbeDeadline == applicationLimitedProbeDeadline
             && nativeRoundTripTimeHealth == .unknown
             && roundTripTimeDisposition == .unavailable
-            && validation.roundTripTimeDisposition == .freshHealthy
+            && rtt.validationDisposition == 2
             && primaryRTTLeaseIsCurrent
         guard let baseline,
               primaryRTTLeaseIsCurrent,
@@ -1008,29 +991,17 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             packets: outboundVideoPacketsSent,
             delay: outboundVideoTotalPacketSendDelaySeconds
         )
-        validation.lastOutboundVideoPacketsSent = baseline.packetsSent
-        validation.lastOutboundVideoTotalPacketSendDelaySeconds =
-            baseline.totalPacketSendDelaySeconds
-        let queue = validation.packetQueueObservationSinceLastSample(
-            packetsSent: outboundVideoPacketsSent,
-            totalPacketSendDelaySeconds: outboundVideoTotalPacketSendDelaySeconds
-        )
-        let queueAllowsGrowth: Bool
-        switch queue {
-        case let .measured(delay):
-            if delay >= Self.immediateAveragePacketSendDelaySeconds {
-                evaluation.reason = .immediateQueue
-                _ = disproveStartupSpatialMode()
-                failApplicationLimitedProbe(revertingTo: origin)
-                return currentRecommendation
-            }
-            queueAllowsGrowth = delay <= Self.maximumUpgradePacketSendDelaySeconds
-        case .noNewPackets:
-            queueAllowsGrowth = lastLowDelayPacketQueueObservation.map {
-                isFreshPacketQueueObservation($0, at: observedAt)
-            } ?? false
-        case .unavailableOrReset:
-            queueAllowsGrowth = false
+        let queueDecision = packetQueue.capacityObservation(
+            previousPackets: baseline.packetsSent,
+            previousDelay: baseline.totalPacketSendDelaySeconds,
+            packets: outboundVideoPacketsSent,
+            delay: outboundVideoTotalPacketSendDelaySeconds, at: observedAt)
+        let queue = queueDecision.observation
+        if queueDecision.requiresImmediateResponse {
+            evaluation.reason = .immediateQueue
+            _ = disproveStartupSpatialMode()
+            failApplicationLimitedProbe(revertingTo: origin)
+            return currentRecommendation
         }
         guard let availableOutgoingBitrateBps,
               availableOutgoingBitrateBps.isFinite,
@@ -1069,9 +1040,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         }
         // Neutral transition bursts withhold growth for this regular observation window;
         // they do not turn a 200 ms poll into an extra congestion/backoff decision.
-        guard queueAllowsGrowth,
-              let queuePermission = lastLowDelayPacketQueueObservation,
-              isFreshPacketQueueObservation(queuePermission, at: observedAt) else {
+        guard queueDecision.allowsCapacityGrowth else {
             evaluation.reason = .queueWithheld
             capacityProbeGrowthIsVetoed = true
             return nil
@@ -1160,8 +1129,8 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
            selectedRoute != self.selectedRoute {
             let startupSpatialRouteWasAlreadyBound = self.selectedRoute != nil
             let isInitialRoute = self.selectedRoute == nil
-                && roundTripTimeWatermark == nil
-                && permitsInitialRoundTripTimeReference
+                && roundTripTime.watermark == nil
+                && roundTripTime.permitsInitial
             self.selectedRoute = selectedRoute
             if startupSpatialRouteWasAlreadyBound {
                 _ = disproveStartupSpatialMode()
@@ -1169,7 +1138,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             revertApplicationLimitedProbeIfActive()
             resetPathMeasurements()
             if isInitialRoute {
-                permitsInitialRoundTripTimeReference = true
+                roundTripTime.allowInitial()
             }
         }
 
@@ -1181,36 +1150,32 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         guard isCaptureActive || isAutomaticallySuspended else {
             floorDiagnostics.reason = .inactiveVisibility
             clearStartupSpatialMode()
-            currentTier = Self.initialTier(
-                configuredTotalRTPBitrateBps: configuredTotalRTPBitrateBps
-            )
+            currentTier = tierDemand.initialTier
             resetPathMeasurements()
             // Hidden reports cannot authorize a later Show using a cached measurement. Keep a
             // valid watermark as a tombstone, without treating it as RTT/queue/BWE health.
-            if case let .measurement(measurement) = roundTripTimeObservation,
-               isValidRoundTripTimeWatermark(measurement) {
-                roundTripTimeWatermark = measurement
-            }
+            roundTripTime.inactive(observation: roundTripTimeObservation)
             resetAutomaticSuspensionMeasurements()
             return nil
         }
 
-        let currentRoundTripTimeSeconds = validRoundTripTime(
-            currentRoundTripTimeSeconds
-        )
-        let roundTripTimeEvidence = consumeRoundTripTimeEvidence(
+        let roundTripTimeEvidence = roundTripTime.observe(
             current: currentRoundTripTimeSeconds,
             observation: roundTripTimeObservation,
-            observedAt: observedAt
+            at: observedAt
         )
+        guard !hasNativeAdaptationPolicyFault else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
+        }
         // Only a fresh inflated native watermark applies additional RTT-only descent. Retained
         // unhealthy/unknown RTT still vetoes upgrades, without suppressing fresh queue pressure.
         let roundTripTimeIsInflated = roundTripTimeEvidence.hasFreshPressure
-        let packetQueueObservation = packetQueueObservationSinceLastSample(
-                packetsSent: outboundVideoPacketsSent,
-                totalPacketSendDelaySeconds:
-                    outboundVideoTotalPacketSendDelaySeconds
-            )
+        let queueDecision = packetQueue.observe(
+            packets: outboundVideoPacketsSent,
+            delay: outboundVideoTotalPacketSendDelaySeconds,
+            rttInflated: roundTripTimeIsInflated, at: observedAt)
+        guard !packetQueue.faulted else { return nil }
+        let packetQueueObservation = queueDecision.observation
         let averagePacketSendDelaySeconds: Double?
         switch packetQueueObservation {
         case let .measured(value):
@@ -1219,75 +1184,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             averagePacketSendDelaySeconds = nil
         }
         lastAveragePacketSendDelaySeconds = averagePacketSendDelaySeconds
-        let packetQueueSampleIsInflated = averagePacketSendDelaySeconds.map {
-            $0 > Self.maximumAveragePacketSendDelaySeconds
-        } ?? false
-        let packetQueueSampleRequiresImmediateResponse =
-            averagePacketSendDelaySeconds.map {
-                $0 >= Self.immediateAveragePacketSendDelaySeconds
-            } ?? false
-        switch packetQueueObservation {
-        case .measured where packetQueueSampleIsInflated
-            && !roundTripTimeIsInflated:
-            if let lastSoftPacketQueuePressureObservation,
-               !isFreshPacketQueueObservation(
-                   lastSoftPacketQueuePressureObservation,
-                   at: observedAt
-               ) {
-                queuePressureSampleCount = 0
-            }
-            if queuePressureSampleCount < Int.max {
-                queuePressureSampleCount += 1
-            }
-            lastSoftPacketQueuePressureObservation = observedAt
-        case .noNewPackets where !roundTripTimeIsInflated:
-            if let lastSoftPacketQueuePressureObservation,
-               !isFreshPacketQueueObservation(
-                   lastSoftPacketQueuePressureObservation,
-                   at: observedAt
-               ) {
-                queuePressureSampleCount = 0
-                self.lastSoftPacketQueuePressureObservation = nil
-            }
-        case .measured, .unavailableOrReset, .noNewPackets:
-            queuePressureSampleCount = 0
-            lastSoftPacketQueuePressureObservation = nil
-        }
-        let packetQueueIsInflated = packetQueueSampleIsInflated
-            && (packetQueueSampleRequiresImmediateResponse
-                || queuePressureSampleCount >= Self.requiredQueuePressureSampleCount)
-        switch packetQueueObservation {
-        case let .measured(averagePacketSendDelaySeconds):
-            lastLowDelayPacketQueueObservation =
-                averagePacketSendDelaySeconds
-                    <= Self.maximumUpgradePacketSendDelaySeconds
-                ? observedAt
-                : nil
-        case .noNewPackets:
-            if let lastLowDelayPacketQueueObservation,
-               !isFreshPacketQueueObservation(
-                   lastLowDelayPacketQueueObservation,
-                   at: observedAt
-               ) {
-                self.lastLowDelayPacketQueueObservation = nil
-            }
-        case .unavailableOrReset:
-            lastLowDelayPacketQueueObservation = nil
-        }
-        let packetQueueAllowsUpgrade: Bool
-        if let averagePacketSendDelaySeconds {
-            packetQueueAllowsUpgrade = averagePacketSendDelaySeconds
-                <= Self.maximumUpgradePacketSendDelaySeconds
-        } else if let lastLowDelayPacketQueueObservation {
-            let observationAge = lastLowDelayPacketQueueObservation.duration(
-                to: observedAt
-            )
-            packetQueueAllowsUpgrade = observationAge >= .zero
-                && observationAge
-                    <= Self.lowDelayPacketQueueObservationValidity
-        } else {
-            packetQueueAllowsUpgrade = false
-        }
+        let packetQueueSampleIsInflated = queueDecision.sampleIsInflated
+        let packetQueueIsInflated = queueDecision.isInflated
+        let packetQueueAllowsUpgrade = queueDecision.allowsUpgrade
         let roundTripTimeAllowsUpgrade = roundTripTimeEvidence.allowsUpgrade
         let directUpgradeEvidenceIsHealthy = averagePacketSendDelaySeconds.map {
             $0 <= Self.maximumUpgradePacketSendDelaySeconds
@@ -1431,12 +1330,12 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         } else {
             effectiveAvailableOutgoingBitrateBps = availableOutgoingBitrateBps
         }
-        let capacitySustainableTier = sustainableTier(
-            for: effectiveAvailableOutgoingBitrateBps
-        )
-        let independentlyQualifiedUpgradeTier = highestQualifiedUpgradeTier(
-            for: effectiveAvailableOutgoingBitrateBps
-        )
+        guard let tierSelection = tierDemand.selection(for: currentTier,
+                availableBandwidth: effectiveAvailableOutgoingBitrateBps) else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
+        }
+        let capacitySustainableTier = tierSelection.sustainableTier
+        let independentlyQualifiedUpgradeTier = tierSelection.highestQualifiedUpgradeTier
         let requiredAudioPriorityBitrateBps = requiredOutgoingBitrateBps(
             for: .audioPriority
         )
@@ -1806,13 +1705,15 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         isCaptureActive: Bool,
         observedAt: ContinuousClock.Instant = .now
     ) -> WorldwideScreenVideoEncodingRecommendation? {
-        if peerGeneration == generation {
-            roundTripTimeObservationAge = lastRoundTripTimeAdvancement.map {
-                $0.duration(to: observedAt)
-            }
+        guard peerGeneration == generation else { return nil }
+        guard !hasNativeAdaptationPolicyFault else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
         }
-        guard peerGeneration == generation,
-              isCaptureActive else {
+        roundTripTime.age(at: observedAt)
+        guard !hasNativeAdaptationPolicyFault else {
+            return nativePolicyFaultRecommendation(isCaptureActive: isCaptureActive)
+        }
+        guard isCaptureActive else {
             return nil
         }
         let previousRecommendation = currentRecommendation
@@ -1842,6 +1743,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         isCaptureActive: Bool,
         isAutomaticallySuspended: Bool
     ) -> WorldwideScreenVideoAutomaticSuspensionDecision? {
+        guard !hasNativeAdaptationPolicyFault else { return nil }
         if isAutomaticallySuspended {
             automaticSuspensionPressureSampleCount = 0
             if maximumSuspensionResumeProbeSampleCount
@@ -1864,9 +1766,11 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
                 return .resume
             }
             let nativeRTTAllowsStableResume = nativeRoundTripTimeHealth == .healthy
-                && roundTripTimeObservationAge.map {
-                    $0 >= .zero && $0 <= Self.roundTripTimeObservationValidity
-                } == true
+                && roundTripTime.publishedLeaseIsCurrent
+            guard !hasNativeAdaptationPolicyFault else {
+                _ = nativePolicyFaultRecommendation(isCaptureActive: false)
+                return nil
+            }
             guard !lastSampleHasLatencyPressure,
                   !usesNativeRoundTripTimeEvidence || nativeRTTAllowsStableResume else {
                 stableSuspensionResumeProbeSampleCount = 0
@@ -1947,38 +1851,9 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
 
     mutating func resetForInactiveCapture() {
         clearStartupSpatialMode()
-        currentTier = Self.initialTier(
-            configuredTotalRTPBitrateBps: configuredTotalRTPBitrateBps
-        )
+        currentTier = tierDemand.initialTier
         resetPathMeasurements()
         resetAutomaticSuspensionMeasurements()
-    }
-
-    private func sustainableTier(
-        for availableOutgoingBitrateBps: Double
-    ) -> WorldwideScreenVideoAdaptationTier {
-        WorldwideScreenVideoAdaptationTier.allCases.first { tier in
-            let requiredBitrate = requiredOutgoingBitrateBps(for: tier)
-            return requiredBitrate <= Double(configuredTotalRTPBitrateBps)
-                && availableOutgoingBitrateBps >= requiredBitrate
-        } ?? .audioPriority
-    }
-
-    private func highestQualifiedUpgradeTier(
-        for availableOutgoingBitrateBps: Double
-    ) -> WorldwideScreenVideoAdaptationTier? {
-        WorldwideScreenVideoAdaptationTier.allCases.first { tier in
-            guard tier.rawValue < currentTier.rawValue else { return false }
-            let requiredBitrate = requiredOutgoingBitrateBps(for: tier)
-            guard requiredBitrate <= Double(configuredTotalRTPBitrateBps) else {
-                return false
-            }
-            let upgradeThreshold = min(
-                Double(configuredTotalRTPBitrateBps),
-                requiredBitrate * Self.upgradeMarginMultiplier
-            )
-            return availableOutgoingBitrateBps >= upgradeThreshold
-        }
     }
 
     private func requiredOutgoingBitrateBps(
@@ -1987,9 +1862,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         // Tier selection is based on calibrated codec demand. The separately configured 50 Mbps
         // RTP value remains a native sender ceiling, but must not multiply the bandwidth required
         // to choose a resolution/fps tier.
-        return Double(Self.baselineReferenceVideoBitrateBps(for: tier))
-            * Self.downgradeHeadroomMultiplier
-            + Self.audioAndControlReserveBps
+        return tierDemand.profile(for: tier)?.requiredOutgoingBitrateBps ?? .infinity
     }
 
     private mutating func consumeFloorRecoveryReportIdentity(
@@ -2121,7 +1994,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         return max(
             confirmedThreshold,
             requiredOutgoingBitrateBps(for: .audioPriority),
-            Double(Self.baselineReferenceVideoBitrateBps(for: origin))
+            Double(tierDemand.profile(for: origin)?.baselineVideoBitrateBps ?? 0)
                 * Self.applicationLimitedProbeImmediateAbortRatio
         )
     }
@@ -2129,58 +2002,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
     private func maximumTotalRTPBitrateBps(
         for tier: WorldwideScreenVideoAdaptationTier
     ) -> Int {
-        Int(
-            min(
-                Double(configuredTotalRTPBitrateBps),
-                requiredOutgoingBitrateBps(for: tier)
-                    * Self.upgradeMarginMultiplier
-            ).rounded(.up)
-        )
-    }
-
-    private static func initialTier(
-        configuredTotalRTPBitrateBps: Int
-    ) -> WorldwideScreenVideoAdaptationTier {
-        let configuredQualityCeiling =
-            WorldwideScreenVideoAdaptationTier.allCases.first { tier in
-                let referenceVideoBitrate = baselineReferenceVideoBitrateBps(
-                    for: tier
-                )
-                let required = Double(referenceVideoBitrate)
-                    * downgradeHeadroomMultiplier
-                    + audioAndControlReserveBps
-                return required <= Double(configuredTotalRTPBitrateBps)
-            } ?? .audioPriority
-        return WorldwideScreenVideoAdaptationTier(
-            rawValue: max(
-                WorldwideScreenVideoAdaptationTier.survival.rawValue,
-                configuredQualityCeiling.rawValue
-            )
-        ) ?? .audioPriority
-    }
-
-    private func referenceVideoBitrateBps(
-        for tier: WorldwideScreenVideoAdaptationTier
-    ) -> Int {
-        let referenceMaximumVideoBitrateBps = max(
-            Self.baselineReferenceMaximumVideoBitrateBps,
-            maximumTierVideoBitrateBps
-        )
-        return max(
-            Self.minimumVideoBitrateBps,
-            referenceMaximumVideoBitrateBps
-                * tier.bitrateBasisPoints / 10_000
-        )
-    }
-
-    private static func baselineReferenceVideoBitrateBps(
-        for tier: WorldwideScreenVideoAdaptationTier
-    ) -> Int {
-        max(
-            minimumVideoBitrateBps,
-            baselineReferenceMaximumVideoBitrateBps
-                * tier.bitrateBasisPoints / 10_000
-        )
+        tierDemand.profile(for: tier)?.maximumTotalRTPBitrateBps ?? 1
     }
 
     private func boundedApplicationLimitedProbeCeiling(
@@ -2473,9 +2295,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         promotionCapacityContinuity = nil
         healthyUpgradeSampleCount = 0
         bandwidthOnlyDowngradeSampleCount = 0
-        queuePressureSampleCount = 0
-        lastLowDelayPacketQueueObservation = nil
-        lastSoftPacketQueuePressureObservation = nil
+        packetQueue.reset(path: true)
         unavailableBandwidthSampleCount = 0
         positiveBandwidthBootstrapSampleCount = 0
         applicationLimitedUpgradeSampleCount = 0
@@ -2488,14 +2308,7 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         belowReserveProbeDisprovedSenderLimitation = false
         automaticResumeProbeRestoration = nil
         resetApplicationLimitedProbeBackoff()
-        roundTripTimeBaselineSeconds = nil
-        roundTripTimeBootstrapSamples = []
-        revokeRoundTripTimeHealth()
-        permitsInitialRoundTripTimeReference = false
-        roundTripTimeReferenceIsProvisional = false
-        distinctHealthyRoundTripTimeReferenceCount = 0
-        lastOutboundVideoPacketsSent = nil
-        lastOutboundVideoTotalPacketSendDelaySeconds = nil
+        roundTripTime.resetPath()
         bandwidthEstimateIsUnavailable = false
         lastSampleHasLatencyPressure = false
         lastSampleHasPositiveSuspensionPressure = false
@@ -2507,254 +2320,13 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
         capacityProbeSample = nil
         capacityProbeBandwidthHighWatermark = nil
         promotionCapacityContinuity = nil
-        queuePressureSampleCount = 0
-        lastLowDelayPacketQueueObservation = nil
-        lastSoftPacketQueuePressureObservation = nil
+        packetQueue.reset(path: false)
     }
 
     private mutating func resetAutomaticSuspensionMeasurements() {
         automaticSuspensionPressureSampleCount = 0
         stableSuspensionResumeProbeSampleCount = 0
         maximumSuspensionResumeProbeSampleCount = 0
-    }
-
-    private func validRoundTripTime(_ value: Double?) -> Double? {
-        guard let value, value.isFinite, value > 0 else { return nil }
-        return value
-    }
-
-    private mutating func revokeRoundTripTimeHealth() {
-        nativeRoundTripTimeHealth = .unknown
-        roundTripTimeDisposition = .unavailable
-    }
-
-    private func isValidRoundTripTimeWatermark(
-        _ measurement: WebRTCRoundTripTimeMeasurement
-    ) -> Bool {
-        let fingerprint = measurement.selectedCandidatePairFingerprint.utf8
-        return fingerprint.count == 64
-            && fingerprint.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
-            && measurement.totalRoundTripTimeSeconds.isFinite
-            && measurement.totalRoundTripTimeSeconds >= 0
-    }
-
-    private mutating func consumeRoundTripTimeEvidence(
-        current: Double?,
-        observation: WebRTCRoundTripTimeObservation?,
-        observedAt: ContinuousClock.Instant
-    ) -> RoundTripTimeEvidence {
-        let unknown = RoundTripTimeEvidence(
-            hasFreshPressure: false,
-            allowsUpgrade: false,
-            permitsLegacyMissingValue: false
-        )
-        usesNativeRoundTripTimeEvidence = observation != nil
-        guard let observation else {
-            // Compatibility is explicit and limited to direct legacy/synthetic callers. Actual
-            // host snapshots request strict observation handling at the service boundary.
-            roundTripTimeDisposition = .legacy
-            let inflated = roundTripTimeIsInflated(current)
-            if let current { updateRoundTripTimeBaseline(current) }
-            return RoundTripTimeEvidence(
-                hasFreshPressure: inflated,
-                allowsUpgrade: roundTripTimeAllowsUpgrade(current),
-                permitsLegacyMissingValue: current == nil
-            )
-        }
-
-        roundTripTimeObservationAge = lastRoundTripTimeAdvancement.map {
-            $0.duration(to: observedAt)
-        }
-        guard case let .measurement(measurement) = observation,
-              isValidRoundTripTimeWatermark(measurement) else {
-            // Never forget the consumed watermark: missing metadata followed by the same old
-            // measurement cannot revive health or apply the same pressure a second time.
-            if let fence = roundTripTimeObservationFence {
-                roundTripTimeWatermark = fence.measurement
-                permitsInitialRoundTripTimeReference = false
-            }
-            revokeRoundTripTimeHealth()
-            return unknown
-        }
-
-        let previousFence = roundTripTimeObservationFence
-        roundTripTimeObservationFence = RoundTripTimeObservationFence(
-            measurement: measurement,
-            current: current
-        )
-        if let previousFence {
-            let replacedPair = measurement.selectedCandidatePairFingerprint
-                != previousFence.measurement.selectedCandidatePairFingerprint
-            let regressed = measurement.totalRoundTripTimeSeconds
-                    < previousFence.measurement.totalRoundTripTimeSeconds
-                || measurement.responsesReceived
-                    < previousFence.measurement.responsesReceived
-            let contradictoryScalar = measurement == previousFence.measurement
-                && current != previousFence.current
-            if replacedPair || regressed || contradictoryScalar {
-                roundTripTimeWatermark = measurement
-                permitsInitialRoundTripTimeReference = false
-                revokeRoundTripTimeHealth()
-                roundTripTimeDisposition = contradictoryScalar ? .unavailable : .reseeded
-                if replacedPair {
-                    roundTripTimeBaselineSeconds = nil
-                    roundTripTimeBootstrapSamples = []
-                    distinctHealthyRoundTripTimeReferenceCount = 0
-                    roundTripTimeReferenceIsProvisional = false
-                }
-                return unknown
-            }
-        }
-
-        let previous = roundTripTimeWatermark
-        let isFirstForPeer = previous == nil && permitsInitialRoundTripTimeReference
-        permitsInitialRoundTripTimeReference = false
-        roundTripTimeWatermark = measurement
-
-        if let previous {
-            let replacedPair = measurement.selectedCandidatePairFingerprint
-                != previous.selectedCandidatePairFingerprint
-            let regressed = measurement.totalRoundTripTimeSeconds
-                    < previous.totalRoundTripTimeSeconds
-                || measurement.responsesReceived < previous.responsesReceived
-            if replacedPair || regressed {
-                // Every pair change is a seed, including A -> B -> A. Counter resets also seed
-                // unknown; neither event is a newly measured ping merely because values differ.
-                revokeRoundTripTimeHealth()
-                roundTripTimeDisposition = .reseeded
-                if replacedPair {
-                    roundTripTimeBaselineSeconds = nil
-                    roundTripTimeBootstrapSamples = []
-                    distinctHealthyRoundTripTimeReferenceCount = 0
-                    roundTripTimeReferenceIsProvisional = false
-                }
-                return unknown
-            }
-        } else if !isFirstForPeer {
-            revokeRoundTripTimeHealth()
-            roundTripTimeDisposition = .reseeded
-            return unknown
-        }
-
-        // Even with valid counters, missing/zero/non-finite/inconsistent scalar RTT is not health.
-        // Consume its watermark so reusing it with a repaired scalar still requires advancement.
-        guard let current,
-              measurement.totalRoundTripTimeSeconds >= current,
-              roundTripTimeObservationAge.map({ $0 >= .zero }) ?? true else {
-            revokeRoundTripTimeHealth()
-            return unknown
-        }
-        let advanced = previous.map {
-            measurement.totalRoundTripTimeSeconds > $0.totalRoundTripTimeSeconds
-                || measurement.responsesReceived > $0.responsesReceived
-        } ?? isFirstForPeer
-        guard advanced else {
-            guard current == lastMeasuredRoundTripTimeSeconds else {
-                // A changed scalar without a changed native watermark is contradictory, not a
-                // new ping. Revoke retained health without minting another RTT penalty.
-                revokeRoundTripTimeHealth()
-                return unknown
-            }
-            switch nativeRoundTripTimeHealth {
-            case .healthy:
-                guard let age = roundTripTimeObservationAge,
-                      age <= Self.roundTripTimeObservationValidity else {
-                    nativeRoundTripTimeHealth = .unknown
-                    roundTripTimeDisposition = .expired
-                    return unknown
-                }
-                roundTripTimeDisposition = .retainedHealthy
-                return RoundTripTimeEvidence(
-                    hasFreshPressure: false,
-                    allowsUpgrade: true,
-                    permitsLegacyMissingValue: false
-                )
-            case .inflated:
-                roundTripTimeDisposition = .retainedInflated
-            case .unknown:
-                roundTripTimeDisposition = .unavailable
-            }
-            return unknown
-        }
-
-        lastRoundTripTimeAdvancement = observedAt
-        lastMeasuredRoundTripTimeSeconds = current
-        roundTripTimeObservationAge = .zero
-        if roundTripTimeBaselineSeconds == nil {
-            // One explicitly provisional reference avoids waiting for three 2.5-second ICE
-            // pings before startup. Fresh queue and consecutive qualified BWE reports remain
-            // mandatory for the existing raised-cap probe; this is not extra capacity evidence.
-            roundTripTimeBaselineSeconds = current
-            roundTripTimeBootstrapSamples = []
-            distinctHealthyRoundTripTimeReferenceCount = 1
-            roundTripTimeReferenceIsProvisional = true
-        } else if !roundTripTimeIsInflated(current) {
-            updateRoundTripTimeBaseline(current)
-            distinctHealthyRoundTripTimeReferenceCount = min(
-                Self.roundTripTimeBootstrapSampleCount,
-                distinctHealthyRoundTripTimeReferenceCount + 1
-            )
-            roundTripTimeReferenceIsProvisional = distinctHealthyRoundTripTimeReferenceCount
-                < Self.roundTripTimeBootstrapSampleCount
-        }
-        let inflated = roundTripTimeIsInflated(current)
-        nativeRoundTripTimeHealth = inflated ? .inflated : .healthy
-        roundTripTimeDisposition = inflated
-            ? .freshInflated
-            : (isFirstForPeer ? .provisionalHealthy : .freshHealthy)
-        return RoundTripTimeEvidence(
-            hasFreshPressure: inflated,
-            allowsUpgrade: !inflated,
-            permitsLegacyMissingValue: false
-        )
-    }
-
-    private mutating func updateRoundTripTimeBaseline(_ current: Double) {
-        guard let baseline = roundTripTimeBaselineSeconds else {
-            roundTripTimeBootstrapSamples.append(current)
-            guard roundTripTimeBootstrapSamples.count
-                    >= Self.roundTripTimeBootstrapSampleCount else {
-                return
-            }
-            roundTripTimeBaselineSeconds = roundTripTimeBootstrapSamples
-                .sorted()[roundTripTimeBootstrapSamples.count / 2]
-            roundTripTimeBootstrapSamples = []
-            return
-        }
-        if current < baseline {
-            roundTripTimeBaselineSeconds = max(
-                current,
-                baseline - Self.maximumRoundTripTimeBaselineFallPerSample
-            )
-        }
-    }
-
-    private func roundTripTimeIsInflated(_ current: Double?) -> Bool {
-        guard let current,
-              let roundTripTimeBaselineSeconds else {
-            return false
-        }
-        let inflationThreshold = max(
-            roundTripTimeBaselineSeconds
-                * Self.roundTripTimeRelativeInflationMultiplier,
-            roundTripTimeBaselineSeconds
-                + Self.roundTripTimeAbsoluteInflationSeconds
-        )
-        return current > inflationThreshold
-    }
-
-    private func roundTripTimeAllowsUpgrade(_ current: Double?) -> Bool {
-        guard let current,
-              let roundTripTimeBaselineSeconds else {
-            return false
-        }
-        let inflationThreshold = max(
-            roundTripTimeBaselineSeconds
-                * Self.roundTripTimeRelativeInflationMultiplier,
-            roundTripTimeBaselineSeconds
-                + Self.roundTripTimeAbsoluteInflationSeconds
-        )
-        return current <= inflationThreshold
     }
 
     private func isFreshPacketQueueObservation(
@@ -2766,40 +2338,327 @@ struct WorldwideScreenVideoAdaptationPolicy: Equatable, Sendable {
             && age <= Self.lowDelayPacketQueueObservationValidity
     }
 
-    private mutating func packetQueueObservationSinceLastSample(
-        packetsSent: UInt64?,
-        totalPacketSendDelaySeconds: Double?
-    ) -> PacketQueueObservation {
-        guard let packetsSent,
-              let totalPacketSendDelaySeconds,
-              totalPacketSendDelaySeconds.isFinite,
-              totalPacketSendDelaySeconds >= 0 else {
-            lastOutboundVideoPacketsSent = nil
-            lastOutboundVideoTotalPacketSendDelaySeconds = nil
-            return .unavailableOrReset
+}
+
+// Source-only seam proposal; no event call sites or actor publication are added.
+// Same-file private access retains actual dependency values, including producer closures.
+extension WorldwideScreenVideoAdaptationPolicy {
+    var networkAdaptationOwnerNativeTimes: [ContinuousClock.Instant?] {
+        [applicationLimitedProbeDeadline, applicationLimitedProbeQualificationObservedAt,
+         promotionCapacityContinuity?.deadline, floorRecoveryFirstWitness?.observedAt,
+         floorRecoveryLastCooldownObservation, startupSparseProbeDeadline,
+         packetQueue.lowObservation, packetQueue.softObservation, roundTripTime.lastAdvancement,
+         nil, nil, nil, nil]
+    }
+
+    func networkAdaptationOwnerWrite(into w: inout BelugaNetworkAdaptationOwnerWriter) throws {
+        w.integer(configuredTotalRTPBitrateBps); w.integer(maximumTierVideoBitrateBps)
+        w.integer(baseFramesPerSecond); w.unsigned(peerGeneration); w.tier(currentTier)
+        w.integer(healthyUpgradeSampleCount); w.integer(bandwidthOnlyDowngradeSampleCount)
+        w.integer(unavailableBandwidthSampleCount); w.integer(positiveBandwidthBootstrapSampleCount)
+        w.integer(applicationLimitedUpgradeSampleCount); w.integer(applicationLimitedProbeHealthySampleCount)
+        w.integer(applicationLimitedProbeGraceSamplesRemaining); try w.time(applicationLimitedProbeDeadline)
+        w.integer(applicationLimitedProbeCooldownSamplesRemaining); w.integer(applicationLimitedProbeFailureCount)
+        w.boolean(belowReserveProbeDisprovedSenderLimitation)
+        w.boolean(automaticResumeProbeRestoration != nil)
+        w.boolean(automaticResumeProbeRestoration?.belowReserveProbeDisprovedSenderLimitation)
+        w.integer(automaticResumeProbeRestoration?.applicationLimitedProbeCooldownSamplesRemaining)
+        w.integer(automaticResumeProbeRestoration?.applicationLimitedProbeFailureCount)
+        w.tier(applicationLimitedProbeOriginTier); w.tier(applicationLimitedProbeBestQualifiedTier)
+        w.tier(applicationLimitedProbeConfirmedTier); try w.time(applicationLimitedProbeQualificationObservedAt)
+        w.integer(applicationLimitedProbeMaximumTotalRTPBitrateBps)
+        w.boolean(promotionCapacityContinuity != nil); w.tier(promotionCapacityContinuity?.tier)
+        w.integer(promotionCapacityContinuity?.maximumTotalRTPBitrateBps)
+        try w.time(promotionCapacityContinuity?.deadline)
+        w.integer(automaticSuspensionPressureSampleCount); w.integer(stableSuspensionResumeProbeSampleCount)
+        w.integer(maximumSuspensionResumeProbeSampleCount); w.boolean(bandwidthEstimateIsUnavailable)
+        w.boolean(lastSampleHasLatencyPressure); w.boolean(lastSampleHasPositiveSuspensionPressure)
+        w.scalar(lastAveragePacketSendDelaySeconds)
+        w.unsigned(packetQueue.packets); w.bits(packetQueue.delayBits); w.integer(packetQueue.pressureCount)
+        try w.time(packetQueue.lowObservation); try w.time(packetQueue.softObservation); w.boolean(packetQueue.faulted)
+        let r = roundTripTime.rawState
+        [r.abi_version, r.reserved, r.baseline_present, r.bootstrap_count, r.disposition,
+         r.health, r.uses_native, r.provisional, r.permits_initial, r.distinct_count,
+         r.last_measured_present, r.advancement_present, r.age_present, r.watermark_present,
+         r.fence_present, r.fence_current_present, r.reserved2, r.reserved3].forEach { w.u32($0) }
+        w.bits(r.baseline_bits); w.bits(r.last_measured_bits)
+        w.bits(r.bootstrap_bits.0); w.bits(r.bootstrap_bits.1); w.bits(r.bootstrap_bits.2)
+        w.signed(r.age_seconds); w.signed(r.age_attoseconds)
+        w.measurement(r.watermark); w.measurement(r.fence); w.bits(r.fence_current_bits)
+        try w.time(roundTripTime.lastAdvancement); w.boolean(roundTripTime.hasNativeFault)
+        let demand = tierDemand.networkAdaptationOwnerStoredProfiles
+        // Actual Swift initialization publishes either zero profiles (terminal denial)
+        // or all eight. Unclaimed Rust array slots are exactly Default::default().
+        guard demand.profiles.count == 0 || demand.profiles.count == 8 else {
+            throw BelugaNetworkAdaptationOwnerError.malformedNativeImage
         }
-        defer {
-            lastOutboundVideoPacketsSent = packetsSent
-            lastOutboundVideoTotalPacketSendDelaySeconds =
-                totalPacketSendDelaySeconds
+        w.u32(demand.cap)
+        for index in 0..<8 {
+            if demand.profiles.isEmpty {
+                w.integer(0); w.integer(0); w.integer(0); w.integer(0); w.bits(0); w.integer(nil)
+            } else {
+                let p = demand.profiles[index]
+                w.integer(p.baselineVideoBitrateBps); w.integer(p.maximumVideoBitrateBps)
+                w.integer(p.maximumTotalRTPBitrateBps); w.integer(p.minimumSustainableBitrateBps)
+                w.scalar(p.requiredOutgoingBitrateBps); w.integer(p.nextHigherTierMinimumDirectUpgradeBitrateBps)
+            }
         }
-        guard let previousPackets = lastOutboundVideoPacketsSent,
-              let previousDelay =
-                lastOutboundVideoTotalPacketSendDelaySeconds else {
-            return .unavailableOrReset
+        w.byte(UInt8(demand.profiles.count)); w.boolean(tierDemand.hasNativeFault)
+        w.byte(UInt8(tierDemand.initialTier.rawValue)); w.integer(tierDemand.maximumTierVideoBitrateBps)
+        w.unsigned(lastConsumedCollectionSequence); w.boolean(selectedRoute != nil)
+        w.boolean(capacityProbeSample != nil); w.unsigned(capacityProbeSample?.packetsSent)
+        w.scalar(capacityProbeSample?.totalPacketSendDelaySeconds); w.scalar(capacityProbeBandwidthHighWatermark)
+        w.scalar(capacityProbeNativeReportTimestamp); w.unsigned(lastCapacityProbeCollectionSequence)
+        w.boolean(capacityProbeGrowthIsVetoed); w.unsigned(floorRecoveryShowEpoch)
+        w.boolean(floorRecoveryVisibilityIsReserved); w.boolean(floorRecoveryVisibilityIsActive)
+        w.boolean(floorRecoveryAttemptConsumed); w.boolean(floorRecoveryProbeWasCancelled)
+        w.scalar(floorRecoveryProbeSeedBandwidthBps); w.boolean(floorRecoveryFirstWitness != nil)
+        try w.time(floorRecoveryFirstWitness?.observedAt); w.scalar(floorRecoveryFirstWitness?.bandwidthBps)
+        w.unsigned(floorRecoveryLastRegularSequence); w.scalar(floorRecoveryLastRegularTimestamp)
+        try w.time(floorRecoveryLastCooldownObservation)
+        w.unsigned(startupSpatialModePeerGeneration); w.unsigned(startupSpatialModeShowEpoch)
+        w.boolean(startupSpatialModeIsDisproved); try w.time(startupSparseProbeDeadline)
+    }
+
+    // CLOSED import of public105–109 only, into a copied policy, after Rust success.
+    // Sealed read-plan witnesses expose no producer setter or scalar permission.
+    var networkAdaptationOwnerRTTApplicationIsAdmitted: Bool {
+        roundTripTime.networkAdaptationOwnerClockedApplicationIsAdmitted
+    }
+    var networkAdaptationOwnerDemandApplicationIsAdmitted: Bool {
+        tierDemand.networkAdaptationOwnerApplicationIsAdmitted
+    }
+    func networkAdaptationOwnerFaultAfterHideRead() throws -> Bool {
+        // Demand's sticky fault participates in the existing policy fault helper.
+        // Still validate RTT provenance because Hide reaches its E/A application.
+        let rttFault = try roundTripTime.networkAdaptationOwnerFaultAfterHideRead()
+        return tierDemand.hasNativeFault || rttFault
+    }
+
+    // Packet construction and field whitelist are sealed to the boundary file.
+    // Assignments import Rust output into THIS copied value, preserving immutable
+    // policy configuration/demand profiles, the RTT producer, and native custody.
+    // No original mutator is replayed, and no generic full179 setter is exposed.
+    mutating func networkAdaptationOwnerImportClocked(_ p: BelugaNetworkAdaptationOwnerClockedImport) throws {
+        if p.permits(3) { peerGeneration = try p.unsigned(3) }
+        if p.permits(4) {
+            guard let tier = try p.tier(4) else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+            currentTier = tier
         }
-        guard packetsSent >= previousPackets,
-              totalPacketSendDelaySeconds >= previousDelay else {
-            return .unavailableOrReset
+        if p.permits(5) { healthyUpgradeSampleCount = try p.requiredInteger(5) }
+        if p.permits(6) { bandwidthOnlyDowngradeSampleCount = try p.requiredInteger(6) }
+        if p.permits(7) { unavailableBandwidthSampleCount = try p.requiredInteger(7) }
+        if p.permits(8) { positiveBandwidthBootstrapSampleCount = try p.requiredInteger(8) }
+        if p.permits(9) { applicationLimitedUpgradeSampleCount = try p.requiredInteger(9) }
+        if p.permits(10) { applicationLimitedProbeHealthySampleCount = try p.requiredInteger(10) }
+        if p.permits(11) { applicationLimitedProbeGraceSamplesRemaining = try p.requiredInteger(11) }
+        if p.permits(12) { applicationLimitedProbeDeadline = p.times[0] }
+        if p.permits(13) { applicationLimitedProbeCooldownSamplesRemaining = try p.requiredInteger(13) }
+        if p.permits(14) { applicationLimitedProbeFailureCount = try p.requiredInteger(14) }
+        if p.permits(15) { belowReserveProbeDisprovedSenderLimitation = try p.boolean(15) }
+        if p.permits(16) {
+            if try p.boolean(16) {
+                guard let disproved = try p.optionalBoolean(17), let cooldown = try p.integer(18), let failures = try p.integer(19) else {
+                    throw BelugaNetworkAdaptationOwnerError.invalidResult
+                }
+                automaticResumeProbeRestoration = .init(belowReserveProbeDisprovedSenderLimitation: disproved,
+                    applicationLimitedProbeCooldownSamplesRemaining: cooldown, applicationLimitedProbeFailureCount: failures)
+            } else {
+                guard try p.optionalBoolean(17) == nil, try p.integer(18) == nil, try p.integer(19) == nil else {
+                    throw BelugaNetworkAdaptationOwnerError.invalidResult
+                }
+                automaticResumeProbeRestoration = nil
+            }
         }
-        guard packetsSent > previousPackets else {
-            return totalPacketSendDelaySeconds == previousDelay
-                ? .noNewPackets
-                : .unavailableOrReset
+        if p.permits(20) { applicationLimitedProbeOriginTier = try p.tier(20) }
+        if p.permits(21) { applicationLimitedProbeBestQualifiedTier = try p.tier(21) }
+        if p.permits(22) { applicationLimitedProbeConfirmedTier = try p.tier(22) }
+        if p.permits(23) { applicationLimitedProbeQualificationObservedAt = p.times[1] }
+        if p.permits(24) { applicationLimitedProbeMaximumTotalRTPBitrateBps = try p.integer(24) }
+        if p.permits(25) {
+            if try p.boolean(25) {
+                guard let tier = try p.tier(26), let cap = try p.integer(27), let deadline = p.times[2] else {
+                    throw BelugaNetworkAdaptationOwnerError.invalidResult
+                }
+                promotionCapacityContinuity = .init(tier: tier, maximumTotalRTPBitrateBps: cap, deadline: deadline)
+            } else {
+                guard try p.tier(26) == nil, try p.integer(27) == nil, p.times[2] == nil else {
+                    throw BelugaNetworkAdaptationOwnerError.invalidResult
+                }
+                promotionCapacityContinuity = nil
+            }
         }
-        return .measured(
-            (totalPacketSendDelaySeconds - previousDelay)
-                / Double(packetsSent - previousPackets)
-        )
+        if p.permits(29) { automaticSuspensionPressureSampleCount = try p.requiredInteger(29) }
+        if p.permits(30) { stableSuspensionResumeProbeSampleCount = try p.requiredInteger(30) }
+        if p.permits(31) { maximumSuspensionResumeProbeSampleCount = try p.requiredInteger(31) }
+        if p.permits(32) { bandwidthEstimateIsUnavailable = try p.boolean(32) }
+        if p.permits(33) { lastSampleHasLatencyPressure = try p.boolean(33) }
+        if p.permits(34) { lastSampleHasPositiveSuspensionPressure = try p.boolean(34) }
+        if p.permits(35) { lastAveragePacketSendDelaySeconds = try p.scalar(35) }
+        if p.permits(36) { try packetQueue.networkAdaptationOwnerImportClocked(p.queue()) }
+        if p.permits(42) { try roundTripTime.networkAdaptationOwnerImportClocked(p.rtt()) }
+        if p.permits(140) { try tierDemand.networkAdaptationOwnerImport(p.demand()) }
+        if p.permits(143) { lastConsumedCollectionSequence = try p.unsigned(143) }
+        if p.permits(144) { selectedRoute = p.route }
+        if p.permits(145) {
+            if try p.boolean(145) {
+                capacityProbeSample = .init(packetsSent: try p.unsigned(146), totalPacketSendDelaySeconds: try p.scalar(147))
+            } else {
+                guard try p.unsigned(146) == nil, try p.scalar(147) == nil else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+                capacityProbeSample = nil
+            }
+        }
+        if p.permits(148) { capacityProbeBandwidthHighWatermark = try p.scalar(148) }
+        if p.permits(149) { capacityProbeNativeReportTimestamp = try p.scalar(149) }
+        if p.permits(150) { lastCapacityProbeCollectionSequence = try p.unsigned(150) }
+        if p.permits(151) { capacityProbeGrowthIsVetoed = try p.boolean(151) }
+        if p.permits(152) { floorRecoveryShowEpoch = try p.unsigned(152) }
+        if p.permits(153) { floorRecoveryVisibilityIsReserved = try p.boolean(153) }
+        if p.permits(154) { floorRecoveryVisibilityIsActive = try p.boolean(154) }
+        if p.permits(155) { floorRecoveryAttemptConsumed = try p.boolean(155) }
+        if p.permits(156) { floorRecoveryProbeWasCancelled = try p.boolean(156) }
+        if p.permits(157) { floorRecoveryProbeSeedBandwidthBps = try p.scalar(157) }
+        if p.permits(158) {
+            if try p.boolean(158) {
+                guard let observedAt = p.times[3], let bandwidth = try p.scalar(160) else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+                floorRecoveryFirstWitness = .init(observedAt: observedAt, bandwidthBps: bandwidth)
+            } else {
+                guard p.times[3] == nil, try p.scalar(160) == nil else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+                floorRecoveryFirstWitness = nil
+            }
+        }
+        if p.permits(161) { floorRecoveryLastRegularSequence = try p.unsigned(161) }
+        if p.permits(162) { floorRecoveryLastRegularTimestamp = try p.scalar(162) }
+        if p.permits(163) { floorRecoveryLastCooldownObservation = p.times[4] }
+        if p.permits(164) { startupSpatialModePeerGeneration = try p.unsigned(164) }
+        if p.permits(165) { startupSpatialModeShowEpoch = try p.unsigned(165) }
+        if p.permits(166) { startupSpatialModeIsDisproved = try p.boolean(166) }
+        if p.permits(167) { startupSparseProbeDeadline = p.times[5] }
+    }
+    #if DEBUG
+    // Fixed native-image conditional-cut fixtures, never a generic setter.
+    mutating func networkAdaptationOwnerSeedClockedProbe() {
+        currentTier = .balanced; applicationLimitedProbeOriginTier = .audioPriority
+        applicationLimitedProbeConfirmedTier = .high
+        floorRecoveryProbeSeedBandwidthBps = 765_000
+        applicationLimitedProbeGraceSamplesRemaining = 3
+    }
+    mutating func networkAdaptationOwnerSeedClockedExpiredProbe(at deadline: ContinuousClock.Instant) {
+        networkAdaptationOwnerSeedClockedProbe()
+        // Committing the already-current confirmed tier consumes the genuine
+        // queue reset without changing the recommendation: read-bearing None.
+        currentTier = .high
+        applicationLimitedProbeDeadline = deadline
+    }
+    mutating func networkAdaptationOwnerSeedClockedFaultTail() {
+        networkAdaptationOwnerSeedClockedProbe()
+        applicationLimitedProbeConfirmedTier = nil
+        roundTripTime.networkAdaptationOwnerSeedClockedMalformedRTT()
+    }
+    mutating func networkAdaptationOwnerSeedClockedRetainedRTTFault() {
+        roundTripTime.networkAdaptationOwnerSeedClockedRTTFault()
+    }
+    mutating func networkAdaptationOwnerSeedClockedRetainedQueueFault() {
+        packetQueue.networkAdaptationOwnerSeedClockedQueueFault()
+    }
+    mutating func networkAdaptationOwnerSeedClockedOpaqueQueueAndRTTFault(at anchor: ContinuousClock.Instant) {
+        packetQueue.networkAdaptationOwnerSeedFixedRegression(at: anchor)
+        networkAdaptationOwnerSeedClockedRetainedRTTFault()
+    }
+    #endif
+
+    // No generic inverse codec, producer setter, clock assignment, or route replacement.
+    mutating func networkAdaptationOwnerImportZeroClock(event: BelugaNetworkAdaptationOwnerEvent,
+        atoms: [BelugaNetworkAdaptationOwnerWriter.Atom]) throws {
+        guard atoms.count == 179 else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+        switch event {
+        case let .activateShow(generation, show):
+            let a = atoms[154]
+            guard a.kind == 4, a.present == 1, a.high == 0, a.low <= 1 else {
+                throw BelugaNetworkAdaptationOwnerError.invalidResult
+            }
+            // Rejection-only correlation with the documented exact guard, not a
+            // replacement successful decision or permission to issue an ACK.
+            let expected = floorRecoveryVisibilityIsActive
+                || (peerGeneration == generation && floorRecoveryShowEpoch == show && floorRecoveryVisibilityIsReserved)
+            guard (a.low == 1) == expected else { throw BelugaNetworkAdaptationOwnerError.invalidResult }
+            floorRecoveryVisibilityIsActive = a.low == 1
+        case .resumeWithoutRevision, .resumeAndAdvance:
+            for index in [16, 25] {
+                let a = atoms[index]
+                guard a.kind == 4, a.present == 1, a.high == 0, a.low == 0 else {
+                    throw BelugaNetworkAdaptationOwnerError.invalidResult
+                }
+            }
+            automaticResumeProbeRestoration = nil
+            promotionCapacityContinuity = nil
+        case .stopSampling, .collectorGate: break
+        }
+    }
+
+    #if DEBUG
+    // Handwritten actual-Swift fixture, not a full179 setter or production factory.
+    // Existing RTT/Demand/Queue values and their producers are left untouched.
+    mutating func networkAdaptationOwnerSeedRegression(at anchor: ContinuousClock.Instant,
+        route: WebRTCICERouteDiagnostics) {
+        peerGeneration = 77; selectedRoute = route
+        healthyUpgradeSampleCount = -3; bandwidthOnlyDowngradeSampleCount = 5
+        applicationLimitedProbeDeadline = anchor.advanced(by: .seconds(4))
+        applicationLimitedProbeQualificationObservedAt = anchor.advanced(by: .milliseconds(-375))
+        automaticResumeProbeRestoration = .init(belowReserveProbeDisprovedSenderLimitation: true,
+            applicationLimitedProbeCooldownSamplesRemaining: -7, applicationLimitedProbeFailureCount: 9)
+        promotionCapacityContinuity = .init(tier: .high, maximumTotalRTPBitrateBps: 6_765_432,
+            deadline: anchor.advanced(by: .seconds(2)))
+        lastAveragePacketSendDelaySeconds = Double(bitPattern: 0x7ff8000000000042)
+        lastConsumedCollectionSequence = 193
+        capacityProbeSample = .init(packetsSent: 31, totalPacketSendDelaySeconds: -0.0)
+        capacityProbeBandwidthHighWatermark = 4_321_000; capacityProbeNativeReportTimestamp = 17.25
+        lastCapacityProbeCollectionSequence = 191; capacityProbeGrowthIsVetoed = true
+        floorRecoveryShowEpoch = 88; floorRecoveryVisibilityIsReserved = true
+        floorRecoveryVisibilityIsActive = false; floorRecoveryAttemptConsumed = true
+        floorRecoveryProbeWasCancelled = true; floorRecoveryProbeSeedBandwidthBps = 765_000
+        floorRecoveryFirstWitness = .init(observedAt: anchor.advanced(by: .milliseconds(125)), bandwidthBps: 1_234_567)
+        floorRecoveryLastRegularSequence = 190; floorRecoveryLastRegularTimestamp = -0.0
+        floorRecoveryLastCooldownObservation = anchor.advanced(by: .seconds(-2))
+        startupSpatialModePeerGeneration = 77; startupSpatialModeShowEpoch = 88
+        startupSpatialModeIsDisproved = true; startupSparseProbeDeadline = anchor.advanced(by: .seconds(3))
+    }
+    // Complete fixed image for one independent179 golden. No arbitrary values
+    // are accepted, and existing dependency producers remain in the actual copies.
+    mutating func networkAdaptationOwnerSeedCompleteRegression(at anchor: ContinuousClock.Instant,
+        route: WebRTCICERouteDiagnostics) {
+        networkAdaptationOwnerSeedRegression(at: anchor, route: route)
+        currentTier = .balanced; unavailableBandwidthSampleCount = 7
+        positiveBandwidthBootstrapSampleCount = 11; applicationLimitedUpgradeSampleCount = 13
+        applicationLimitedProbeHealthySampleCount = 17; applicationLimitedProbeGraceSamplesRemaining = 19
+        applicationLimitedProbeCooldownSamplesRemaining = 23; applicationLimitedProbeFailureCount = 29
+        belowReserveProbeDisprovedSenderLimitation = true; applicationLimitedProbeOriginTier = .survival
+        applicationLimitedProbeBestQualifiedTier = .high; applicationLimitedProbeConfirmedTier = .full
+        applicationLimitedProbeMaximumTotalRTPBitrateBps = 1_234_567
+        automaticSuspensionPressureSampleCount = 31; stableSuspensionResumeProbeSampleCount = 37
+        maximumSuspensionResumeProbeSampleCount = 41; bandwidthEstimateIsUnavailable = true
+        lastSampleHasLatencyPressure = false; lastSampleHasPositiveSuspensionPressure = true
+        packetQueue.networkAdaptationOwnerSeedFixedRegression(at: anchor)
+        roundTripTime.networkAdaptationOwnerSeedFixedRegression(at: anchor)
+    }
+    #endif
+}
+
+// Append to WorldwideScreenVideoAdaptationPolicy.swift. Closed Regular501 fault
+// prefix only; no producer setter, generic inverse168 or native mutator replay.
+extension WorldwideScreenVideoAdaptationPolicy {
+    mutating func networkAdaptationOwnerImportTerminalPrepared(
+        _ p: BelugaNetworkAdaptationTerminalPolicyImport) {
+        healthyUpgradeSampleCount = p.healthyUpgrades
+        applicationLimitedUpgradeSampleCount = p.limitedUpgrades
+        promotionCapacityContinuity = nil
+        startupSpatialModeIsDisproved = p.startupDisproved
+        startupSparseProbeDeadline = p.sparseDeadline
+    }
+}
+
+extension WorldwideScreenVideoAdaptationPolicy {
+    func networkAdaptationOwnerFailureCopyFenceWillFault(from other: Self) throws -> Bool {
+        try roundTripTime.networkAdaptationOwnerFailureCopyFenceWillFault(from: other.roundTripTime)
     }
 }

@@ -1,4 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
+import { routeAudioShare } from "./audio-share.js";
+export { AudioShareSession } from "./audio-share.js";
+export { AudioShareBudget } from "./audio-share-budget.js";
 import { TurnProvisioningError, iceServersForJoin } from "./ice.js";
 import {
   AVAILABILITY_WEBSOCKET_PROTOCOL,
@@ -1232,6 +1235,8 @@ export default {
    * then forwards a minimal canonical request to the channel's Durable Object.
    */
   async fetch(request, env) {
+    const audioShare = await routeAudioShare(request, env);
+    if (audioShare) return audioShare;
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/healthz" && url.search === "") {
       return json({ ok: true });

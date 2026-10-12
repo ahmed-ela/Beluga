@@ -60,13 +60,20 @@ private final class SupportedRuntimeFake: MacSystemNowPlayingRuntime, @unchecked
 }
 
 final class MacSupportedNowPlayingRuntimeTests: XCTestCase {
-    func testSimultaneouslyDiscoveredPlayersDoNotChooseAnArbitraryCommandTarget() throws {
+    func testSimultaneouslyDiscoveredPlayersPublishStablePrimaryAndIndependentCatalog() throws {
         let browser = SupportedRuntimeFake(), music = SupportedRuntimeFake()
         browser.result = .snapshot(item(source: "YouTube", identity: "browser-a"))
         music.result = .snapshot(item(source: "Music", identity: "music-a"))
         let runtime = MacSupportedNowPlayingRuntime(browser: browser, music: music)
-        guard case .noActiveMedia = try fetch(runtime) else { return XCTFail("Ambiguous owner chosen") }
-        guard case .noActiveMedia = try fetch(runtime) else { return XCTFail("Ambiguity disappeared without evidence") }
+        XCTAssertEqual(try snapshot(runtime).sourceName, "YouTube")
+        XCTAssertEqual(try snapshot(runtime).sourceName, "YouTube")
+        let catalog = try catalog(runtime)
+        XCTAssertEqual(catalog.additional.map(\.sourceName), ["Music"])
+        let musicResult = send(runtime, snapshot: catalog.additional[0])
+        music.completeCommand()
+        XCTAssertEqual(musicResult.read(), .applied)
+        XCTAssertEqual(music.commands, [1])
+        XCTAssertTrue(browser.commands.isEmpty)
         music.result = .noActiveMedia
         XCTAssertEqual(try snapshot(runtime).sourceName, "YouTube")
     }
@@ -101,7 +108,7 @@ final class MacSupportedNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(actual.enabledCommands, [1, 4])
     }
 
-    func testNewlyPlayingMusicTakesOverAndRemainsSelectedWhenBothPause() throws {
+    func testNewlyPlayingMusicDoesNotStealPrimaryUntilBrowserPauses() throws {
         let browser = SupportedRuntimeFake()
         let music = SupportedRuntimeFake()
         browser.result = .snapshot(item(source: "YouTube", identity: "browser-a"))
@@ -110,9 +117,10 @@ final class MacSupportedNowPlayingRuntimeTests: XCTestCase {
         XCTAssertEqual(try snapshot(runtime).sourceName, "YouTube")
 
         music.result = .snapshot(item(source: "Music", identity: "music-a"))
-        XCTAssertEqual(try snapshot(runtime).sourceName, "Music")
+        XCTAssertEqual(try snapshot(runtime).sourceName, "YouTube")
 
         browser.result = .snapshot(item(source: "YouTube", identity: "browser-a", playing: false))
+        XCTAssertEqual(try snapshot(runtime).sourceName, "Music")
         music.result = .snapshot(item(source: "Music", identity: "music-a", playing: false, commands: [0]))
         let paused = try snapshot(runtime)
         XCTAssertEqual(paused.sourceName, "Music")
@@ -175,6 +183,7 @@ final class MacSupportedNowPlayingRuntimeTests: XCTestCase {
         let queued = send(runtime, snapshot: old)
 
         music.result = .snapshot(item(source: "Music", identity: "music-a"))
+        browser.result = .noActiveMedia
         XCTAssertEqual(try snapshot(runtime).sourceName, "Music")
         let rejected = send(runtime, snapshot: old)
         browser.completeCommand()
@@ -195,6 +204,7 @@ final class MacSupportedNowPlayingRuntimeTests: XCTestCase {
         let queued = send(runtime, snapshot: try snapshot(runtime))
 
         music.result = .snapshot(item(source: "Music", identity: "music-a"))
+        browser.result = .noActiveMedia
         XCTAssertEqual(try snapshot(runtime).sourceName, "Music")
         browser.result = .snapshot(item(source: "YouTube", identity: "browser-a", playing: false))
         music.result = .snapshot(item(source: "Music", identity: "music-a", playing: false))
@@ -347,6 +357,15 @@ final class MacSupportedNowPlayingRuntimeTests: XCTestCase {
     private func snapshot(_ runtime: MacSupportedNowPlayingRuntime) throws -> MacNowPlayingRuntimeSnapshot {
         guard case .snapshot(let snapshot) = try fetch(runtime) else { throw MacMusicBackendError.unavailable }
         return snapshot
+    }
+
+    private func catalog(_ runtime: MacSupportedNowPlayingRuntime) throws -> MacNowPlayingRuntimeCatalog {
+        let result = SupportedRuntimeBox<MacNowPlayingRuntimeCatalogResult?>(nil)
+        runtime.fetchCatalog { value in result.update { $0 = value } }
+        guard case .snapshot(let value) = try XCTUnwrap(result.read()) else {
+            throw NSError(domain: "Missing catalog", code: 1)
+        }
+        return value
     }
 
     private func send(

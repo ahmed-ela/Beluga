@@ -1,0 +1,195 @@
+--- a/WebRtcAudioTrack.java
++++ b/WebRtcAudioTrack.java
+@@ -79,7 +79,59 @@
+   private final @Nullable AudioTrackErrorCallback errorCallback;
+   private final @Nullable AudioTrackStateCallback stateCallback;
+   private final @Nullable PlaybackSamplesReadyCallback audioSamplesReadyCallback;
++  private final @Nullable OutputLease outputLease;
+ 
++  /** Exact-output decisions shared by the real thread and focused JVM tests; no platform calls. */
++  static final class OutputLease {
++    private final PlaybackOutputObserver observer;
++    private AudioTrack exact;
++    private volatile boolean failed, cleanupUnproved, stopped;
++    private boolean published;
++
++    OutputLease(PlaybackOutputObserver observer) { this.observer = observer; }
++
++    boolean started(AudioTrack output) {
++      if (output == null || published || failed || stopped) {
++        failure(published ? exact : output, true); return false;
++      }
++      exact = output; published = true;
++      try { observer.onPlaybackOutputStarted(output); return !failed; }
++      catch (RuntimeException | LinkageError error) { failure(output, false); return false; }
++    }
++
++    boolean allows(AudioTrack output) {
++      if (!published || failed || stopped) return false;
++      if (output != exact) { failure(exact, true); return false; }
++      try { return observer.isPlaybackAuthorized(output) && !failed && !stopped; }
++      catch (RuntimeException | LinkageError error) { failure(output, false); return false; }
++    }
++
++    boolean stopped(AudioTrack output) {
++      if (!published || output != exact || stopped || cleanupUnproved) {
++        failure(exact, true); return false;
++      }
++      // An operational admission failure can still have independently proved resource cleanup.
++      stopped = true;
++      try { observer.onPlaybackOutputStopped(output); return !cleanupUnproved; }
++      catch (RuntimeException | LinkageError error) { failure(output, true); return false; }
++    }
++
++    synchronized void failure(AudioTrack output, boolean unproved) {
++      boolean notify = !failed || (unproved && !cleanupUnproved);
++      failed = true; cleanupUnproved |= unproved;
++      if (notify) {
++        try { observer.onPlaybackOutputFailure(output, cleanupUnproved); }
++        catch (RuntimeException | LinkageError ignored) {
++          // Never log arbitrary callback messages or let a callback reopen the write gate.
++          cleanupUnproved = true;
++        }
++      }
++    }
++    boolean failed() { return failed; }
++    boolean cleanupUnproved() { return cleanupUnproved; }
++    boolean published() { return published; }
++  }
++
+   private boolean checkPlayState = true;
+ 
+   /**
+@@ -91,10 +143,12 @@
+   private class AudioTrackThread extends Thread {
+     private volatile boolean keepAlive = true;
+     private final LowLatencyAudioBufferManager bufferManager;
++    private final AudioTrack exactOutput;
+ 
+     public AudioTrackThread(String name) {
+       super(name);
+       bufferManager = new LowLatencyAudioBufferManager();
++      exactOutput = audioTrack;
+     }
+ 
+     @Override
+@@ -103,11 +157,15 @@
+       Logging.d(TAG, "AudioTrackThread" + WebRtcAudioUtils.getThreadInfo());
+       
+       if (checkPlayState) {
+-        assertTrue(audioTrack.getPlayState() == AudioTrack.PLAYSTATE_PLAYING);
++        assertTrue(exactOutput.getPlayState() == AudioTrack.PLAYSTATE_PLAYING);
+       }
+ 
+       // Audio playout has started and the client is informed about it.
+-      doAudioTrackStateCallback(AUDIO_TRACK_START);
++      if (outputLease == null) {
++        doAudioTrackStateCallback(AUDIO_TRACK_START);
++      } else {
++        if (!outputLease.started(exactOutput)) return;
++      }
+ 
+       // Fixed size in bytes of each 10ms block of audio data that we ask for
+       // using callbacks to the native WebRTC client.
+@@ -122,12 +180,15 @@
+         // Upon return, the buffer position will have been advanced to reflect
+         // the amount of data that was successfully written to the AudioTrack.
+         assertTrue(sizeInBytes <= byteBuffer.remaining());
+-        if (speakerMute) {
++        if (outputLease != null && !keepAlive) break;
++        boolean admitted = outputLease == null || outputLease.allows(exactOutput);
++        if (outputLease != null && outputLease.failed()) break;
++        if (speakerMute || !admitted) {
+           byteBuffer.clear();
+           byteBuffer.put(emptyBytes);
+           byteBuffer.position(0);
+         }
+-        int bytesWritten = audioTrack.write(byteBuffer, sizeInBytes, AudioTrack.WRITE_BLOCKING);
++        int bytesWritten = exactOutput.write(byteBuffer, sizeInBytes, AudioTrack.WRITE_BLOCKING);
+         if (bytesWritten != sizeInBytes) {
+           Logging.e(TAG, "AudioTrack.write played invalid number of bytes: " + bytesWritten);
+           // If a write() returns a negative value, an error has occurred.
+@@ -144,12 +205,12 @@
+           byte[] data = Arrays.copyOfRange(byteBuffer.array(), byteBuffer.arrayOffset(),
+               sizeInBytes + byteBuffer.arrayOffset());
+           audioSamplesReadyCallback.onWebRtcAudioTrackSamplesReady(
+-              new JavaAudioDeviceModule.AudioSamples(audioTrack.getAudioFormat(),
+-                  audioTrack.getChannelCount(), audioTrack.getSampleRate(), data));
++              new JavaAudioDeviceModule.AudioSamples(exactOutput.getAudioFormat(),
++                  exactOutput.getChannelCount(), exactOutput.getSampleRate(), data));
+         }
+ 
+         if (useLowLatency) {
+-          bufferManager.maybeAdjustBufferSize(audioTrack);
++          bufferManager.maybeAdjustBufferSize(exactOutput);
+         }
+         // The byte buffer must be rewinded since byteBuffer.position() is
+         // increased at each call to AudioTrack.write(). If we don't do this,
+@@ -188,6 +249,8 @@
+     this.stateCallback = stateCallback;
+     this.volumeLogger = enableVolumeLogger ? new VolumeLogger(audioManager) : null;
+     this.audioSamplesReadyCallback = audioSamplesReadyCallback;
++    this.outputLease = stateCallback instanceof PlaybackOutputObserver
++        ? new OutputLease((PlaybackOutputObserver) stateCallback) : null;
+     this.useLowLatency = useLowLatency;
+     Logging.d(TAG, "ctor" + WebRtcAudioUtils.getThreadInfo());
+   }
+@@ -200,6 +263,8 @@
+   @CalledByNative
+   private int initPlayout(int sampleRate, int channels, double bufferSizeFactor) {
+     threadChecker.checkIsOnValidThread();
++    // One opted-in ADM owns one output lifetime. A fresh attempt needs a fresh native graph.
++    if (outputLease != null && (outputLease.published() || outputLease.failed())) return -1;
+     Logging.d(TAG,
+         "initPlayout(sampleRate=" + sampleRate + ", channels=" + channels
+             + ", bufferSizeFactor=" + bufferSizeFactor + ")");
+@@ -287,6 +352,7 @@
+   @CalledByNative
+   private boolean startPlayout() {
+     threadChecker.checkIsOnValidThread();
++    if (outputLease != null && (outputLease.published() || outputLease.failed())) return false;
+     if (volumeLogger != null) {
+       volumeLogger.start();
+     }
+@@ -321,6 +387,7 @@
+   @CalledByNative
+   private boolean stopPlayout() {
+     threadChecker.checkIsOnValidThread();
++    if (outputLease != null) return stopOwnedPlayout();
+     if (volumeLogger != null) {
+       volumeLogger.stop();
+     }
+@@ -351,6 +418,33 @@
+     return true;
+   }
+ 
++  private boolean stopOwnedPlayout() {
++    if (outputLease.cleanupUnproved()) return false;
++    AudioTrack exactOutput = audioTrack;
++    AudioTrackThread exactThread = audioThread;
++    if (exactOutput == null || exactThread == null) {
++      outputLease.failure(exactOutput, true); return false;
++    }
++    try {
++      if (volumeLogger != null) volumeLogger.stop();
++      exactThread.stopThread();
++      exactThread.interrupt();
++      if (!ThreadUtils.joinUninterruptibly(exactThread, AUDIO_TRACK_THREAD_JOIN_TIMEOUT_MS)) {
++        // Preserve both references. Native destruction ignores this false return, so the caller
++        // must observe the synchronous failure callback and quarantine the entire native graph.
++        outputLease.failure(exactOutput, true); return false;
++      }
++      exactOutput.stop();
++      exactOutput.release();
++    } catch (RuntimeException | LinkageError error) {
++      outputLease.failure(exactOutput, true); return false;
++    }
++    if (!outputLease.stopped(exactOutput)) return false;
++    audioThread = null;
++    audioTrack = null;
++    return true;
++  }
++
+   // Get max possible volume index for a phone call audio stream.
+   @CalledByNative
+   private int getStreamMaxVolume() {

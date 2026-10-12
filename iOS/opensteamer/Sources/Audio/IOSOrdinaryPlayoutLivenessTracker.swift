@@ -15,7 +15,9 @@ enum IOSOrdinaryPlayoutLivenessResult: Equatable {
 ///
 /// The native render callback must keep advancing even when the Mac source is silent. When
 /// WebRTC reports increasing inbound audio energy, the final decoded PCM counters must advance in
-/// the same bounded window. The tracker observes counters only; lifecycle policy still owns
+/// the same bounded window unless the exact audio owner deliberately suppresses that track
+/// for a local phone player. Suppression never exempts frozen native callbacks. The tracker
+/// observes counters only; lifecycle policy still owns
 /// whether recovery is allowed.
 struct IOSOrdinaryPlayoutLivenessTracker {
     static let failureWindow: TimeInterval = 3.5
@@ -25,6 +27,8 @@ struct IOSOrdinaryPlayoutLivenessTracker {
         let sessionGeneration: UUID
         let audioPolicyGeneration: UUID
         let peerIdentity: ObjectIdentifier
+        let mediaHandoffAudioSuppressionID: UUID?
+        let mediaHandoffAudioGeneration: UUID?
     }
 
     private struct Floor {
@@ -47,12 +51,16 @@ struct IOSOrdinaryPlayoutLivenessTracker {
         audioPolicyGeneration: UUID,
         peerIdentity: ObjectIdentifier,
         collectedAt: Date,
-        oracle: WorldwideAudioPlayoutOracleSnapshot
+        oracle: WorldwideAudioPlayoutOracleSnapshot,
+        mediaHandoffAudioSuppressionID: UUID? = nil,
+        mediaHandoffAudioGeneration: UUID? = nil
     ) -> IOSOrdinaryPlayoutLivenessResult {
         let scope = Scope(
             sessionGeneration: sessionGeneration,
             audioPolicyGeneration: audioPolicyGeneration,
-            peerIdentity: peerIdentity
+            peerIdentity: peerIdentity,
+            mediaHandoffAudioSuppressionID: mediaHandoffAudioSuppressionID,
+            mediaHandoffAudioGeneration: mediaHandoffAudioGeneration
         )
         let current = Floor(
             scope: scope,
@@ -106,7 +114,7 @@ struct IOSOrdinaryPlayoutLivenessTracker {
         let failure: IOSOrdinaryPlayoutLivenessFailure?
         if !callbacksAdvanced {
             failure = .callbacksFrozen
-        } else if inboundEnergyAdvanced && !pcmAdvanced {
+        } else if scope.mediaHandoffAudioSuppressionID == nil && inboundEnergyAdvanced && !pcmAdvanced {
             failure = .inboundEnergyWithoutPCM
         } else {
             failure = nil

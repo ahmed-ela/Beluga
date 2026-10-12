@@ -17,6 +17,17 @@ public enum WebRTCRemoteMediaCommand: String, Codable, CaseIterable, Sendable {
     case pause
     case nextTrack
     case previousTrack
+    case seekForward30
+    case seekBackward30
+    case seekToPosition
+
+    public func accepts(positionSeconds: TimeInterval?) -> Bool {
+        if self == .seekToPosition {
+            guard let positionSeconds else { return false }
+            return positionSeconds.isFinite && (0...31_536_000).contains(positionSeconds)
+        }
+        return positionSeconds == nil
+    }
 }
 
 public enum WebRTCRemoteMediaPlaybackState: String, Codable, Sendable {
@@ -31,17 +42,41 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
     public let canPause: Bool
     public let canSkipForward: Bool
     public let canSkipBackward: Bool
+    public let canSeekForward: Bool
+    public let canSeekBackward: Bool
+    public let canSeekToPosition: Bool
 
     public init(
         canPlay: Bool,
         canPause: Bool,
         canSkipForward: Bool,
-        canSkipBackward: Bool
+        canSkipBackward: Bool,
+        canSeekForward: Bool = false,
+        canSeekBackward: Bool = false,
+        canSeekToPosition: Bool = false
     ) {
         self.canPlay = canPlay
         self.canPause = canPause
         self.canSkipForward = canSkipForward
         self.canSkipBackward = canSkipBackward
+        self.canSeekForward = canSeekForward
+        self.canSeekBackward = canSeekBackward
+        self.canSeekToPosition = canSeekToPosition
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case canPlay, canPause, canSkipForward, canSkipBackward, canSeekForward, canSeekBackward, canSeekToPosition
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        canPlay = try values.decode(Bool.self, forKey: .canPlay)
+        canPause = try values.decode(Bool.self, forKey: .canPause)
+        canSkipForward = try values.decode(Bool.self, forKey: .canSkipForward)
+        canSkipBackward = try values.decode(Bool.self, forKey: .canSkipBackward)
+        canSeekForward = try values.decodeIfPresent(Bool.self, forKey: .canSeekForward) ?? false
+        canSeekBackward = try values.decodeIfPresent(Bool.self, forKey: .canSeekBackward) ?? false
+        canSeekToPosition = try values.decodeIfPresent(Bool.self, forKey: .canSeekToPosition) ?? false
     }
 
     public func permits(_ command: WebRTCRemoteMediaCommand) -> Bool {
@@ -50,6 +85,9 @@ public struct WebRTCRemoteMediaCapabilities: Codable, Equatable, Sendable {
         case .pause: canPause
         case .nextTrack: canSkipForward
         case .previousTrack: canSkipBackward
+        case .seekForward30: canSeekForward
+        case .seekBackward30: canSeekBackward
+        case .seekToPosition: canSeekToPosition
         }
     }
 }
@@ -197,14 +235,56 @@ public struct WebRTCRemoteMediaItem: Codable, Equatable, Sendable {
 public struct WebRTCRemoteMediaStateUpdate: Codable, Equatable, Sendable {
     public let revision: UInt64
     public let item: WebRTCRemoteMediaItem?
+    public let additionalItems: [WebRTCRemoteMediaItem]
 
-    public init(revision: UInt64, item: WebRTCRemoteMediaItem?) {
+    public init(revision: UInt64, item: WebRTCRemoteMediaItem?, additionalItems: [WebRTCRemoteMediaItem] = []) {
         self.revision = revision
         self.item = item
+        self.additionalItems = additionalItems
+    }
+
+    private enum CodingKeys: String, CodingKey { case revision, item, additionalItems }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        revision = try values.decode(UInt64.self, forKey: .revision)
+        item = try values.decodeIfPresent(WebRTCRemoteMediaItem.self, forKey: .item)
+        additionalItems = try values.decodeIfPresent([WebRTCRemoteMediaItem].self, forKey: .additionalItems) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(revision, forKey: .revision)
+        try values.encodeIfPresent(item, forKey: .item)
+        if !additionalItems.isEmpty { try values.encode(additionalItems, forKey: .additionalItems) }
+    }
+
+    public var allItems: [WebRTCRemoteMediaItem] {
+        item.map { [$0] + additionalItems } ?? []
+    }
+
+    public func item(contextID: String) -> WebRTCRemoteMediaItem? {
+        allItems.first { $0.contextID == contextID }
     }
 
     public var isValid: Bool {
         revision > 0 && (item?.isValid ?? true)
+            && additionalItems.count <= 1
+            && (item != nil || additionalItems.isEmpty)
+            && additionalItems.allSatisfy(\.isValid)
+            && Set(allItems.map(\.contextID)).count == allItems.count
+    }
+}
+
+extension WebRTCRemoteMediaPipelineDiagnostics.Stage {
+    /// Privacy-reduced observation only; never serializes source identity or media metadata.
+    public init?(update: WebRTCRemoteMediaStateUpdate) {
+        guard update.isValid else { return nil }
+        let items = update.allItems
+        self.init(revision: update.revision, itemCount: UInt8(items.count),
+                  playingMask: items.enumerated().reduce(UInt8(0)) { mask, entry in
+                      entry.element.playbackState == .playing ? mask | (1 << entry.offset) : mask
+                  })
     }
 }
 
@@ -242,17 +322,20 @@ public struct WebRTCRemoteMediaCommandRequest: Codable, Equatable, Sendable {
     public let contextID: String
     public let observedRevision: UInt64
     public let command: WebRTCRemoteMediaCommand
+    public let positionSeconds: TimeInterval?
 
     public init(
         id: UInt64,
         contextID: String,
         observedRevision: UInt64,
-        command: WebRTCRemoteMediaCommand
+        command: WebRTCRemoteMediaCommand,
+        positionSeconds: TimeInterval? = nil
     ) {
         self.id = id
         self.contextID = contextID
         self.observedRevision = observedRevision
         self.command = command
+        self.positionSeconds = positionSeconds
     }
 
     public var isValid: Bool {
@@ -261,6 +344,7 @@ public struct WebRTCRemoteMediaCommandRequest: Codable, Equatable, Sendable {
             && !contextID.isEmpty
             && contextID.utf8.count <= WebRTCRemoteMediaItem.maximumContextIDBytes
             && !contextID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            && command.accepts(positionSeconds: positionSeconds)
     }
 }
 
@@ -328,6 +412,52 @@ struct WebRTCRemoteMediaStateEnvelope: Codable, Equatable, Sendable {
     var isValid: Bool { update.isValid }
 }
 
+/// Per-field UTF-8 limits do not bound JSON escaping across two sources. Keep command authority
+/// intact and shorten display-only metadata against the actual complete control envelope.
+enum WebRTCRemoteMediaStateWireEncoding {
+    static func encode(_ envelope: WebRTCRemoteMediaStateEnvelope) throws
+        -> (data: Data, update: WebRTCRemoteMediaStateUpdate) {
+        guard envelope.isValid else { throw WebRTCTransportError.invalidInputRequest }
+        let original = try JSONEncoder().encode(ControlChannelMessage.remoteMediaState(envelope))
+        if original.count <= WebRTCWireConstants.maximumControlMessageBytes {
+            return (original, envelope.update)
+        }
+        for maximumLabelBytes in [512, 256, 128, 64] {
+            func projected(_ item: WebRTCRemoteMediaItem) -> WebRTCRemoteMediaItem {
+                .init(contextID: item.contextID,
+                      sourceName: shortened(item.sourceName, maximumBytes: min(128, maximumLabelBytes)),
+                      title: shortened(item.title, maximumBytes: maximumLabelBytes),
+                      playbackState: item.playbackState, elapsedTime: item.elapsedTime,
+                      duration: item.duration, playbackRate: item.playbackRate,
+                      capabilities: item.capabilities, artwork: item.artwork)
+            }
+            let update = WebRTCRemoteMediaStateUpdate(revision: envelope.update.revision,
+                item: envelope.update.item.map(projected),
+                additionalItems: envelope.update.additionalItems.map(projected))
+            let projectedEnvelope = WebRTCRemoteMediaStateEnvelope(authorization: envelope.authorization,
+                update: update, refreshID: envelope.refreshID)
+            let data = try JSONEncoder().encode(ControlChannelMessage.remoteMediaState(projectedEnvelope))
+            if data.count <= WebRTCWireConstants.maximumControlMessageBytes {
+                return (data, update)
+            }
+        }
+        throw WebRTCTransportError.invalidInputRequest
+    }
+
+    private static func shortened(_ value: String, maximumBytes: Int) -> String {
+        guard value.utf8.count > maximumBytes else { return value }
+        var result = ""
+        var count = 0
+        for character in value {
+            let size = character.utf8.count
+            guard count + size <= maximumBytes else { break }
+            result.append(character)
+            count += size
+        }
+        return result.isEmpty ? "…" : result
+    }
+}
+
 struct WebRTCRemoteMediaStateRefreshEnvelope: Codable, Equatable, Sendable {
     let authorization: WebRTCRemoteMediaAuthorization
     let id: UUID
@@ -364,12 +494,15 @@ public enum WebRTCRemoteMediaCommandAdmission {
         guard request.observedRevision <= update.revision else {
             return .staleContext
         }
-        guard let item = update.item else { return .noActiveMedia }
-        guard request.contextID == item.contextID else {
+        guard update.item != nil else { return .noActiveMedia }
+        guard let item = update.item(contextID: request.contextID) else {
             return .staleContext
         }
         guard item.capabilities.permits(request.command) else {
             return .unsupported
+        }
+        if request.command == .seekToPosition {
+            guard let duration = item.duration, duration.isFinite, duration > 0 else { return .unsupported }
         }
         return nil
     }

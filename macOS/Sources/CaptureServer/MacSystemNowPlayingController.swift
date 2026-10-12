@@ -15,12 +15,45 @@ protocol MacRemoteMediaControlling: Sendable {
     func prepareCommand(
         _ command: WebRTCRemoteMediaCommand,
         contextID: String,
+        positionSeconds: TimeInterval?,
         isAuthorized: @escaping @Sendable () -> Bool
     ) -> MacPreparedRemoteMediaCommand?
     func perform(
         _ prepared: MacPreparedRemoteMediaCommand
     ) async -> WebRTCRemoteMediaCommandResult
+    func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff?
+    func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
+                              phonePositionSeconds: Double,
+                              executionIsAuthorized: @escaping @Sendable () -> Bool) async -> WebRTCRemoteMediaCommandResult
     func refresh()
+}
+
+extension MacRemoteMediaControlling {
+    func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff? { nil }
+    func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
+                              phonePositionSeconds: Double,
+                              executionIsAuthorized: @escaping @Sendable () -> Bool = { true }) async -> WebRTCRemoteMediaCommandResult { .unsupported }
+}
+
+/// A host-native source preparation; the product transaction still needs an exact peer/offer
+/// binding and current phone-playback evidence before invoking its single Pause attempt.
+struct MacPreparedMediaHandoff: Sendable {
+    let contextID: String
+    fileprivate let owner: MacRemoteMediaCommandGate
+    fileprivate let authorization: MacRemoteMediaCommandGate.Authorization
+    fileprivate let source: MacYouTubeHandoffSource
+    fileprivate let snapshot: MacNowPlayingRuntimeSnapshot
+    fileprivate let isAuthorized: @Sendable () -> Bool
+    fileprivate let execution = MacPreparedRemoteMediaExecution()
+    var videoID: String { source.videoID }
+    var positionSeconds: Double { source.positionSeconds }
+    var durationSeconds: Double { source.durationSeconds }
+    var playbackRate: Double { source.playbackRate }
+    var deadlineUptime: Double { source.deadlineUptime }
+    var sourceDescription: WebRTCMediaHandoffSourceDescription {
+        .init(videoID: videoID, positionSeconds: positionSeconds, durationSeconds: durationSeconds,
+              playbackRate: playbackRate, observedAtUptime: source.observedAtUptime, deadlineUptime: deadlineUptime)
+    }
 }
 
 /// Only the originating controller can create or execute this immutable admission.
@@ -29,7 +62,22 @@ struct MacPreparedRemoteMediaCommand: Sendable {
     fileprivate let authorization: MacRemoteMediaCommandGate.Authorization
     fileprivate let command: WebRTCRemoteMediaCommand
     fileprivate let contextID: String
+    fileprivate let positionSeconds: TimeInterval?
     fileprivate let isAuthorized: @Sendable () -> Bool
+    fileprivate let execution = MacPreparedRemoteMediaExecution()
+}
+
+/// Command identity is single-use even while a successful seek preserves the source identity.
+fileprivate final class MacPreparedRemoteMediaExecution: @unchecked Sendable {
+    private let lock = NSLock()
+    private var consumed = false
+    func claim() -> Bool {
+        lock.withLock {
+            guard !consumed else { return false }
+            consumed = true
+            return true
+        }
+    }
 }
 
 /// Strongly owns the private-framework client for the complete snapshot/command transaction.
@@ -94,6 +142,7 @@ struct MacNowPlayingRuntimeSnapshot: @unchecked Sendable {
     let metadata: MacNowPlayingMetadata
     /// Raw MediaRemote command values that the exact client reports as enabled.
     let enabledCommands: Set<Int>
+    var handoffSource: MacYouTubeHandoffSource? = nil
 
     var identityKey: String {
         client.clientIdentity + "\u{1e}" + metadata.identityComponent
@@ -107,6 +156,17 @@ enum MacNowPlayingRuntimeSnapshotResult: @unchecked Sendable {
     case retry
 }
 
+struct MacNowPlayingRuntimeCatalog: @unchecked Sendable {
+    let primary: MacNowPlayingRuntimeSnapshot
+    let additional: [MacNowPlayingRuntimeSnapshot]
+}
+
+enum MacNowPlayingRuntimeCatalogResult: @unchecked Sendable {
+    case snapshot(MacNowPlayingRuntimeCatalog)
+    case noActiveMedia
+    case retry
+}
+
 protocol MacSystemNowPlayingRuntime: Sendable {
     var isAvailable: Bool { get }
     func stop()
@@ -114,6 +174,7 @@ protocol MacSystemNowPlayingRuntime: Sendable {
     func fetchSnapshot(
         completion: @escaping @Sendable (MacNowPlayingRuntimeSnapshotResult) -> Void
     )
+    func fetchCatalog(completion: @escaping @Sendable (MacNowPlayingRuntimeCatalogResult) -> Void)
 
     func send(
         rawCommand: Int,
@@ -121,10 +182,38 @@ protocol MacSystemNowPlayingRuntime: Sendable {
         isAuthorized: @escaping @Sendable () -> Bool,
         completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void
     )
+    func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void)
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void)
 }
 
 extension MacSystemNowPlayingRuntime {
+    func sendHandoffPause(source: MacYouTubeHandoffSource, phonePositionSeconds: Double,
+                          snapshot: MacNowPlayingRuntimeSnapshot,
+                          isAuthorized: @escaping @Sendable () -> Bool,
+                          completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        completion(.unsupported)
+    }
+    func send(rawCommand: Int, positionSeconds: TimeInterval?, snapshot: MacNowPlayingRuntimeSnapshot,
+              isAuthorized: @escaping @Sendable () -> Bool,
+              completion: @escaping @Sendable (WebRTCRemoteMediaCommandResult) -> Void) {
+        guard positionSeconds == nil else { completion(.unsupported); return }
+        send(rawCommand: rawCommand, snapshot: snapshot, isAuthorized: isAuthorized, completion: completion)
+    }
     func stop() {}
+    func fetchCatalog(completion: @escaping @Sendable (MacNowPlayingRuntimeCatalogResult) -> Void) {
+        fetchSnapshot { result in
+            switch result {
+            case .snapshot(let value): completion(.snapshot(.init(primary: value, additional: [])))
+            case .noActiveMedia: completion(.noActiveMedia)
+            case .retry: completion(.retry)
+            }
+        }
+    }
 }
 
 enum MacMediaRemoteABIGate {
@@ -173,7 +262,7 @@ private final class MacRemoteMediaCommandAttempt: @unchecked Sendable {
     var isActive: Bool { lock.withLock { active } }
 }
 
-fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
+final class MacRemoteMediaCommandGate: @unchecked Sendable {
     struct Lifecycle: Sendable, Equatable {
         fileprivate let value: UInt64
     }
@@ -184,53 +273,83 @@ fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
         fileprivate let contextID: String
     }
 
+    // Read-only observation of the actual locked owner, not a state seed/setter.
+    struct Snapshot: Sendable {
+        let rawState: BelugaRustMediaCommandGate.State
+        let hasNativeFault: Bool
+        let contextIDs: Set<String>
+    }
+
+    struct AuthorizationSnapshot: Sendable, Equatable {
+        let lifecycle: UInt64
+        let commandEpoch: UInt64
+        let contextID: String
+    }
+
     private let lock = NSLock()
-    private var lifecycle: UInt64 = 0
-    private var commandEpoch: UInt64 = 0
-    private var isOpen = false
-    private var contextID: String?
+    private var policy: BelugaRustMediaCommandGate
+    private var contextIDs: Set<String> = []
+
+    init(resultMutation: BelugaRustMediaCommandGate.ResultMutation? = nil) {
+        policy = BelugaRustMediaCommandGate(resultMutation: resultMutation)
+    }
+
+    var snapshot: Snapshot {
+        lock.withLock {
+            Snapshot(rawState: policy.rawState, hasNativeFault: policy.hasNativeFault,
+                     contextIDs: contextIDs)
+        }
+    }
+
+    static func lifecycleValue(_ token: Lifecycle) -> UInt64 { token.value }
+
+    static func authorizationSnapshot(_ value: Authorization) -> AuthorizationSnapshot {
+        AuthorizationSnapshot(lifecycle: value.lifecycle, commandEpoch: value.commandEpoch,
+                              contextID: value.contextID)
+    }
 
     func open() -> Lifecycle {
         lock.withLock {
-            lifecycle &+= 1
-            commandEpoch &+= 1
-            isOpen = true
-            contextID = nil
-            return Lifecycle(value: lifecycle)
+            if policy.open() { contextIDs = [] }
+            // A denied open retains this value solely for signature compatibility;
+            // the same faulted owner denies every subsequent authority check.
+            return Lifecycle(value: policy.rawState.lifecycle)
         }
     }
 
     func close() {
         lock.withLock {
-            lifecycle &+= 1
-            commandEpoch &+= 1
-            isOpen = false
-            contextID = nil
+            let wasFaulted = policy.hasNativeFault
+            if policy.close() || wasFaulted {
+                // First rejected close preserves the native set. Only a later
+                // explicit close on the already-faulted owner performs cleanup.
+                contextIDs = []
+            }
         }
     }
 
     func invalidateCommands() {
-        lock.withLock { commandEpoch &+= 1 }
+        lock.withLock { _ = policy.invalidateCommands() }
     }
 
     func setContext(_ newContextID: String?) {
-        lock.withLock {
-            guard contextID != newContextID else { return }
-            contextID = newContextID
-            commandEpoch &+= 1
-        }
+        setContexts(newContextID.map { [$0] } ?? [])
+    }
+
+    func setContexts(_ values: Set<String>) {
+        lock.withLock { contextIDs = values }
     }
 
     func lifecycleIsCurrent(_ candidate: Lifecycle) -> Bool {
-        lock.withLock { isOpen && lifecycle == candidate.value }
+        lock.withLock { policy.lifecycleIsCurrent(candidate.value) }
     }
 
     func capture(contextID candidate: String) -> Authorization? {
         lock.withLock {
-            guard isOpen, contextID == candidate else { return nil }
+            guard policy.capture(contextIsCurrent: contextIDs.contains(candidate)) else { return nil }
             return Authorization(
-                lifecycle: lifecycle,
-                commandEpoch: commandEpoch,
+                lifecycle: policy.rawState.lifecycle,
+                commandEpoch: policy.rawState.command_epoch,
                 contextID: candidate
             )
         }
@@ -238,10 +357,9 @@ fileprivate final class MacRemoteMediaCommandGate: @unchecked Sendable {
 
     func admits(_ authorization: Authorization) -> Bool {
         lock.withLock {
-            isOpen
-                && lifecycle == authorization.lifecycle
-                && commandEpoch == authorization.commandEpoch
-                && contextID == authorization.contextID
+            policy.admits(lifecycle: authorization.lifecycle,
+                          commandEpoch: authorization.commandEpoch,
+                          contextIsCurrent: contextIDs.contains(authorization.contextID))
         }
     }
 }
@@ -697,6 +815,9 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         case pause = 1
         case nextTrack = 4
         case previousTrack = 5
+        case seekForward30 = 6
+        case seekBackward30 = 7
+        case seekToPosition = 10_000
 
         init(_ command: WebRTCRemoteMediaCommand) {
             switch command {
@@ -704,6 +825,9 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             case .pause: self = .pause
             case .nextTrack: self = .nextTrack
             case .previousTrack: self = .previousTrack
+            case .seekForward30: self = .seekForward30
+            case .seekBackward30: self = .seekBackward30
+            case .seekToPosition: self = .seekToPosition
             }
         }
     }
@@ -713,11 +837,17 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         label: "com.elamin.opensteamer.system-now-playing",
         qos: .utility
     )
-    private let gate = MacRemoteMediaCommandGate()
+    private let gate: MacRemoteMediaCommandGate
     private let pollInterval: TimeInterval?
     private let operationTimeout: TimeInterval
     private let now: @Sendable () -> Date
+    private let uptime: @Sendable () -> Double
     private let onCommandEnqueued: (@Sendable () -> Void)?
+    private let stateDiagnostics: @Sendable (String) -> Void
+    private let stateTraceSession = UUID()
+    private var stateTraceGate = RemoteMediaStateTrace.Gate()
+    private var stateTraceGeneration: UInt64 = 0
+    private var stateTraceRefreshID: UInt64 = 0
     private var timer: DispatchSourceTimer?
     private var lifecycle: MacRemoteMediaCommandGate.Lifecycle?
     private var onStateChanged:
@@ -727,6 +857,9 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     private var currentIdentityKey: String?
     private var currentItem: WebRTCRemoteMediaItem?
     private var currentSnapshot: MacNowPlayingRuntimeSnapshot?
+    private var catalogBindings: [String: (item: WebRTCRemoteMediaItem, snapshot: MacNowPlayingRuntimeSnapshot)] = [:]
+    private var identityContexts: [String: String] = [:]
+    private var lastPublishedAdditionalItems: [WebRTCRemoteMediaItem] = []
     private var lastPublishedItem: WebRTCRemoteMediaItem?
     private var hasPublishedState = false
     private var nextRefreshID: UInt64 = 0
@@ -735,12 +868,18 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
 
     var isAvailable: Bool { runtime?.isAvailable == true }
 
+    // Read-only observation for the injected-runtime regression seam.
+    var commandGateSnapshot: MacRemoteMediaCommandGate.Snapshot { gate.snapshot }
+
     init() {
         runtime = MacSupportedNowPlayingRuntime()
+        gate = MacRemoteMediaCommandGate()
         pollInterval = 1
         operationTimeout = 2
         now = Date.init
+        uptime = { ProcessInfo.processInfo.systemUptime }
         onCommandEnqueued = nil
+        stateDiagnostics = { print($0) }
     }
 
     init(
@@ -748,13 +887,19 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         pollInterval: TimeInterval? = nil,
         operationTimeout: TimeInterval = 2,
         now: @escaping @Sendable () -> Date = Date.init,
-        onCommandEnqueued: (@Sendable () -> Void)? = nil
+        onCommandEnqueued: (@Sendable () -> Void)? = nil,
+        stateDiagnostics: @escaping @Sendable (String) -> Void = { print($0) },
+        uptime: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime },
+        commandGateResultMutation: BelugaRustMediaCommandGate.ResultMutation? = nil
     ) {
         self.runtime = runtime
+        gate = MacRemoteMediaCommandGate(resultMutation: commandGateResultMutation)
         self.pollInterval = pollInterval
         self.operationTimeout = operationTimeout
         self.now = now
+        self.uptime = uptime
         self.onCommandEnqueued = onCommandEnqueued
+        self.stateDiagnostics = stateDiagnostics
     }
 
     func start(
@@ -765,12 +910,17 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             guard let self,
                   self.gate.lifecycleIsCurrent(requestedLifecycle) else { return }
             self.lifecycle = requestedLifecycle
+            self.stateTraceGeneration &+= 1
+            self.stateTraceRefreshID = 0
             self.onStateChanged = onStateChanged
             self.revision = 0
             self.currentContextID = nil
             self.currentIdentityKey = nil
             self.currentItem = nil
             self.currentSnapshot = nil
+            self.catalogBindings = [:]
+            self.identityContexts = [:]
+            self.lastPublishedAdditionalItems = []
             self.lastPublishedItem = nil
             self.hasPublishedState = false
             self.activeRefreshID = nil
@@ -809,6 +959,9 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             self.currentIdentityKey = nil
             self.currentItem = nil
             self.currentSnapshot = nil
+            self.catalogBindings = [:]
+            self.identityContexts = [:]
+            self.lastPublishedAdditionalItems = []
             self.lastPublishedItem = nil
             self.hasPublishedState = false
         }
@@ -825,11 +978,12 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     func prepareCommand(
         _ command: WebRTCRemoteMediaCommand,
         contextID: String,
+        positionSeconds: TimeInterval? = nil,
         isAuthorized: @escaping @Sendable () -> Bool
     ) -> MacPreparedRemoteMediaCommand? {
         // Capture before the caller's first suspension, not merely before our
         // dispatch queue. A revoked caller must never adopt a replacement epoch.
-        guard isAuthorized(),
+        guard command.accepts(positionSeconds: positionSeconds), isAuthorized(),
               let authorization = gate.capture(contextID: contextID) else {
             return nil
         }
@@ -838,6 +992,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             authorization: authorization,
             command: command,
             contextID: contextID,
+            positionSeconds: positionSeconds,
             isAuthorized: isAuthorized
         )
     }
@@ -847,7 +1002,8 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     ) async -> WebRTCRemoteMediaCommandResult {
         guard let runtime, runtime.isAvailable else { return .unsupported }
         let authorization = prepared.authorization
-        guard prepared.owner === gate, gate.admits(authorization), prepared.isAuthorized() else {
+        guard prepared.owner === gate, gate.admits(authorization), prepared.isAuthorized(),
+              prepared.execution.claim() else {
             return .staleContext
         }
         let command = prepared.command
@@ -865,11 +1021,12 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                     resolver.resolve(.staleContext)
                     return
                 }
-                guard let currentItem = self.currentItem,
-                      let snapshot = self.currentSnapshot else {
+                guard let binding = self.catalogBindings[contextID] else {
                     resolver.resolve(.noActiveMedia)
                     return
                 }
+                let currentItem = binding.item
+                let snapshot = binding.snapshot
                 guard currentItem.contextID == contextID else {
                     resolver.resolve(.staleContext)
                     return
@@ -882,6 +1039,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 let rawCommand = CommandValue(command).rawValue
                 runtime.send(
                     rawCommand: rawCommand,
+                    positionSeconds: prepared.positionSeconds,
                     snapshot: snapshot,
                     isAuthorized: { [gate = self.gate] in
                         attempt.isActive && gate.admits(authorization) && prepared.isAuthorized()
@@ -901,6 +1059,53 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         }
     }
 
+    func prepareHandoff(contextID: String, isAuthorized: @escaping @Sendable () -> Bool) async -> MacPreparedMediaHandoff? {
+        guard isAuthorized(), let authorization = gate.capture(contextID: contextID) else { return nil }
+        return await withCheckedContinuation { continuation in
+            queue.async { [weak self] in
+                guard let self, self.gate.admits(authorization), isAuthorized(),
+                      self.currentContextID == contextID, let binding = self.catalogBindings[contextID],
+                      binding.item.playbackState == .playing, let source = binding.snapshot.handoffSource,
+                      source.isFreshForOffer(now: self.uptime()) else { continuation.resume(returning: nil); return }
+                continuation.resume(returning: .init(contextID: contextID, owner: self.gate,
+                    authorization: authorization, source: source, snapshot: binding.snapshot,
+                    isAuthorized: isAuthorized))
+            }
+        }
+    }
+
+    func performHandoffPause(_ prepared: MacPreparedMediaHandoff,
+                              phonePositionSeconds: Double,
+                              executionIsAuthorized: @escaping @Sendable () -> Bool = { true }) async -> WebRTCRemoteMediaCommandResult {
+        guard let runtime, runtime.isAvailable else { return .unsupported }
+        guard executionIsAuthorized(), prepared.owner === gate, gate.admits(prepared.authorization), prepared.isAuthorized(),
+              uptime() < prepared.deadlineUptime, phonePositionSeconds.isFinite,
+              phonePositionSeconds >= 0, phonePositionSeconds < prepared.durationSeconds,
+              prepared.execution.claim() else { return .staleContext }
+        return await withCheckedContinuation { continuation in
+            let resolver = MacSingleCompletion<WebRTCRemoteMediaCommandResult> { continuation.resume(returning: $0) }
+            queue.async { [weak self] in
+                guard executionIsAuthorized(), let self, self.currentContextID == prepared.contextID,
+                      self.gate.admits(prepared.authorization), prepared.isAuthorized(),
+                      self.uptime() < prepared.deadlineUptime,
+                      self.catalogBindings[prepared.contextID]?.snapshot.client === prepared.snapshot.client else {
+                    resolver.resolve(.staleContext); return
+                }
+                let attempt = MacRemoteMediaCommandAttempt()
+                runtime.sendHandoffPause(source: prepared.source, phonePositionSeconds: phonePositionSeconds,
+                    snapshot: prepared.snapshot, isAuthorized: { [gate = self.gate, uptime = self.uptime] in
+                        attempt.isActive && executionIsAuthorized() && gate.admits(prepared.authorization) && prepared.isAuthorized()
+                            && uptime() < prepared.deadlineUptime
+                    }, completion: { [weak self] result in
+                        attempt.invalidate(); resolver.resolve(result); self?.refresh()
+                    })
+                self.queue.asyncAfter(deadline: .now() + self.operationTimeout) {
+                    attempt.invalidate(); resolver.resolve(.failed)
+                }
+            }
+        }
+    }
+
     private func requestRefresh() {
         dispatchPrecondition(condition: .onQueue(queue))
         guard let runtime, runtime.isAvailable,
@@ -913,14 +1118,16 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         nextRefreshID &+= 1
         if nextRefreshID == 0 { nextRefreshID = 1 }
         let refreshID = nextRefreshID
+        let traceGeneration = stateTraceGeneration
         activeRefreshID = refreshID
-        runtime.fetchSnapshot { [weak self] result in
+        runtime.fetchCatalog { [weak self] result in
             guard let self else { return }
             self.queue.async { [weak self] in
                 self?.finishRefresh(
                     id: refreshID,
                     lifecycle: lifecycle,
-                    result: result
+                    result: result,
+                    traceGeneration: traceGeneration
                 )
             }
         }
@@ -928,7 +1135,9 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             self?.finishRefresh(
                 id: refreshID,
                 lifecycle: lifecycle,
-                result: .noActiveMedia
+                result: .noActiveMedia,
+                traceGeneration: traceGeneration,
+                isWatchdog: true
             )
         }
     }
@@ -936,16 +1145,38 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
     private func finishRefresh(
         id: UInt64,
         lifecycle candidateLifecycle: MacRemoteMediaCommandGate.Lifecycle,
-        result: MacNowPlayingRuntimeSnapshotResult
+        result: MacNowPlayingRuntimeCatalogResult,
+        traceGeneration: UInt64,
+        isWatchdog: Bool = false
     ) {
         dispatchPrecondition(condition: .onQueue(queue))
         guard activeRefreshID == id,
               lifecycle == candidateLifecycle,
-              gate.lifecycleIsCurrent(candidateLifecycle) else { return }
+              gate.lifecycleIsCurrent(candidateLifecycle) else {
+            // A successfully completed refresh leaves an inert scheduled watchdog;
+            // only an actual late runtime reply is evidence of a rejected sample.
+            if !isWatchdog {
+                traceState(.observerRejected, summary: .init(result: result),
+                    generation: traceGeneration, refreshID: id,
+                    reason: activeRefreshID != id ? .supersededRefresh : .retiredLifecycle,
+                    failure: true)
+            }
+            return
+        }
+        stateTraceRefreshID = id
+        let reason: RemoteMediaStateTrace.Reason
+        switch result {
+        case .snapshot: reason = .snapshot
+        case .noActiveMedia: reason = .empty
+        case .retry: reason = .retry
+        }
+        traceState(isWatchdog ? .observerTimedOut : .observerAccepted,
+            summary: .init(result: result), generation: traceGeneration, refreshID: id,
+            reason: isWatchdog ? .watchdog : reason, failure: isWatchdog || reason == .retry)
         activeRefreshID = nil
         switch result {
-        case .snapshot(let snapshot):
-            finishRefresh(snapshot: snapshot)
+        case .snapshot(let catalog):
+            finishRefresh(catalog: catalog)
         case .noActiveMedia:
             publish(item: nil, snapshot: nil)
         case .retry:
@@ -967,7 +1198,30 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
         }
     }
 
-    private func finishRefresh(snapshot: MacNowPlayingRuntimeSnapshot) {
+    private func finishRefresh(catalog: MacNowPlayingRuntimeCatalog) {
+        guard catalog.additional.count <= 1 else { publish(item: nil, snapshot: nil); return }
+        let snapshots = [catalog.primary] + catalog.additional
+        guard Set(snapshots.map(\.identityKey)).count == snapshots.count else {
+            publish(item: nil, snapshot: nil); return
+        }
+        var bindings: [String: (item: WebRTCRemoteMediaItem, snapshot: MacNowPlayingRuntimeSnapshot)] = [:]
+        var contexts: [String: String] = [:]
+        var items: [WebRTCRemoteMediaItem] = []
+        for snapshot in snapshots {
+            let context = identityContexts[snapshot.identityKey] ?? UUID().uuidString.lowercased()
+            guard let item = makeItem(snapshot: snapshot, contextID: context) else {
+                publish(item: nil, snapshot: nil); return
+            }
+            items.append(item)
+            contexts[snapshot.identityKey] = context
+            bindings[context] = (item, snapshot)
+        }
+        identityContexts = contexts
+        catalogBindings = bindings
+        publish(item: items.first, snapshot: catalog.primary, additionalItems: Array(items.dropFirst()))
+    }
+
+    private func makeItem(snapshot: MacNowPlayingRuntimeSnapshot, contextID: String) -> WebRTCRemoteMediaItem? {
         let sourceName = Self.boundedString(
             snapshot.sourceName,
             maximumBytes: WebRTCRemoteMediaItem.maximumSourceNameBytes
@@ -976,17 +1230,7 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
             snapshot.metadata.title,
             maximumBytes: WebRTCRemoteMediaItem.maximumTitleBytes
         ) ?? (snapshot.sourceName == nil ? nil : sourceName) else {
-            publish(item: nil, snapshot: nil)
-            return
-        }
-
-        if snapshot.identityKey != currentIdentityKey {
-            currentIdentityKey = snapshot.identityKey
-            currentContextID = UUID().uuidString.lowercased()
-        }
-        guard let contextID = currentContextID else {
-            publish(item: nil, snapshot: nil)
-            return
+            return nil
         }
 
         let rate = min(max(snapshot.metadata.playbackRate, 0), 16)
@@ -1023,30 +1267,55 @@ final class MacSystemNowPlayingController: MacRemoteMediaControlling,
                 canPlay: enabled.contains(CommandValue.play.rawValue),
                 canPause: enabled.contains(CommandValue.pause.rawValue),
                 canSkipForward: enabled.contains(CommandValue.nextTrack.rawValue),
-                canSkipBackward: enabled.contains(CommandValue.previousTrack.rawValue)
+                canSkipBackward: enabled.contains(CommandValue.previousTrack.rawValue),
+                canSeekForward: enabled.contains(CommandValue.seekForward30.rawValue),
+                canSeekBackward: enabled.contains(CommandValue.seekBackward30.rawValue),
+                canSeekToPosition: enabled.contains(CommandValue.seekToPosition.rawValue)
             ),
             artwork: snapshot.metadata.artwork
         )
-        publish(item: item.isValid ? item : nil, snapshot: snapshot)
+        return item.isValid ? item : nil
     }
 
     private func publish(
         item: WebRTCRemoteMediaItem?,
-        snapshot: MacNowPlayingRuntimeSnapshot?
+        snapshot: MacNowPlayingRuntimeSnapshot?,
+        additionalItems: [WebRTCRemoteMediaItem] = []
     ) {
         currentItem = item
         currentSnapshot = item == nil ? nil : snapshot
         currentContextID = item?.contextID
-        if item == nil { currentIdentityKey = nil }
-        gate.setContext(item?.contextID)
-        guard !hasPublishedState || item != lastPublishedItem else { return }
+        if item == nil {
+            currentIdentityKey = nil
+            catalogBindings = [:]
+            identityContexts = [:]
+        }
+        gate.setContexts(Set(catalogBindings.keys))
+        guard !hasPublishedState || item != lastPublishedItem || additionalItems != lastPublishedAdditionalItems else { return }
         hasPublishedState = true
         lastPublishedItem = item
+        lastPublishedAdditionalItems = additionalItems
         revision &+= 1
         if revision == 0 { revision = 1 }
+        traceState(.controllerPublished,
+            summary: .init(item: item, additionalItems: additionalItems),
+            generation: stateTraceGeneration, refreshID: stateTraceRefreshID, reason: .state)
         onStateChanged?(
-            WebRTCRemoteMediaStateUpdate(revision: revision, item: item)
+            WebRTCRemoteMediaStateUpdate(revision: revision, item: item, additionalItems: additionalItems)
         )
+    }
+
+    private func traceState(_ stage: RemoteMediaStateTrace.Stage,
+                            summary: RemoteMediaStateTraceSummary,
+                            generation: UInt64, refreshID: UInt64,
+                            reason: RemoteMediaStateTrace.Reason, failure: Bool = false) {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard stateTraceGate.shouldReport(stage: stage, summary: summary, epoch: generation,
+                                         failure: failure, uptime: uptime) else { return }
+        stateDiagnostics(RemoteMediaStateTrace.message(stage: stage, session: stateTraceSession,
+            processID: ProcessInfo.processInfo.processIdentifier, generation: generation,
+            refreshID: refreshID, activeRefreshID: activeRefreshID ?? 0,
+            controllerRevision: revision, summary: summary, reason: reason, uptime: uptime))
     }
 
     private static func validTime(_ value: Double?) -> Double? {

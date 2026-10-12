@@ -121,3 +121,51 @@ struct WorldwideScreenFloorRecoveryDiagnostics: Equatable, Sendable {
         ].joined(separator: " ")
     }
 }
+
+// Each extension is appended to its existing respective diagnostic source file.
+// Reader construction is sealed to the validated codec output, not a caller DTO.
+extension WorldwideScreenFloorRecoveryDiagnostics {
+    init(networkAdaptationPreparedReader r: inout BelugaNetworkAdaptationPreparedReader) throws {
+        showEpoch = try r.unsigned(); reserved = try r.boolean(); active = try r.boolean()
+        consumed = try r.boolean(); disproved = try r.boolean(); cooldownRemaining = try r.integer()
+        collectionSequence = try r.unsigned(); previousRegularSequence = try r.unsigned()
+        previousRegularReportMicroseconds = try r.unsigned(); capacityReportMicroseconds = try r.unsigned()
+        nativeReportMicroseconds = try r.unsigned(); currentBandwidthBps = try r.scalar()
+        firstBandwidthBps = try r.scalar(); witnessAgeMicroseconds = try r.unsigned()
+        beforeTotalCapBps = try r.integer(); proposedTotalCapBps = try r.integer()
+        trend = try r.choice([.unknown, .falling, .flat, .rising])
+        identity = try r.choice([.notChecked, .fresh, .rejectedOrder, .rejectedTimestamp])
+        reason = try r.choice([.notEvaluated, .rejectedOrder, .rejectedTimestamp, .inactiveVisibility,
+            .consumed, .disproved, .notFloor, .existingProbe, .rttBlocked, .invalidBandwidth,
+            .ordinaryProbeEligible, .noHeadroom, .noNewPackets, .queueBlocked, .cooldown,
+            .firstWitness, .tooEarly, .bandwidthFalling, .qualified, .admitted])
+        queueKind = try r.choice([.notChecked, .measured, .noNewPackets, .unavailableOrReset])
+        queueMicroseconds = try r.unsigned()
+        let dispositions: [WorldwideScreenVideoAdaptationPolicy.RoundTripTimeDisposition] = [
+            .legacy, .provisionalHealthy, .freshHealthy, .freshInflated, .retainedHealthy,
+            .retainedInflated, .unavailable, .expired, .reseeded, .reordered]
+        roundTripTimeDisposition = try r.optionalChoice(dispositions)
+        roundTripTimeAllowsUpgrade = try r.optionalBoolean()
+    }
+
+    func networkAdaptationOwnerWritePrepared(into w: inout BelugaNetworkAdaptationOwnerWriter) {
+        w.unsigned(showEpoch); w.boolean(reserved); w.boolean(active); w.boolean(consumed); w.boolean(disproved)
+        w.integer(cooldownRemaining); w.unsigned(collectionSequence); w.unsigned(previousRegularSequence)
+        w.unsigned(previousRegularReportMicroseconds); w.unsigned(capacityReportMicroseconds)
+        w.unsigned(nativeReportMicroseconds); w.scalar(currentBandwidthBps); w.scalar(firstBandwidthBps)
+        w.unsigned(witnessAgeMicroseconds); w.integer(beforeTotalCapBps); w.integer(proposedTotalCapBps)
+        w.u32(UInt32([Trend.unknown, .falling, .flat, .rising].firstIndex(of: trend)!))
+        w.u32(UInt32([Identity.notChecked, .fresh, .rejectedOrder, .rejectedTimestamp].firstIndex(of: identity)!))
+        w.u32(UInt32([Reason.notEvaluated, .rejectedOrder, .rejectedTimestamp, .inactiveVisibility,
+            .consumed, .disproved, .notFloor, .existingProbe, .rttBlocked, .invalidBandwidth,
+            .ordinaryProbeEligible, .noHeadroom, .noNewPackets, .queueBlocked, .cooldown,
+            .firstWitness, .tooEarly, .bandwidthFalling, .qualified, .admitted].firstIndex(of: reason)!))
+        w.u32(UInt32([QueueKind.notChecked, .measured, .noNewPackets, .unavailableOrReset].firstIndex(of: queueKind)!))
+        w.unsigned(queueMicroseconds)
+        let dispositions: [WorldwideScreenVideoAdaptationPolicy.RoundTripTimeDisposition] = [
+            .legacy, .provisionalHealthy, .freshHealthy, .freshInflated, .retainedHealthy,
+            .retainedInflated, .unavailable, .expired, .reseeded, .reordered]
+        w.word(6, roundTripTimeDisposition.map { UInt64(dispositions.firstIndex(of: $0)!) })
+        w.boolean(roundTripTimeAllowsUpgrade)
+    }
+}

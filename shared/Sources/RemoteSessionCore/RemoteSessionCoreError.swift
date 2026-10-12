@@ -14,17 +14,20 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
     case replayedSequence
     case sequenceOutsideReplayWindow
     case sequenceExhausted
+    case invalidSignalingReplayBridge
     case invalidDeviceIdentity
     case invalidPairingMessage
     case unsupportedPairingVersion
     case pairingRoleConflict
     case pairingTranscriptMismatch
     case invalidPairingCommit
+    case invalidPairingCommitBridge
     case invalidPairedDeviceRecord
     case deviceIdentityMismatch
     case invalidReconnectMessage
     case unsupportedReconnectVersion
     case staleReconnectSequence
+    case invalidReconnectCounterBridge
     case invalidRendezvousCredential
 
     public var errorDescription: String? {
@@ -53,6 +56,8 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "The signaling envelope is too old."
         case .sequenceExhausted:
             "The signaling sequence is exhausted."
+        case .invalidSignalingReplayBridge:
+            "The signaling replay guard could not be verified."
         case .invalidDeviceIdentity:
             "The device identity is invalid."
         case .invalidPairingMessage:
@@ -65,6 +70,8 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "The pairing transcript does not match."
         case .invalidPairingCommit:
             "The pairing commit is invalid."
+        case .invalidPairingCommitBridge:
+            "The pairing commit policy could not be verified."
         case .invalidPairedDeviceRecord:
             "The paired-device record is invalid."
         case .deviceIdentityMismatch:
@@ -75,6 +82,8 @@ public enum RemoteSessionCoreError: Error, Equatable, LocalizedError, Sendable {
             "This reconnect protocol version is not supported."
         case .staleReconnectSequence:
             "The reconnect request is stale or has already been used."
+        case .invalidReconnectCounterBridge:
+            "The reconnect counter proposal could not be verified."
         case .invalidRendezvousCredential:
             "The rendezvous credential is invalid."
         }

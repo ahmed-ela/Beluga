@@ -28,6 +28,7 @@ function initialize_fixture_repository() {
     "$repository/iOS/opensteamer/scripts" \
     "$repository/macOS/OpensteamerHost" \
     "$repository/macOS/Sources/CaptureServer" \
+    "$repository/macOS/Sources/BelugaUpdateCore" \
     "$repository/macOS/scripts" \
     "$repository/macOS/RelayBridge" \
     "$repository/services/Rendezvous" \
@@ -97,7 +98,7 @@ function initialize_fixture_repository() {
 fflush(stdout)' >"$repository/macOS/Sources/CaptureServer/CaptureServerMain.swift"
   print -r -- 'static let legacyRuntimeDirectoryName =
     "com.elamin.AudioStreamer.CaptureServer.runtime"' \
-    >"$repository/macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift"
+    >"$repository/macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift"
   print -r -- 'codesign --identifier com.elamin.AudioStreamer.CaptureServer executable' \
     >"$repository/macOS/scripts/build-opensteamer-host-app.sh"
   print -r -- 'EXPECTED_BUNDLE_IDENTIFIER="com.elamin.AudioStreamer.CaptureServer"' \

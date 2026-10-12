@@ -2,6 +2,14 @@ import CaptureCore
 import Foundation
 import RemoteSessionCore
 
+protocol WorldwideHostPairingTransport: AnyObject, Sendable {
+    func connect() async throws -> PairingBootstrapSignalingClient.EventStream
+    func send(_ payload: RemotePairingPayload) async throws
+    func close() async
+}
+
+extension PairingBootstrapSignalingClient: WorldwideHostPairingTransport {}
+
 /// Runs the one-time authenticated pairing handshake and persists every recovery checkpoint.
 ///
 /// Actor isolation owns signaling state and transcript progression. The exported
@@ -10,15 +18,18 @@ import RemoteSessionCore
 actor WorldwidePairingBootstrap {
     /// Emits the single active pairing record or the terminal bootstrap failure.
     nonisolated let completion: AsyncThrowingStream<RemotePairedDeviceRecord, Error>
+    nonisolated let invitationEvents: AsyncStream<BelugaPairingInvitationEvent>
+    nonisolated let checkpoint: WorldwidePairingCatalogCheckpoint
 
     private let identity: RemoteDeviceIdentity
     private var participant: RemotePairingParticipant
-    private let signaling: PairingBootstrapSignalingClient
-    private let store: WorldwidePairingStore
+    private let signaling: any WorldwideHostPairingTransport
     private let logger: Logger
     private let invitation: RemoteInvitationCode
     private let completionContinuation:
         AsyncThrowingStream<RemotePairedDeviceRecord, Error>.Continuation
+    private let invitationContinuation: AsyncStream<BelugaPairingInvitationEvent>.Continuation
+    private var invitationExpiresAt: Date?
 
     private var signalingTask: Task<Void, Never>?
     private var agreement: RemotePairingAgreement?
@@ -31,7 +42,12 @@ actor WorldwidePairingBootstrap {
     init(
         endpoint: URL,
         identity: RemoteDeviceIdentity,
-        store: WorldwidePairingStore,
+        checkpoint: WorldwidePairingCatalogCheckpoint,
+        invitation: RemoteInvitationCode? = nil,
+        signalingFactory: @Sendable (URL, RemoteInvitationCode) throws
+            -> any WorldwideHostPairingTransport = { endpoint, invitation in
+                try PairingBootstrapSignalingClient(endpoint: endpoint, invitation: invitation, role: .host)
+            },
         logger: Logger
     ) throws {
         let pair = AsyncThrowingStream<RemotePairedDeviceRecord, Error>.makeStream(
@@ -39,16 +55,17 @@ actor WorldwidePairingBootstrap {
         )
         completion = pair.stream
         completionContinuation = pair.continuation
-        let invitation = try RemoteInvitationCode.generate()
+        let presentation = AsyncStream<BelugaPairingInvitationEvent>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
+        invitationEvents = presentation.stream
+        invitationContinuation = presentation.continuation
+        let invitation = try invitation ?? RemoteInvitationCode.generate()
         self.invitation = invitation
         self.identity = identity
         participant = try RemotePairingParticipant(identity: identity, invitation: invitation)
-        signaling = try PairingBootstrapSignalingClient(
-            endpoint: endpoint,
-            invitation: invitation,
-            role: .host
-        )
-        self.store = store
+        signaling = try signalingFactory(endpoint, invitation)
+        self.checkpoint = checkpoint
         self.logger = logger
     }
 
@@ -60,6 +77,7 @@ actor WorldwidePairingBootstrap {
         isStarted = true
         do {
             let events = try await signaling.connect()
+            guard !isFinished, !Task.isCancelled else { throw CancellationError() }
             signalingTask = Task { [weak self] in
                 await self?.consume(events)
             }
@@ -73,11 +91,11 @@ actor WorldwidePairingBootstrap {
 
     /// Cancels signaling, closes the socket, and finishes completion idempotently.
     func stop() async {
-        guard !isFinished else { return }
-        signalingTask?.cancel()
-        signalingTask = nil
-        await signaling.close()
+        let task = signalingTask
         finish(throwing: nil)
+        await signaling.close()
+        await task?.value
+        signalingTask = nil
     }
 
     /// Serially consumes signaling events until commit, cancellation, or failure.
@@ -96,8 +114,8 @@ actor WorldwidePairingBootstrap {
         } catch {
             guard !isFinished else { return }
             logger.error("Worldwide pairing failed: \(error.localizedDescription)")
-            await signaling.close()
             finish(throwing: error)
+            await signaling.close()
         }
     }
 
@@ -105,10 +123,13 @@ actor WorldwidePairingBootstrap {
     private func handle(_ event: PairingBootstrapSignalingEvent) async throws {
         switch event {
         case .waiting(let invitationExpiresAt):
+            self.invitationExpiresAt = invitationExpiresAt
+            publishInvitationIfValid()
             let seconds = max(0, Int(invitationExpiresAt.timeIntervalSinceNow.rounded()))
             logger.info("Worldwide pairing invitation expires in about \(seconds) seconds")
 
         case .ready:
+            invitationContinuation.yield(.hidden)
             guard !helloSent else { return }
             helloSent = true
             try await signaling.send(.hello(participant.hello))
@@ -128,13 +149,13 @@ actor WorldwidePairingBootstrap {
             var pending = try agreement.makePendingRecord(
                 peerConfirmation: peerConfirmation
             )
-            try store.savePairedViewer(pending, for: identity)
+            try checkpoint.add(pending)
             // Publish the first durable record to the local recovery state immediately. The
             // viewer never sends this confirmation until its matching pending record is saved,
             // so a departure from this point onward is safe to continue on availability.
             record = pending
             let proposal = try pending.prepareProposal(using: identity)
-            try store.savePairedViewer(pending, for: identity)
+            try checkpoint.update(pending)
             record = pending
             try await signaling.send(.commit(proposal))
 
@@ -160,6 +181,7 @@ actor WorldwidePairingBootstrap {
                 )
                 agreement = nil
                 helloSent = false
+                publishInvitationIfValid()
                 logger.info(
                     "The iPhone left before durable pairing; waiting for a fresh secure attempt"
                 )
@@ -189,15 +211,17 @@ actor WorldwidePairingBootstrap {
             acknowledgement,
             record: &record
         )
-        try store.savePairedViewer(record, for: identity)
+        try checkpoint.update(record)
 
         let completion = try record.prepareCompletion(using: identity)
-        try store.savePairedViewer(record, for: identity)
+        try checkpoint.update(record)
         self.record = record
         try await signaling.send(.commit(completion))
 
+        guard !isFinished, !Task.isCancelled else { throw CancellationError() }
+
         try record.markCompletionSent(commitID: completion.commitID)
-        try store.savePairedViewer(record, for: identity)
+        try checkpoint.update(record)
         self.record = record
     }
 
@@ -209,28 +233,43 @@ actor WorldwidePairingBootstrap {
             throw WorldwidePairingBootstrapError.unexpectedMessage
         }
         try record.acceptActivationAcknowledgement(acknowledgement)
-        try store.savePairedViewer(record, for: identity)
+        try checkpoint.update(record)
         self.record = record
         logger.info("Worldwide pairing committed; the Mac will now accept secure reconnects")
+        isFinished = true
+        checkpoint.revoke()
+        signalingTask?.cancel()
+        await signaling.close()
         completionContinuation.yield(record)
         completionContinuation.finish()
-        isFinished = true
-        signalingTask?.cancel()
-        signalingTask = nil
-        await signaling.close()
+        invitationContinuation.yield(.hidden)
+        invitationContinuation.finish()
     }
 
     /// Completes the public stream exactly once and cancels the consumer task.
     private func finish(throwing error: (any Error)?) {
         guard !isFinished else { return }
         isFinished = true
+        checkpoint.revoke()
         signalingTask?.cancel()
-        signalingTask = nil
+        invitationContinuation.yield(.hidden)
+        invitationContinuation.finish()
         if let error {
             completionContinuation.finish(throwing: error)
         } else {
             completionContinuation.finish()
         }
+    }
+
+    private func publishInvitationIfValid() {
+        guard !isFinished, !helloSent, let invitationExpiresAt,
+              invitationExpiresAt > Date() else {
+            invitationContinuation.yield(.hidden)
+            return
+        }
+        invitationContinuation.yield(.available(BelugaPairingInvitation(
+            code: invitation, expiresAt: invitationExpiresAt
+        )))
     }
 }
 

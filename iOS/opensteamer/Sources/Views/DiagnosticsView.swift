@@ -55,6 +55,12 @@ struct DiagnosticsView: View {
                     title: "Video",
                     value: worldwideVideoDescription
                 )
+                if worldwideViewModel.screenLivenessBridgeError != nil {
+                    Text("Prior pipeline counters are retained; evidence is stale.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("worldwideScreenLivenessEvidenceStale")
+                }
                 MetricRow(
                     title: "Client Pipeline",
                     value: worldwideViewModel.screenLivenessStatusText
@@ -127,6 +133,18 @@ struct DiagnosticsView: View {
                     value: worldwideViewModel.screenLivenessDiagnosticSnapshot
                         .coverState.statusText
                 )
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Renderer Path")
+                    Text(
+                        worldwideViewModel.screenRendererPathDiagnosticLines
+                            .joined(separator: "\n")
+                    )
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("worldwideScreenRendererPathDiagnostics")
             }
 
             Section("Connection Timeline") {

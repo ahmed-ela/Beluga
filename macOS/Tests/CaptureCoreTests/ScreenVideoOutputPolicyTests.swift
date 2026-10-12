@@ -3,31 +3,31 @@ import XCTest
 @testable import CaptureCore
 
 final class ScreenVideoOutputPolicyTests: XCTestCase {
-    func testCaptureStartupRejectsFramebufferResolutionDrift() {
+    func testCaptureStartupRejectsFramebufferResolutionDrift() throws {
         XCTAssertTrue(
-            ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
+            try ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
                 before: .init(width: 1_206, height: 2_622),
                 after: .init(width: 1_206, height: 2_622)
             )
         )
         XCTAssertFalse(
-            ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
+            try ScreenVideoSourceDimensionPolicy.isStableAcrossStart(
                 before: .init(width: 1_206, height: 2_622),
                 after: .init(width: 1_080, height: 2_340)
             )
         )
     }
 
-    func testOwnedDisplayRequirementAcceptsExactSoleMainIdentity() {
+    func testOwnedDisplayRequirementAcceptsExactSoleMainIdentity() throws {
         XCTAssertTrue(
-            ScreenVideoDisplayRequirementPolicy.isSatisfied(
+            try ScreenVideoDisplayRequirementPolicy.isSatisfied(
                 ownedDisplayRequirement,
                 by: ownedDisplaySnapshot
             )
         )
     }
 
-    func testOwnedDisplayRequirementRejectsRecycledIDIdentity() {
+    func testOwnedDisplayRequirementRejectsRecycledIDIdentity() throws {
         var snapshot = ownedDisplaySnapshot
         snapshot = ScreenVideoDisplaySnapshot(
             displayID: snapshot.displayID,
@@ -41,14 +41,14 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         )
 
         XCTAssertFalse(
-            ScreenVideoDisplayRequirementPolicy.isSatisfied(
+            try ScreenVideoDisplayRequirementPolicy.isSatisfied(
                 ownedDisplayRequirement,
                 by: snapshot
             )
         )
     }
 
-    func testOwnedDisplayRequirementRejectsTopologyDrift() {
+    func testOwnedDisplayRequirementRejectsTopologyDrift() throws {
         let snapshot = ScreenVideoDisplaySnapshot(
             displayID: ownedDisplaySnapshot.displayID,
             vendorID: ownedDisplaySnapshot.vendorID,
@@ -61,15 +61,15 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         )
 
         XCTAssertFalse(
-            ScreenVideoDisplayRequirementPolicy.isSatisfied(
+            try ScreenVideoDisplayRequirementPolicy.isSatisfied(
                 ownedDisplayRequirement,
                 by: snapshot
             )
         )
     }
 
-    func testOrdinaryDisplayKeepsScreenCaptureKitLogicalDimensions() {
-        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+    func testOrdinaryDisplayKeepsScreenCaptureKitLogicalDimensions() throws {
+        let dimensionKind = try ScreenVideoSourceDimensionPolicy.dimensionKind(
             vendorID: 0x610,
             productID: 0xA0E1
         )
@@ -77,8 +77,8 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensionKind, .logical)
     }
 
-    func testOpenSteamerPhoneDisplayUsesFramebufferPixels() {
-        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+    func testOpenSteamerPhoneDisplayUsesFramebufferPixels() throws {
+        let dimensionKind = try ScreenVideoSourceDimensionPolicy.dimensionKind(
             vendorID: 0x6F73,
             productID: 0x1717
         )
@@ -86,8 +86,8 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensionKind, .framebufferPixels)
     }
 
-    func testOpenSteamerCombinedDisplayUsesFramebufferPixels() {
-        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+    func testOpenSteamerCombinedDisplayUsesFramebufferPixels() throws {
+        let dimensionKind = try ScreenVideoSourceDimensionPolicy.dimensionKind(
             vendorID: 0x6F73,
             productID: 0x1718
         )
@@ -95,8 +95,8 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensionKind, .framebufferPixels)
     }
 
-    func testMatchingProductFromAnotherVendorKeepsLogicalDimensions() {
-        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+    func testMatchingProductFromAnotherVendorKeepsLogicalDimensions() throws {
+        let dimensionKind = try ScreenVideoSourceDimensionPolicy.dimensionKind(
             vendorID: 0xFFFF,
             productID: 0x1717
         )
@@ -104,8 +104,8 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensionKind, .logical)
     }
 
-    func testUnknownOpenSteamerProductKeepsLogicalDimensions() {
-        let dimensionKind = ScreenVideoSourceDimensionPolicy.dimensionKind(
+    func testUnknownOpenSteamerProductKeepsLogicalDimensions() throws {
+        let dimensionKind = try ScreenVideoSourceDimensionPolicy.dimensionKind(
             vendorID: 0x6F73,
             productID: 0x1719
         )
@@ -113,7 +113,7 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensionKind, .logical)
     }
 
-    func testOwnedDisplayResolvesEverySupportedSelectedFramebuffer() {
+    func testOwnedDisplayResolvesEverySupportedSelectedFramebuffer() throws {
         let modes: [(
             logical: ScreenVideoPixelDimensions,
             scale: Double,
@@ -152,7 +152,7 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         ]
 
         for mode in modes {
-            let dimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
+            let dimensions = try ScreenVideoSourceDimensionPolicy.sourceDimensions(
                 vendorID: 0x6F73,
                 productID: 0x1718,
                 logicalDimensions: mode.logical,
@@ -174,8 +174,8 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         }
     }
 
-    func testOrdinaryDisplayIgnoresFilterPixelScale() {
-        let dimensions = ScreenVideoSourceDimensionPolicy.sourceDimensions(
+    func testOrdinaryDisplayIgnoresFilterPixelScale() throws {
+        let dimensions = try ScreenVideoSourceDimensionPolicy.sourceDimensions(
             vendorID: 0x610,
             productID: 0xA0E1,
             logicalDimensions: .init(width: 1_512, height: 982),
@@ -189,7 +189,7 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         XCTAssertEqual(dimensions, .init(width: 1_512, height: 982))
     }
 
-    func testOwnedDisplayRejectsInvalidFilterGeometry() {
+    func testOwnedDisplayRejectsInvalidFilterGeometry() throws {
         let logical = ScreenVideoPixelDimensions(width: 540, height: 1_170)
         let invalidSnapshots: [(width: Double, height: Double, scale: Double)] = [
             (.nan, 1_170, 2),
@@ -202,7 +202,7 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
 
         for snapshot in invalidSnapshots {
             XCTAssertNil(
-                ScreenVideoSourceDimensionPolicy.sourceDimensions(
+                try ScreenVideoSourceDimensionPolicy.sourceDimensions(
                     vendorID: 0x6F73,
                     productID: 0x1718,
                     logicalDimensions: logical,
@@ -216,9 +216,9 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         }
     }
 
-    func testOwnedDisplayRejectsFramebufferOverflow() {
+    func testOwnedDisplayRejectsFramebufferOverflow() throws {
         XCTAssertNil(
-            ScreenVideoSourceDimensionPolicy.sourceDimensions(
+            try ScreenVideoSourceDimensionPolicy.sourceDimensions(
                 vendorID: 0x6F73,
                 productID: 0x1718,
                 logicalDimensions: .init(width: .max, height: .max),
@@ -231,11 +231,11 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         )
     }
 
-    func testOwnedDisplayUsesCurrentCoreGraphicsFramebufferDespiteStaleFilterScale() {
+    func testOwnedDisplayUsesCurrentCoreGraphicsFramebufferDespiteStaleFilterScale() throws {
         let logical = ScreenVideoPixelDimensions(width: 540, height: 1_170)
 
         XCTAssertEqual(
-            ScreenVideoSourceDimensionPolicy.sourceDimensions(
+            try ScreenVideoSourceDimensionPolicy.sourceDimensions(
                 vendorID: 0x6F73,
                 productID: 0x1718,
                 logicalDimensions: logical,
@@ -249,11 +249,11 @@ final class ScreenVideoOutputPolicyTests: XCTestCase {
         )
     }
 
-    func testOwnedDisplayAcceptsOnlyReconciledFilterAndCoreGraphicsFramebuffer() {
+    func testOwnedDisplayAcceptsOnlyReconciledFilterAndCoreGraphicsFramebuffer() throws {
         let logical = ScreenVideoPixelDimensions(width: 540, height: 1_170)
 
         XCTAssertEqual(
-            ScreenVideoSourceDimensionPolicy.sourceDimensions(
+            try ScreenVideoSourceDimensionPolicy.sourceDimensions(
                 vendorID: 0x6F73,
                 productID: 0x1718,
                 logicalDimensions: logical,

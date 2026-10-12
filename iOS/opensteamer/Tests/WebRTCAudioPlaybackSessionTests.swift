@@ -5225,7 +5225,7 @@ private final class PhysicalMicrophoneAuthorizationFence: NSObject, CXCallObserv
 
 /// Negotiation-only fixture device. These flags describe ADM requests, never hardware state.
 /// There is no session, engine, AudioUnit, timer, renderer, input producer, PCM or audio callback.
-private final class PhysicalNoHardwareAudioDevice: NSObject, LKRTCAudioDevice, Sendable {
+final class PhysicalNoHardwareAudioDevice: NSObject, LKRTCAudioDevice, Sendable {
     struct Snapshot: Sendable {
         var initialized = false
         var playoutInitialized = false

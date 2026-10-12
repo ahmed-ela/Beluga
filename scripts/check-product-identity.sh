@@ -12,12 +12,26 @@ fi
 
 ROOT="$(cd "$REPOSITORY" && pwd -P)"
 FAILURES=0
-EXPECTED_IOS_TARGETS=$'opensteamer\nopensteamerTests\nopensteamerUITests'
+typeset -a IDENTITY_DIAGNOSTICS=()
+typeset -a IDENTITY_MULTILINE_FIELDS=()
+typeset -a IDENTITY_MULTILINE_PATHS=()
+typeset -a IDENTITY_MULTILINE_EXPECTED=()
+typeset -a IDENTITY_MULTILINE_DESCRIPTIONS=()
+typeset -a IDENTITY_MULTILINE_SLOTS=()
+typeset -a IDENTITY_LITERAL_IS_MULTILINE=()
+EXPECTED_IOS_TARGETS=$'MediaNotificationContent\nopensteamer\nopensteamerTests\nopensteamerUITests'
 EXPECTED_SCHEME_FILES=$'opensteamer.xcscheme\nopensteamerTestFlight.xcscheme\nopensteamerUITests.xcscheme'
 
 fail() {
-  print -u2 -r -- "product identity check failed: $1"
+  IDENTITY_DIAGNOSTICS+=("product identity check failed: $1")
   FAILURES=$((FAILURES + 1))
+}
+
+print_identity_diagnostics() {
+  local diagnostic
+  for diagnostic in "${IDENTITY_DIAGNOSTICS[@]}"; do
+    [[ -z "$diagnostic" ]] || print -u2 -r -- "$diagnostic"
+  done
 }
 
 assert_equal() {
@@ -167,58 +181,171 @@ assert_literal_count() {
   local literal=$2
   local expected_count=$3
   local description=$4
-  local actual_count
-  local grep_matches
-  local grep_status
-  local -a grep_match_lines
-
   require_file "$relative_path" || return
   if [[ -z "$literal" ]]; then
     fail "$description: cannot count an empty required literal in $relative_path"
     return
   fi
 
-  # Nearly every identity pin is one line. Avoid launching a JavaScript runtime for each of
-  # those assertions; fixed-string grep has the same non-overlapping count semantics. Preserve
-  # the byte-for-byte JavaScript implementation for the small set of multiline contracts.
-  if [[ "$literal" != *$'\n'* ]]; then
-    grep_matches=$(LC_ALL=C grep -F -o -- "$literal" \
-      "$ROOT/$relative_path" 2>/dev/null)
-    grep_status=$?
-    case "$grep_status" in
-      0)
-        grep_match_lines=("${(f)grep_matches}")
-        actual_count=${#grep_match_lines[@]}
-        ;;
-      1)
-        actual_count=0
-        ;;
-      *)
-        fail "$description: could not count the required literal in $relative_path"
-        return
-        ;;
-    esac
-    assert_equal "$description" "$expected_count" "$actual_count"
-    return
+  # One invocation-local batch avoids hundreds of parser/grep process starts. Preserve the
+  # former single-line byte counter and multiline UTF-8 counter as distinct algorithms.
+  # Every request reads its file independently at flush; neither content nor verdict is cached.
+  # Reserve the original assertion's diagnostic position, including among ordinary failures.
+  IDENTITY_DIAGNOSTICS+=('')
+  IDENTITY_MULTILINE_SLOTS+=("${#IDENTITY_DIAGNOSTICS[@]}")
+  if [[ "$literal" == *$'\n'* ]]; then
+    IDENTITY_LITERAL_IS_MULTILINE+=(1)
+  else
+    IDENTITY_LITERAL_IS_MULTILINE+=(0)
+  fi
+  IDENTITY_MULTILINE_FIELDS+=("$ROOT/$relative_path" "$literal")
+  IDENTITY_MULTILINE_PATHS+=("$relative_path")
+  IDENTITY_MULTILINE_EXPECTED+=("$expected_count")
+  IDENTITY_MULTILINE_DESCRIPTIONS+=("$description")
+}
+
+flush_literal_count_batch() {
+  local request_count=${#IDENTITY_MULTILINE_PATHS[@]}
+  (( request_count > 0 )) || return 0
+  local batch_output
+  local batch_valid=1
+  local index field_offset slot actual_count description relative_path expected_count
+  local diagnostic read_error
+  local -a results
+
+  # NUL framing preserves multiline text, quotes, backslashes and empty result/error fields.
+  # The final nonempty marker also prevents command substitution's newline trimming from
+  # changing a read error. Any worker/pipe/protocol failure rejects the entire pending batch.
+  if ! batch_output=$(print -rN -- "${IDENTITY_MULTILINE_FIELDS[@]}" | node -e '
+    const fs = require("node:fs");
+    const { spawnSync } = require("node:child_process");
+    const fields = fs.readFileSync(0, "utf8").split("\0");
+    const requestCount = Number(process.argv[1]);
+    if (!Number.isSafeInteger(requestCount) || requestCount <= 0 ||
+        fields.length !== requestCount * 2 + 1 || fields.pop() !== "") {
+      process.exit(2);
+    }
+    const results = [];
+    for (let index = 0; index < requestCount; index += 1) {
+      try {
+        const file = fields[index * 2];
+        const bytes = fs.readFileSync(file);
+        const literal = fields[index * 2 + 1];
+        if (literal.length === 0) throw new Error("empty required literal");
+        let count = 0;
+        if (literal.includes("\n")) {
+          const contents = bytes.toString("utf8");
+          let offset = 0;
+          while ((offset = contents.indexOf(literal, offset)) >= 0) {
+            count += 1;
+            offset += literal.length;
+          }
+        } else if (bytes.includes(0) || literal.includes("\0")) {
+          // BSD grep has special binary-output semantics. Retain the actual old command for
+          // that exceptional input rather than pretending a text counter is equivalent.
+          const result = spawnSync("grep", ["-F", "-o", "--", literal, file], {
+            env: { ...process.env, LC_ALL: "C" }, maxBuffer: 64 * 1024 * 1024,
+          });
+          if (result.error || result.signal !== null || ![0, 1].includes(result.status)) {
+            throw result.error || new Error("fixed-string binary counter failed");
+          }
+          if (result.status === 0) {
+            const output = result.stdout.toString("utf8").replace(/\n+$/, "");
+            // Quoted zsh ${(f)...} elides interior empty split fields, but retains one
+            // empty element when command substitution yields the empty string.
+            count = output.length === 0 ? 1 : output.split("\n").filter(line => line.length > 0).length;
+          }
+        } else {
+          const needle = Buffer.from(literal, "utf8");
+          let offset = 0;
+          while ((offset = bytes.indexOf(needle, offset)) >= 0) {
+            count += 1;
+            offset += needle.length;
+          }
+        }
+        results.push(String(index + 1), "ok", String(count), "");
+      } catch (error) {
+        const diagnostic = String(error.stack || error);
+        if (diagnostic.includes("\0")) process.exit(3);
+        results.push(String(index + 1), "error", "", diagnostic);
+      }
+    }
+    results.push(String(requestCount), "complete");
+    process.stdout.write(results.join("\0"));
+  ' "$request_count"); then
+    batch_valid=0
+  else
+    results=("${(@0)batch_output}")
+    if (( ${#results[@]} != request_count * 4 + 2 )) \
+        || [[ "${results[-2]}" != "$request_count" \
+          || "${results[-1]}" != complete ]]; then
+      batch_valid=0
+    else
+      for (( index = 1; index <= request_count; index++ )); do
+        field_offset=$(( (index - 1) * 4 ))
+        if [[ "${results[field_offset + 1]}" != "$index" ]]; then
+          batch_valid=0
+          break
+        fi
+        case "${results[field_offset + 2]}" in
+          ok)
+            actual_count=${results[field_offset + 3]}
+            if [[ "$actual_count" != 0 \
+                && ("$actual_count" != [1-9]* || "$actual_count" == *[^0-9]*) ]] \
+                || [[ -n "${results[field_offset + 4]}" ]]; then
+              batch_valid=0
+              break
+            fi
+            ;;
+          error)
+            if [[ -n "${results[field_offset + 3]}" \
+                || -z "${results[field_offset + 4]}" ]]; then
+              batch_valid=0
+              break
+            fi
+            ;;
+          *)
+            batch_valid=0
+            break
+            ;;
+        esac
+      done
+    fi
   fi
 
-  if ! actual_count=$(node -e '
-    const fs = require("node:fs");
-    const contents = fs.readFileSync(process.argv[1], "utf8");
-    const literal = process.argv[2];
-    if (literal.length === 0) process.exit(2);
-    let count = 0;
-    let offset = 0;
-    while ((offset = contents.indexOf(literal, offset)) >= 0) {
-      count += 1;
-      offset += literal.length;
-    }
-    process.stdout.write(String(count));
-  ' "$ROOT/$relative_path" "$literal"); then
-    fail "$description: could not count the required literal in $relative_path"
-    return
-  fi
-  assert_equal "$description" "$expected_count" "$actual_count"
+  for (( index = 1; index <= request_count; index++ )); do
+    slot=${IDENTITY_MULTILINE_SLOTS[index]}
+    description=${IDENTITY_MULTILINE_DESCRIPTIONS[index]}
+    relative_path=${IDENTITY_MULTILINE_PATHS[index]}
+    expected_count=${IDENTITY_MULTILINE_EXPECTED[index]}
+    field_offset=$(( (index - 1) * 4 ))
+    diagnostic=''
+    if (( batch_valid == 0 )); then
+      diagnostic="product identity check failed: $description: could not count the required literal in $relative_path"
+    elif [[ "${results[field_offset + 2]}" == error ]]; then
+      read_error=${results[field_offset + 4]}
+      diagnostic="product identity check failed: $description: could not count the required literal in $relative_path"
+      if [[ "${IDENTITY_LITERAL_IS_MULTILINE[index]}" == 1 ]]; then
+        diagnostic="$read_error"$'\n'"$diagnostic"
+      fi
+    else
+      actual_count=${results[field_offset + 3]}
+      if [[ "$actual_count" != "$expected_count" ]]; then
+        diagnostic="product identity check failed: $description: expected [$expected_count], found [$actual_count]"
+      fi
+    fi
+    if [[ -n "$diagnostic" ]]; then
+      IDENTITY_DIAGNOSTICS[slot]=$diagnostic
+      FAILURES=$((FAILURES + 1))
+    fi
+  done
+
+  IDENTITY_MULTILINE_FIELDS=()
+  IDENTITY_MULTILINE_PATHS=()
+  IDENTITY_MULTILINE_EXPECTED=()
+  IDENTITY_MULTILINE_DESCRIPTIONS=()
+  IDENTITY_MULTILINE_SLOTS=()
+  IDENTITY_LITERAL_IS_MULTILINE=()
 }
 
 assert_function_sha256() {
@@ -281,6 +408,7 @@ for required_tool in awk find grep node plutil sed sort xmllint; do
   fi
 done
 if (( FAILURES > 0 )); then
+  print_identity_diagnostics
   exit 1
 fi
 
@@ -328,7 +456,9 @@ if require_file "$PROJECT_YML"; then
     'project.yml archive-only TestFlight scheme restoration hook'
   # The app product is Beluga; target and module names remain stable for source and test imports.
   assert_literal_count \
-    "$PROJECT_YML" 'PRODUCT_NAME:' 1 'project.yml product-name override count'
+    "$PROJECT_YML" 'PRODUCT_NAME:' 2 'project.yml product-name override count'
+  assert_literal_count "$PROJECT_YML" '        PRODUCT_NAME: MediaNotificationContent' 1 \
+    'project.yml notification extension product name'
   assert_literal_count "$PROJECT_YML" '    productName: Beluga' 1 \
     'project.yml app product name'
   assert_literal_count "$PROJECT_YML" '        PRODUCT_NAME: Beluga' 1 \
@@ -390,6 +520,7 @@ if require_file "$PROJECT_YML"; then
     }
   ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
   EXPECTED_XCODEGEN_TARGET_TYPES=$(printf '%s\n' \
+    'MediaNotificationContent|app-extension' \
     'opensteamer|application' \
     'opensteamerTests|bundle.unit-test' \
     'opensteamerUITests|bundle.ui-testing' \
@@ -421,6 +552,9 @@ if require_file "$PROJECT_YML"; then
     }
   ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
   EXPECTED_XCODEGEN_BUNDLE_ID_MAPPINGS=$(printf '%s\n' \
+    'MediaNotificationContent|base|org.example.AudioStreamer.dev.MediaNotificationContent' \
+    'MediaNotificationContent|Release|com.elamin.AudioStreamer.MediaNotificationContent' \
+    'MediaNotificationContent|TestFlight|com.elamin.opensteamer.MediaNotificationContent' \
     'opensteamer|Debug|org.example.AudioStreamer.dev' \
     'opensteamer|Release|com.elamin.AudioStreamer' \
     'opensteamer|TestFlight|com.elamin.opensteamer' \
@@ -431,6 +565,58 @@ if require_file "$PROJECT_YML"; then
     "project.yml target/configuration bundle-ID mapping" \
     "$EXPECTED_XCODEGEN_BUNDLE_ID_MAPPINGS" \
     "$XCODEGEN_BUNDLE_ID_MAPPINGS"
+
+  XCODEGEN_MEDIA_SETTINGS=$(awk '
+    /^targets:[[:space:]]*$/ { in_targets = 1; next }
+    in_targets && /^[^[:space:]]/ { in_targets = 0 }
+    in_targets && /^  [^[:space:]][^:]*:[[:space:]]*$/ {
+      target = $0; sub(/^  /, "", target); sub(/:[[:space:]]*$/, "", target)
+      scope = ""; next
+    }
+    in_targets && /^      base:[[:space:]]*$/ { scope = "base"; next }
+    in_targets && /^      configs:[[:space:]]*$/ { scope = ""; next }
+    in_targets && /^        (Debug|Release|TestFlight):[[:space:]]*$/ {
+      scope = $0; sub(/^        /, "", scope); sub(/:[[:space:]]*$/, "", scope); next
+    }
+    in_targets && (target == "opensteamer" || target == "MediaNotificationContent") {
+      key = $0; sub(/^[[:space:]]*/, "", key); sub(/:.*/, "", key)
+      if (key == "CODE_SIGN_ENTITLEMENTS" || key == "BELUGA_MEDIA_APP_GROUP" ||
+          (target == "MediaNotificationContent" && key ~ /^(SKIP_INSTALL|APPLICATION_EXTENSION_API_ONLY|MARKETING_VERSION|CURRENT_PROJECT_VERSION|DEVELOPMENT_TEAM|CODE_SIGN_STYLE)$/)) {
+        value = $0; sub(/^[^:]*:[[:space:]]*/, "", value)
+        print target "|" scope "|" key "|" value
+      }
+    }
+  ' "$ROOT/$PROJECT_YML" | LC_ALL=C sort)
+  EXPECTED_XCODEGEN_MEDIA_SETTINGS=$(printf '%s\n' \
+    'opensteamer|base|CODE_SIGN_ENTITLEMENTS|Sources/Support/MediaNotification.entitlements' \
+    'opensteamer|base|BELUGA_MEDIA_APP_GROUP|group.org.example.AudioStreamer.dev.media' \
+    'opensteamer|TestFlight|BELUGA_MEDIA_APP_GROUP|group.com.elamin.opensteamer.media' \
+    'MediaNotificationContent|base|CODE_SIGN_ENTITLEMENTS|Sources/Support/MediaNotification.entitlements' \
+    'MediaNotificationContent|base|BELUGA_MEDIA_APP_GROUP|group.org.example.AudioStreamer.dev.media' \
+    'MediaNotificationContent|base|SKIP_INSTALL|YES' \
+    'MediaNotificationContent|base|APPLICATION_EXTENSION_API_ONLY|YES' \
+    'MediaNotificationContent|base|MARKETING_VERSION|0.1.0' \
+    'MediaNotificationContent|base|CURRENT_PROJECT_VERSION|1' \
+    'MediaNotificationContent|base|CODE_SIGN_STYLE|Automatic' \
+    'MediaNotificationContent|Release|CURRENT_PROJECT_VERSION|36' \
+    'MediaNotificationContent|Release|DEVELOPMENT_TEAM|MSMG8CJLB3' \
+    'MediaNotificationContent|TestFlight|BELUGA_MEDIA_APP_GROUP|group.com.elamin.opensteamer.media' \
+    'MediaNotificationContent|TestFlight|CURRENT_PROJECT_VERSION|95' \
+    'MediaNotificationContent|TestFlight|DEVELOPMENT_TEAM|MSMG8CJLB3' \
+    | LC_ALL=C sort)
+  assert_equal "project.yml notification storage/signing/install contract" \
+    "$EXPECTED_XCODEGEN_MEDIA_SETTINGS" "$XCODEGEN_MEDIA_SETTINGS"
+  XCODEGEN_MEDIA_SDK=$(awk '
+    /^  MediaNotificationContent:[[:space:]]*$/ { in_extension = 1; next }
+    in_extension && /^  [^[:space:]]/ { in_extension = 0 }
+    in_extension && /^    dependencies:[[:space:]]*$/ { in_dependencies = 1; next }
+    in_extension && /^    [^[:space:]]/ { in_dependencies = 0 }
+    in_extension && in_dependencies && /^[[:space:]]*-/ {
+      value = $0; sub(/^[[:space:]]*/, "", value); print value
+    }
+  ' "$ROOT/$PROJECT_YML")
+  assert_equal "project.yml notification extension framework link" \
+    '- sdk: UserNotificationsUI.framework' "$XCODEGEN_MEDIA_SDK"
 fi
 
 PBX_PROJECT='iOS/opensteamer/opensteamer.xcodeproj/project.pbxproj'
@@ -510,6 +696,13 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     const fileReferences = objects("PBXFileReference");
     const buildConfigurations = objects("XCBuildConfiguration");
     const configurationLists = objects("XCConfigurationList");
+    const frameworkPhases = objects("PBXFrameworksBuildPhase");
+    const buildFiles = objects("PBXBuildFile");
+    function referenceList(body, key) {
+      const match = body.match(new RegExp(`\\b${key} = \\(([\\s\\S]*?)\\);`));
+      if (!match) throw new Error(`missing ${key} list`);
+      return [...match[1].matchAll(/^\s*([A-F0-9]+)\b/gm)].map(entry => entry[1]);
+    }
     const lines = [];
     for (const [targetID, target] of targets.entries()) {
       const name = setting(target.body, "name");
@@ -523,6 +716,17 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
       const configurationListID = referenceID(target.body, "buildConfigurationList");
       lines.push(`target|${name}|${productName}|${productPath}|${productFileType}|${productType}`);
       lines.push(`target-id|${name}|${targetID}`);
+      if (name === "MediaNotificationContent") {
+        const phases = referenceList(target.body, "buildPhases").filter(id => frameworkPhases.has(id));
+        if (phases.length !== 1) throw new Error("notification extension needs one framework phase");
+        const links = referenceList(frameworkPhases.get(phases[0]).body, "files");
+        if (links.length !== 1) throw new Error("notification extension framework set differs");
+        const link = buildFiles.get(links[0]);
+        if (!link || /\bATTRIBUTES\s*=/.test(link.body)) throw new Error("notification framework must be a normal strong link");
+        const reference = fileReferences.get(referenceID(link.body, "fileRef"));
+        if (!reference) throw new Error("missing notification framework reference");
+        lines.push(`media-framework|${setting(reference.body, "sourceTree")}|${setting(reference.body, "lastKnownFileType")}|${setting(reference.body, "path")}`);
+      }
       const configurationList = configurationLists.get(configurationListID);
       if (!configurationList) throw new Error(`missing configuration list for ${name}`);
       const entries = configurationList.body.match(
@@ -550,6 +754,14 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
         if (name === "opensteamer") {
           lines.push(`app-product|${configurationName}|${setting(configuration.body, "PRODUCT_NAME")}|${setting(configuration.body, "PRODUCT_MODULE_NAME")}|${setting(configuration.body, "ASSETCATALOG_COMPILER_APPICON_NAME")}`);
         }
+        if (["opensteamer", "MediaNotificationContent"].includes(name)) {
+          lines.push(`media-storage|${name}|${configurationName}|${setting(configuration.body, "BELUGA_MEDIA_APP_GROUP")}|${setting(configuration.body, "CODE_SIGN_ENTITLEMENTS")}`);
+        }
+        if (name === "MediaNotificationContent") {
+          const keys = ["SKIP_INSTALL", "APPLICATION_EXTENSION_API_ONLY", "MARKETING_VERSION", "CURRENT_PROJECT_VERSION", "CODE_SIGN_STYLE"];
+          const team = configurationName === "Debug" ? "development-unpinned" : setting(configuration.body, "DEVELOPMENT_TEAM");
+          lines.push(`media-extension|${configurationName}|${keys.map(key => setting(configuration.body, key)).join("|")}|${team}`);
+        }
       }
       if (entryIDs.length !== 3 || configurationNames.size !== 3) {
         throw new Error(`wrong configuration set for ${name}`);
@@ -562,6 +774,7 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     PBX_TARGET_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
       | sed -n '/^target|/p' | LC_ALL=C sort)
     EXPECTED_PBX_TARGET_CONTRACTS=$(printf '%s\n' \
+      'target|MediaNotificationContent|MediaNotificationContent|MediaNotificationContent.appex|wrapper.app-extension|com.apple.product-type.app-extension' \
       'target|opensteamer|opensteamer|Beluga.app|wrapper.application|com.apple.product-type.application' \
       'target|opensteamerTests|opensteamerTests|opensteamerTests.xctest|wrapper.cfbundle|com.apple.product-type.bundle.unit-test' \
       'target|opensteamerUITests|opensteamerUITests|opensteamerUITests.xctest|wrapper.cfbundle|com.apple.product-type.bundle.ui-testing' \
@@ -574,6 +787,9 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
     PBX_BUILD_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
       | sed -n '/^build|/p' | LC_ALL=C sort)
     EXPECTED_PBX_BUILD_CONTRACTS=$(printf '%s\n' \
+      'build|MediaNotificationContent|Debug|org.example.AudioStreamer.dev.MediaNotificationContent' \
+      'build|MediaNotificationContent|Release|com.elamin.AudioStreamer.MediaNotificationContent' \
+      'build|MediaNotificationContent|TestFlight|com.elamin.opensteamer.MediaNotificationContent' \
       'build|opensteamer|Debug|org.example.AudioStreamer.dev' \
       'build|opensteamer|Release|com.elamin.AudioStreamer' \
       'build|opensteamer|TestFlight|com.elamin.opensteamer' \
@@ -595,6 +811,27 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
       $'app-product|Debug|Beluga|opensteamer|AppIcon\napp-product|Release|Beluga|opensteamer|AppIcon\napp-product|TestFlight|Beluga|opensteamer|AppIcon' \
       "$PBX_APP_PRODUCT_CONTRACTS"
 
+    PBX_MEDIA_STORAGE_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
+      | sed -n '/^media-storage|/p' | LC_ALL=C sort)
+    EXPECTED_PBX_MEDIA_STORAGE_CONTRACTS=$(printf '%s\n' \
+      'media-storage|MediaNotificationContent|Debug|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|MediaNotificationContent|Release|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|MediaNotificationContent|TestFlight|group.com.elamin.opensteamer.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|opensteamer|Debug|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|opensteamer|Release|group.org.example.AudioStreamer.dev.media|Sources/Support/MediaNotification.entitlements' \
+      'media-storage|opensteamer|TestFlight|group.com.elamin.opensteamer.media|Sources/Support/MediaNotification.entitlements' \
+      | LC_ALL=C sort)
+    assert_equal "generated Xcode notification storage isolation" \
+      "$EXPECTED_PBX_MEDIA_STORAGE_CONTRACTS" "$PBX_MEDIA_STORAGE_CONTRACTS"
+    PBX_MEDIA_EXTENSION_CONTRACTS=$(print -r -- "$PBX_CONTRACTS" \
+      | sed -n '/^media-extension|/p' | LC_ALL=C sort)
+    assert_equal "generated Xcode notification signing/install contract" \
+      $'media-extension|Debug|YES|YES|0.1.0|1|Automatic|development-unpinned\nmedia-extension|Release|YES|YES|0.1.0|36|Automatic|MSMG8CJLB3\nmedia-extension|TestFlight|YES|YES|0.1.0|95|Automatic|MSMG8CJLB3' \
+      "$PBX_MEDIA_EXTENSION_CONTRACTS"
+    assert_equal "generated Xcode notification extension framework link" \
+      'media-framework|SDKROOT|wrapper.framework|System/Library/Frameworks/UserNotificationsUI.framework' \
+      "$(print -r -- "$PBX_CONTRACTS" | sed -n '/^media-framework|/p')"
+
     APP_TARGET_ID=$(print -r -- "$PBX_CONTRACTS" | awk -F'|' \
       '$1 == "target-id" && $2 == "opensteamer" { print $3 }')
     UNIT_TEST_TARGET_ID=$(print -r -- "$PBX_CONTRACTS" | awk -F'|' \
@@ -611,7 +848,9 @@ if [[ -f "$ROOT/$PBX_PROJECT" ]]; then
 
   # Keep the inherited test-product defaults and require the app override in every configuration.
   assert_literal_count \
-    "$PBX_PROJECT" 'PRODUCT_NAME = ' 6 'generated Xcode product-name setting count'
+    "$PBX_PROJECT" 'PRODUCT_NAME = ' 9 'generated Xcode product-name setting count'
+  assert_literal_count "$PBX_PROJECT" 'PRODUCT_NAME = MediaNotificationContent;' 3 \
+    'generated Xcode notification extension product names'
   assert_literal_count \
     "$PBX_PROJECT" 'PRODUCT_NAME = "$(TARGET_NAME)";' 3 \
     'generated Xcode inherited product-name defaults'
@@ -750,7 +989,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_CONFIGURATION="TestFlight"' 1 \
   'side-by-side TestFlight configuration guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_BUILD_NUMBER="82"' 1 \
+  'EXPECTED_BUILD_NUMBER="95"' 1 \
   'side-by-side TestFlight build-number guard'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'PRIVATE_TEMPORARY_ROOT="/private/tmp"' 1 \
@@ -831,7 +1070,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-type SPARSE' 1 \
   'side-by-side TestFlight sparse-image creation'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'archive -showBuildSettings -json' 1 \
+  'archive -showBuildSettings -json' 2 \
   'side-by-side TestFlight archive-action settings proof'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-fs APFS' 1 \
@@ -1044,8 +1283,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"${EXPECTED_PACKAGE_MANIFEST_SHA256}"' 2 \
   'side-by-side TestFlight current release package-manifest binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '"${EXPECTED_PACKAGE_RESOLVED_STATE}"' 2 \
-  'side-by-side TestFlight current release absent-lock binding'
+  '"${EXPECTED_PACKAGE_RESOLVED_SHA256}"' 2 \
+  'side-by-side TestFlight current release resolved-package binding'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '"${EXPECTED_TESTFLIGHT_BUILD_CACHE_ENROLLMENT_PACKAGE_MANIFEST_SHA256}"' 3 \
   'side-by-side TestFlight cache-enrollment package-manifest provenance'
@@ -1194,6 +1433,24 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-derivedDataPath "${TESTFLIGHT_DERIVED_DATA_DIRECTORY}"' 1 \
   'side-by-side TestFlight fixed private DerivedData'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"${generated_intermediate_arguments[@]}"' 2 \
+  'side-by-side TestFlight identical target-local generated arguments and environment'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/Targets/$(PROJECT_NAME)/$(TARGET_NAME)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)' 1 \
+  'side-by-side TestFlight target-local generated intermediate namespace'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '    verify_effective_target_generated_intermediates \' 1 \
+  'side-by-side TestFlight main effective generated-root verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '  verify_effective_target_generated_intermediates "${destination}" 0 MediaNotificationContent' 1 \
+  'side-by-side TestFlight extension effective generated-root verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '      remove_private_build_settings_documents || cleanup_failed=1' 1 \
+  'side-by-side TestFlight owned build-settings cleanup reachability'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '  remove_exact_private_file "${TESTFLIGHT_CONTROL_DIRECTORY}/media-extension-build-settings.json"' 1 \
+  'side-by-side TestFlight exact extension build-settings cleanup'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '-clonedSourcePackagesDirPath "${TESTFLIGHT_BUILD_SOURCE_PACKAGES_DIRECTORY}"' 1 \
   'side-by-side TestFlight fixed private package cache'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -1296,14 +1553,20 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function resolve_pinned_package_dependencies() {' 1 \
   'side-by-side TestFlight one-time native package resolution'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_PACKAGE_MANIFEST_SHA256="443fe7a76bfbe8cda2d193c047cc04122c01479f8763ccd9e2d5871b7e504f82"' 1 \
+  'EXPECTED_PACKAGE_MANIFEST_SHA256="c518eda5d6313c66fd38d8e8b4ae5ab537f276edccc5149f19b29dfef3c0c5aa"' 1 \
   'side-by-side TestFlight exact package manifest pin'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'EXPECTED_PACKAGE_RESOLVED_STATE="absent"' 1 \
-  'side-by-side TestFlight exact absent-lock state'
+  'EXPECTED_PACKAGE_RESOLVED_SHA256="b3ab744638912653cdcd8d3890a460390e651343720897a8a24ba84273ec83c7"' 1 \
+  'side-by-side TestFlight exact resolved-package pin'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '&& ! -e "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}"' 1 \
-  'side-by-side TestFlight rejects stale remote dependency lock'
+  '&& -f "${PACKAGE_RESOLVED_PATH}" && ! -L "${PACKAGE_RESOLVED_PATH}"' 1 \
+  'side-by-side TestFlight requires regular non-symlink dependency lock'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"$(sha256_private_file_contents "${PACKAGE_MANIFEST_PATH}")"' 1 \
+  'side-by-side TestFlight exact manifest bytes'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '"$(sha256_private_file_contents "${PACKAGE_RESOLVED_PATH}")"' 1 \
+  'side-by-side TestFlight exact resolved-package bytes'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'VENDOR_ARCHIVE_PATH="${REPOSITORY_ROOT}/shared/Vendor/LiveKitWebRTC/LiveKitWebRTC.xcframework.zip"' 1 \
   'side-by-side TestFlight exact local vendor path'
@@ -1335,8 +1598,14 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'function run_initialize_build_cache() {\n  verify_package_dependency_contract \\\n    || fail "current package inputs changed before build-cache enrollment"' 1 \
   'side-by-side TestFlight fresh enrollment current-package verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  $'verify_static_contract\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' 1 \
+  $'esac\nverify_package_dependency_contract \\\n  || fail "current package inputs do not match the reviewed release pins"\npin_export_options_identity' 1 \
   'side-by-side TestFlight entrypoint current-package verification'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_microphone_regression_receipt' 5 \
+  'side-by-side TestFlight mandatory microphone receipt boundaries'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'"${MICROPHONE_REGRESSION_RUNNER}" --verify-receipt "${receipt}" \\\n    --receipt-sha256 "${expected_receipt_sha256}" || return 1' 1 \
+  'side-by-side TestFlight independently bound microphone receipt verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   '/usr/bin/sandbox-exec -p "${profile_text}"' 1 \
   'side-by-side TestFlight protected-path Xcode sandbox'
@@ -1591,6 +1860,24 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'verify_main_signed_entitlements "${app_path}"' 1 \
   'side-by-side TestFlight signed entitlement verifier call'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'function verify_media_notification_framework_load_commands() {' 1 \
+  'side-by-side TestFlight notification strong-load parser'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_media_notification_framework_link "${extension_path}/MediaNotificationContent" || return 1' 1 \
+  'side-by-side TestFlight notification binary framework validation'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '/usr/bin/otool -arch arm64 -l "${executable}"' 1 \
+  'side-by-side TestFlight actual notification Mach-O load commands'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'  (( app_target_count == 1 )) || return 1\n  verify_effective_media_extension_build_settings' 1 \
+  'side-by-side TestFlight independent effective notification settings gate'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  $'    media-extension-settings)\n      run_with_pinned_xcode_sandbox_profile settings "$@"' 1 \
+  'side-by-side TestFlight sandboxed read-only notification settings'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_media_notification_effective_settings_document "${destination}"' 1 \
+  'side-by-side TestFlight exact effective notification settings document'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'function verify_embedded_provisioning_profile() {' 1 \
   'side-by-side TestFlight provisioning-profile verification'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -1714,8 +2001,8 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'EXPECTED_ASC_P8_SHA256="22d0dffa775141c5bedb6eb255fb909f50f0547f1997f2ff9ad92609afce5300"' 1 \
   'side-by-side TestFlight exact API-key byte digest'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  'sha256_private_file_contents' 3 \
-  'side-by-side TestFlight path-independent private-key hashing'
+  'sha256_private_file_contents' 9 \
+  'side-by-side TestFlight path-independent private-key, receipt, and package hashing'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'NR == 1 && NF == 2 && $2 == "-" && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1 }' 1 \
   'side-by-side TestFlight private-key stdin digest parser'
@@ -1774,7 +2061,7 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   $'function run_authorized_api_key_upload() {\n  pin_app_store_connect_api_key_identity \\\n    || fail "reviewed App Store Connect API key is missing, changed, or unsafe (${TESTFLIGHT_ASC_API_KEY_PIN_FAILURE})"\n  run_authorized_upload\n}' 1 \
   'side-by-side TestFlight API-key pin-before-upload wrapper'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
-  '--upload-authorized-side-by-side-testflight-with-api-key)' 1 \
+  '--upload-authorized-side-by-side-testflight-with-api-key)' 2 \
   'side-by-side TestFlight explicit API-key upload authorization mode'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'exec {TESTFLIGHT_ASC_API_KEY_FD}>&- || cleanup_failed=1' 1 \
@@ -1915,6 +2202,12 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'trap cleanup_on_exit EXIT' 1 \
   'side-by-side TestFlight single exit-cleanup entrypoint'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'trap cleanup_on_exit ZERR' 1 \
+  'side-by-side TestFlight nested errexit cleanup entrypoint'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  '(( ZSH_SUBSHELL == 0 )) || return ${original_status}' 1 \
+  'side-by-side TestFlight cleanup belongs only to the owning shell'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'cleanup_release_scratch || cleanup_status=1' 1 \
   'side-by-side TestFlight idempotent masked normal cleanup'
 assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
@@ -1940,6 +2233,9 @@ assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
   'side-by-side TestFlight caller-controlled output path rejection'
 
 SIDE_BY_SIDE_EXPORT_OPTIONS='iOS/opensteamer/TestFlightExportOptions.plist'
+assert_literal_count "$SIDE_BY_SIDE_TESTFLIGHT_SCRIPT" \
+  'verify_reviewed_export_signing_options "${EXPORT_OPTIONS_PATH}"' 1 \
+  'side-by-side TestFlight exact local signing export gate'
 require_absent_file \
   'iOS/opensteamer/ExportOptions.plist' \
   'superseded generic iOS export options'
@@ -1947,8 +2243,19 @@ assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" destination upload \
   'side-by-side TestFlight export destination'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" method app-store-connect \
   'side-by-side TestFlight export method'
-assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingStyle automatic \
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingStyle manual \
   'side-by-side TestFlight export signing style'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" signingCertificate \
+  CEB61B792A7A5848E9E797BB2E44EA2642611A6F \
+  'side-by-side TestFlight export certificate'
+assert_plist_container_cardinality "$SIDE_BY_SIDE_EXPORT_OPTIONS" provisioningProfiles dict 2 \
+  'side-by-side TestFlight export profile count'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" \
+  'provisioningProfiles.com\.elamin\.opensteamer' 66eb4be5-07eb-49a3-a70f-fcbb76a2a849 \
+  'side-by-side TestFlight main export profile'
+assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" \
+  'provisioningProfiles.com\.elamin\.opensteamer\.MediaNotificationContent' 9401f67d-3ef2-4b0e-af11-9603de6698c2 \
+  'side-by-side TestFlight extension export profile'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" teamID MSMG8CJLB3 \
   'side-by-side TestFlight export team'
 assert_plist_value "$SIDE_BY_SIDE_EXPORT_OPTIONS" manageAppVersionAndBuildNumber false \
@@ -1974,7 +2281,7 @@ assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   'iOS local-network description identity'
 assert_plist_value iOS/opensteamer/Sources/Support/Info.plist \
   NSCameraUsageDescription \
-  'Beluga may request camera access through its real-time communication framework only when you explicitly start a camera-capable sharing feature. Ordinary audio and screen streaming do not access the camera.' \
+  'Beluga uses the camera only when you choose to scan a Mac pairing QR code. Ordinary audio and screen streaming do not access the camera.' \
   'iOS camera usage description'
 assert_literal_count iOS/opensteamer/Sources/Views/BrowserView.swift \
   '.navigationTitle("Beluga")' 1 'iOS navigation-title identity'
@@ -2202,7 +2509,10 @@ assert_literal_count macOS/Sources/CaptureServer/CaptureServerMain.swift \
   'dataStore: WorldwideKeychainDataStore()' 1 \
   'explicit opensteamer pairing-store composition'
 assert_literal_count macOS/Sources/CaptureServer/CaptureServerMain.swift \
-  'fflush(stdout)' 2 'immediate primary and secondary one-time pairing-code flushes'
+  'fflush(stdout)' 1 'immediate primary one-time pairing-code flush'
+assert_literal_count macOS/Sources/CaptureServer/CaptureServerMain.swift \
+  'Secondary one-time test viewer code' 0 \
+  'secondary invitation absence from the long-lived host log'
 if require_directory macOS/Sources; then
   PROTECTED_PAIRING_SOURCE_MATCHES=$(find "$ROOT/macOS/Sources" -type f -name '*.swift' \
     -exec grep -lF -- \
@@ -2210,7 +2520,7 @@ if require_directory macOS/Sources; then
   [[ -z "$PROTECTED_PAIRING_SOURCE_MATCHES" ]] \
     || fail 'protected legacy pairing Keychain service appears in macOS runtime source'
 fi
-assert_literal_count macOS/Sources/CaptureServer/WorldwideHostProcessLock.swift \
+assert_literal_count macOS/Sources/BelugaUpdateCore/WorldwideHostProcessLock.swift \
   '"com.elamin.AudioStreamer.CaptureServer.runtime"' 1 \
   'preserved cross-version runtime lock namespace'
 assert_literal_count macOS/scripts/build-opensteamer-host-app.sh \
@@ -2260,11 +2570,17 @@ assert_json_name macOS/RelayBridge/package-lock.json top opensteamer-relay-bridg
 assert_json_name macOS/RelayBridge/package-lock.json lock-root opensteamer-relay-bridge \
   'RelayBridge lockfile root-package name'
 
-assert_toml_name services/RendezvousWorker/wrangler.toml opensteamer-rendezvous \
+assert_toml_name services/RendezvousWorker/wrangler.toml audiostreamer-rendezvous \
   'production Worker name'
 assert_toml_name services/RendezvousWorker/wrangler.test.toml opensteamer-rendezvous-test \
   'test Worker name'
 
+# Resolve every deferred assertion before admission. A skipped/broken flush is not a pass.
+flush_literal_count_batch
+if (( ${#IDENTITY_MULTILINE_PATHS[@]} > 0 )); then
+  fail 'multiline literal-count assertions remain unflushed'
+fi
+print_identity_diagnostics
 if (( FAILURES > 0 )); then
   print -u2 -- "Beluga product identity check rejected $FAILURES mismatch(es)"
   exit 1

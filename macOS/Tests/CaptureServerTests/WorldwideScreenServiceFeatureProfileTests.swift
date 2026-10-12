@@ -4,6 +4,36 @@ import XCTest
 @testable import CaptureServer
 
 final class WorldwideScreenServiceFeatureProfileTests: XCTestCase {
+    func testProductionPrimaryConfigurationAdvertisesHandoffWithAvailableMediaController() {
+        let configuration = WorldwideScreenService.makePeerConfiguration(
+            iceServers: [], icePolicy: .relayOnly, maximumVideoBitrate: 8_000_000,
+            featureProfile: .fullPrimary, remoteMediaControllerIsAvailable: true
+        )
+        XCTAssertEqual(configuration.role, .host)
+        XCTAssertEqual(configuration.icePolicy, .relayOnly)
+        XCTAssertEqual(configuration.maximumVideoBitrate, 8_000_000)
+        XCTAssertEqual(configuration.mediaTopology, .full)
+        XCTAssertTrue(configuration.supportsRemoteMediaControls)
+        XCTAssertTrue(configuration.supportsMediaHandoff)
+        XCTAssertTrue(configuration.supportsAudioClientDiagnostics)
+    }
+
+    func testProductionHandoffConfigurationRejectsUnavailableControllerAndSecondaryOwnership() {
+        for profile in [WorldwideScreenServiceFeatureProfile.fullPrimary, .secondaryTest] {
+            for controllerIsAvailable in [false, true] {
+                let configuration = WorldwideScreenService.makePeerConfiguration(
+                    iceServers: [], icePolicy: .directPreferred, maximumVideoBitrate: 4_000_000,
+                    featureProfile: profile, remoteMediaControllerIsAvailable: controllerIsAvailable
+                )
+                let mayControlMedia = profile == .fullPrimary && controllerIsAvailable
+                XCTAssertEqual(configuration.supportsMediaHandoff, mayControlMedia)
+                XCTAssertEqual(configuration.supportsRemoteMediaControls, mayControlMedia)
+                XCTAssertEqual(configuration.mediaTopology, profile.transportMediaTopology)
+                XCTAssertEqual(configuration.supportsAudioClientDiagnostics, profile == .fullPrimary)
+            }
+        }
+    }
+
     func testFullPrimaryOwnsEveryProcessGlobalMediaFeature() {
         let profile = WorldwideScreenServiceFeatureProfile.fullPrimary
 

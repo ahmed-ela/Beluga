@@ -56,13 +56,55 @@ final class WorldwideHostLifecycleTests: XCTestCase {
                 + "coverVisible=false coverReason=none inboundBytes=8192 "
                 + "inboundPackets=64 decoded=32 presented=31 contentSamples=12 "
                 + "contentChanges=4 presentationAgeMs=5250 dimensions=1280x832 "
-                + "fps=12.5"
+                + "fps=12.5 rendererPath=unavailable"
         )
         XCTAssertFalse(message.contains("trackID"))
         XCTAssertFalse(message.contains("receiverID"))
         XCTAssertFalse(message.contains("sourceID"))
         XCTAssertFalse(message.contains("SSRC"))
         XCTAssertFalse(message.contains("SDP"))
+    }
+
+    func testScreenClientDiagnosticsLogDistinguishesNativeCoverAndRendererStages() {
+        let heartbeat = WebRTCScreenClientDiagnosticsHeartbeat(
+            sequence: 10,
+            screenRequestID: 43,
+            liveness: .presentationStalled,
+            trackAttached: true,
+            coverVisible: false,
+            coverReason: .none,
+            rendererPath: WebRTCVideoRendererPathDiagnostics(
+                rendererEpoch: 91,
+                nativeCoverVisible: true,
+                metalDelegateInstalled: true,
+                renderFrameEntries: 40,
+                mtkDrawEntries: 30,
+                nilDrawable: 4,
+                producerBusy: 3,
+                registrarUnsupported: 2,
+                registrarAlreadyPresented: 1,
+                registrarRegistered: 20,
+                presentedTimeReadable: 27,
+                callbackEarly: 1,
+                callbackValid: 12,
+                callbackFenceRejected: 2
+            )
+        )
+        XCTAssertTrue(heartbeat.isValid)
+        let message = WorldwideScreenService.screenClientDiagnosticsLogMessage(
+            heartbeat,
+            hostPhase: .suspended,
+            isCorrelated: true
+        )
+        XCTAssertTrue(message.contains("coverVisible=false"))
+        XCTAssertTrue(message.contains("nativeCover=true"))
+        XCTAssertTrue(message.contains("rendererEpoch=91"))
+        XCTAssertTrue(message.contains("nilDrawable=4"))
+        XCTAssertTrue(message.contains("producerBusy=3"))
+        XCTAssertTrue(message.contains("presentedTimeReadable=27"))
+        XCTAssertTrue(message.contains("callbackFenceRejected=2"))
+        XCTAssertFalse(message.contains("pixel"))
+        XCTAssertFalse(message.contains("digest"))
     }
 
     func testRemoteInputFormatDiagnosticReportsBoundedOriginAndGeometryState() {
@@ -190,7 +232,12 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         XCTAssertEqual(
             message,
             "Worldwide iPhone microphone forwarding " +
-                "phase=waitingForPeer inputEndpointAvailable=false " +
+                "phase=waitingForPeer monitorEpoch=none " +
+                "deviceGeneration=0 peerGeneration=0 " +
+                "transportAuthorizationEpoch=0 trackGeneration=0 " +
+                "attemptGeneration=0 " +
+                "lastAttemptedKeyMatchesSnapshot=false " +
+                "inputEndpointAvailable=false " +
                 "hiddenSinkAvailable=false " +
                 "hiddenWriterSelectionProven=false transport=false " +
                 "trackAdmitted=false queueRunning=false callbacks=0 " +
@@ -282,61 +329,61 @@ final class WorldwideHostLifecycleTests: XCTestCase {
         XCTAssertFalse(message.contains("nonce"))
     }
 
-    func testSafeOutputRetryPolicyBacksOffThenProbesAfterCappedCooldown() {
+    func testSafeOutputRetryPolicyBacksOffThenProbesAfterCappedCooldown() throws {
         var policy = WorldwideSafeOutputInvariantRetryPolicy(
             maximumFailedAttemptCount: 3,
             maximumBackoffTickCount: 4,
             cappedCooldownTickCount: 3
         )
 
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
-        policy.recordFailure()
-        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
+        try policy.recordFailure()
+        XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
 
-        policy.recordFailure()
-        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
-        XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        try policy.recordFailure()
+        XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
+        XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
 
-        policy.recordFailure()
+        try policy.recordFailure()
         for _ in 0..<3 {
-            XCTAssertFalse(policy.shouldAttemptOnCurrentTick())
+            XCTAssertFalse(try policy.shouldAttemptOnCurrentTick())
         }
         XCTAssertEqual(policy.failedAttemptCount, 3)
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
         XCTAssertEqual(policy.failedAttemptCount, 0)
 
-        policy.recordFailure()
-        policy.reset()
+        try policy.recordFailure()
+        try policy.reset()
         XCTAssertEqual(policy.failedAttemptCount, 0)
-        XCTAssertTrue(policy.shouldAttemptOnCurrentTick())
+        XCTAssertTrue(try policy.shouldAttemptOnCurrentTick())
     }
 
-    func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() {
+    func testAvailabilityBackoffDoesNotResetForUpgradeFollowedByServerError() throws {
         var policy = WorldwideAvailabilityRetryPolicy()
 
-        XCTAssertEqual(policy.delayAfterFailure(), 1)
-        XCTAssertEqual(policy.delayAfterFailure(), 2)
-        XCTAssertEqual(policy.delayAfterFailure(), 4)
-        XCTAssertEqual(policy.delayAfterFailure(), 8)
-        XCTAssertEqual(policy.delayAfterFailure(), 16)
-        XCTAssertEqual(policy.delayAfterFailure(), 30)
-        XCTAssertEqual(policy.delayAfterFailure(), 30)
+        XCTAssertEqual(try policy.delayAfterFailure(), 1)
+        XCTAssertEqual(try policy.delayAfterFailure(), 2)
+        XCTAssertEqual(try policy.delayAfterFailure(), 4)
+        XCTAssertEqual(try policy.delayAfterFailure(), 8)
+        XCTAssertEqual(try policy.delayAfterFailure(), 16)
+        XCTAssertEqual(try policy.delayAfterFailure(), 30)
+        XCTAssertEqual(try policy.delayAfterFailure(), 30)
         XCTAssertFalse(policy.hasValidatedConnection)
     }
 
-    func testValidAvailabilityStateResetsBackoffAndIsReportedOncePerConnection() {
+    func testValidAvailabilityStateResetsBackoffAndIsReportedOncePerConnection() throws {
         var policy = WorldwideAvailabilityRetryPolicy()
-        XCTAssertEqual(policy.delayAfterFailure(), 1)
-        XCTAssertEqual(policy.delayAfterFailure(), 2)
+        XCTAssertEqual(try policy.delayAfterFailure(), 1)
+        XCTAssertEqual(try policy.delayAfterFailure(), 2)
 
-        XCTAssertTrue(policy.observedValidAvailabilityState())
-        XCTAssertFalse(policy.observedValidAvailabilityState())
+        XCTAssertTrue(try policy.observedValidAvailabilityState())
+        XCTAssertFalse(try policy.observedValidAvailabilityState())
         XCTAssertTrue(policy.hasValidatedConnection)
-        XCTAssertEqual(policy.delayAfterFailure(), 1)
+        XCTAssertEqual(try policy.delayAfterFailure(), 1)
 
-        XCTAssertTrue(policy.observedValidAvailabilityState())
+        XCTAssertTrue(try policy.observedValidAvailabilityState())
         XCTAssertEqual(policy.nextDelaySeconds, 1)
     }
 

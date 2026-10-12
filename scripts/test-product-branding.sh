@@ -178,6 +178,58 @@ write_current_automatic_signing_fixture "$AUTOMATIC_SIGNING"
 commit_all "$AUTOMATIC_SIGNING"
 "$AUTOMATIC_SIGNING/scripts/check-product-branding.sh" "$AUTOMATIC_SIGNING" >/dev/null
 
+WORKER_ORIGIN="$TEMPORARY_ROOT/worker-origin"
+initialize_repository "$WORKER_ORIGIN"
+mkdir -p "$WORKER_ORIGIN/services/RendezvousWorker"
+print -r -- 'name = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+print -r -- "$PRODUCTION_URL" >"$WORKER_ORIGIN/services/RendezvousWorker/README.md"
+commit_all "$WORKER_ORIGIN"
+"$WORKER_ORIGIN/scripts/check-product-branding.sh" "$WORKER_ORIGIN" >/dev/null
+
+print -rl -- '[vars]' 'name = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.toml:2:'
+print -r -- 'name = "audiostreamer-rendezvous-other"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.toml:1:'
+print -r -- 'description = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.toml:1:'
+print -r -- 'name = "audiostreamer-rendezvous"' \
+  >"$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml"
+print -r -- "http://${PRODUCTION_HOST}" >"$WORKER_ORIGIN/services/RendezvousWorker/README.md"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/README.md:1:'
+print -r -- "$PRODUCTION_URL" >"$WORKER_ORIGIN/services/RendezvousWorker/README.md"
+cp "$WORKER_ORIGIN/services/RendezvousWorker/wrangler.toml" \
+  "$WORKER_ORIGIN/services/RendezvousWorker/wrangler.test.toml"
+commit_all "$WORKER_ORIGIN"
+require_failure "$WORKER_ORIGIN" 'services/RendezvousWorker/wrangler.test.toml:1:'
+
+MAC_RENDEZVOUS="$TEMPORARY_ROOT/mac-rendezvous"
+initialize_repository "$MAC_RENDEZVOUS"
+mkdir -p "$MAC_RENDEZVOUS/macOS/BelugaHost"
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+commit_all "$MAC_RENDEZVOUS"
+"$MAC_RENDEZVOUS/scripts/check-product-branding.sh" "$MAC_RENDEZVOUS" >/dev/null
+
+print -rl -- '<key>CFBundleDisplayName</key>' "<string>${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+require_failure "$MAC_RENDEZVOUS" 'macOS/BelugaHost/Info.plist:2:'
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>http://${PRODUCTION_HOST}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+require_failure "$MAC_RENDEZVOUS" 'macOS/BelugaHost/Info.plist:2:'
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>Beluga at ${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+require_failure "$MAC_RENDEZVOUS" 'macOS/BelugaHost/Info.plist:2:'
+print -rl -- '<key>BelugaRendezvousURL</key>' "<string>${PRODUCTION_URL}</string>" \
+  >"$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist"
+mkdir -p "$MAC_RENDEZVOUS/macOS/OtherApp"
+cp "$MAC_RENDEZVOUS/macOS/BelugaHost/Info.plist" "$MAC_RENDEZVOUS/macOS/OtherApp/Info.plist"
+commit_all "$MAC_RENDEZVOUS"
+require_failure "$MAC_RENDEZVOUS" 'macOS/OtherApp/Info.plist:2:'
+
 HOST_CONTRACTS="$TEMPORARY_ROOT/host-contracts"
 initialize_repository "$HOST_CONTRACTS"
 mkdir -p \
@@ -299,6 +351,262 @@ require_scoped_content_rejected() {
   commit_all "$repository"
   require_failure "$repository" "$relative_path:1:$token"
 }
+
+MAC_CLIENT_COMPATIBILITY="$TEMPORARY_ROOT/mac-client-compatibility"
+initialize_repository "$MAC_CLIENT_COMPATIBILITY"
+MAC_CLIENT_COMPATIBILITY_PATHS=(
+  iOS/opensteamer/Sources/Security/ViewerPairedMacCatalogStore.swift
+  macOS/Sources/BelugaUpdateCore/BelugaUpdateOperation.swift
+  macOS/Sources/BelugaUpdateCore/BelugaUpdateInstalledArtifact.swift
+  macOS/Sources/CaptureServer/BelugaHostPresentation.swift
+  macOS/Tests/CaptureServerTests/BelugaUpdatePeerIdentityTests.swift
+  macOS/Tests/CaptureServerTests/BelugaUpdateInstalledArtifactTests.swift
+  macOS/Tests/CaptureServerTests/BelugaMenuBarTests.swift
+  macOS/scripts/build-beluga-mac-client-contract.rb
+  macOS/scripts/verify-beluga-mac-client-tests.rb
+  macOS/BelugaHost/Release.json
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java
+  ANDROID_CLIENT_PLAN.md
+  shared/Sources/WebRTCTransport/WebRTCAudioShareSender.swift
+)
+for relative_path in "${MAC_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  mkdir -p "$MAC_CLIENT_COMPATIBILITY/${relative_path:h}"
+done
+print -r -- 'service: "org.example.AudioStreamer", account: "worldwide-paired-macs-catalog"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[1]}"
+print -r -- 'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[2]}"
+print -r -- 'static let signingRequirement = "anchor apple generic and identifier \"com.elamin.AudioStreamer.CaptureServer\" and certificate leaf[subject.OU] = \"MSMG8CJLB3\" and certificate leaf[field.1.2.840.113635.100.6.1.13] exists"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[3]}"
+print -r -- '&& bundleIdentifier == "com.elamin.AudioStreamer.CaptureServer"' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[4]}"
+print -r -- 'XCTAssertTrue(source.contains("identifier \"\(role == .main ? "com.elamin.AudioStreamer.CaptureServer" : "com.elamin.beluga.Updater")\""))' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[5]}"
+print -r -- 'XCTAssertTrue(Reader.signingRequirement.contains("identifier \"com.elamin.AudioStreamer.CaptureServer\""))' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[6]}"
+print -rl -- "let endpoint = \"${PRODUCTION_URL}\"" \
+  'bundleIdentifier: "com.elamin.AudioStreamer.CaptureServer",' \
+  'arguments: arguments, bundleIdentifier: "com.elamin.AudioStreamer.CaptureServer",' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[7]}"
+print -r -- "BUNDLE_ID = 'com.elamin.AudioStreamer.CaptureServer'" \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[8]}"
+print -r -- "value = '${PRODUCTION_URL}'" \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[9]}"
+print -r -- '"bundleIdentifier": "com.elamin.AudioStreamer.CaptureServer",' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[10]}"
+print -r -- '"AudioStreamer.RemoteInvitation.Checksum.v1\0".getBytes(StandardCharsets.US_ASCII);' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[11]}"
+print -r -- '`audiostreamer.control`/`.v2` envelopes, stereo Opus negotiation and H.264 screen' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[12]}"
+print -r -- '|| $0.hasPrefix("a=audiostreamer") || $0.hasPrefix("a=opensteamer")' \
+  >"$MAC_CLIENT_COMPATIBILITY/${MAC_CLIENT_COMPATIBILITY_PATHS[13]}"
+commit_all "$MAC_CLIENT_COMPATIBILITY"
+"$MAC_CLIENT_COMPATIBILITY/scripts/check-product-branding.sh" "$MAC_CLIENT_COMPATIBILITY" >/dev/null
+
+# Every newly permitted path still rejects former-brand presentation. Separate
+# fixtures avoid a first failure hiding a later path's accidental broad allowance.
+for relative_path in "${MAC_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  require_scoped_content_rejected "mac-client-display-${relative_path:t}" "$relative_path" \
+    'Text("AudioStreamer")' AudioStreamer
+done
+require_scoped_content_rejected mac-client-identity-wrong-path \
+  macOS/Sources/BelugaUpdateCore/Unreviewed.swift \
+  'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer"' \
+  AudioStreamer.CaptureServer
+require_scoped_content_rejected mac-client-identity-wrong-token "${MAC_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer.preview"' \
+  AudioStreamer.CaptureServer.preview
+require_scoped_content_rejected mac-client-identity-trailing-brand "${MAC_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'package static let expectedBundleIdentifier = "com.elamin.AudioStreamer.CaptureServer" // AudioStreamer' \
+  AudioStreamer.CaptureServer
+require_scoped_content_rejected mac-client-keychain-wrong-account "${MAC_CLIENT_COMPATIBILITY_PATHS[1]}" \
+  'service: "org.example.AudioStreamer", account: "unreviewed-catalog"' AudioStreamer
+require_scoped_content_rejected mac-client-release-display-field "${MAC_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  '"displayName": "com.elamin.AudioStreamer.CaptureServer",' AudioStreamer.CaptureServer
+require_scoped_content_rejected mac-client-rendezvous-wrong-token "${MAC_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  "value = 'wss://audiostreamer-rendezvous.elaminahmed04.workers.dev'" \
+  audiostreamer-rendezvous.elaminahmed04.workers.dev
+require_scoped_content_rejected android-checksum-wrong-domain "${MAC_CLIENT_COMPATIBILITY_PATHS[11]}" \
+  '"AudioStreamer.RemoteInvitation.Checksum.v2\0".getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.RemoteInvitation.Checksum.v2
+require_scoped_content_rejected audio-share-negative-prefix-wrong-context "${MAC_CLIENT_COMPATIBILITY_PATHS[13]}" \
+  'Text("a=audiostreamer")' audiostreamer
+require_scoped_content_rejected android-plan-wire-wrong-context "${MAC_CLIENT_COMPATIBILITY_PATHS[12]}" \
+  '# audiostreamer.control' audiostreamer.control
+
+# Exercise every imported Android compatibility line, rather than a reduced sample.
+# The policy has fixed literal matches; these current-source inputs cannot grant permission.
+ANDROID_CLIENT_COMPATIBILITY="$TEMPORARY_ROOT/android-client-compatibility"
+initialize_repository "$ANDROID_CLIENT_COMPATIBILITY"
+ANDROID_CLIENT_COMPATIBILITY_PATHS=(
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingInvitation.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingCanonicalCodec.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodec.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerPairingAuthenticator.java
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ReconnectMessages.java
+  android/transport/src/main/java/com/elamin/beluga/protocol/ProcessPairingDnsResolver.java
+  android/protocol/src/test/java/com/elamin/beluga/protocol/PairingCanonicalCodecTest.java
+  android/protocol/src/test/java/com/elamin/beluga/protocol/BouncyCastlePairingCryptoTest.java
+  android/transport/src/main/java/com/elamin/beluga/protocol/NettyPairingWssTransport.java
+  android/transport/src/test/java/com/elamin/beluga/protocol/NettyPairingWssTransportTest.java
+  android/transport/src/test/java/com/elamin/beluga/protocol/ViewerPairingSessionTest.java
+  android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapEnvelopeCodecTest.java
+  android/app/src/test/java/com/elamin/beluga/protocol/PairingBootstrapBrokerEventParserTest.java
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerStorageCatalogTest.java
+)
+# These exact files are absent in the prior Android checkpoint. When present,
+# their actual ABI lines must pass the same fixed policy, not a fixture exemption.
+for relative_path in \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodecTest.java \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerConnectionSessionTest.java; do
+  if [[ -f "$ROOT_DIR/$relative_path" ]] && \
+      rg -q 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path"; then
+    ANDROID_CLIENT_COMPATIBILITY_PATHS+=("$relative_path")
+  fi
+done
+for relative_path in "${ANDROID_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  mkdir -p "$ANDROID_CLIENT_COMPATIBILITY/${relative_path:h}"
+  rg 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path" \
+    >"$ANDROID_CLIENT_COMPATIBILITY/$relative_path"
+done
+commit_all "$ANDROID_CLIENT_COMPATIBILITY"
+"$ANDROID_CLIENT_COMPATIBILITY/scripts/check-product-branding.sh" \
+  "$ANDROID_CLIENT_COMPATIBILITY" >/dev/null
+
+for relative_path in "${ANDROID_CLIENT_COMPATIBILITY_PATHS[@]}"; do
+  # Every admitted source/test path still refuses presentation, including a real ABI token.
+  require_scoped_content_rejected "android-client-display-${relative_path:t}" "$relative_path" \
+    'String displayName = "AudioStreamer";' AudioStreamer
+  require_scoped_content_rejected "android-client-domain-display-${relative_path:t}" "$relative_path" \
+    'String displayName = "AudioStreamer.Pairing.Root.v1";' AudioStreamer.Pairing.Root.v1
+
+  # Moving an otherwise exact imported definition/assertion to a new file must not pass.
+  content=$(rg -m 1 'AudioStreamer|audiostreamer' "$ROOT_DIR/$relative_path" \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  wrong_path="android/unreviewed/${relative_path:t}"
+  repository="$TEMPORARY_ROOT/android-client-wrong-path-${relative_path:t}"
+  initialize_repository "$repository"
+  mkdir -p "$repository/${wrong_path:h}"
+  print -r -- "$content" >"$repository/$wrong_path"
+  commit_all "$repository"
+  require_failure "$repository" "$wrong_path:1:"
+done
+
+require_scoped_content_rejected android-client-admission-domain-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[1]}" \
+  'digest.update("AudioStreamer.WorldwideInvitation.Admitted.v2\0".getBytes(StandardCharsets.UTF_8));' \
+  AudioStreamer.WorldwideInvitation.Admitted.v2
+require_scoped_content_rejected android-client-canonical-frame-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'byte[] domain = ("AudioStreamer.Pairing." + fixedSuffix + ".v2").getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.Pairing.
+require_scoped_content_rejected android-client-canonical-frame-variable "${ANDROID_CLIENT_COMPATIBILITY_PATHS[2]}" \
+  'byte[] domain = ("AudioStreamer.Pairing." + displayName + ".v1").getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.Pairing.
+require_scoped_content_rejected android-client-envelope-domain-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[3]}" \
+  'private static final byte[] AAD_DOMAIN = ascii("AudioStreamer.Signaling.Envelope.AAD.v2\0");' \
+  AudioStreamer.Signaling.Envelope.AAD.v2
+require_scoped_content_rejected android-client-durable-label-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[4]}" \
+  'channel = derive(root, salt, "AudioStreamer.DurableRendezvous.session.channel.v2");' \
+  AudioStreamer.DurableRendezvous.session.channel.v2
+require_scoped_content_rejected android-client-role-label-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[4]}" \
+  'key = derive(root, transcript, "AudioStreamer.Pairing.Confirmation.viewer.v2");' \
+  AudioStreamer.Pairing.Confirmation.viewer.v2
+require_scoped_content_rejected android-client-commit-role-variable "${ANDROID_CLIENT_COMPATIBILITY_PATHS[4]}" \
+  'return "AudioStreamer.Pairing.Commit." + displayName + "." + name + ".v1";' \
+  AudioStreamer.Pairing.Commit.
+require_scoped_content_rejected android-client-reconnect-label-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[5]}" \
+  'return domain("AudioStreamer.Reconnect.Request.Signature.v2", unsignedRequest(request));' \
+  AudioStreamer.Reconnect.Request.Signature.v2
+require_scoped_content_rejected android-client-dns-host-mutation "${ANDROID_CLIENT_COMPATIBILITY_PATHS[6]}" \
+  'private static final String HOST = "audiostreamer-rendezvous.elaminahmed04.workers.dev";' \
+  audiostreamer-rendezvous.elaminahmed04.workers.dev
+require_scoped_content_rejected android-client-test-frame-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[7]}" \
+  'byte[] label = ("AudioStreamer.Pairing." + suffix + ".v2").getBytes(StandardCharsets.US_ASCII);' \
+  AudioStreamer.Pairing.
+require_scoped_content_rejected android-client-test-commit-variable "${ANDROID_CLIENT_COMPATIBILITY_PATHS[8]}" \
+  'byte[] key = BouncyCastlePairingCrypto.hkdfSha256(root, transcript, utf8("AudioStreamer.Pairing.Commit." + displayName + "." + phase + ".v1"), 32);' \
+  AudioStreamer.Pairing.Commit.
+require_scoped_content_rejected android-client-origin-wrong-scheme "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'public static final String PRODUCTION_ORIGIN = "ws://audiostreamer-rendezvous.elaminahmed03.workers.dev";' \
+  audiostreamer-rendezvous.elaminahmed03.workers.dev
+require_scoped_content_rejected android-client-subprotocol-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'public static final String SUBPROTOCOL = "audiostreamer.pairing.v2";' audiostreamer.pairing.v2
+require_scoped_content_rejected android-client-header-role-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Role", "host")' AudioStreamer-Role
+require_scoped_content_rejected android-client-header-trailing-brand "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Channel", join.channelID()) // AudioStreamer' AudioStreamer-Channel
+require_scoped_content_rejected android-client-test-forbidden-header-inversion "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  'assertTrue(headers.contains("X-AudioStreamer-Viewer-Admission"));' AudioStreamer-Viewer-Admission
+
+require_scoped_content_rejected android-client-availability-subprotocol-version "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'public static final String AVAILABILITY_SUBPROTOCOL = "audiostreamer.availability.v2";' audiostreamer.availability.v2
+require_scoped_content_rejected android-client-availability-subprotocol-wrong-path \
+  android/transport/src/main/java/com/elamin/beluga/protocol/UnreviewedAvailabilityTransport.java \
+  'public static final String AVAILABILITY_SUBPROTOCOL = "audiostreamer.availability.v1";' audiostreamer.availability.v1
+require_scoped_content_rejected android-client-availability-mode-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Mode", "pairing");' AudioStreamer-Mode
+require_scoped_content_rejected android-client-availability-host-registration "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  '.set("X-AudioStreamer-Viewer-Admission", join.admissionProofForUpgradeHeader());' AudioStreamer-Viewer-Admission
+require_scoped_content_rejected android-client-availability-test-host-header-inversion "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  'assertTrue(headers.contains("X-AudioStreamer-Host-Admission"));' AudioStreamer-Host-Admission
+require_scoped_content_rejected android-client-availability-test-mode-swap "${ANDROID_CLIENT_COMPATIBILITY_PATHS[10]}" \
+  'assertEquals("pairing", headers.get("X-AudioStreamer-Mode"));' AudioStreamer-Mode
+require_scoped_content_rejected android-client-availability-subprotocol-display "${ANDROID_CLIENT_COMPATIBILITY_PATHS[9]}" \
+  'String displayName = "audiostreamer.availability.v1";' audiostreamer.availability.v1
+require_scoped_content_rejected android-client-availability-route-version \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'route = derive(root, routeSalt, "AudioStreamer.Availability.Route.v2");' AudioStreamer.Availability.Route.v2
+require_scoped_content_rejected android-client-availability-admission-role-swap \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'admission = derive(route, transcript, "AudioStreamer.Availability.Admission.Host.v2");' AudioStreamer.Availability.Admission.Host.v2
+require_scoped_content_rejected android-client-availability-seed-label-change \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'seed = derive(root, seedSalt, "AudioStreamer.Availability.ExchangeSeed.v2");' AudioStreamer.Availability.ExchangeSeed.v2
+require_scoped_content_rejected android-client-availability-label-display \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityLocator.java \
+  'String displayName = "AudioStreamer.Availability.Route.v1";' AudioStreamer.Availability.Route.v1
+require_scoped_content_rejected android-client-availability-domain-wrong-path \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/UnreviewedAvailabilityLocator.java \
+  'route = derive(root, routeSalt, "AudioStreamer.Availability.Route.v1");' AudioStreamer.Availability.Route.v1
+require_scoped_content_rejected android-client-availability-exchange-salt-input-change \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'salt = ReconnectMessages.domain("AudioStreamer.Availability.Exchange.Salt.v1", raw);' AudioStreamer.Availability.Exchange.Salt.v1
+require_scoped_content_rejected android-client-availability-send-direction-swap \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'send = ViewerAvailabilityLocator.derive(seed, salt, "AudioStreamer.Availability.Exchange.Signaling.HostToViewer.v1");' AudioStreamer.Availability.Exchange.Signaling.HostToViewer.v1
+require_scoped_content_rejected android-client-availability-aad-version \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v2", new byte[] {1}, ascii(channel),' AudioStreamer.Availability.Envelope.AAD.v2
+require_scoped_content_rejected android-client-availability-envelope-label-display \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodec.java \
+  'String displayName = "AudioStreamer.Availability.Envelope.AAD.v1";' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-availability-test-aad-version \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v2", new byte[] {1}, value("derived.channel"),' AudioStreamer.Availability.Envelope.AAD.v2
+require_scoped_content_rejected android-client-availability-test-aad-input-change \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {2}, value("derived.channel"),' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-availability-test-aad-wrong-path \
+  android/app/src/test/java/com/elamin/beluga/protocol/UnreviewedAvailabilityEnvelopeTest.java \
+  'return ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {1}, value("derived.channel"),' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-availability-test-label-display \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerAvailabilityEnvelopeCodecTest.java \
+  'String displayName = "AudioStreamer.Availability.Envelope.AAD.v1";' AudioStreamer.Availability.Envelope.AAD.v1
+require_scoped_content_rejected android-client-media-aad-version \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java \
+  'byte[] prefix = ascii("AudioStreamer.Signaling.Envelope.AAD.v2\0");' AudioStreamer.Signaling.Envelope.AAD.v2
+require_scoped_content_rejected android-client-media-aad-display \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/ViewerMediaSignalingCodec.java \
+  'String displayName = "AudioStreamer.Signaling.Envelope.AAD.v1";' AudioStreamer.Signaling.Envelope.AAD.v1
+require_scoped_content_rejected android-client-media-aad-wrong-path \
+  android/protocol/src/main/java/com/elamin/beluga/protocol/UnreviewedMediaCodec.java \
+  'byte[] prefix = ascii("AudioStreamer.Signaling.Envelope.AAD.v1\0");' AudioStreamer.Signaling.Envelope.AAD.v1
+require_scoped_content_rejected android-client-connection-test-aad-direction \
+  android/app/src/test/java/com/elamin/beluga/protocol/ViewerConnectionSessionTest.java \
+  'byte[] aad = ReconnectMessages.domain("AudioStreamer.Availability.Envelope.AAD.v1", new byte[] {2},' AudioStreamer.Availability.Envelope.AAD.v1
 
 require_scoped_content_rejected physical-identity-wrong-path \
   iOS/opensteamer/Tests/UnreviewedTests.swift \

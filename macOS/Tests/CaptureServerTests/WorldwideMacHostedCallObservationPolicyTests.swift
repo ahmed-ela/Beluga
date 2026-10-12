@@ -5,44 +5,44 @@ import Foundation
 import XCTest
 
 final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
-    func testWireEvidenceStateDistinguishesProspectiveArmFromPoison() {
+    func testWireEvidenceStateDistinguishesProspectiveArmFromPoison() throws {
         XCTAssertEqual(
-            WorldwideMacHostedCallEvidenceStatePolicy.state(
+            try WorldwideMacHostedCallEvidenceStatePolicy.state(
                 isCausallyBoundActive: false,
                 isCausallyArmed: true
             ),
             .preflightArmed
         )
         XCTAssertEqual(
-            WorldwideMacHostedCallEvidenceStatePolicy.state(
+            try WorldwideMacHostedCallEvidenceStatePolicy.state(
                 isCausallyBoundActive: true,
                 isCausallyArmed: false
             ),
             .active
         )
         XCTAssertEqual(
-            WorldwideMacHostedCallEvidenceStatePolicy.state(
+            try WorldwideMacHostedCallEvidenceStatePolicy.state(
                 isCausallyBoundActive: false,
                 isCausallyArmed: false
             ),
             .inactive
         )
         XCTAssertNil(
-            WorldwideMacHostedCallEvidenceStatePolicy.state(
+            try WorldwideMacHostedCallEvidenceStatePolicy.state(
                 isCausallyBoundActive: true,
                 isCausallyArmed: true
             )
         )
     }
 
-    func testRejectsReorderedObservationEvenWhenChallengeMatches() {
+    func testRejectsReorderedObservationEvenWhenChallengeMatches() throws {
         let challenge = WebRTCMacHostedCallChallenge(
             sequence: 1,
             callEpochNonce: UUID()
         )
 
         XCTAssertTrue(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 11,
                 highestAdmittedSequence: 10,
                 observationChallenge: nativeChallenge(challenge),
@@ -50,7 +50,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
             )
         )
         XCTAssertFalse(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 10,
                 highestAdmittedSequence: 11,
                 observationChallenge: nativeChallenge(challenge),
@@ -59,7 +59,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
     }
 
-    func testRejectsObservationFromPriorChallenge() {
+    func testRejectsObservationFromPriorChallenge() throws {
         let callEpochNonce = UUID()
         let prior = WebRTCMacHostedCallChallenge(
             sequence: 1,
@@ -71,7 +71,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
 
         XCTAssertFalse(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 12,
                 highestAdmittedSequence: 11,
                 observationChallenge: nativeChallenge(prior),
@@ -79,7 +79,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
             )
         )
         XCTAssertTrue(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 12,
                 highestAdmittedSequence: 11,
                 observationChallenge: nativeChallenge(current),
@@ -88,7 +88,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
     }
 
-    func testRejectsPriorSequenceWhenNonceIsReused() {
+    func testRejectsPriorSequenceWhenNonceIsReused() throws {
         let nonce = UUID()
         let callEpochNonce = UUID()
         let prior = WebRTCMacHostedCallChallenge(
@@ -103,7 +103,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
 
         XCTAssertFalse(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 12,
                 highestAdmittedSequence: 11,
                 observationChallenge: nativeChallenge(prior),
@@ -111,7 +111,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
             )
         )
         XCTAssertTrue(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 13,
                 highestAdmittedSequence: 11,
                 observationChallenge: nativeChallenge(current),
@@ -120,7 +120,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
     }
 
-    func testRejectsWrongCallEpochEvenWhenSequenceAndNonceMatch() {
+    func testRejectsWrongCallEpochEvenWhenSequenceAndNonceMatch() throws {
         let nonce = UUID()
         let current = WebRTCMacHostedCallChallenge(
             sequence: 7,
@@ -135,7 +135,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
             )
 
         XCTAssertFalse(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 1,
                 highestAdmittedSequence: 0,
                 observationChallenge: wrongEpochObservation,
@@ -144,14 +144,14 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
     }
 
-    func testRejectsMissingOrInvalidChallenge() {
+    func testRejectsMissingOrInvalidChallenge() throws {
         let invalid = WebRTCMacHostedCallChallenge(
             sequence: 0,
             callEpochNonce: UUID()
         )
 
         XCTAssertFalse(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 1,
                 highestAdmittedSequence: 0,
                 observationChallenge: nativeChallenge(invalid),
@@ -159,7 +159,7 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
             )
         )
         XCTAssertFalse(
-            WorldwideMacHostedCallObservationPolicy.admits(
+            try WorldwideMacHostedCallObservationPolicy.admits(
                 observationSequence: 1,
                 highestAdmittedSequence: 0,
                 observationChallenge: nil,
@@ -168,30 +168,30 @@ final class WorldwideMacHostedCallObservationPolicyTests: XCTestCase {
         )
     }
 
-    func testPeerGenerationFenceRejectsStaleSourceOrChallenge() {
+    func testPeerGenerationFenceRejectsStaleSourceOrChallenge() throws {
         XCTAssertTrue(
-            WorldwideMacHostedCallPeerGenerationPolicy.admits(
+            try WorldwideMacHostedCallPeerGenerationPolicy.admits(
                 audioPeerGeneration: 7,
                 challengePeerGeneration: 7,
                 currentPeerGeneration: 7
             )
         )
         XCTAssertFalse(
-            WorldwideMacHostedCallPeerGenerationPolicy.admits(
+            try WorldwideMacHostedCallPeerGenerationPolicy.admits(
                 audioPeerGeneration: 6,
                 challengePeerGeneration: 7,
                 currentPeerGeneration: 7
             )
         )
         XCTAssertFalse(
-            WorldwideMacHostedCallPeerGenerationPolicy.admits(
+            try WorldwideMacHostedCallPeerGenerationPolicy.admits(
                 audioPeerGeneration: 7,
                 challengePeerGeneration: 6,
                 currentPeerGeneration: 7
             )
         )
         XCTAssertFalse(
-            WorldwideMacHostedCallPeerGenerationPolicy.admits(
+            try WorldwideMacHostedCallPeerGenerationPolicy.admits(
                 audioPeerGeneration: 0,
                 challengePeerGeneration: 0,
                 currentPeerGeneration: 0

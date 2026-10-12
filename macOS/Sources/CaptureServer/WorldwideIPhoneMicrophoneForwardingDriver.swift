@@ -54,6 +54,7 @@ enum WorldwideIPhoneMicrophoneForwardingFailureCategory:
     case sharedClockUnsafe
     case runtimeEnqueueFailed
     case runtimeProgressStalled
+    case evidenceBridgeRefused
 }
 
 struct WorldwideIPhoneMicrophoneForwardingKey:
@@ -87,6 +88,7 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
     let trackGeneration: UInt64
     let currentAttemptID: UUID?
     let lastAttemptID: UUID?
+    let attemptGeneration: UInt64
     let exactTrackAdmitted: Bool
     let queueRunning: Bool
     let progress: BlackHoleMicrophoneOutputProgressSnapshot
@@ -124,6 +126,7 @@ struct WorldwideIPhoneMicrophoneForwardingHostSnapshot:
             trackGeneration: 0,
             currentAttemptID: nil,
             lastAttemptID: nil,
+            attemptGeneration: 0,
             exactTrackAdmitted: false,
             queueRunning: false,
             progress: .zero,
@@ -299,7 +302,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         let sinkEndpoint: BlackHoleDeviceEndpointIdentity
     }
 
-    private struct InboundMediaSample {
+    private struct InboundMediaSample: Equatable {
         let sequence: UInt64
         let peerGeneration: UInt64
         let trackGeneration: UInt64
@@ -383,7 +386,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var latestInboundMediaSample: InboundMediaSample?
 
     private var currentAttempt: Attempt?
-    private struct AttemptHistory {
+    private struct AttemptHistory: Equatable {
         var count: Int
         var mayRetry: Bool
     }
@@ -395,6 +398,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var lastAttemptedKey:
         WorldwideIPhoneMicrophoneForwardingKey?
     private var lastAttemptID: UUID?
+    private var attemptGeneration: UInt64 = 0
     private var lastFailureCategory:
         WorldwideIPhoneMicrophoneForwardingFailureCategory?
     private var preserveSharedClockUnsafePhaseUntilPeerOrPairChanges =
@@ -407,6 +411,187 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     private var redriveRequested = false
     private var isStopped = false
     private var mediaFreshnessWatchdogTask: Task<Void, Never>?
+    private var evidenceBridge = BelugaRustMicrophoneForwardingEvidence()
+    private var evidenceBusy = false
+    private var evidencePoisoned = false
+    private var evidenceSuperseded = false
+    private var evidenceBridgeFaulted = false
+    private final class EvidenceFrame {
+        var retiredAttempt: Attempt?
+        var retiredRetryKey: WorldwideIPhoneMicrophoneForwardingKey?
+        var faultExhaustConsumed = false
+    }
+    private var activeEvidenceFrame: EvidenceFrame?
+
+    #if DEBUG
+    private var retryPostResultMutation:
+        BelugaRustMicrophoneForwardingRetry.PostResultMutation?
+    private var faultExhaustCallsForTesting = 0
+    #endif
+
+    private enum EvidenceDecisionFailure: Error { case superseded, poisoned }
+
+    private struct EvidenceHistory: Equatable {
+        let admitted: Bool
+        let deferredProgress: BlackHoleMicrophoneOutputProgressSnapshot?
+        let sinkHealthy: Bool
+        let watermark: WorldwideIPhoneMicrophoneInboundMediaWatermark?
+        let sequence: UInt64
+        let advancementCount: UInt64
+        let staleCount: Int
+        let requiresAdvance: Bool
+        let deadline: UInt64?
+        let watchdogGeneration: UInt64
+
+        init(_ attempt: Attempt) {
+            admitted = attempt.exactTrackAdmitted
+            deferredProgress = attempt.deferredReadyProgress
+            sinkHealthy = attempt.sinkContinuingHealthProven
+            watermark = attempt.lastInboundMediaWatermark
+            sequence = attempt.lastInboundMediaSampleSequence
+            advancementCount = attempt.inboundMediaAdvancementCount
+            staleCount = attempt.consecutiveStaleInboundMediaSamples
+            requiresAdvance = attempt.requiresFreshInboundMediaAdvance
+            deadline = attempt.mediaFreshnessDeadlineNanoseconds
+            watchdogGeneration = attempt.mediaFreshnessWatchdogGeneration
+        }
+    }
+
+    private struct EvidenceWitness {
+        let attempt: Attempt
+        let history: EvidenceHistory
+        let latestSample: InboundMediaSample?
+    }
+
+    private func beginEvidenceFrame() -> Bool {
+        if evidenceBusy {
+            evidencePoisoned = true
+            evidenceBridgeFaulted = true
+            retainEvidenceFailurePhase()
+            return false
+        }
+        guard !evidenceBridgeFaulted else {
+            retainEvidenceFailurePhase()
+            return false
+        }
+        evidenceBusy = true
+        activeEvidenceFrame = EvidenceFrame()
+        evidencePoisoned = false
+        evidenceSuperseded = false
+        return true
+    }
+
+    private func endEvidenceFrame() {
+        evidenceBusy = false
+        activeEvidenceFrame = nil
+        evidencePoisoned = false
+        evidenceSuperseded = false
+        retainEvidenceFailurePhase()
+    }
+
+    private func supersedeEvidenceFrame() {
+        if evidenceBusy { evidenceSuperseded = true }
+    }
+
+    private func evidenceWitness(for attempt: Attempt) throws -> EvidenceWitness {
+        try requireEvidenceOwner(attempt)
+        return EvidenceWitness(attempt: attempt, history: EvidenceHistory(attempt),
+                               latestSample: latestInboundMediaSample)
+    }
+
+    private func requireEvidenceOwner(_ attempt: Attempt) throws {
+        precondition(evidenceBusy)
+        guard !evidencePoisoned, !evidenceBridgeFaulted else {
+            throw EvidenceDecisionFailure.poisoned
+        }
+        guard !evidenceSuperseded, candidateStillOwnsAttempt(attempt) else {
+            throw EvidenceDecisionFailure.superseded
+        }
+    }
+
+    private func requireEvidenceWitness(_ witness: EvidenceWitness) throws {
+        try requireEvidenceOwner(witness.attempt)
+        guard EvidenceHistory(witness.attempt) == witness.history,
+              latestInboundMediaSample == witness.latestSample else {
+            throw EvidenceDecisionFailure.superseded
+        }
+    }
+
+    private func finishEvidenceFailure(_ error: Error, original: Attempt?) {
+        if let failure = error as? EvidenceDecisionFailure,
+           case .superseded = failure, !evidencePoisoned, !evidenceBridgeFaulted {
+            return
+        }
+        evidenceBridgeFaulted = true
+        if let original, currentAttempt === original {
+            // Native privacy retirement precedes fixed, callback-free bookkeeping.
+            if retireAttemptNative(original) {
+                exhaustFaultedRetryBookkeeping(original.key)
+            }
+        } else if let original, activeEvidenceFrame?.retiredAttempt === original {
+            exhaustFaultedRetryBookkeeping(original.key)
+        } else if original == nil, let key = activeEvidenceFrame?.retiredRetryKey {
+            exhaustFaultedRetryBookkeeping(key)
+        }
+        retainEvidenceFailurePhase()
+    }
+
+    private func retainEvidenceFailurePhase() {
+        guard evidenceBridgeFaulted else { return }
+        redriveRequested = false
+        if isStopped {
+            phase = .stopped
+            return
+        }
+        lastFailureCategory = .evidenceBridgeRefused
+        phase = .runtimeFailed
+    }
+
+    #if DEBUG
+    func configureEvidenceMutationsForTesting(
+        isolation: isolated (any Actor)? = #isolation,
+        _ mutations: BelugaRustMicrophoneForwardingEvidence.Mutations
+    ) {
+        precondition(!evidenceBusy && !evidenceBridgeFaulted)
+        precondition(currentAttempt == nil && attemptGeneration == 0)
+        evidenceBridge = BelugaRustMicrophoneForwardingEvidence(mutations: mutations)
+    }
+
+    func configureRetryMutationForTesting(
+        isolation: isolated (any Actor)? = #isolation,
+        _ mutation: BelugaRustMicrophoneForwardingRetry.PostResultMutation?
+    ) {
+        precondition(!evidenceBusy && !evidenceBridgeFaulted)
+        precondition(currentAttempt == nil && attemptGeneration == 0)
+        retryPostResultMutation = mutation
+    }
+    #endif
+
+    #if DEBUG
+    /// Read-only copied bookkeeping. No row setter, native admission or producer.
+    func retryObservationForTesting(
+        isolation: isolated (any Actor)? = #isolation,
+        key: WorldwideIPhoneMicrophoneForwardingKey
+    ) -> (count: Int?, mayRetry: Bool?, redrive: Bool, faultExhaustCalls: Int,
+          bridgeFaulted: Bool, retainedKeys: [WorldwideIPhoneMicrophoneForwardingKey]) {
+        let row = attemptHistory[key]
+        return (row?.count, row?.mayRetry, redriveRequested, faultExhaustCallsForTesting,
+                evidenceBridgeFaulted, attemptedKeyOrder)
+    }
+
+    func seedUnauthorizedFailureForTesting(
+        isolation: isolated (any Actor)? = #isolation,
+        _ category: WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) {
+        precondition(category == .sharedClockUnsafe || category == .formatUnsafe)
+        precondition(!isStopped && currentAttempt == nil && peer == nil && track == nil)
+        precondition(!transportAuthorized && mediaFreshnessWatchdogTask == nil)
+        preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
+        preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        lastFailureCategory = category
+        phase = category == .sharedClockUnsafe ? .sharedClockUnsafe : .formatUnsafe
+    }
+    #endif
 
     init(
         policy: WorldwideIPhoneMicrophoneForwardingPolicy,
@@ -495,6 +680,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
 
         preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
         preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         activeMonitorEpoch = epoch
         monitorSnapshot = nil
@@ -502,6 +688,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         disableCurrentTrack()
         phase = .waitingForMonitor
         redriveRequested = true
+        retainEvidenceFailurePhase()
     }
 
     func monitoringDidFail(
@@ -510,6 +697,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         guard !isStopped, policy == .enabled else { return }
         preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
         preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         monitoringFailed = true
         monitorSnapshot = nil
@@ -517,6 +705,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         lastFailureCategory = .monitoringFailed
         phase = .monitoringFailed
         redriveRequested = true
+        retainEvidenceFailurePhase()
     }
 
     func updateDeviceSnapshot(
@@ -537,6 +726,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
 
         preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
         preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         monitorSnapshot = snapshot
         monitoringFailed = false
@@ -560,6 +750,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
 
         preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
         preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         disableCurrentTrack()
         track = nil
@@ -577,6 +768,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         guard !isStopped else { return }
         preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
         preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         disableCurrentTrack()
         track = nil
@@ -606,6 +798,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
 
+        supersedeEvidenceFrame()
         transportAuthorizationEpoch = Self.nextNonzero(
             transportAuthorizationEpoch
         )
@@ -630,6 +823,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
            lastFailureCategory == .formatUnsafe {
             preserveFormatUnsafePhaseUntilPeerOrPairChanges = true
         }
+        supersedeEvidenceFrame()
         transportAuthorized = false
         latestInboundMediaSample = nil
         invalidateCurrentAttempt()
@@ -655,6 +849,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return
         }
 
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         disableCurrentTrack()
         self.track = track
@@ -674,6 +869,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         isolation: isolated (any Actor)? = #isolation
     ) {
         guard !isStopped else { return }
+        supersedeEvidenceFrame()
         invalidateCurrentAttempt()
         disableCurrentTrack()
         track = nil
@@ -688,16 +884,31 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         peerGeneration sourcePeerGeneration: UInt64,
         watermark: WorldwideIPhoneMicrophoneInboundMediaWatermark?
     ) async {
+        let shouldDrive = processInboundMediaSample(
+            isolation: isolation, peer: sourcePeer,
+            peerGeneration: sourcePeerGeneration, watermark: watermark
+        )
+        if shouldDrive { await drive(isolation: isolation) }
+    }
+
+    private func processInboundMediaSample(
+        isolation: isolated (any Actor)?,
+        peer sourcePeer: Peer,
+        peerGeneration sourcePeerGeneration: UInt64,
+        watermark: WorldwideIPhoneMicrophoneInboundMediaWatermark?
+    ) -> Bool {
+        let original = currentAttempt
+        guard beginEvidenceFrame() else { return false }
+        defer { endEvidenceFrame() }
+        let frame = activeEvidenceFrame!
         guard !isStopped,
               self.peer === sourcePeer,
               peerGeneration == sourcePeerGeneration,
               sourcePeerGeneration > 0 else {
-            return
+            return false
         }
 
-        inboundMediaSampleSequence = Self.nextNonzero(
-            inboundMediaSampleSequence
-        )
+        inboundMediaSampleSequence = Self.nextNonzero(inboundMediaSampleSequence)
         let previousSample = latestInboundMediaSample
         let sample = InboundMediaSample(
             sequence: inboundMediaSampleSequence,
@@ -707,84 +918,61 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         )
         latestInboundMediaSample = sample
 
-        guard let attempt = currentAttempt,
-              candidateStillOwnsAttempt(attempt),
-              attempt.exactTrackAdmitted,
-              attempt.peer === sourcePeer,
-              attempt.key.peerGeneration == sourcePeerGeneration,
-              sample.trackGeneration == attempt.key.trackGeneration,
-              sample.sequence > attempt.lastInboundMediaSampleSequence else {
-            if reviveSourceMediaStalledCandidateIfFresh(
-                previousSample: previousSample,
-                sample: sample
-            ) {
-                await drive(isolation: isolation)
-            }
-            return
-        }
-
-        let progress = attempt.output.forwardingProgressSnapshot
-        if progress.enqueueFailureCount > 0 {
-            failAttempt(
-                attempt,
-                category: .runtimeEnqueueFailed
-            )
-        } else if !progress.queueRunning {
-            failAttempt(
-                attempt,
-                category: .readinessFailed
-            )
-        } else {
-            promoteDeferredReadinessIfPossible(
-                attempt: attempt,
-                progress: progress
-            )
-            attempt.lastInboundMediaSampleSequence = sample.sequence
-            let hasExactContinuity = sample.watermark?.isContinuous(
-                from: attempt.lastInboundMediaWatermark
-            ) ?? false
-            let didAdvance = hasExactContinuity
-                && (sample.watermark?.advances(
-                    from: attempt.lastInboundMediaWatermark
-                ) ?? false)
-            if hasExactContinuity, let watermark = sample.watermark {
-                attempt.lastInboundMediaWatermark =
-                    watermark.preservingMaximums(
-                        from: attempt.lastInboundMediaWatermark
-                    )
-            }
-
-            if didAdvance {
-                attempt.inboundMediaAdvancementCount =
-                    Self.nextNonzero(
-                        attempt.inboundMediaAdvancementCount
-                    )
-                attempt.consecutiveStaleInboundMediaSamples = 0
-                attempt.requiresFreshInboundMediaAdvance = false
-                armMediaFreshnessWatchdog(
-                    for: attempt,
-                    isolation: isolation
+        do {
+            guard let attempt = currentAttempt,
+                  candidateStillOwnsAttempt(attempt),
+                  attempt.exactTrackAdmitted,
+                  attempt.peer === sourcePeer,
+                  attempt.key.peerGeneration == sourcePeerGeneration,
+                  sample.trackGeneration == attempt.key.trackGeneration,
+                  sample.sequence > attempt.lastInboundMediaSampleSequence else {
+                return try reviveSourceMediaStalledCandidateIfFreshHeld(
+                    previousSample: previousSample, sample: sample
                 )
-            } else if attempt.inboundMediaAdvancementCount > 0
-                        || attempt.requiresFreshInboundMediaAdvance {
-                attempt.consecutiveStaleInboundMediaSamples += 1
-                if attempt.consecutiveStaleInboundMediaSamples
-                    >= maximumStaleInboundMediaSamples {
-                    failAttempt(
-                        attempt,
-                        category: .sourceMediaStalled
-                    )
+            }
+
+            let progressWitness = try evidenceWitness(for: attempt)
+            let progress = attempt.output.forwardingProgressSnapshot
+            try requireEvidenceWitness(progressWitness)
+            if progress.enqueueFailureCount > 0 {
+                try failAttemptHeld(attempt, category: .runtimeEnqueueFailed, frame: frame)
+            } else if !progress.queueRunning {
+                try failAttemptHeld(attempt, category: .readinessFailed, frame: frame)
+            } else {
+                try promoteDeferredReadinessIfPossibleHeld(attempt: attempt, progress: progress)
+                try requireEvidenceOwner(attempt)
+                attempt.lastInboundMediaSampleSequence = sample.sequence
+                let watermarkWitness = try evidenceWitness(for: attempt)
+                let decision = try evidenceBridge.watermark(
+                    previous: attempt.lastInboundMediaWatermark, current: sample.watermark
+                )
+                try requireEvidenceWitness(watermarkWitness)
+                if decision.continuous {
+                    attempt.lastInboundMediaWatermark = decision.retained
+                }
+                if decision.didAdvance {
+                    attempt.inboundMediaAdvancementCount = Self.nextNonzero(attempt.inboundMediaAdvancementCount)
+                    attempt.consecutiveStaleInboundMediaSamples = 0
+                    attempt.requiresFreshInboundMediaAdvance = false
+                    guard armMediaFreshnessWatchdog(for: attempt, isolation: isolation) else {
+                        try requireEvidenceOwner(attempt)
+                        throw EvidenceDecisionFailure.superseded
+                    }
+                } else if attempt.inboundMediaAdvancementCount > 0
+                            || attempt.requiresFreshInboundMediaAdvance {
+                    attempt.consecutiveStaleInboundMediaSamples += 1
+                    if attempt.consecutiveStaleInboundMediaSamples >= maximumStaleInboundMediaSamples {
+                        try failAttemptHeld(attempt, category: .sourceMediaStalled, frame: frame)
+                    }
+                }
+                if currentAttempt === attempt {
+                    try updateForwardingPhaseHeld(for: attempt)
                 }
             }
-
-            if currentAttempt === attempt {
-                updateForwardingPhase(for: attempt)
-            }
+        } catch {
+            finishEvidenceFailure(error, original: original)
         }
-
-        if redriveRequested {
-            await drive(isolation: isolation)
-        }
+        return redriveRequested && !evidenceBridgeFaulted
     }
 
     @discardableResult
@@ -800,21 +988,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             return false
         }
 
-        cancelMediaFreshnessWatchdog()
-        currentAttempt = nil
-        if track === attempt.track {
-            disableTrack(attempt.track)
-        }
-        attempt.output.stop()
-        lastFailureCategory = category
-        phase = Self.phase(for: category)
-        redriveRequested = markRetryable(
-            attempt.key,
-            category: category
-        )
-        if redriveRequested {
+        failAttempt(attempt, category: category)
+        if redriveRequested && !evidenceBridgeFaulted {
             await drive(isolation: isolation)
         }
+        retainEvidenceFailurePhase()
         return true
     }
 
@@ -822,6 +1000,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         isolation: isolated (any Actor)? = #isolation
     ) {
         guard !isStopped else { return }
+        supersedeEvidenceFrame()
         isStopped = true
         preserveSharedClockUnsafePhaseUntilPeerOrPairChanges = false
         preserveFormatUnsafePhaseUntilPeerOrPairChanges = false
@@ -837,15 +1016,37 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
     func snapshot(
         isolation: isolated (any Actor)? = #isolation
     ) -> WorldwideIPhoneMicrophoneForwardingHostSnapshot {
-        let progress = currentAttempt?
-            .output
-            .forwardingProgressSnapshot ?? .zero
-        if let currentAttempt {
-            promoteDeferredReadinessIfPossible(
-                attempt: currentAttempt,
-                progress: progress
-            )
+        let original = currentAttempt
+        guard beginEvidenceFrame() else {
+            return makeHostSnapshot(progress: .zero, inboundMediaFresh: false)
         }
+        defer { endEvidenceFrame() }
+        var progress = BlackHoleMicrophoneOutputProgressSnapshot.zero
+        var fresh = false
+        do {
+            if let original {
+                let witness = try evidenceWitness(for: original)
+                progress = original.output.forwardingProgressSnapshot
+                try requireEvidenceWitness(witness)
+                try promoteDeferredReadinessIfPossibleHeld(attempt: original, progress: progress)
+                try requireEvidenceOwner(original)
+                if original.sinkContinuingHealthProven {
+                    fresh = try sourceMediaIsFreshHeld(for: original)
+                }
+                try requireEvidenceOwner(original)
+            }
+        } catch {
+            finishEvidenceFailure(error, original: original)
+            progress = .zero
+            fresh = false
+        }
+        return makeHostSnapshot(progress: progress, inboundMediaFresh: fresh)
+    }
+
+    private func makeHostSnapshot(
+        progress: BlackHoleMicrophoneOutputProgressSnapshot,
+        inboundMediaFresh: Bool
+    ) -> WorldwideIPhoneMicrophoneForwardingHostSnapshot {
         return WorldwideIPhoneMicrophoneForwardingHostSnapshot(
             policy: policy,
             phase: phase,
@@ -867,6 +1068,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             trackGeneration: trackGeneration,
             currentAttemptID: currentAttempt?.id,
             lastAttemptID: lastAttemptID,
+            attemptGeneration: attemptGeneration,
             exactTrackAdmitted:
                 currentAttempt?.exactTrackAdmitted ?? false,
             queueRunning: progress.queueRunning,
@@ -879,11 +1081,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             consecutiveStaleInboundMediaSamples:
                 currentAttempt?.consecutiveStaleInboundMediaSamples
                     ?? 0,
-            inboundMediaFresh:
-                currentAttempt.map {
-                    $0.sinkContinuingHealthProven
-                        && sourceMediaIsFresh(for: $0)
-                } ?? false,
+            inboundMediaFresh: inboundMediaFresh,
             lastFailureCategory: lastFailureCategory
         )
     }
@@ -892,6 +1090,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         isolation: isolated (any Actor)?
     ) async {
         guard !isStopped else { return }
+        guard !evidenceBridgeFaulted else { retainEvidenceFailurePhase(); return }
         if isDriving {
             redriveRequested = true
             return
@@ -930,7 +1129,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             updateIneligiblePhase()
             return
         }
-        guard candidateMayBeAttempted(candidate.key) else {
+        do {
+            guard try candidateMayBeAttempted(candidate) else { return }
+        } catch {
+            finishEvidenceFailure(error, original: nil)
             return
         }
 
@@ -942,7 +1144,11 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                     redriveRequested = true
                     return
                 }
-                markRetryExhausted(candidate.key)
+                do {
+                    try markRetryExhausted(candidate)
+                } catch {
+                    finishEvidenceFailure(error, original: nil)
+                }
                 return
             }
 
@@ -952,7 +1158,13 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             }
         }
 
-        rememberAttempted(candidate.key)
+        do {
+            try rememberAttempted(candidate)
+        } catch {
+            finishEvidenceFailure(error, original: nil)
+            return
+        }
+        attemptGeneration = Self.nextNonzero(attemptGeneration)
         let attemptID = makeAttemptID()
         lastAttemptID = attemptID
 
@@ -1069,118 +1281,110 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         attempt.inboundMediaAdvancementCount = 0
         attempt.consecutiveStaleInboundMediaSamples = 0
         phase = .checkingReadiness
-        armMediaFreshnessWatchdog(
+        guard armMediaFreshnessWatchdog(
             for: attempt,
             isolation: isolation
-        )
+        ) else { return }
         await awaitReadiness(
             for: attempt,
             isolation: isolation
         )
     }
 
+    private enum ReadinessSample {
+        case finished
+        case next(BlackHoleMicrophoneOutputProgressSnapshot)
+    }
+
+    private func sampleReadiness(
+        for attempt: Attempt,
+        previousPollingProgress: BlackHoleMicrophoneOutputProgressSnapshot?
+    ) -> ReadinessSample {
+        guard beginEvidenceFrame() else { return .finished }
+        defer { endEvidenceFrame() }
+        let frame = activeEvidenceFrame!
+        do {
+            try requireEvidenceOwner(attempt)
+            if attempt.sinkContinuingHealthProven {
+                try updateForwardingPhaseHeld(for: attempt)
+                return .finished
+            }
+            let witness = try evidenceWitness(for: attempt)
+            let progress = attempt.output.forwardingProgressSnapshot
+            try requireEvidenceWitness(witness)
+            if progress.enqueueFailureCount > 0 {
+                try failAttemptHeld(attempt, category: .runtimeEnqueueFailed,
+                                    allowRetry: !Task.isCancelled, frame: frame)
+                return .finished
+            }
+            guard progress.queueRunning else {
+                try failAttemptHeld(attempt, category: .readinessFailed,
+                                    allowRetry: !Task.isCancelled, frame: frame)
+                return .finished
+            }
+            if let previousPollingProgress,
+               progress.postStartCallbackCount > previousPollingProgress.postStartCallbackCount,
+               progress.successfulFrameCount == previousPollingProgress.successfulFrameCount {
+                attempt.deferredReadyProgress = nil
+                phase = .awaitingFrames
+                return .finished
+            }
+
+            let decision = try evidenceBridge.readiness(
+                current: progress, previous: attempt.deferredReadyProgress
+            )
+            try requireEvidenceWitness(witness)
+            if decision.ready {
+                if decision.continuing {
+                    attempt.sinkContinuingHealthProven = true
+                    attempt.deferredReadyProgress = progress
+                    try updateForwardingPhaseHeld(for: attempt)
+                    return .finished
+                }
+                attempt.deferredReadyProgress = progress
+                phase = .forwardingReady
+            }
+            return .next(progress)
+        } catch {
+            finishEvidenceFailure(error, original: attempt)
+            return .finished
+        }
+    }
+
     private func awaitReadiness(
         for attempt: Attempt,
         isolation: isolated (any Actor)?
     ) async {
-        var previousProgress:
-            BlackHoleMicrophoneOutputProgressSnapshot?
-
+        var previousProgress: BlackHoleMicrophoneOutputProgressSnapshot?
         for sampleIndex in 0..<readinessSampleLimit {
+            guard !evidenceBridgeFaulted else { return }
             guard candidateStillOwnsAttempt(attempt) else {
                 finishSupersededAttempt(attempt)
                 return
             }
-
-            if attempt.sinkContinuingHealthProven {
-                updateForwardingPhase(for: attempt)
-                return
+            switch sampleReadiness(for: attempt, previousPollingProgress: previousProgress) {
+            case .finished: return
+            case .next(let progress): previousProgress = progress
             }
-
-            let progress =
-                attempt.output.forwardingProgressSnapshot
-            if progress.enqueueFailureCount > 0 {
-                failAttempt(
-                    attempt,
-                    category: .runtimeEnqueueFailed,
-                    allowRetry: !Task.isCancelled
-                )
-                return
-            }
-            guard progress.queueRunning else {
-                failAttempt(
-                    attempt,
-                    category: .readinessFailed,
-                    allowRetry: !Task.isCancelled
-                )
-                return
-            }
-
-            if let previousProgress,
-               progress.postStartCallbackCount
-                > previousProgress.postStartCallbackCount,
-               progress.successfulFrameCount
-                == previousProgress.successfulFrameCount {
-                // The queue callback is alive but still zero-filling. Keep
-                // this exact attempt admitted while the source starts; this
-                // state must not consume its retry budget.
-                attempt.deferredReadyProgress = nil
-                phase = .awaitingFrames
-                return
-            }
-            previousProgress = progress
-
-            if WorldwideIPhoneMicrophoneForwardingProgressEvaluator
-                .isReady(progress) {
-                if let previous = attempt.deferredReadyProgress,
-                   WorldwideIPhoneMicrophoneForwardingProgressEvaluator
-                    .provesContinuingHealth(
-                        previous: previous,
-                        current: progress
-                    ) {
-                    guard candidateStillOwnsAttempt(attempt) else {
-                        finishSupersededAttempt(attempt)
-                        return
-                    }
-                    attempt.sinkContinuingHealthProven = true
-                    attempt.deferredReadyProgress = progress
-                    updateForwardingPhase(for: attempt)
-                    return
-                }
-
-                attempt.deferredReadyProgress = progress
-                phase = .forwardingReady
-            }
-
-            guard sampleIndex + 1 < readinessSampleLimit else {
-                break
-            }
-
+            guard sampleIndex + 1 < readinessSampleLimit else { break }
             do {
                 try await readinessSleep()
             } catch {
+                guard !evidenceBridgeFaulted else { return }
                 guard candidateStillOwnsAttempt(attempt) else {
                     finishSupersededAttempt(attempt)
                     return
                 }
-                failAttempt(
-                    attempt,
-                    category: .readinessFailed,
-                    allowRetry: !Task.isCancelled
-                )
+                failAttempt(attempt, category: .readinessFailed, allowRetry: !Task.isCancelled)
                 return
             }
         }
-
+        guard !evidenceBridgeFaulted else { return }
         guard candidateStillOwnsAttempt(attempt) else {
             finishSupersededAttempt(attempt)
             return
         }
-        failAttempt(
-            attempt,
-            category: .readinessFailed,
-            allowRetry: !Task.isCancelled
-        )
+        failAttempt(attempt, category: .readinessFailed, allowRetry: !Task.isCancelled)
     }
 
     private var hasUnattemptedEligibleCandidate: Bool {
@@ -1188,11 +1392,16 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
               let candidate = currentCandidate() else {
             return false
         }
-        return candidateMayBeAttempted(candidate.key)
+        do {
+            return try candidateMayBeAttempted(candidate)
+        } catch {
+            finishEvidenceFailure(error, original: nil)
+            return false
+        }
     }
 
     private func currentCandidate() -> Candidate? {
-        guard !isStopped,
+        guard !isStopped, !evidenceBridgeFaulted,
               policy == .enabled,
               !monitoringFailed,
               let activeMonitorEpoch,
@@ -1265,58 +1474,44 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         return true
     }
 
-    private func promoteDeferredReadinessIfPossible(
+    private func promoteDeferredReadinessIfPossibleHeld(
         attempt: Attempt,
         progress: BlackHoleMicrophoneOutputProgressSnapshot
-    ) {
-        guard currentAttempt === attempt,
-              attempt.exactTrackAdmitted else {
-            return
-        }
+    ) throws {
+        try requireEvidenceOwner(attempt)
+        guard attempt.exactTrackAdmitted else { return }
         if attempt.sinkContinuingHealthProven {
-            updateForwardingPhase(for: attempt)
+            try updateForwardingPhaseHeld(for: attempt)
             return
         }
-        guard phase == .checkingReadiness
-                || phase == .awaitingFrames
-                || phase == .forwardingReady else {
+        guard phase == .checkingReadiness || phase == .awaitingFrames || phase == .forwardingReady else {
             return
         }
-        guard WorldwideIPhoneMicrophoneForwardingProgressEvaluator
-                .isReady(progress) else {
+        let witness = try evidenceWitness(for: attempt)
+        let decision = try evidenceBridge.readiness(current: progress, previous: attempt.deferredReadyProgress)
+        try requireEvidenceWitness(witness)
+        guard decision.ready else {
             attempt.deferredReadyProgress = nil
             phase = .awaitingFrames
             return
         }
-
-        if let previous = attempt.deferredReadyProgress,
-           WorldwideIPhoneMicrophoneForwardingProgressEvaluator
-            .provesContinuingHealth(
-                previous: previous,
-                current: progress
-            ) {
+        if decision.continuing {
             attempt.sinkContinuingHealthProven = true
             attempt.deferredReadyProgress = progress
-            updateForwardingPhase(for: attempt)
+            try updateForwardingPhaseHeld(for: attempt)
             return
         }
-
         attempt.deferredReadyProgress = progress
         phase = .forwardingReady
     }
 
-    private func updateForwardingPhase(
-        for attempt: Attempt
-    ) {
-        guard currentAttempt === attempt,
-              attempt.exactTrackAdmitted else {
-            return
-        }
-        if attempt.sinkContinuingHealthProven,
-           sourceMediaIsFresh(for: attempt) {
-            phase = .forwardingHealthy
-        } else if attempt.sinkContinuingHealthProven {
-            phase = .awaitingFrames
+    private func updateForwardingPhaseHeld(for attempt: Attempt) throws {
+        try requireEvidenceOwner(attempt)
+        guard attempt.exactTrackAdmitted else { return }
+        if attempt.sinkContinuingHealthProven {
+            let fresh = try sourceMediaIsFreshHeld(for: attempt)
+            try requireEvidenceOwner(attempt)
+            phase = fresh ? .forwardingHealthy : .awaitingFrames
         } else if attempt.deferredReadyProgress != nil {
             phase = .forwardingReady
         } else {
@@ -1324,30 +1519,47 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         }
     }
 
-    private func sourceMediaIsFresh(
-        for attempt: Attempt
-    ) -> Bool {
-        guard let deadline =
-                attempt.mediaFreshnessDeadlineNanoseconds else {
-            return false
+    private func sourceMediaIsFreshHeld(for attempt: Attempt) throws -> Bool {
+        let witness = try evidenceWitness(for: attempt)
+        let plan = try evidenceBridge.planFreshness(
+            advancementCount: witness.history.advancementCount,
+            consecutiveStaleSamples: witness.history.staleCount,
+            maximumStaleSamples: maximumStaleInboundMediaSamples,
+            deadlineNanoseconds: witness.history.deadline
+        )
+        try requireEvidenceWitness(witness)
+        switch plan {
+        case .decided(let fresh):
+            return fresh
+        case .needsNow(let snapshot):
+            // No mutable adapter borrow is held across this original clock cut.
+            try requireEvidenceWitness(witness)
+            let now = mediaFreshnessNow()
+            try requireEvidenceWitness(witness)
+            let fresh = try evidenceBridge.finishFreshness(snapshot, now: now)
+            try requireEvidenceWitness(witness)
+            return fresh
         }
-        return attempt.inboundMediaAdvancementCount > 0
-            && attempt.consecutiveStaleInboundMediaSamples
-                < maximumStaleInboundMediaSamples
-            && mediaFreshnessNow() < deadline
     }
 
+    @discardableResult
     private func armMediaFreshnessWatchdog(
         for attempt: Attempt,
         isolation: isolated (any Actor)?
-    ) {
+    ) -> Bool {
         precondition(
             isolation != nil,
             "The forwarding driver watchdog requires actor ownership."
         )
+        // The initial admission arm is outside an evidence read. Subsequent
+        // advancement arms reuse their already-held, synchronous frame.
+        let ownsFrame = !evidenceBusy
+        if ownsFrame && !beginEvidenceFrame() { return false }
+        defer { if ownsFrame { endEvidenceFrame() } }
         guard candidateStillOwnsAttempt(attempt),
-              attempt.exactTrackAdmitted else {
-            return
+              attempt.exactTrackAdmitted,
+              !evidenceBridgeFaulted, !evidencePoisoned, !evidenceSuperseded else {
+            return false
         }
 
         cancelMediaFreshnessWatchdog()
@@ -1355,10 +1567,21 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             Self.nextNonzero(
                 attempt.mediaFreshnessWatchdogGeneration
             )
-        let deadline = Self.addingClamped(
-            mediaFreshnessNow(),
-            mediaFreshnessTimeoutNanoseconds
-        )
+        let history = EvidenceHistory(attempt)
+        let latestSample = latestInboundMediaSample
+        let nowValue = mediaFreshnessNow()
+        guard candidateStillOwnsAttempt(attempt), attempt.exactTrackAdmitted,
+              !evidenceBridgeFaulted, !evidencePoisoned, !evidenceSuperseded,
+              EvidenceHistory(attempt) == history,
+              latestInboundMediaSample == latestSample else {
+            if ownsFrame {
+                let failure: EvidenceDecisionFailure =
+                    evidencePoisoned || evidenceBridgeFaulted ? .poisoned : .superseded
+                finishEvidenceFailure(failure, original: attempt)
+            }
+            return false
+        }
+        let deadline = Self.addingClamped(nowValue, mediaFreshnessTimeoutNanoseconds)
         attempt.mediaFreshnessDeadlineNanoseconds = deadline
 
         let attemptID = attempt.id
@@ -1393,6 +1616,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
                 deadlineNanoseconds: deadline
             )
         }
+        return true
     }
 
     private func mediaFreshnessWatchdogDidReachDeadline(
@@ -1468,138 +1692,351 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
 
     private func failAttempt(
         _ attempt: Attempt,
-        category:
-            WorldwideIPhoneMicrophoneForwardingFailureCategory,
+        category: WorldwideIPhoneMicrophoneForwardingFailureCategory,
         allowRetry: Bool = true
     ) {
         guard currentAttempt === attempt else {
             finishSupersededAttempt(attempt)
+            retainEvidenceFailurePhase()
             return
         }
+        guard beginEvidenceFrame() else {
+            if retireAttemptNative(attempt) {
+                exhaustFaultedRetryBookkeeping(attempt.key)
+            }
+            retainEvidenceFailurePhase()
+            return
+        }
+        defer { endEvidenceFrame() }
+        do {
+            try failAttemptHeld(attempt, category: category,
+                                allowRetry: allowRetry, frame: activeEvidenceFrame!)
+        } catch {
+            finishEvidenceFailure(error, original: attempt)
+        }
+    }
 
+    private func failAttemptHeld(
+        _ attempt: Attempt,
+        category: WorldwideIPhoneMicrophoneForwardingFailureCategory,
+        allowRetry: Bool = true,
+        frame: EvidenceFrame
+    ) throws {
+        try requireRetryFrame(frame)
+        guard retireAttemptNative(attempt) else { return }
+        if isStopped {
+            phase = .stopped
+            redriveRequested = false
+            return
+        }
+        let candidate = candidateForRetiredAttempt(attempt)
+        try requireRetryCandidate(candidate, frame: frame)
+        lastFailureCategory = category
+        phase = Self.phase(for: category)
+        // Preserve the native short circuit: no operation-three call on false.
+        if allowRetry {
+            redriveRequested = try markRetryableHeld(candidate, category: category, frame: frame)
+        } else {
+            redriveRequested = false
+        }
+    }
+
+    @discardableResult
+    private func retireAttemptNative(_ attempt: Attempt) -> Bool {
+        guard currentAttempt === attempt else {
+            finishSupersededAttempt(attempt)
+            return false
+        }
+        activeEvidenceFrame?.retiredAttempt = attempt
+        activeEvidenceFrame?.retiredRetryKey = attempt.key
         cancelMediaFreshnessWatchdog()
         currentAttempt = nil
         if track === attempt.track {
             disableTrack(attempt.track)
         }
         attempt.output.stop()
-        lastFailureCategory = category
-        phase = Self.phase(for: category)
-        redriveRequested = allowRetry
-            && markRetryable(
-                attempt.key,
-                category: category
-            )
+        return true
     }
 
     private func failWithoutOutput(
         candidate: Candidate,
-        category:
-            WorldwideIPhoneMicrophoneForwardingFailureCategory
+        category: WorldwideIPhoneMicrophoneForwardingFailureCategory
     ) {
-        guard let current = currentCandidate(),
-              current.key == candidate.key,
-              current.peer === candidate.peer,
-              current.track === candidate.track else {
+        guard candidateStillCurrent(candidate) else {
             redriveRequested = true
+            retainEvidenceFailurePhase()
             return
         }
-
+        guard beginEvidenceFrame() else {
+            disableTrack(candidate.track)
+            retainEvidenceFailurePhase()
+            return
+        }
+        defer { endEvidenceFrame() }
+        let frame = activeEvidenceFrame!
         disableTrack(candidate.track)
-        lastFailureCategory = category
-        phase = Self.phase(for: category)
-        redriveRequested = markRetryable(
-            candidate.key,
-            category: category
-        )
+        if isStopped {
+            phase = .stopped
+            redriveRequested = false
+            return
+        }
+        do {
+            try requireRetryCandidate(candidate, frame: frame)
+            frame.retiredRetryKey = candidate.key
+            lastFailureCategory = category
+            phase = Self.phase(for: category)
+            redriveRequested = try markRetryableHeld(candidate, category: category, frame: frame)
+        } catch {
+            finishEvidenceFailure(error, original: nil)
+        }
     }
 
-    private func rememberAttempted(
-        _ key: WorldwideIPhoneMicrophoneForwardingKey
-    ) {
-        if var history = attemptHistory[key] {
-            history.count += 1
-            history.mayRetry = false
-            attemptHistory[key] = history
-        } else {
-            attemptHistory[key] = AttemptHistory(
-                count: 1,
-                mayRetry: false
-            )
-            attemptedKeyOrder.append(key)
-        }
+    private func candidateForRetiredAttempt(_ attempt: Attempt) -> Candidate {
+        Candidate(key: attempt.key, peer: attempt.peer, track: attempt.track,
+                  sinkEndpoint: attempt.sinkEndpoint)
+    }
 
+    private struct RetryWitness {
+        let frame: EvidenceFrame?
+        let key: WorldwideIPhoneMicrophoneForwardingKey
+        let row: AttemptHistory?
+        let monitorEpoch: UUID?
+        let monitorSnapshot: BlackHoleDeviceAvailabilitySnapshot?
+        let monitoringFailed: Bool
+        let peer: Peer?
+        let peerGeneration: UInt64
+        let transportEpoch: UInt64
+        let transportAuthorized: Bool
+        let track: Track?
+        let trackGeneration: UInt64
+        let attempt: Attempt?
+        let attemptGeneration: UInt64
+        let lastAttemptID: UUID?
+        let lastAttemptedKey: WorldwideIPhoneMicrophoneForwardingKey?
+        let order: [WorldwideIPhoneMicrophoneForwardingKey]
+        let latestSample: InboundMediaSample?
+        let phase: WorldwideIPhoneMicrophoneForwardingPhase
+        let failure: WorldwideIPhoneMicrophoneForwardingFailureCategory?
+        let redrive: Bool
+        let stopped: Bool
+    }
+
+    private func retryWitness(_ key: WorldwideIPhoneMicrophoneForwardingKey) -> RetryWitness {
+        RetryWitness(frame: activeEvidenceFrame, key: key, row: attemptHistory[key],
+            monitorEpoch: activeMonitorEpoch, monitorSnapshot: monitorSnapshot,
+            monitoringFailed: monitoringFailed, peer: peer, peerGeneration: peerGeneration,
+            transportEpoch: transportAuthorizationEpoch, transportAuthorized: transportAuthorized,
+            track: track, trackGeneration: trackGeneration, attempt: currentAttempt,
+            attemptGeneration: attemptGeneration, lastAttemptID: lastAttemptID,
+            lastAttemptedKey: lastAttemptedKey, order: attemptedKeyOrder,
+            latestSample: latestInboundMediaSample, phase: phase, failure: lastFailureCategory,
+            redrive: redriveRequested, stopped: isStopped)
+    }
+
+    private func retryWitnessStillMatches(_ witness: RetryWitness) -> Bool {
+        activeEvidenceFrame === witness.frame
+            && attemptHistory[witness.key] == witness.row
+            && activeMonitorEpoch == witness.monitorEpoch
+            && monitorSnapshot == witness.monitorSnapshot
+            && monitoringFailed == witness.monitoringFailed
+            && peer === witness.peer && peerGeneration == witness.peerGeneration
+            && transportAuthorizationEpoch == witness.transportEpoch
+            && transportAuthorized == witness.transportAuthorized
+            && track === witness.track && trackGeneration == witness.trackGeneration
+            && currentAttempt === witness.attempt
+            && attemptGeneration == witness.attemptGeneration
+            && lastAttemptID == witness.lastAttemptID
+            && lastAttemptedKey == witness.lastAttemptedKey
+            && attemptedKeyOrder == witness.order
+            && latestInboundMediaSample == witness.latestSample
+            && phase == witness.phase && lastFailureCategory == witness.failure
+            && redriveRequested == witness.redrive && isStopped == witness.stopped
+    }
+
+    private func requireRetryFrame(_ frame: EvidenceFrame) throws {
+        precondition(evidenceBusy && activeEvidenceFrame === frame)
+        guard !evidencePoisoned, !evidenceBridgeFaulted else {
+            throw EvidenceDecisionFailure.poisoned
+        }
+        guard !evidenceSuperseded else { throw EvidenceDecisionFailure.superseded }
+    }
+
+    private func requireRetryCandidate(_ candidate: Candidate, frame: EvidenceFrame) throws {
+        try requireRetryFrame(frame)
+        guard currentAttempt == nil, candidateStillCurrent(candidate) else {
+            throw EvidenceDecisionFailure.superseded
+        }
+    }
+
+    private func evaluateRetryHeld(
+        _ candidate: Candidate,
+        operation: BelugaRustMicrophoneForwardingRetry.Operation,
+        category: WorldwideIPhoneMicrophoneForwardingFailureCategory? = nil,
+        frame: EvidenceFrame
+    ) throws -> BelugaRustMicrophoneForwardingRetry.Evaluation {
+        try requireRetryCandidate(candidate, frame: frame)
+        let witness = retryWitness(candidate.key)
+        let row = witness.row.map {
+            BelugaRustMicrophoneForwardingRetry.Row(count: $0.count, mayRetry: $0.mayRetry)
+        }
+        let result: BelugaRustMicrophoneForwardingRetry.Evaluation
+        #if DEBUG
+        let mutation = retryPostResultMutation
+        if let mutation {
+            result = try BelugaRustMicrophoneForwardingRetry.evaluateForTesting(
+                maximumAttemptCount: maximumAttemptCountPerKey, before: row, operation: operation,
+                failureCategory: category.map(Self.retryFailureCategory), bridgeFaulted: false,
+                postResultMutation: mutation)
+        } else {
+            result = try BelugaRustMicrophoneForwardingRetry.evaluate(
+                maximumAttemptCount: maximumAttemptCountPerKey, before: row, operation: operation,
+                failureCategory: category.map(Self.retryFailureCategory), bridgeFaulted: false)
+        }
+        #else
+        result = try BelugaRustMicrophoneForwardingRetry.evaluate(
+            maximumAttemptCount: maximumAttemptCountPerKey, before: row, operation: operation,
+            failureCategory: category.map(Self.retryFailureCategory), bridgeFaulted: false)
+        #endif
+        try requireRetryCandidate(candidate, frame: frame)
+        guard retryWitnessStillMatches(witness) else {
+            throw EvidenceDecisionFailure.superseded
+        }
+        return result
+    }
+
+    private func rememberAttempted(_ candidate: Candidate) throws {
+        guard beginEvidenceFrame() else { throw EvidenceDecisionFailure.poisoned }
+        defer { endEvidenceFrame() }
+        let frame = activeEvidenceFrame!
+        let result = try evaluateRetryHeld(candidate, operation: .recordAttempt, frame: frame)
+        guard let row = result.row else { throw BelugaRustMicrophoneForwardingRetry.Failure.refused }
+        // All observable work has ended; retain the original native FIFO/write cuts.
+        attemptHistory[candidate.key] = AttemptHistory(count: row.count, mayRetry: row.mayRetry)
+        if result.originalRow == nil {
+            attemptedKeyOrder.append(candidate.key)
+        }
         let maximumRetainedKeys = 256
         while attemptedKeyOrder.count > maximumRetainedKeys {
             let removed = attemptedKeyOrder.removeFirst()
             attemptHistory.removeValue(forKey: removed)
         }
-        lastAttemptedKey = key
+        lastAttemptedKey = candidate.key
     }
 
-    private func candidateMayBeAttempted(
-        _ key: WorldwideIPhoneMicrophoneForwardingKey
-    ) -> Bool {
-        guard let history = attemptHistory[key] else {
-            return true
+    private func candidateMayBeAttempted(_ candidate: Candidate) throws -> Bool {
+        guard beginEvidenceFrame() else { throw EvidenceDecisionFailure.poisoned }
+        defer { endEvidenceFrame() }
+        return try evaluateRetryHeld(candidate, operation: .eligible,
+                                     frame: activeEvidenceFrame!).decision
+    }
+
+    private func markRetryableHeld(
+        _ candidate: Candidate,
+        category: WorldwideIPhoneMicrophoneForwardingFailureCategory,
+        frame: EvidenceFrame
+    ) throws -> Bool {
+        let result = try evaluateRetryHeld(candidate, operation: .retryFailure,
+                                           category: category, frame: frame)
+        if let row = result.row {
+            attemptHistory[candidate.key] = AttemptHistory(count: row.count, mayRetry: row.mayRetry)
         }
-        return history.mayRetry
-            && history.count < maximumAttemptCountPerKey
+        return result.decision
     }
 
-    @discardableResult
-    private func markRetryable(
-        _ key: WorldwideIPhoneMicrophoneForwardingKey,
-        category:
-            WorldwideIPhoneMicrophoneForwardingFailureCategory
-    ) -> Bool {
-        guard Self.isRetryable(category),
-              var history = attemptHistory[key],
-              history.count < maximumAttemptCountPerKey else {
-            return false
+    private func markRetryExhausted(_ candidate: Candidate) throws {
+        guard beginEvidenceFrame() else { throw EvidenceDecisionFailure.poisoned }
+        defer { endEvidenceFrame() }
+        let result = try evaluateRetryHeld(candidate, operation: .exhaust, frame: activeEvidenceFrame!)
+        if let row = result.row {
+            attemptHistory[candidate.key] = AttemptHistory(count: row.count, mayRetry: row.mayRetry)
         }
-        history.mayRetry = true
-        attemptHistory[key] = history
-        return true
+        applyRetryRedrive(result.redrive)
     }
 
-    private func markRetryExhausted(
-        _ key: WorldwideIPhoneMicrophoneForwardingKey
-    ) {
-        guard var history = attemptHistory[key] else {
-            return
+    private func exhaustFaultedRetryBookkeeping(_ key: WorldwideIPhoneMicrophoneForwardingKey) {
+        precondition(evidenceBridgeFaulted)
+        if let frame = activeEvidenceFrame {
+            guard frame.retiredRetryKey == key, !frame.faultExhaustConsumed else { return }
+            frame.faultExhaustConsumed = true
         }
-        history.mayRetry = false
-        attemptHistory[key] = history
-        redriveRequested = false
+        // Capture AFTER native cleanup. This fixed C/validator call has no hooks,
+        // clocks, borrowed evidence bridge, healthy vote or recursive error handler.
+        let witness = retryWitness(key)
+        #if DEBUG
+        faultExhaustCallsForTesting += 1
+        #endif
+        do {
+            let result = try BelugaRustMicrophoneForwardingRetry.exhaustBookkeeping(
+                maximumAttemptCount: maximumAttemptCountPerKey,
+                before: witness.row.map {
+                    BelugaRustMicrophoneForwardingRetry.Row(count: $0.count, mayRetry: $0.mayRetry)
+                })
+            guard evidenceBridgeFaulted, retryWitnessStillMatches(witness) else { return }
+            if let row = result.row {
+                attemptHistory[key] = AttemptHistory(count: row.count, mayRetry: row.mayRetry)
+            }
+            applyRetryRedrive(result.redrive)
+        } catch {
+            // Original output is already closed. Refused bookkeeping stays
+            // untouched and cannot reopen a faulted driver or recurse.
+        }
     }
 
-    private func reviveSourceMediaStalledCandidateIfFresh(
+    private func applyRetryRedrive(_ action: BelugaRustMicrophoneForwardingRetry.RedriveAction) {
+        switch action {
+        case .retain: break
+        case .clear: redriveRequested = false
+        case .request: redriveRequested = true
+        }
+    }
+
+    private static func retryFailureCategory(
+        _ category: WorldwideIPhoneMicrophoneForwardingFailureCategory
+    ) -> BelugaRustMicrophoneForwardingRetry.FailureCategory {
+        switch category {
+        case .monitoringFailed: .monitoringFailed
+        case .outputUnavailable: .outputUnavailable
+        case .startFailed: .startFailed
+        case .admissionFailed: .admissionFailed
+        case .readinessFailed: .readinessFailed
+        case .sourceMediaStalled: .sourceMediaStalled
+        case .formatUnsafe: .formatUnsafe
+        case .sharedClockUnsafe: .sharedClockUnsafe
+        case .runtimeEnqueueFailed: .runtimeEnqueueFailed
+        case .runtimeProgressStalled: .runtimeProgressStalled
+        case .evidenceBridgeRefused: .evidenceBridgeRefused
+        }
+    }
+
+    private func reviveSourceMediaStalledCandidateIfFreshHeld(
         previousSample: InboundMediaSample?,
         sample: InboundMediaSample
-    ) -> Bool {
-        guard currentAttempt == nil,
+    ) throws -> Bool {
+        precondition(evidenceBusy)
+        guard !evidenceBridgeFaulted, !evidencePoisoned, !evidenceSuperseded,
+              currentAttempt == nil,
               lastFailureCategory == .sourceMediaStalled,
               let candidate = currentCandidate(),
-              candidate.key.peerGeneration
-                == sample.peerGeneration,
-              candidate.key.trackGeneration
-                == sample.trackGeneration,
+              candidate.key.peerGeneration == sample.peerGeneration,
+              candidate.key.trackGeneration == sample.trackGeneration,
               let previousSample,
-              previousSample.peerGeneration
-                == sample.peerGeneration,
-              previousSample.trackGeneration
-                == sample.trackGeneration,
-              sample.sequence > previousSample.sequence,
-              sample.watermark?.isContinuous(
-                from: previousSample.watermark
-              ) == true,
-              sample.watermark?.advances(
-                from: previousSample.watermark
-              ) == true else {
+              previousSample.peerGeneration == sample.peerGeneration,
+              previousSample.trackGeneration == sample.trackGeneration,
+              sample.sequence > previousSample.sequence else {
             return false
         }
-
+        let decision = try evidenceBridge.watermark(
+            previous: previousSample.watermark, current: sample.watermark
+        )
+        guard !evidenceBridgeFaulted, !evidencePoisoned else {
+            throw EvidenceDecisionFailure.poisoned
+        }
+        guard !evidenceSuperseded, currentAttempt == nil,
+              candidateStillCurrent(candidate), latestInboundMediaSample == sample,
+              lastFailureCategory == .sourceMediaStalled else {
+            throw EvidenceDecisionFailure.superseded
+        }
+        guard decision.didAdvance else { return false }
         attemptHistory.removeValue(forKey: candidate.key)
         attemptedKeyOrder.removeAll { $0 == candidate.key }
         redriveRequested = true
@@ -1616,6 +2053,10 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         guard currentAttempt == nil else { return }
         if isStopped {
             phase = .stopped
+            return
+        }
+        if evidenceBridgeFaulted {
+            retainEvidenceFailurePhase()
             return
         }
         if policy == .suppressedForLANCoexistence {
@@ -1659,10 +2100,16 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
         }
 
         if let candidate = currentCandidate(),
-           attemptHistory[candidate.key] != nil,
-           !candidateMayBeAttempted(candidate.key) {
-            // Preserve the terminal result for this already-attempted key.
-            return
+           attemptHistory[candidate.key] != nil {
+            do {
+                if try candidateMayBeAttempted(candidate) == false {
+                    // Preserve the terminal result for this already-attempted key.
+                    return
+                }
+            } catch {
+                finishEvidenceFailure(error, original: nil)
+                return
+            }
         }
         phase = .waitingForTrack
     }
@@ -1688,25 +2135,8 @@ final class WorldwideIPhoneMicrophoneForwardingDriver<
             .formatUnsafe
         case .sharedClockUnsafe:
             .sharedClockUnsafe
-        case .runtimeEnqueueFailed, .runtimeProgressStalled:
+        case .runtimeEnqueueFailed, .runtimeProgressStalled, .evidenceBridgeRefused:
             .runtimeFailed
-        }
-    }
-
-    private static func isRetryable(
-        _ category:
-            WorldwideIPhoneMicrophoneForwardingFailureCategory
-    ) -> Bool {
-        switch category {
-        case .outputUnavailable, .startFailed,
-             .readinessFailed, .sourceMediaStalled,
-             .runtimeEnqueueFailed, .runtimeProgressStalled:
-            true
-        case .monitoringFailed, .admissionFailed,
-             .formatUnsafe:
-            false
-        case .sharedClockUnsafe:
-            false
         }
     }
 
@@ -2064,6 +2494,64 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         case externallySuperseded
     }
 
+    private struct ReleaseOwnership: Equatable {
+        let activeKey: WorldwideBlackHoleDefaultInputKey?
+        let pendingKey: LeaseKey?
+    }
+
+    private struct ReleaseContext: Equatable {
+        let activeMonitorEpoch: UUID?
+        let monitorSnapshot: BlackHoleDeviceAvailabilitySnapshot?
+        let healthyPeerGeneration: UInt64?
+        let highestPeerGenerationSeen: UInt64
+        let connectionGeneration: UInt64
+        let isStopped: Bool
+    }
+
+    private struct ReleaseProtection: Equatable {
+        let terminalConnectionGeneration: UInt64?
+        let externallySupersededPeerGeneration: UInt64?
+    }
+
+    private struct ReleaseEpisode {
+        // Nil means the expected owner or context changed before a native call. A
+        // non-nil value preserves the actual result, including noChange
+        // for the original no-owner path. Currentness is not a Rust fact.
+        let disposition: ReleaseDisposition?
+        let expectedContext: ReleaseContext
+        let expectedProtection: ReleaseProtection
+        // Includes lifecycle changes that retain the same ownership slot.
+        let currentnessChanged: Bool
+    }
+
+    private var releaseOwnership: ReleaseOwnership {
+        ReleaseOwnership(activeKey: activeKey, pendingKey: pendingKey)
+    }
+
+    private var releaseContext: ReleaseContext {
+        ReleaseContext(
+            activeMonitorEpoch: activeMonitorEpoch,
+            monitorSnapshot: monitorSnapshot,
+            healthyPeerGeneration: healthyPeerGeneration,
+            highestPeerGenerationSeen: highestPeerGenerationSeen,
+            connectionGeneration: connectionGeneration,
+            isStopped: isStopped
+        )
+    }
+
+    private var releaseProtection: ReleaseProtection {
+        ReleaseProtection(
+            terminalConnectionGeneration: terminalConnectionGeneration,
+            externallySupersededPeerGeneration: externallySupersededPeerGeneration
+        )
+    }
+
+    private func releaseIsCurrent(_ episode: ReleaseEpisode) -> Bool {
+        !episode.currentnessChanged
+            && releaseContext == episode.expectedContext
+            && releaseProtection == episode.expectedProtection
+    }
+
     private let policy:
         WorldwideIPhoneMicrophoneForwardingPolicy
     private let lease:
@@ -2087,6 +2575,9 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
     private var externallySupersededPeerGeneration: UInt64?
     private var lastAttemptedIdentity: CandidateIdentity?
     private var acquisitionAttemptCount = 0
+    // Out-of-domain policy refusal blocks new healthy admission, not the
+    // original exact native release/shutdown callbacks for retained ownership.
+    private var inputLeasePolicyRefused = false
     private var isStopped = false
     private var shutdownCleanupWasPending = false
 
@@ -2129,6 +2620,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         }
 
         let release = releaseActiveBounded()
+        guard releaseIsCurrent(release) else { return .degraded }
         activeMonitorEpoch = epoch
         monitorSnapshot = nil
         resetAcquisitionAttempts()
@@ -2146,7 +2638,8 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard policy == .enabled else {
             return .suppressed
         }
-        _ = releaseActiveBounded()
+        let release = releaseActiveBounded()
+        guard releaseIsCurrent(release) else { return .degraded }
         activeMonitorEpoch = nil
         monitorSnapshot = nil
         resetAcquisitionAttempts()
@@ -2161,7 +2654,8 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         guard policy == .enabled else {
             return .suppressed
         }
-        _ = releaseActiveBounded()
+        let release = releaseActiveBounded()
+        guard releaseIsCurrent(release) else { return .degraded }
         monitorSnapshot = nil
         resetAcquisitionAttempts()
         return .degraded
@@ -2236,6 +2730,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         }
 
         let release = releaseActiveBounded()
+        guard releaseIsCurrent(release) else { return .degraded }
         healthyPeerGeneration = peerGeneration
         connectionGeneration = Self.nextNonzero(
             connectionGeneration
@@ -2247,7 +2742,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             // allowed to clear a prior external-selector terminal fence.
             externallySupersededPeerGeneration = nil
         }
-        if release == .retryableFailure {
+        if release.disposition == .retryableFailure {
             return .degraded
         }
         return drive()
@@ -2271,11 +2766,13 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         }
         resetAcquisitionAttempts()
         let release = releaseActiveBounded()
+        guard releaseIsCurrent(release),
+              let disposition = release.disposition else { return .degraded }
         let releaseOutcome = outcome(
             for: release,
             whenNoChange: .noChange
         )
-        switch release {
+        switch disposition {
         case .retryableFailure:
             return releaseOutcome
         case .noChange, .released,
@@ -2367,6 +2864,7 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         parkingProof: BlackHoleDefaultInputLeaseParkingProof
     ) -> WorldwideBlackHoleDefaultInputOutcome {
         guard !isStopped,
+              !inputLeasePolicyRefused,
               policy == .enabled,
               healthyPeerGeneration == nil,
               clockEpochParkingProof == parkingProof,
@@ -2384,26 +2882,41 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
               !releaseIsPending else {
             return .degraded
         }
-        guard lease.clockEpochParkingProofIsCurrent(
+        let leaseKey = LeaseKey(activeKey)
+        let parkingProofIsCurrent = lease.clockEpochParkingProofIsCurrent(
             parkingProof
-        ) else {
+        )
+        guard !inputLeasePolicyRefused else {
+            cleanupRefusedInputLease(for: leaseKey)
+            return .degraded
+        }
+        guard parkingProofIsCurrent else {
             _ = releaseActiveBounded()
             return .degraded
         }
 
-        switch lease.reacquisitionResult(
+        let reacquisition = lease.reacquisitionResult(
             parkingProof: parkingProof,
             targetEndpoint: activeKey.deviceEndpoint
-        ) {
+        )
+        guard !inputLeasePolicyRefused else {
+            cleanupRefusedInputLease(for: leaseKey)
+            return .degraded
+        }
+        switch reacquisition {
         case .acquired:
             guard let authorization =
                     authorizationProof(
-                        for: LeaseKey(activeKey)
+                        for: leaseKey
                     ) else {
+                if inputLeasePolicyRefused {
+                    cleanupRefusedInputLease(for: leaseKey)
+                    return .degraded
+                }
                 _ = releaseActiveBounded()
                 return .degraded
             }
-            let refreshedKey = LeaseKey(activeKey).authorized(
+            let refreshedKey = leaseKey.authorized(
                 by: authorization
             )
             self.activeKey = refreshedKey
@@ -2488,7 +3001,9 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             attemptCount += 1
 
             let release = releaseActiveBounded()
-            switch release {
+            guard releaseIsCurrent(release),
+                  let disposition = release.disposition else { return .degraded }
+            switch disposition {
             case .retryableFailure:
                 shutdownCleanupWasPending = true
                 continue
@@ -2501,7 +3016,14 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                 break
             }
 
-            switch lease.shutdown() {
+            let expectedOwnership = releaseOwnership
+            let expectedContext = releaseContext
+            let expectedProtection = releaseProtection
+            let shutdownResult = lease.shutdown()
+            guard releaseOwnership == expectedOwnership,
+                  releaseContext == expectedContext,
+                  releaseProtection == expectedProtection else { return .degraded }
+            switch shutdownResult {
             case .released,
                  .externallySuperseded:
                 shutdownCleanupWasPending = false
@@ -2578,9 +3100,14 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         if let activeKey,
            activeKeyMatchesIdentity,
            !releaseIsPending {
+            guard !inputLeasePolicyRefused else { return .degraded }
             let leaseKey = LeaseKey(activeKey)
             guard let authorization =
                     authorizationProof(for: leaseKey) else {
+                if inputLeasePolicyRefused {
+                    cleanupRefusedInputLease(for: leaseKey)
+                    return .degraded
+                }
                 terminalConnectionGeneration =
                     activeKey.connectionGeneration
                 resetAcquisitionAttempts()
@@ -2598,7 +3125,9 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
            releaseIsPending
                 || !activeKeyMatchesIdentity {
             let release = releaseActiveBounded()
-            if release == .retryableFailure {
+            guard releaseIsCurrent(release),
+                  let disposition = release.disposition else { return .degraded }
+            if disposition == .retryableFailure {
                 return .degraded
             }
             if terminalConnectionGeneration
@@ -2611,8 +3140,11 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             lastAttemptedIdentity = identity
             acquisitionAttemptCount = 0
         }
-        guard acquisitionAttemptCount
-                < maximumAcquisitionAttemptCount else {
+        guard inputLeasePolicyAction(
+            operation: .acquisitionBudget,
+            attemptCount: acquisitionAttemptCount,
+            maximumAttemptCount: maximumAcquisitionAttemptCount
+        ) == .acquire else {
             return .degraded
         }
 
@@ -2638,16 +3170,44 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
             pendingKey = key
         }
 
-        while acquisitionAttemptCount
-                < maximumAcquisitionAttemptCount {
+        while true {
+            // The key exists at this second admission cut. Refusal must drive
+            // its existing exact native cleanup before returning degraded.
+            guard let admission = inputLeasePolicyAction(
+                operation: .acquisitionBudget,
+                attemptCount: acquisitionAttemptCount,
+                maximumAttemptCount: maximumAcquisitionAttemptCount
+            ) else {
+                cleanupRefusedInputLease(for: key)
+                return .degraded
+            }
+            guard admission == .acquire else { break }
             acquisitionAttemptCount += 1
-            switch lease.acquisitionResult(
+            let nativeResult = lease.acquisitionResult(
                 generation: key.leaseGeneration,
                 targetEndpoint: deviceEndpoint
-            ) {
-            case .acquired:
+            )
+            let nativeDisposition: UInt32
+            switch nativeResult {
+            case .acquired: nativeDisposition = 1
+            case .retryableFailure: nativeDisposition = 2
+            case .terminalFailure: nativeDisposition = 3
+            }
+            guard let acquisition = inputLeasePolicyAction(
+                operation: .acquisitionOutcome,
+                disposition: nativeDisposition
+            ) else {
+                cleanupRefusedInputLease(for: key)
+                return .degraded
+            }
+            switch acquisition {
+            case .authorizeAcquired:
                 guard let authorization =
                         authorizationProof(for: key) else {
+                    if inputLeasePolicyRefused {
+                        cleanupRefusedInputLease(for: key)
+                        return .degraded
+                    }
                     terminalConnectionGeneration =
                         key.connectionGeneration
                     acquisitionAttemptCount =
@@ -2661,14 +3221,18 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                 pendingKey = nil
                 activeKey = authorizedKey
                 return .selected(authorizedKey)
-            case .retryableFailure:
+            case .retryAcquisition:
                 continue
-            case .terminalFailure:
+            case .terminalAcquisition:
                 terminalConnectionGeneration =
                     key.connectionGeneration
                 acquisitionAttemptCount =
                     maximumAcquisitionAttemptCount
                 _ = releaseActiveBounded()
+                return .degraded
+            default:
+                inputLeasePolicyRefused = true
+                cleanupRefusedInputLease(for: key)
                 return .degraded
             }
         }
@@ -2684,27 +3248,67 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         return .degraded
     }
 
-    private func releaseActive()
-        -> ReleaseDisposition {
+    private func releaseActive(
+        for expectedOwnership: ReleaseOwnership,
+        context expectedContext: ReleaseContext,
+        protection expectedProtection: ReleaseProtection
+    ) -> ReleaseEpisode {
+        guard releaseOwnership == expectedOwnership,
+              releaseContext == expectedContext,
+              releaseProtection == expectedProtection else {
+            return ReleaseEpisode(disposition: nil, expectedContext: expectedContext,
+                expectedProtection: expectedProtection, currentnessChanged: true)
+        }
         guard let leaseKey =
-                activeKey.map(LeaseKey.init) ?? pendingKey else {
+                expectedOwnership.activeKey.map(LeaseKey.init)
+                    ?? expectedOwnership.pendingKey else {
             releaseIsPending = false
             clockEpochParkingProof = nil
-            return .noChange
+            return ReleaseEpisode(disposition: .noChange, expectedContext: expectedContext,
+                expectedProtection: expectedProtection, currentnessChanged: false)
         }
-        switch lease.release(
+        let nativeResult = lease.release(
             generation: leaseKey.leaseGeneration
-        ) {
+        )
+        let actualDisposition: ReleaseDisposition
+        switch nativeResult {
+        case .released: actualDisposition = .released
+        case .retryableFailure: actualDisposition = .retryableFailure
+        case .externallySuperseded: actualDisposition = .externallySuperseded
+        }
+        guard releaseOwnership == expectedOwnership,
+              releaseContext == expectedContext,
+              releaseProtection == expectedProtection else {
+            // Native cleanup may have reentered the coordinator. Retain its
+            // real result, but do not clear/fence a replacement owner or commit
+            // across newer lifecycle context that retains the same owner.
+            return ReleaseEpisode(disposition: actualDisposition, expectedContext: expectedContext,
+                expectedProtection: expectedProtection, currentnessChanged: true)
+        }
+        let expectedPostProtection: ReleaseProtection
+        switch nativeResult {
+        case .externallySuperseded:
+            // Derive the exact original own-write transition from copied
+            // facts. Never adopt a nested callback's newer protection state.
+            expectedPostProtection = ReleaseProtection(
+                terminalConnectionGeneration: leaseKey.connectionGeneration,
+                externallySupersededPeerGeneration: leaseKey.peerGeneration > 0
+                    ? max(expectedProtection.externallySupersededPeerGeneration ?? 0,
+                        leaseKey.peerGeneration)
+                    : expectedProtection.externallySupersededPeerGeneration
+            )
+        case .released, .retryableFailure:
+            expectedPostProtection = expectedProtection
+        }
+        switch nativeResult {
         case .released:
             self.activeKey = nil
             pendingKey = nil
             releaseIsPending = false
             clockEpochParkingProof = nil
-            return .released
 
         case .retryableFailure:
             releaseIsPending = true
-            return .retryableFailure
 
         case .externallySuperseded:
             self.activeKey = nil
@@ -2717,17 +3321,20 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
                 peerGeneration:
                     leaseKey.peerGeneration
             )
-            return .externallySuperseded
         }
+        return ReleaseEpisode(disposition: actualDisposition, expectedContext: expectedContext,
+            expectedProtection: expectedPostProtection, currentnessChanged: false)
     }
 
     private func authorizationProof(
         for key: LeaseKey
     ) -> BlackHoleDefaultInputLeaseAuthorization? {
+        guard !inputLeasePolicyRefused else { return nil }
         guard let authorization = lease.authorizationProof(
             generation: key.leaseGeneration,
             targetEndpoint: key.deviceEndpoint
         ),
+        !inputLeasePolicyRefused,
         authorization.leaseGeneration == key.leaseGeneration,
         authorization.targetEndpoint == key.deviceEndpoint else {
             return nil
@@ -2735,30 +3342,106 @@ final class WorldwideBlackHoleDefaultInputCoordinator {
         return authorization
     }
 
+    private func cleanupRefusedInputLease(for key: LeaseKey) {
+        // Never release a reentrantly newer coordinator owner. This entry
+        // key fence precedes a full-slot-fenced bounded release episode.
+        guard (activeKey.map(LeaseKey.init) ?? pendingKey) == key else { return }
+        // Keep the real disposition/bookkeeping: retryable release retains
+        // this exact key and releaseIsPending for later lifecycle callbacks.
+        _ = releaseActiveBounded()
+    }
+
     private func releaseActiveBounded()
-        -> ReleaseDisposition {
-        var result = releaseActive()
+        -> ReleaseEpisode {
+        let expectedOwnership = releaseOwnership
+        let expectedContext = releaseContext
+        let expectedProtection = releaseProtection
+        var episode = releaseActive(for: expectedOwnership, context: expectedContext,
+            protection: expectedProtection)
         var attemptCount = 1
-        while result == .retryableFailure,
-              attemptCount < maximumReleaseAttemptCount {
+        while true {
+            guard releaseIsCurrent(episode),
+                  let result = episode.disposition else { return episode }
+            // The first exact native cleanup call above is unconditional even
+            // after refusal. A refusal does not fabricate its native disposition.
+            let continuation = inputLeasePolicyAction(
+                operation: .releaseContinuation,
+                disposition: inputLeaseDisposition(result),
+                attemptCount: attemptCount,
+                maximumAttemptCount: maximumReleaseAttemptCount
+            )
+            if result == .retryableFailure,
+               (releaseOwnership != expectedOwnership || releaseContext != expectedContext
+                    || releaseProtection != expectedProtection) {
+                return ReleaseEpisode(disposition: result, expectedContext: expectedContext,
+                    expectedProtection: expectedProtection, currentnessChanged: true)
+            }
+            guard releaseIsCurrent(episode) else {
+                return ReleaseEpisode(disposition: result, expectedContext: expectedContext,
+                    expectedProtection: episode.expectedProtection, currentnessChanged: true)
+            }
+            guard let continuation else { return episode }
+            guard continuation == .retryRelease else { break }
             attemptCount += 1
-            result = releaseActive()
+            // The entire episode owns one captured slot, never whichever
+            // replacement key a nested callback has since published.
+            episode = releaseActive(for: expectedOwnership, context: expectedContext,
+                protection: expectedProtection)
         }
-        return result
+        return episode
     }
 
     private func outcome(
-        for release: ReleaseDisposition,
+        for release: ReleaseEpisode,
         whenNoChange fallback:
             WorldwideBlackHoleDefaultInputOutcome
     ) -> WorldwideBlackHoleDefaultInputOutcome {
-        switch release {
-        case .noChange:
+        // An admitted caller may already have committed its own new epoch.
+        // Reentry refusal is sticky in this result; do not reject those
+        // intentional caller commits by rechecking the captured old context.
+        guard !release.currentnessChanged,
+              let disposition = release.disposition else { return .degraded }
+        guard let result = inputLeasePolicyAction(
+            operation: .releaseOutcome,
+            disposition: inputLeaseDisposition(disposition)
+        ) else { return .degraded }
+        switch result {
+        case .useNativeFallback:
             return fallback
-        case .released, .externallySuperseded:
+        case .released:
             return .released
-        case .retryableFailure:
+        case .degraded:
             return .degraded
+        default:
+            inputLeasePolicyRefused = true
+            return .degraded
+        }
+    }
+
+    private func inputLeaseDisposition(_ result: ReleaseDisposition) -> UInt32 {
+        switch result {
+        case .noChange: 0
+        case .released: 1
+        case .retryableFailure: 2
+        case .externallySuperseded: 3
+        }
+    }
+
+    private func inputLeasePolicyAction(
+        operation: BelugaRustMicrophoneInputLease.Operation,
+        disposition: UInt32 = 0,
+        attemptCount: Int = 0,
+        maximumAttemptCount: Int = 0
+    ) -> BelugaRustMicrophoneInputLease.Action? {
+        guard !inputLeasePolicyRefused || operation == .releaseContinuation else { return nil }
+        do {
+            return try BelugaRustMicrophoneInputLease.evaluate(
+                operation: operation, disposition: disposition,
+                attemptCount: attemptCount, maximumAttemptCount: maximumAttemptCount
+            )
+        } catch {
+            inputLeasePolicyRefused = true
+            return nil
         }
     }
 

@@ -14,10 +14,31 @@ enum MacChromeMediaScript {
         uuid(e.documentID) && uuid(e.itemID) && Number.isSafeInteger(e.itemGeneration) && e.itemGeneration > 0;
       const sameExpected = (a,b) => a && b && a.documentID === b.documentID &&
         a.itemID === b.itemID && a.itemGeneration === b.itemGeneration;
+      const handoffValid = h => exact(h,["continuityID","videoID","positionSeconds","durationSeconds",
+        "playbackRate","observedAtPageMilliseconds","phonePositionSeconds"]) && uuid(h.continuityID) &&
+        typeof h.videoID === "string" && VIDEO.test(h.videoID) &&
+        Number.isFinite(h.durationSeconds) && h.durationSeconds > 0 && h.durationSeconds <= 31536000 &&
+        [h.positionSeconds,h.phonePositionSeconds].every(p => Number.isFinite(p) && p >= 0 && p < h.durationSeconds) &&
+        Number.isFinite(h.playbackRate) && h.playbackRate > 0 && h.playbackRate <= 16 &&
+        Number.isFinite(h.observedAtPageMilliseconds) && h.observedAtPageMilliseconds >= 0 &&
+        h.observedAtPageMilliseconds <= Number.MAX_SAFE_INTEGER;
+      const sameHandoff = (a,b) => (!a && !b) || (a && b &&
+        Object.keys(a).every(k => a[k] === b[k]) && Object.keys(a).length === Object.keys(b).length);
+      const handoffMatches = (h,m) => {
+        const elapsed = (m.observedAtPageMilliseconds - h.observedAtPageMilliseconds) / 1000;
+        return elapsed >= 0 && elapsed < 30 && m.playbackContinuityID === h.continuityID &&
+          m.videoID === h.videoID && !m.paused && m.canPause && m.canSeek &&
+          m.duration === h.durationSeconds && m.playbackRate === h.playbackRate &&
+          Math.abs(m.elapsedTime - (h.positionSeconds + elapsed * h.playbackRate)) <= 1 &&
+          Math.abs(m.elapsedTime - h.phonePositionSeconds) <= 2;
+      };
       const bounded = o => { try { return encoder.encode(JSON.stringify(o)).length <= 4096; } catch { return false; } };
-      const output = (status, snapshot) => {
+      const output = (status, snapshot, record) => {
         const result = {schemaVersion:1,status};
         if (snapshot) result.snapshot = snapshot;
+        if (record?.seekTarget !== undefined) {
+          result.seekFrom = record.seekFrom; result.seekTarget = record.seekTarget;
+        }
         return JSON.stringify(bounded(result) ? result : {schemaVersion:1,status:"failed"});
       };
       const text = (value, max) => {
@@ -46,10 +67,16 @@ enum MacChromeMediaScript {
           if (!exact(request,["schemaVersion","operation","commandID","expected"]) ||
               !uuid(request.commandID) || !expectedValid(request.expected)) return output("failed");
         } else if (operation === "command") {
-          if (!exact(request,["schemaVersion","operation","commandID","expected","command",
-                "expiresAtUnixMilliseconds","expiresAtPageMilliseconds"]) ||
+          const fields = ["schemaVersion","operation","commandID","expected","command",
+                "expiresAtUnixMilliseconds","expiresAtPageMilliseconds"];
+          if (request.command === "seekToPosition") fields.push("positionSeconds");
+          if (Object.hasOwn(request,"handoff")) fields.push("handoff");
+          if (!exact(request,fields) ||
               !uuid(request.commandID) || !expectedValid(request.expected) ||
-              !["play","pause","next","previous"].includes(request.command) ||
+              !["play","pause","next","previous","seekForward30","seekBackward30","seekToPosition"].includes(request.command) ||
+              (Object.hasOwn(request,"handoff") && (request.command !== "pause" || !handoffValid(request.handoff))) ||
+              (request.command === "seekToPosition" && (!Number.isFinite(request.positionSeconds) ||
+                request.positionSeconds < 0 || request.positionSeconds > 31536000)) ||
               !Number.isFinite(request.expiresAtUnixMilliseconds) ||
               !Number.isFinite(request.expiresAtPageMilliseconds)) return output("failed");
         } else return output("failed");
@@ -75,6 +102,8 @@ enum MacChromeMediaScript {
           document.addEventListener("yt-navigate-start",() => { s.navigating = true; s.invalidate(); },options);
           document.addEventListener("yt-navigate-finish",() => { s.navigating = false; s.invalidate(); },options);
         }
+        // Existing pages can hold the earlier version of this same bounded ledger.
+        s.setCurrentTime ||= Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,"currentTime")?.set;
         const unavailable = () => {
           if (!s.unavailable || s.itemID) s.invalidate();
           return null;
@@ -113,6 +142,15 @@ enum MacChromeMediaScript {
             s.video = video; s.invalidate();
             video.addEventListener("emptied",s.invalidate,{signal:s.videoEvents.signal});
           }
+          // A source can retain its item identity through manual seek/pause/rate changes.
+          // Keep this separate from normal command identity, including on an existing v1 page.
+          if (s.handoffVideo !== video) {
+            s.handoffEvents?.abort(); s.handoffEvents = new AbortController();
+            s.handoffVideo = video; s.playbackContinuityID = crypto.randomUUID();
+            const changed = () => { s.playbackContinuityID = crypto.randomUUID(); };
+            for (const name of ["seeking","ratechange","pause","play","waiting","ended","emptied"])
+              video.addEventListener(name,changed,{signal:s.handoffEvents.signal,passive:true});
+          }
           if (s.player !== player || s.href !== page.href || s.src !== video.currentSrc || s.videoID !== page.videoID) {
             s.player = player; s.href = page.href; s.src = video.currentSrc; s.videoID = page.videoID; s.invalidate();
           }
@@ -128,10 +166,16 @@ enum MacChromeMediaScript {
           if (!Number.isFinite(elapsed) || elapsed < 0 || elapsed > 31536000 ||
               !Number.isFinite(rate) || rate <= 0 || rate > 16) return unavailable();
           const paused = video.paused || video.ended;
+          const ranges = video.seekable;
+          const canSeek = typeof s.setCurrentTime === "function" && Number.isFinite(duration) &&
+            duration > 0 && duration <= 31536000 && elapsed <= duration && ranges?.length === 1 &&
+            Number.isFinite(ranges.start(0)) && ranges.start(0) <= 0.01 &&
+            Number.isFinite(ranges.end(0)) && ranges.end(0) >= duration - 0.01;
           const snapshot = {documentID:s.documentID,itemID:s.itemID,itemGeneration:s.itemGeneration,
+            playbackContinuityID:s.playbackContinuityID,
             videoID:page.videoID,title,paused,playbackRate:paused ? 0 : rate,
             elapsedTime:elapsed,observedAtUnixMilliseconds:Date.now(),observedAtPageMilliseconds:performance.now(),
-            canPlay:paused,canPause:!paused,canNext:!!next,canPrevious:!!previous};
+            canPlay:paused,canPause:!paused,canNext:!!next,canPrevious:!!previous,canSeek};
           if (artist) snapshot.artist = artist;
           if (Number.isFinite(duration) && duration >= 0 && duration <= 31536000) snapshot.duration = duration;
           // Recheck after all metadata/control getters; a read cannot create mixed authority.
@@ -148,11 +192,16 @@ enum MacChromeMediaScript {
           if (record.expected.documentID !== s.documentID || s.retired) return output("staleContext",view?.snapshot);
           if (record.status === "pending") {
             if (expired(record)) record.status = "failed";
+            else if (record.seekTarget !== undefined) {
+              if (!view || !sameExpected(view.snapshot,record.expected)) record.status = "staleContext";
+              else if (!view.video.seeking && Math.abs(view.snapshot.elapsedTime - record.seekTarget) <= 0.25)
+                record.status = "ok";
+            }
             else if (record.targetVideoID && view && view.snapshot.itemID !== record.expected.itemID) {
               record.status = view.snapshot.videoID === record.targetVideoID ? "ok" : "staleContext";
             }
           }
-          return output(record.status,view?.snapshot);
+          return output(record.status,view?.snapshot,record);
         };
         const view = observe();
         const now = performance.now();
@@ -162,6 +211,8 @@ enum MacChromeMediaScript {
         if (existing) {
           if (!sameExpected(existing.expected,request.expected) ||
               (operation === "command" && (existing.command !== request.command ||
+                existing.positionSeconds !== request.positionSeconds ||
+                !sameHandoff(existing.handoff,request.handoff) ||
                 existing.expiresAtUnixMilliseconds !== request.expiresAtUnixMilliseconds ||
                 existing.expiresAtPageMilliseconds !== request.expiresAtPageMilliseconds))) return output("staleContext");
           return recordResult(existing,view);
@@ -172,9 +223,14 @@ enum MacChromeMediaScript {
             request.expiresAtUnixMilliseconds - Date.now() > 5000) return output("failed",view.snapshot);
         if (s.commands.size >= 128) return output("failed",view.snapshot);
         const relative = request.command === "next" || request.command === "previous";
+        const seek = request.command === "seekForward30" || request.command === "seekBackward30" ||
+          request.command === "seekToPosition";
         const chosen = relative ? view[request.command] : null;
         if (relative && !chosen) return output("unsupported",view.snapshot);
+        if (seek && !view.snapshot.canSeek) return output("unsupported",view.snapshot);
         const record = {expected:{...request.expected},command:request.command,status:"pending",
+          positionSeconds:request.positionSeconds,
+          handoff:request.handoff,
           expiresAtUnixMilliseconds:request.expiresAtUnixMilliseconds,expiresAtPageMilliseconds:request.expiresAtPageMilliseconds,
           retainUntil:now + 60000,targetVideoID:chosen?.videoID};
         s.commands.set(request.commandID,record);
@@ -187,9 +243,22 @@ enum MacChromeMediaScript {
           record.status = "staleContext"; return output(record.status,fence?.snapshot);
         }
         if (expired(request)) { record.status = "failed"; return output(record.status,fence.snapshot); }
+        // Read the live continuity again: final DOM validation can synchronously dispatch
+        // an event after observe created its immutable snapshot.
+        if (request.handoff && (!handoffMatches(request.handoff,fence.snapshot) ||
+            s.playbackContinuityID !== request.handoff.continuityID)) {
+          record.status = "staleContext"; return output(record.status,fence.snapshot);
+        }
         try {
           if (relative) {
             s.click.call(chosen.node);
+          } else if (seek) {
+            if (!fence.snapshot.canSeek) { record.status = "failed"; return recordResult(record,fence); }
+            record.seekFrom = fence.snapshot.elapsedTime;
+            record.seekTarget = Math.min(fence.snapshot.duration, Math.max(0,
+              request.command === "seekToPosition" ? request.positionSeconds :
+                record.seekFrom + (request.command === "seekForward30" ? 30 : -30)));
+            s.setCurrentTime.call(fence.video,record.seekTarget);
           } else if (request.command === "pause") {
             s.pause.call(view.video);
             const after = observe();

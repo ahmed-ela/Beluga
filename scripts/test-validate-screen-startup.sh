@@ -81,7 +81,13 @@ Dir.mktmpdir('startup-runner-selftest-') do |temporary|
         skipped = native && (mode == 'log_skipped_native' || ENV['OPENSTEAMER_RUN_STARTUP_CLARITY_EXPERIMENT'] != '1')
         state = skipped ? 'skipped' : mode == 'log_failed' ? 'failed' : 'passed'
         state = 'unrecognized' if mode == 'log_unrecognized_case'
-        puts "#{prefix} #{state} (0.001 seconds)." unless mode == 'log_unfinished_case' && index == selected.length - 1
+        unless mode == 'log_unfinished_case' && index == selected.length - 1
+          if mode == 'log_embedded_pass' && id.include?('testDenseProductionPolicyDelayedNetworkWithDynamicFrameRateCharacterization')
+            puts "STARTUP_POLICY_NATIVE_LOOPBACK {trace:#{prefix} #{state} (0.001 seconds). remainder}"
+          else
+            puts "#{prefix} #{state} (0.001 seconds)."
+          end
+        end
       end
       unless mode == 'log_missing_suite_end'
         repetitions = mode == 'log_duplicate_footer' ? 2 : 1
@@ -177,6 +183,7 @@ Dir.mktmpdir('startup-runner-selftest-') do |temporary|
   run.call('log_failed', expected_failure: 'required test failed')
   run.call('log_missing_start', expected_failure: 'XCTest pass without matching start')
   run.call('log_unfinished_case', expected_failure: 'unfinished XCTest case')
+  run.call('log_embedded_pass', native_enabled: true, expected_failure: 'unfinished XCTest case')
   run.call('log_missing_suite_end', expected_failure: 'missing or duplicate Selected tests passed record')
   run.call('log_truncated_footer', expected_failure: 'missing or malformed Selected tests count footer')
   run.call('log_wrong_count', expected_failure: 'count footer disagrees with required method manifest')

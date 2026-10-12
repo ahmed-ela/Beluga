@@ -7,6 +7,126 @@ import Testing
 struct DurableSignalingClientTests {
     private let endpoint = URL(string: "wss://rendezvous.example.test")!
 
+    @Test func availabilitySecondCloseJoinsNativeFinishAndPreservesFirstTerminalError() async throws {
+        let fake = DurableFakeSocketTransport()
+        let client = try PairedAvailabilitySignalingClient(endpoint: endpoint,
+            locator: makeLocator(role: .host), role: .host, transport: fake)
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        await fake.push(text: #"{"type":"availability-waiting"}"#)
+        #expect(try await iterator.next() == .waiting)
+        await fake.suspendCloses()
+        await fake.push(text: #"{"type":"not-a-valid-state"}"#)
+        #expect(await eventually { await fake.hasSuspendedClose() })
+        await assertPublicCloseJoinsHeldTransport(fake: fake, close: { await client.close() })
+        do {
+            _ = try await iterator.next()
+            Issue.record("The first native terminal error must survive a reentrant public close")
+        } catch { #expect(error as? RendezvousSignalingError == .invalidServerMessage) }
+    }
+
+    @Test func pairingSecondCloseJoinsNativeFinishAndPreservesFirstTerminalError() async throws {
+        let fake = DurableFakeSocketTransport()
+        let invitation = try RemoteInvitationCode(secret: Data(repeating: 0x37, count: 20))
+        let client = try PairingBootstrapSignalingClient(endpoint: endpoint,
+            invitation: invitation, role: .host, transport: fake)
+        let stream = try await client.connect()
+        var iterator = stream.makeAsyncIterator()
+        #expect(await eventually { await fake.hasSuspendedReceive() })
+        await fake.suspendCloses()
+        await fake.push(text: #"{"type":"not-a-valid-state"}"#)
+        #expect(await eventually { await fake.hasSuspendedClose() })
+        await assertPublicCloseJoinsHeldTransport(fake: fake, close: { await client.close() })
+        do {
+            _ = try await iterator.next()
+            Issue.record("The first pairing terminal error must survive a reentrant public close")
+        } catch { #expect(error as? RendezvousSignalingError == .invalidServerMessage) }
+    }
+
+    @Test func availabilityCloseJoinsConnectionFailureCleanup() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.failConnects()
+        await fake.suspendCloses()
+        let client = try PairedAvailabilitySignalingClient(endpoint: endpoint,
+            locator: makeLocator(role: .host), role: .host, transport: fake)
+        let connecting = Task { try await client.connect() }
+        #expect(await eventually { await fake.hasSuspendedClose() })
+        await assertPublicCloseJoinsHeldTransport(fake: fake, close: { await client.close() })
+        do {
+            _ = try await connecting.value
+            Issue.record("A failed connection must remain failed after coalesced cleanup")
+        } catch { #expect(error as? RendezvousSignalingError == .connectionFailed) }
+    }
+
+    @Test func availabilityPublicCloseJoinsDistinctLateSuccessReclose() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendConnects()
+        let client = try PairedAvailabilitySignalingClient(endpoint: endpoint,
+            locator: makeLocator(role: .viewer), role: .viewer, transport: fake)
+        let connecting = Task { try await client.connect() }
+        #expect(await eventually { await fake.hasSuspendedConnect() })
+        // The original finish is completely drained before the late open resumes.
+        await client.close()
+        #expect(await fake.closeCallCount() == 1)
+        #expect(await fake.hasSuspendedClose() == false)
+        await fake.suspendCloses()
+        await fake.resumeSuspendedConnect()
+        #expect(await eventually { await fake.hasSuspendedClose() })
+        #expect(await fake.closeCallCount() == 2)
+        await assertPublicCloseJoinsHeldTransport(fake: fake, expectedCloseCalls: 2,
+            close: { await client.close() })
+        do {
+            _ = try await connecting.value
+            Issue.record("Late open cannot resurrect availability after its distinct reclose")
+        } catch { #expect(error as? RendezvousSignalingError == .connectionClosed) }
+    }
+
+    @Test func pairingPublicCloseJoinsDistinctLateSuccessReclose() async throws {
+        let fake = DurableFakeSocketTransport()
+        await fake.suspendConnects()
+        let invitation = try RemoteInvitationCode(secret: Data(repeating: 0x47, count: 20))
+        let client = try PairingBootstrapSignalingClient(endpoint: endpoint,
+            invitation: invitation, role: .viewer, transport: fake)
+        let connecting = Task { try await client.connect() }
+        #expect(await eventually { await fake.hasSuspendedConnect() })
+        await client.close()
+        #expect(await fake.closeCallCount() == 1)
+        #expect(await fake.hasSuspendedClose() == false)
+        await fake.suspendCloses()
+        await fake.resumeSuspendedConnect()
+        #expect(await eventually { await fake.hasSuspendedClose() })
+        #expect(await fake.closeCallCount() == 2)
+        await assertPublicCloseJoinsHeldTransport(fake: fake, expectedCloseCalls: 2,
+            close: { await client.close() })
+        do {
+            _ = try await connecting.value
+            Issue.record("Late open cannot resurrect pairing after its distinct reclose")
+        } catch { #expect(error as? RendezvousSignalingError == .connectionClosed) }
+    }
+
+    private func assertPublicCloseJoinsHeldTransport(
+        fake: DurableFakeSocketTransport, expectedCloseCalls: Int = 1,
+        close: @escaping @Sendable () async -> Void
+    ) async {
+        let observation = DurableCloseObservation()
+        let second = Task {
+            await observation.enter()
+            await close()
+            await observation.complete()
+        }
+        #expect(await eventually { await observation.hasEntered() })
+        // Checked-continuation suspension is intentionally not released by cancellation.
+        second.cancel()
+        for _ in 0..<200 { await Task.yield() }
+        #expect(await observation.hasCompleted() == false)
+        #expect(await fake.closeCallCount() == expectedCloseCalls)
+        #expect(await fake.hasSuspendedClose())
+        await fake.resumeSuspendedCloses()
+        await second.value
+        #expect(await observation.hasCompleted())
+        #expect(await fake.closeCallCount() == expectedCloseCalls)
+    }
+
     @Test func pairingBootstrapUsesNegotiatedPairingModeAndBoundedPayloads() async throws {
         let invitation = try RemoteInvitationCode(secret: Data(repeating: 7, count: 20))
         let hostFake = DurableFakeSocketTransport()
@@ -934,9 +1054,12 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private var shouldSuspendApplicationProbeSends = false
     private var suspendedApplicationProbeSend: CheckedContinuation<Void, any Error>?
     private var shouldSuspendConnects = false
+    private var shouldFailConnects = false
     private var suspendedConnect: CheckedContinuation<Void, any Error>?
     private var probeSendWaiter: CheckedContinuation<String, any Error>?
     private var closeCalls = 0
+    private var shouldSuspendCloses = false
+    private var suspendedCloses: [CheckedContinuation<Void, Never>] = []
     private var queued = [RendezvousSocketMessage]()
     private var waiter: CheckedContinuation<RendezvousSocketMessage, any Error>?
 
@@ -953,6 +1076,7 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
         self.admissionProof = admissionProof
         self.viewerAdmissionProof = viewerAdmissionProof
         self.mode = mode
+        if shouldFailConnects { throw DurableFakeSocketError.closed }
         if shouldSuspendConnects {
             try await withCheckedThrowingContinuation {
                 suspendedConnect = $0
@@ -992,6 +1116,9 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
 
     func close() async {
         closeCalls += 1
+        if shouldSuspendCloses {
+            await withCheckedContinuation { suspendedCloses.append($0) }
+        }
         waiter?.resume(throwing: DurableFakeSocketError.closed)
         waiter = nil
         suspendedApplicationProbeSend?.resume(throwing: DurableFakeSocketError.closed)
@@ -1002,6 +1129,16 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
 
     func failPings(with failure: DurableFakePingFailure = .closed) {
         pingFailure = failure
+    }
+
+    func failConnects() { shouldFailConnects = true }
+    func suspendCloses() { shouldSuspendCloses = true }
+    func hasSuspendedClose() -> Bool { !suspendedCloses.isEmpty }
+    func resumeSuspendedCloses() {
+        shouldSuspendCloses = false
+        let pending = suspendedCloses
+        suspendedCloses.removeAll(keepingCapacity: false)
+        pending.forEach { $0.resume() }
     }
 
     func suspendConnects() { shouldSuspendConnects = true }
@@ -1058,4 +1195,13 @@ private actor DurableFakeSocketTransport: RendezvousSocketTransport {
     private static func isApplicationProbe(_ text: String) -> Bool {
         text.contains(#""type":"availability-probe""#)
     }
+}
+
+private actor DurableCloseObservation {
+    private var entered = false
+    private var completed = false
+    func enter() { entered = true }
+    func complete() { completed = true }
+    func hasEntered() -> Bool { entered }
+    func hasCompleted() -> Bool { completed }
 }

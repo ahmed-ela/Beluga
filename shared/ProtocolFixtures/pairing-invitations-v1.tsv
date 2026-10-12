@@ -1,0 +1,5 @@
+# Public, deterministic TEST-ONLY capabilities. Never issue these as real invitations.
+# id<TAB>20-byte secret hex<TAB>canonical grouped invitation
+zero	0000000000000000000000000000000000000000	04000-00000-00000-00000-00000-00000-00022-HVRDN
+sequence	000102030405060708090a0b0c0d0e0f10111213	04002-0G30G-2GC1R-81450-P30D1-R7H04-8J2EZ-G8AG3
+ones	ffffffffffffffffffffffffffffffffffffffff	07ZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZXM-PTX9H

@@ -237,8 +237,13 @@ public actor PairedAvailabilitySignalingClient {
     private let applicationProbeAckTimeoutNanoseconds: UInt64
     private let applicationProbeAckSleep: LivenessSleep
     private let applicationProbeNonceGenerator: ProbeNonceGenerator
+    private let replayObserver: BelugaRustSignalingReplayObservation.Observer?
 
     private var state = State.idle
+    private var finishIsInProgress = false
+    private var finishWaiters: [CheckedContinuation<Void, Never>] = []
+    private var transportCloseIsInProgress = false
+    private var transportCloseWaiters: [CheckedContinuation<Void, Never>] = []
     private var continuation: EventStream.Continuation?
     private var receiveTask: Task<Void, Never>?
     private var firstProtocolStateDeadlineTask: Task<Void, Never>?
@@ -248,7 +253,7 @@ public actor PairedAvailabilitySignalingClient {
     private var exchangeID: RemoteAvailabilityExchangeID?
     private var cipher: RemoteAvailabilityCipher?
     private var nextSequence: UInt64 = 0
-    private var replayGuard = SignalingReplayGuard()
+    private var replayGuard: SignalingReplayGuard
 
     public init(
         endpoint: URL,
@@ -270,6 +275,8 @@ public actor PairedAvailabilitySignalingClient {
         applicationProbeAckTimeoutNanoseconds = Limits.applicationProbeAckTimeoutNanoseconds
         applicationProbeAckSleep = Self.defaultLivenessSleep
         applicationProbeNonceGenerator = Self.defaultApplicationProbeNonce
+        replayObserver = nil
+        replayGuard = SignalingReplayGuard()
     }
 
     internal init(
@@ -290,7 +297,8 @@ public actor PairedAvailabilitySignalingClient {
         applicationProbeAckSleep: @escaping LivenessSleep = PairedAvailabilitySignalingClient
             .defaultLivenessSleep,
         applicationProbeNonceGenerator: @escaping ProbeNonceGenerator =
-            PairedAvailabilitySignalingClient.defaultApplicationProbeNonce
+            PairedAvailabilitySignalingClient.defaultApplicationProbeNonce,
+        replayObserver: BelugaRustSignalingReplayObservation.Observer? = nil
     ) throws {
         guard locator.localRole == role else {
             throw RemoteSessionCoreError.invalidRendezvousCredential
@@ -312,6 +320,8 @@ public actor PairedAvailabilitySignalingClient {
         self.applicationProbeAckTimeoutNanoseconds = applicationProbeAckTimeoutNanoseconds
         self.applicationProbeAckSleep = applicationProbeAckSleep
         self.applicationProbeNonceGenerator = applicationProbeNonceGenerator
+        self.replayObserver = replayObserver
+        replayGuard = SignalingReplayGuard(producer: .actual, observer: replayObserver)
     }
 
     /// Connects exactly once and starts the bounded availability event stream.
@@ -329,8 +339,7 @@ public actor PairedAvailabilitySignalingClient {
                 mode: .availability
             )
         } catch {
-            state = .closed
-            await transport.close()
+            await finish(throwing: RendezvousSignalingError.connectionFailed)
             throw RendezvousSignalingError.connectionFailed
         }
 
@@ -338,7 +347,10 @@ public actor PairedAvailabilitySignalingClient {
         // therefore win while the socket is still opening and move this client to `.closed`.
         // Never let a later successful connect completion resurrect that closed client.
         guard state == .idle else {
-            await transport.close()
+            await finish(throwing: nil)
+            // A late successful open may have installed a socket after the original close.
+            // Preserve this distinct reclose, but let public close join it while pending.
+            await closeTransport()
             throw RendezvousSignalingError.connectionClosed
         }
 
@@ -636,7 +648,7 @@ public actor PairedAvailabilitySignalingClient {
                 role: role
             )
             nextSequence = 0
-            replayGuard = SignalingReplayGuard()
+            replayGuard = freshReplayGuard()
             return .ready(role: role, exchangeID: newExchange)
 
         case "availability-signal":
@@ -678,7 +690,7 @@ public actor PairedAvailabilitySignalingClient {
             exchangeID = nil
             cipher = nil
             nextSequence = 0
-            replayGuard = SignalingReplayGuard()
+            replayGuard = freshReplayGuard()
             return .peerLeft(role: wire.role, exchangeID: currentExchange)
 
         case "availability-probe-ack":
@@ -710,9 +722,18 @@ public actor PairedAvailabilitySignalingClient {
         }
     }
 
+    private func freshReplayGuard() -> SignalingReplayGuard {
+        SignalingReplayGuard(producer: .actual, observer: replayObserver)
+    }
+
     private func finish(throwing error: (any Error)?) async {
-        guard state != .closed else { return }
+        guard state != .closed else {
+            await joinFinishIfNeeded()
+            await joinTransportCloseIfNeeded()
+            return
+        }
         state = .closed
+        finishIsInProgress = true
         let activeContinuation = continuation
         continuation = nil
         let activeTask = receiveTask
@@ -730,12 +751,41 @@ public actor PairedAvailabilitySignalingClient {
         activeLivenessTask?.cancel()
         activeApplicationProbeDeadlineTask?.cancel()
         activeApplicationProbe?.resolver.resolve(.failure(CancellationError()))
-        await transport.close()
+        await closeTransport()
         if let error {
             activeContinuation?.finish(throwing: error)
         } else {
             activeContinuation?.finish()
         }
+        finishIsInProgress = false
+        let waiters = finishWaiters
+        finishWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Closing is a locally retained operation, not merely a `.closed` state flag. Do not
+    /// join receiveTask here: receive/liveness may themselves own this first finish call.
+    private func joinFinishIfNeeded() async {
+        guard finishIsInProgress else { return }
+        await withCheckedContinuation { finishWaiters.append($0) }
+    }
+
+    private func joinTransportCloseIfNeeded() async {
+        guard transportCloseIsInProgress else { return }
+        await withCheckedContinuation { transportCloseWaiters.append($0) }
+    }
+
+    private func closeTransport() async {
+        if transportCloseIsInProgress {
+            await joinTransportCloseIfNeeded()
+            return
+        }
+        transportCloseIsInProgress = true
+        await transport.close()
+        transportCloseIsInProgress = false
+        let waiters = transportCloseWaiters
+        transportCloseWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
     }
 
     private static func validate(

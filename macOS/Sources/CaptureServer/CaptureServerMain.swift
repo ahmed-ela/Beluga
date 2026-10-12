@@ -1,3 +1,4 @@
+import BelugaUpdateCore
 import CaptureCore
 import Darwin
 import Foundation
@@ -12,9 +13,47 @@ import VirtualDisplayCore
 @main
 struct CaptureServerMain {
     /// Parses configuration, starts enabled services, and exits nonzero on any fatal failure.
+    @MainActor
     static func main() async {
+        switch BelugaHostLaunchMode.resolve(
+            arguments: CommandLine.arguments,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            bundlePath: Bundle.main.bundlePath,
+            configuredEndpoint: Bundle.main.object(forInfoDictionaryKey: "BelugaRendezvousURL") as? String
+        ) {
+        case .commandLine(let arguments):
+            await run(arguments: arguments)
+        case .menuBar(let arguments, let endpoint):
+            let application = BelugaMenuBarApplication(arguments: arguments, endpoint: endpoint) {
+                arguments, presentation, additionalMedia, phoneCommands in
+                await run(arguments: arguments, presentation: presentation,
+                          presentsInvitationInConsole: false, additionalMedia: additionalMedia,
+                          phoneCommands: phoneCommands)
+            }
+            application.run()
+        }
+    }
+
+    @MainActor
+    static func run(
+        arguments: [String],
+        presentation: @escaping @Sendable (BelugaHostPresentation) -> Void = { _ in },
+        presentsInvitationInConsole: Bool = true,
+        additionalMedia: CaptureAdditionalMediaLifetime? = nil,
+        phoneCommands: @escaping @Sendable (BelugaPhoneCatalogCommands) -> Void = { _ in }
+    ) async {
+        do {
+            if let clientMode = try WorldwideSecondaryTestViewerControlClientMode
+                .parseIfRequested(arguments) {
+                try clientMode.run()
+                return
+            }
+        } catch {
+            fputs("error: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
         if let probe = ScreenVideoDisplayModeProbeMode.executionIfRequested(
-            CommandLine.arguments
+            arguments
         ) {
             if let output = probe.output,
                let data = output.data(using: .utf8) {
@@ -23,7 +62,7 @@ struct CaptureServerMain {
             exit(probe.exitStatus)
         }
         if let probeExitStatus = RestoredDesktopProbeMode.exitStatusIfRequested(
-            CommandLine.arguments
+            arguments
         ) {
             exit(probeExitStatus)
         }
@@ -39,7 +78,7 @@ struct CaptureServerMain {
         var mediaAutomationService: MacMediaAutomationService?
         defer { mediaAutomationService?.stop() }
         do {
-            let options = try CaptureServerOptions.parse(CommandLine.arguments)
+            let options = try CaptureServerOptions.parse(arguments)
             if options.showHelp {
                 print(CaptureServerOptions.usage)
                 return
@@ -60,13 +99,24 @@ struct CaptureServerMain {
                 return
             }
 
-            // The shared lock is also required by the display-only LAN mode: WindowServer must
-            // never be mutated while an installed worldwide host owns this runtime namespace.
-            if options.requiresExclusiveHostProcessLock {
-                worldwideHostProcessLock = try WorldwideHostProcessLock.acquire()
+            // Runtime admission is under the same lease used by the updater broker.
+            // Every app replacement target (including direct LAN CLI invocation) reads
+            // its durable update fence while holding that lease, before native effects.
+            // Bare nonexclusive CLI tools and the read-only diagnostics above retain
+            // their existing behavior; no protected legacy lock namespace is changed.
+            let updateContext = try BelugaUpdateRuntimeContext.resolve()
+            let validateUpdateTarget: (() throws -> Void)?
+            if let updateContext {
+                validateUpdateTarget = {
+                    try BelugaUpdateRuntimeAdmission.validateTarget(updateContext)
+                }
             } else {
-                worldwideHostProcessLock = nil
+                validateUpdateTarget = nil
             }
+            worldwideHostProcessLock = try BelugaUpdateRuntimeAdmission.acquire(
+                requiresExclusiveOwnership: options.requiresExclusiveHostProcessLock,
+                validateUpdateTarget: validateUpdateTarget
+            )
 
             let virtualDisplayTeardownDeadline: VirtualDisplayTeardownDeadline?
             if options.virtualPhoneDisplayEnabled {
@@ -146,7 +196,8 @@ struct CaptureServerMain {
 
                 serviceLifetime = CaptureServiceLifetime(
                     validityProbe: { owner.isAlive },
-                    teardownDidBegin: { teardownDeadline.arm() }
+                    teardownDidBegin: { teardownDeadline.arm() },
+                    additionalMedia: additionalMedia
                 )
                 activeServiceLifetime = serviceLifetime
                 let invalidationSignal = VirtualDisplayInvalidationSignal()
@@ -182,12 +233,15 @@ struct CaptureServerMain {
                 )
             } else {
                 serviceLifetime = CaptureServiceLifetime(
-                    teardownDidBegin: { processCleanupDeadline?.arm() }
+                    teardownDidBegin: { processCleanupDeadline?.arm() },
+                    additionalMedia: additionalMedia
                 )
                 activeServiceLifetime = serviceLifetime
                 virtualDisplayLifetimeTask = nil
                 virtualDisplayInvalidationEvents = nil
             }
+
+            try serviceLifetime.activateAdditionalMedia()
 
             let displaySelection = CaptureDisplaySelection(
                 explicitDisplayID: options.displayID,
@@ -272,6 +326,14 @@ struct CaptureServerMain {
                         )
                     }
                 }
+                let terminationMonitor = activeTerminationSignalMonitor
+                let ownerIsValid: @Sendable () -> Bool = {
+                    worldwideHostProcessLock.isHeld && serviceLifetime.isValid
+                        && terminationMonitor != nil && terminationMonitor?.pendingSignal() == nil
+                }
+                // Only the primary phone session is switched. Independent browser audio shares
+                // retain their own capture lifetime; LAN/test-sidecar modes are not admitted.
+                let allowsPhoneChanges = !options.lanEnabled && !options.secondaryTestViewerEnabled
                 let coordinator = WorldwideHostCoordinator(
                     endpoint: rendezvousURL,
                     forceRelay: options.forceRelay,
@@ -306,6 +368,9 @@ struct CaptureServerMain {
                     makeNativeCaptureWatchdog: {
                         virtualDisplayTeardownDeadline?.makeNativeCaptureWatchdog()
                     },
+                    presentation: presentation,
+                    catalogMutationIsAuthorized: { allowsPhoneChanges && ownerIsValid() },
+                    catalogOwnerIsValid: ownerIsValid,
                     logger: logger
                 )
                 try serviceLifetime.install(
@@ -322,6 +387,7 @@ struct CaptureServerMain {
                 try activeTerminationSignalMonitor?.throwIfSignaled()
                 try serviceLifetime.requireValid()
                 worldwideHostCoordinator = coordinator
+                phoneCommands(.owned(by: coordinator))
 
                 // Present an already-ready primary invitation before any optional sidecar work.
                 // A secondary rendezvous can therefore never consume the primary code's window.
@@ -329,49 +395,94 @@ struct CaptureServerMain {
                 case .invitation(let invitationCode):
                     // This is the sole intentional presentation of the pairing capability.
                     // Routine diagnostics must never repeat it or include derived channels.
-                    print("")
-                    print("Worldwide one-time pairing code")
-                    print("-------------------------------")
-                    print(invitationCode)
-                    print("Enter this code on the iPhone before it expires.")
-                    print("")
-                    fflush(stdout)
+                    if presentsInvitationInConsole {
+                        print("")
+                        print("Worldwide one-time pairing code")
+                        print("-------------------------------")
+                        print(invitationCode)
+                        print("Enter this code on the iPhone before it expires.")
+                        print("")
+                        fflush(stdout)
+                    }
                 case .paired:
                     logger.info("Worldwide host is available for the paired iPhone")
+                case .unselected:
+                    logger.info("No phone is selected; use the Beluga menu to pair or select a phone")
                 }
 
                 if options.secondaryTestViewerEnabled {
-                    // Construct only after primary startup and presentation. Invitation RNG or
-                    // signaling-client construction failure is optional and cannot tear down the
-                    // paired host. Both services share only the owner-scoped input controller.
+                    // Construct only after primary startup and presentation. Every secondary
+                    // generation gets a fresh consume-once service and a dedicated view-only
+                    // input controller, so its Show message cannot supersede primary ownership.
+                    let secondaryForceRelay = options.forceRelay
+                    let secondaryScreenDisplayID = displaySelection.screenDisplayID
+                    let secondarySystemAudioDisplayID =
+                        displaySelection.systemAudioDisplayID
+                    let secondaryMaximumWidth = options.screenMaximumWidth
+                    let secondaryFramesPerSecond = options.screenFramesPerSecond
+                    let secondaryMaximumVideoBitrate = Int(
+                        options.worldwideTotalRTPBitrate
+                    )
+                    let secondaryCaptureLifetime =
+                        virtualDisplayOwner == nil ? nil : serviceLifetime
+                    let secondaryMicrophonePolicy =
+                        options.iPhoneMicrophoneForwardingPolicy
+                    let configuredSecondaryControlSocketPath =
+                        options.secondaryTestViewerControlSocketPath
+                    let hostProcessIdentifier =
+                        ProcessInfo.processInfo.processIdentifier
+                    let hostGeneration = worldwideHostProcessLock.generationNonce
                     let construction = constructOptionalSecondaryTestViewer {
-                        let secondaryService = try WorldwideScreenService(
-                            endpoint: rendezvousURL,
-                            forceRelay: options.forceRelay,
-                            screenDisplayID: displaySelection.screenDisplayID,
-                            screenDisplayRequirement: screenDisplayRequirement,
-                            systemAudioDisplayID: displaySelection.systemAudioDisplayID,
-                            maximumWidth: options.screenMaximumWidth,
-                            framesPerSecond: options.screenFramesPerSecond,
-                            maximumVideoBitrate: Int(
-                                options.worldwideTotalRTPBitrate
-                            ),
-                            featureProfile: .secondaryTest,
-                            remoteInputController: remoteInputController,
-                            captureLifetime:
-                                virtualDisplayOwner == nil ? nil : serviceLifetime,
-                            iPhoneMicrophoneForwardingPolicy:
-                                options.iPhoneMicrophoneForwardingPolicy,
-                            makeServiceTeardownWatchdog: {
-                                virtualDisplayTeardownDeadline?.makeMediaServiceWatchdog()
-                            },
-                            makeNativeCaptureWatchdog: {
-                                virtualDisplayTeardownDeadline?.makeNativeCaptureWatchdog()
-                            },
-                            logger: logger
+                        let secondaryControlSocketPath = try
+                            configuredSecondaryControlSocketPath ??
+                            WorldwideSecondaryTestViewerControlServer
+                                .defaultSocketPath()
+                        let factory = WorldwideSecondaryTestViewerServiceFactory {
+                            _ in
+                            try WorldwideScreenService(
+                                endpoint: rendezvousURL,
+                                forceRelay: secondaryForceRelay,
+                                screenDisplayID: secondaryScreenDisplayID,
+                                screenDisplayRequirement: screenDisplayRequirement,
+                                systemAudioDisplayID: secondarySystemAudioDisplayID,
+                                maximumWidth: secondaryMaximumWidth,
+                                framesPerSecond: secondaryFramesPerSecond,
+                                maximumVideoBitrate:
+                                    secondaryMaximumVideoBitrate,
+                                featureProfile: .secondaryTest,
+                                remoteInputController: MacRemoteInputController(
+                                    allowRemoteControl: false
+                                ),
+                                captureLifetime: secondaryCaptureLifetime,
+                                iPhoneMicrophoneForwardingPolicy:
+                                    secondaryMicrophonePolicy,
+                                makeServiceTeardownWatchdog: {
+                                    virtualDisplayTeardownDeadline?
+                                        .makeMediaServiceWatchdog()
+                                },
+                                makeNativeCaptureWatchdog: {
+                                    virtualDisplayTeardownDeadline?
+                                        .makeNativeCaptureWatchdog()
+                                },
+                                logger: logger
+                            )
+                        }
+                        let coordinator = WorldwideSecondaryTestViewerCoordinator(
+                            factory: factory
                         )
-                        return WorldwideSecondaryTestViewerCoordinator(
-                            service: secondaryService
+                        let handler = WorldwideSecondaryTestViewerControlHandler(
+                            hostProcessIdentifier: hostProcessIdentifier,
+                            hostGeneration: hostGeneration,
+                            coordinator: coordinator
+                        )
+                        let controlServer =
+                            WorldwideSecondaryTestViewerControlServer(
+                                socketPath: secondaryControlSocketPath,
+                                handler: handler
+                            )
+                        return (
+                            coordinator: coordinator,
+                            controlServer: controlServer
                         )
                     }
                     switch construction {
@@ -380,43 +491,26 @@ struct CaptureServerMain {
                             "Secondary test viewer is unavailable; the primary paired host " +
                                 "remains active: " + failureDescription
                         )
-                    case .constructed(let secondaryTestViewerCoordinator):
-                        try serviceLifetime.install(
-                            secondaryTestViewerCoordinator:
-                                secondaryTestViewerCoordinator
-                        )
-                        let outcome = try await startOptionalSecondaryTestViewer(
-                            start: {
-                                try await runUntilProcessTermination(
-                                    terminationSignals:
-                                        activeTerminationSignalMonitor?.events
-                                ) {
-                                    try await secondaryTestViewerCoordinator.start()
-                                }
-                            },
-                            stop: {
-                                await secondaryTestViewerCoordinator.stop()
-                            }
-                        )
-                        switch outcome {
-                        case .started(let invitationCode):
-                            // Like primary bootstrap, this is the sole intentional presentation
-                            // of the secret. The secondary owner never logs or persists it.
-                            print("")
-                            print("Secondary one-time test viewer code")
-                            print("-----------------------------------")
-                            print(invitationCode)
-                            print("Enter this code on the secondary iPhone before it expires.")
-                            print("")
-                            fflush(stdout)
-                        case .unavailable(let failureDescription):
+                    case .constructed(let secondary):
+                        do {
+                            try serviceLifetime.installAndStart(
+                                secondaryTestViewerCoordinator:
+                                    secondary.coordinator,
+                                controlServer: secondary.controlServer
+                            )
+                            // Stay idle until an owner-authenticated local request arrives. The
+                            // invitation is returned exactly once over that connection and is
+                            // never printed into the long-lived host log.
+                            try activeTerminationSignalMonitor?.throwIfSignaled()
+                            try serviceLifetime.requireValid()
+                        } catch let error as VirtualDisplayLifetimeError {
+                            throw error
+                        } catch {
                             logger.error(
                                 "Secondary test viewer is unavailable; the primary paired host " +
-                                    "remains active: " + failureDescription
+                                    "remains active: \(error.localizedDescription)"
                             )
                         }
-                        try activeTerminationSignalMonitor?.throwIfSignaled()
-                        try serviceLifetime.requireValid()
                     }
                 }
             } else {

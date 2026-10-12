@@ -43,6 +43,10 @@ enum {
    * CFData containing exactly one OSVADiagnosticSnapshot.
    */
   kOSVADiagnosticSnapshotProperty = 0x6F734453,
+  kOSVADiagnosticSnapshotV2Property = 0x6F734432, /* FourCC "osD2". */
+  kOSVADiagnosticSnapshotV2SchemaVersion = 2,
+  /* A diagnostic serialization bound, never a registration admission limit. */
+  kOSVADiagnosticSnapshotV2MaximumByteCount = 1048576,
 };
 
 enum {
@@ -286,6 +290,120 @@ typedef struct OSVADiagnosticSnapshot {
       core_client_slots[kOSVADiagnosticClientSlotCapacity];
   UInt64 reserved[16];
 } OSVADiagnosticSnapshot;
+
+/*
+ * osDS v1 stays byte-for-byte frozen. It is unavailable while any dynamically
+ * allocated overflow registration remains, even after the live count falls
+ * below 64: live registrations are never repacked to manufacture a v1 result.
+ * osD2 contains this header followed by registry_record_count complete records.
+ * The inventory contains live registrations only, ordered by registry_index.
+ * Overflow indices and registration generations are never reused within one
+ * driver instance. Base-bank index reuse always has a new generation. Readers
+ * must validate exact checked byte/count arithmetic before decoding records.
+ * Oversized, contended, changed, or allocation-failed observations are unavailable
+ * rather than truncated. The 64-slot bound applies only to active core resources.
+ * Nested transitions retain the frozen v1 bank index/sentinel convention;
+ * overflow provenance uses the full registry_index in inventory/failure records.
+ */
+enum {
+  kOSVADiagnosticInvariantActiveSlotCountsWithinCapacity = UINT64_C(1) << 13,
+  kOSVADiagnosticInvariantCompleteRegistryInventory = UINT64_C(1) << 18,
+  kOSVADiagnosticAdmissionAdd = 1,
+  kOSVADiagnosticAdmissionRemove = 2,
+  kOSVADiagnosticAdmissionStart = 3,
+  kOSVADiagnosticAdmissionStop = 4,
+  kOSVADiagnosticFailureNotInitialized = 1,
+  kOSVADiagnosticFailureDuplicateRegistration = 2,
+  kOSVADiagnosticFailureRegistrationAllocation = 3,
+  kOSVADiagnosticFailureIdentityExhausted = 4,
+  kOSVADiagnosticFailureMissingRegistration = 5,
+  kOSVADiagnosticFailureAlreadyStarted = 6,
+  kOSVADiagnosticFailureNotStarted = 7,
+  kOSVADiagnosticFailureRemoveWhileStarted = 8,
+  kOSVADiagnosticFailureCoreRejected = 9,
+};
+
+typedef struct OSVADiagnosticAdmissionFailureSnapshot {
+  UInt64 sequence;
+  UInt64 host_ticks;
+  UInt64 registry_index; /* UINT64_MAX when no registration exists. */
+  UInt64 driver_client_generation;
+  UInt32 operation;
+  UInt32 reason;
+  UInt32 device_object_id;
+  UInt32 client_id;
+  SInt32 process_id; /* Zero when the HAL call supplies no known PID. */
+  SInt32 status;
+  SInt32 core_status; /* Zero unless reason is CoreRejected. */
+  UInt32 reserved;
+} OSVADiagnosticAdmissionFailureSnapshot;
+
+typedef struct OSVADiagnosticRegistryClientSnapshot {
+  UInt64 registry_index;
+  OSVADiagnosticDriverClientSlotSnapshot client;
+} OSVADiagnosticRegistryClientSnapshot;
+
+typedef struct OSVADiagnosticSnapshotV2State {
+  UInt64 snapshot_sequence;
+  UInt64 captured_host_ticks;
+  UInt64 driver_instance_generation;
+  UInt64 invariant_flags;
+  UInt64 driver_lifecycle_sequence;
+  UInt64 core_lifecycle_sequence;
+  UInt64 host_ticks_per_second;
+  UInt64 timeline_seed;
+  UInt64 current_seed_generation;
+  UInt64 anchor_host_ticks;
+  UInt64 last_issued_seed;
+  UInt64 last_issued_session_id;
+  UInt64 active_client_count;
+  UInt64 visible_input_active_count;
+  UInt64 hidden_writer_active_count;
+  UInt64 core_active_slot_count;
+  UInt64 core_active_slot_bitmap;
+  UInt64 driver_registered_count;
+  UInt64 driver_started_count;
+  UInt64 visible_driver_registered_count;
+  UInt64 hidden_driver_registered_count;
+  UInt64 visible_driver_started_count;
+  UInt64 hidden_driver_started_count;
+  UInt64 driver_client_add_attempt_count;
+  UInt64 driver_client_add_count;
+  UInt64 driver_client_remove_attempt_count;
+  UInt64 driver_client_remove_count;
+  UInt64 global_start_attempt_count;
+  UInt64 global_start_transition_count;
+  UInt64 global_stop_attempt_count;
+  UInt64 global_stop_transition_count;
+  UInt64 seed_create_count;
+  UInt64 seed_clear_count;
+  UInt64 last_seed_create_host_ticks;
+  UInt64 last_seed_clear_host_ticks;
+  UInt64 last_cleared_seed;
+  UInt64 last_cleared_seed_generation;
+  UInt64 last_cleared_anchor_host_ticks;
+  OSVADiagnosticTransitionSnapshot last_driver_transition;
+  OSVADiagnosticTransitionSnapshot last_core_transition;
+  OSVADiagnosticZeroTimestampSnapshot zero_timestamp[2];
+  OSVADiagnosticIOSnapshot io[2];
+  OSVADiagnosticIOWorkLoopSnapshot io_work_loop[2];
+} OSVADiagnosticSnapshotV2State;
+
+typedef struct OSVADiagnosticSnapshotV2Header {
+  UInt32 schema_version;
+  UInt32 header_size;
+  UInt64 total_byte_count;
+  UInt64 registry_record_count;
+  UInt64 registry_record_size;
+  UInt64 registry_revision;
+  UInt32 core_slot_capacity;
+  UInt32 reserved_header;
+  OSVADiagnosticSnapshotV2State state;
+  OSVADiagnosticAdmissionFailureSnapshot last_admission_failure;
+  OSVADiagnosticCoreClientSlotSnapshot
+      core_client_slots[kOSVADiagnosticClientSlotCapacity];
+  UInt64 reserved[8];
+} OSVADiagnosticSnapshotV2Header;
 
 /*
  * Schema v1 is copied verbatim across Core Audio custom-property IPC. Freeze
@@ -624,6 +742,105 @@ OSVA_DIAGNOSTIC_STATIC_ASSERT(
 OSVA_DIAGNOSTIC_STATIC_ASSERT(
     sizeof(OSVADiagnosticSnapshot) == kOSVADiagnosticSnapshotByteCount,
     "diagnostic snapshot ABI size changed");
+OSVA_DIAGNOSTIC_STATIC_ASSERT(sizeof(OSVADiagnosticAdmissionFailureSnapshot) == 64,
+                              "v2 admission failure ABI size changed");
+OSVA_DIAGNOSTIC_STATIC_ASSERT(sizeof(OSVADiagnosticRegistryClientSnapshot) == 88,
+                              "v2 registry record ABI size changed");
+OSVA_DIAGNOSTIC_STATIC_ASSERT(sizeof(OSVADiagnosticSnapshotV2State) == 1280,
+                              "v2 state ABI size changed");
+OSVA_DIAGNOSTIC_STATIC_ASSERT(sizeof(OSVADiagnosticSnapshotV2Header) == 3504,
+                              "v2 header ABI size changed");
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, state, 48);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header,
+                              last_admission_failure, 1328);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header,
+                              core_client_slots, 1392);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, snapshot_sequence, 0);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, captured_host_ticks, 8);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_instance_generation, 16);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, invariant_flags, 24);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_lifecycle_sequence, 32);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, core_lifecycle_sequence, 40);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, host_ticks_per_second, 48);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, timeline_seed, 56);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, current_seed_generation, 64);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, anchor_host_ticks, 72);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_issued_seed, 80);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_issued_session_id, 88);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, active_client_count, 96);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, visible_input_active_count, 104);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, hidden_writer_active_count, 112);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, core_active_slot_count, 120);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, core_active_slot_bitmap, 128);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_registered_count, 136);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_started_count, 144);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, visible_driver_registered_count, 152);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, hidden_driver_registered_count, 160);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, visible_driver_started_count, 168);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, hidden_driver_started_count, 176);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_client_add_attempt_count, 184);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_client_add_count, 192);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_client_remove_attempt_count, 200);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, driver_client_remove_count, 208);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, global_start_attempt_count, 216);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, global_start_transition_count, 224);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, global_stop_attempt_count, 232);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, global_stop_transition_count, 240);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, seed_create_count, 248);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, seed_clear_count, 256);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_seed_create_host_ticks, 264);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_seed_clear_host_ticks, 272);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_cleared_seed, 280);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_cleared_seed_generation, 288);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_cleared_anchor_host_ticks, 296);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_driver_transition, 304);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, last_core_transition, 376);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, zero_timestamp, 448);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, io, 720);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2State, io_work_loop, 1136);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, sequence, 0);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, host_ticks, 8);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, registry_index, 16);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, driver_client_generation, 24);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, operation, 32);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, reason, 36);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, device_object_id, 40);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, client_id, 44);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, process_id, 48);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, status, 52);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, core_status, 56);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticAdmissionFailureSnapshot, reserved, 60);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticRegistryClientSnapshot, registry_index, 0);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticRegistryClientSnapshot, client, 8);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, schema_version, 0);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, header_size, 4);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, total_byte_count, 8);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, registry_record_count, 16);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, registry_record_size, 24);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, registry_revision, 32);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, core_slot_capacity, 40);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, reserved_header, 44);
+OSVA_DIAGNOSTIC_ASSERT_OFFSET(OSVADiagnosticSnapshotV2Header, reserved, 3440);
+OSVA_DIAGNOSTIC_STATIC_ASSERT(
+    kOSVADiagnosticSnapshotV2SchemaVersion == 2 &&
+        kOSVADiagnosticSnapshotV2Property == 0x6F734432 &&
+        kOSVADiagnosticSnapshotV2MaximumByteCount == 1048576 &&
+        kOSVADiagnosticInvariantActiveSlotCountsWithinCapacity == (UINT64_C(1) << 13) &&
+        kOSVADiagnosticInvariantCompleteRegistryInventory == (UINT64_C(1) << 18),
+    "diagnostic v2 schema identity changed");
+OSVA_DIAGNOSTIC_STATIC_ASSERT(
+    kOSVADiagnosticAdmissionAdd == 1 && kOSVADiagnosticAdmissionRemove == 2 &&
+        kOSVADiagnosticAdmissionStart == 3 && kOSVADiagnosticAdmissionStop == 4 &&
+        kOSVADiagnosticFailureNotInitialized == 1 &&
+        kOSVADiagnosticFailureDuplicateRegistration == 2 &&
+        kOSVADiagnosticFailureRegistrationAllocation == 3 &&
+        kOSVADiagnosticFailureIdentityExhausted == 4 &&
+        kOSVADiagnosticFailureMissingRegistration == 5 &&
+        kOSVADiagnosticFailureAlreadyStarted == 6 &&
+        kOSVADiagnosticFailureNotStarted == 7 &&
+        kOSVADiagnosticFailureRemoveWhileStarted == 8 &&
+        kOSVADiagnosticFailureCoreRejected == 9,
+    "diagnostic v2 admission wire values changed");
 
 #undef OSVA_DIAGNOSTIC_ASSERT_OFFSET
 #undef OSVA_DIAGNOSTIC_STATIC_ASSERT
@@ -636,6 +853,9 @@ OpensteamerVirtualMicrophone_Create(CFAllocatorRef allocator,
 /// Restores the process-local production driver instance to its initial state.
 /// Tests may call this only while no I/O operation is active.
 OSStatus OSVADriverResetForTesting(void);
+
+/// Fails the next overflow registration allocation, without touching leases.
+void OSVADriverFailNextRegistrationAllocationForTesting(void);
 
 /// Fences the core lifecycle sequence after the next I/O call acquires its
 /// client lease. The test build clears the fence before that call returns.

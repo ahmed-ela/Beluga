@@ -82,6 +82,42 @@ introduced; installed hostv48 can retain these numeric codes without redeploymen
 It does **not** prove output through the later iOS mixer, hardware, speaker or
 headphones. Similarly, inbound RTP progress alone does not prove decoded playback.
 
+## Media-control diagnosis without a screenshot gate
+
+The optional media-pipeline snapshot correlates received/applied/successfully written
+App Group revisions and the custom notification extension's latest fresh read. A
+missing extension receipt is unknown, not proof that the user is viewing either
+the custom notification or the standard system player.
+
+A separately nonce-echoed media-surface capability adds two bounded observations:
+
+- Native metadata readback: the current expected revision/state, whether the
+  process-global Now Playing dictionary exists, private current-source equality
+  reduced to a boolean, its configured rate class (absent/zero/positive/invalid),
+  and enabled play/pause/toggle/backward30/forward30/seek bits. It reads actual
+  configured values instead of reporting the values the code intended to assign.
+- The most recent ordinary command entrypoint: native command center versus
+  custom notification, bounded sequence, current revision, gate admission and age
+  since that actual attempt. Sampling a heartbeat does not renew the attempt age.
+  Native origin includes Lock Screen, Control Center and accessories; it does not
+  identify which native surface is visible. Admission is not host execution.
+
+These observations neither select sources nor change command/audio authorization.
+Ownership, transport uncertainty and negotiation replacement retire command-origin
+evidence. They contain no titles, URLs, content IDs, user input or audio. The new
+heartbeat key is omitted unless both peers echo its own current diagnostics nonce;
+v1 peers retain the existing schema. Under the unchanged 4 KiB budget, surface
+telemetry is dropped before pipeline telemetry or existing audio evidence.
+
+Correlate a normal control action with these observations to identify its delivery
+path automatically. Compare a Mac pause's revision with native readback and extension
+receipt to locate the first divergent boundary; do not infer visibility from receipt
+absence. Dictionary readback and a SwiftUI model receipt are not rendered pixels.
+Apple documents [`MPNowPlayingInfoCenter.playbackState`](https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter/playbackstate) as applying only to macOS;
+an iOS Simulator getter assertion therefore does not prove the physical system-player
+glyph. Final visual behavior still requires an independently observed real UI result,
+not another speculative patch or a successful upload.
+
 ## Verification boundary
 
 Build 69 deliberately selects the supported `playback` category / `default` mode /

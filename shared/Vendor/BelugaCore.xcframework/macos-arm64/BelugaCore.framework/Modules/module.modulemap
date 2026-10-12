@@ -1,0 +1,5 @@
+framework module BelugaCore {
+    umbrella header "beluga_core.h"
+    export *
+    module * { export * }
+}

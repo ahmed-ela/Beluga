@@ -3,6 +3,8 @@ import Dispatch
 import IOSWebRTCAudioDeviceShim
 @preconcurrency import MediaPlayer
 import RemoteSessionCore
+import UIKit
+import WebKit
 import XCTest
 @testable import opensteamer
 @testable import WebRTCTransport
@@ -33,6 +35,593 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
     private enum PrematureMacHostedCallChallengeOutcome: Equatable {
         case localSuccess
         case localFailure
+    }
+
+    func testProductionPeerConfigurationAdvertisesHandoffOnlyForAudioOwner() {
+        for topology in [WebRTCTransportMediaTopology.full, .videoControlOnly] {
+            let configuration = WorldwideSessionViewModel.makePeerConfiguration(
+                iceServers: [], mediaTopology: topology
+            )
+            let ownsAudio = topology == .full
+            XCTAssertEqual(configuration.role, .viewer)
+            XCTAssertEqual(configuration.icePolicy, .directPreferred)
+            XCTAssertEqual(configuration.mediaTopology, topology)
+            XCTAssertEqual(configuration.supportsMediaHandoff, ownsAudio)
+            XCTAssertEqual(configuration.supportsRemoteMediaControls, ownsAudio)
+            XCTAssertEqual(configuration.supportsAudioClientDiagnostics, ownsAudio)
+        }
+        // Older/unintegrated callers do not acquire this optional protocol by default.
+        XCTAssertFalse(WebRTCTransportConfiguration(role: .viewer, iceServers: [],
+            supportsRemoteMediaControls: true).supportsMediaHandoff)
+    }
+
+    func testComposedHandoffReceiverUsesRealPeerAndScopedAudioOwner() async throws {
+        #if targetEnvironment(simulator)
+        let actualProvider = ProcessInfo.processInfo.environment["OPENSTEAMER_LIVE_YOUTUBE_PROBE"] == "1"
+        #else
+        let actualProvider = false
+        #endif
+        try await exerciseComposedHandoff(retireBeforePlayback: false, actualProvider: actualProvider)
+    }
+
+    func testComposedHandoffTransportRetirementCannotSendMacPause() async throws {
+        try await exerciseComposedHandoff(retireBeforePlayback: true)
+    }
+
+    /// Real ordered local peers -> production VM consumer -> coordinator -> visible WK ->
+    /// typed commit -> VM completion. Provider HTML is normally a double; the explicit
+    /// Simulator opt-in uses real YouTube. Native audio and Mac completion remain doubles.
+    private func exerciseComposedHandoff(retireBeforePlayback: Bool, actualProvider: Bool = false) async throws {
+        let hostDevice = PhysicalNoHardwareAudioDevice()
+        let viewerDevice = PhysicalNoHardwareAudioDevice()
+        try await exerciseComposedHandoff(retireBeforePlayback: retireBeforePlayback,
+            actualProvider: actualProvider, hostDevice: hostDevice, viewerDevice: viewerDevice)
+        // Native ADM teardown follows release of the peer factory, not merely close().
+        try await waitForComposedHandoff("both scoped native factories released") {
+            !hostDevice.snapshot.delegateBound && !viewerDevice.snapshot.delegateBound
+        }
+    }
+
+    private func exerciseComposedHandoff(retireBeforePlayback: Bool, actualProvider: Bool,
+        hostDevice: PhysicalNoHardwareAudioDevice, viewerDevice: PhysicalNoHardwareAudioDevice) async throws {
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let fixture = makeFixture()
+        let coordinator = YouTubeHandoffCoordinator(makePlayer: {
+            if actualProvider { return YouTubeHandoffPlayer(request: $0, eventHandler: $1) }
+            return YouTubeHandoffPlayer(request: $0,
+                htmlDocument: YouTubeHandoffWebViewTests.localDocument, eventHandler: $1)
+        })
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller,
+                                                  mediaHandoff: coordinator)
+        let presenter = UUID()
+        coordinator.registerPresenter(presenter, priority: 0)
+        let host = try WebRTCPeer.makeNoHardwareHostForTesting(configuration: .init(
+            role: .host, iceServers: [], supportsRemoteMediaControls: true,
+            supportsMediaHandoff: true), audioDevice: hostDevice)
+        let viewer = try WebRTCPeer.makeNoHardwareViewerForTesting(
+            configuration: WorldwideSessionViewModel.makePeerConfiguration(
+                iceServers: [], mediaTopology: .full), audioDevice: viewerDevice)
+        XCTAssertNil(viewer.iOSAudioTransactionDeviceBinding)
+        XCTAssertTrue(viewModel.debugInstallScreenSessionForTests(peer: viewer,
+            provenance: .unauthenticated, bindAudioTransactionDevice: false))
+        viewModel.handleAppBecameActive()
+        fixture.controller.prepare(serverName: "Local handoff fixture")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        let nativeCounts = [fixture.playback.activateCount, fixture.playback.recoverCount,
+                            fixture.playback.deactivateCount]
+        let microphoneAllowed = fixture.controller.microphoneActivationIsAllowed()
+        let signaling = try RendezvousSignalingClient(endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        // No signaling connection is opened. Real peer SDP/ICE goes directly to the other
+        // local peer. Only real remote-media events enter the production VM consumer.
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        let consumer = viewModel.debugStartPeerEventLoopForTests(events: events.stream, signaling: signaling)
+        var errors: [String] = []
+        var refreshIDs: [UUID] = []
+        var commits: [WebRTCReceivedMediaHandoffCommit] = []
+        var genericCommands = 0
+        var revision: UInt64 = 0
+        let videoID = actualProvider ? "M7lc1UVf-VE" : "dQw4w9WgXcQ"
+        let duration: Double = actualProvider ? 1344 : 200
+        let startedAt = ProcessInfo.processInfo.systemUptime
+        func publish(_ refresh: WebRTCReceivedRemoteMediaStateRefreshRequest? = nil) async throws {
+            revision += 1
+            let item = WebRTCRemoteMediaItem(contextID: "composed-exact-source", sourceName: "YouTube",
+                title: actualProvider ? "YouTube API demo" : "Local provider double", playbackState: .playing,
+                elapsedTime: 20 + ProcessInfo.processInfo.systemUptime - startedAt,
+                duration: duration, playbackRate: 1,
+                capabilities: .init(canPlay: true, canPause: true, canSkipForward: false,
+                    canSkipBackward: false, canSeekToPosition: true), artwork: .init(videoID: videoID))
+            try await host.sendRemoteMediaState(.init(revision: revision, item: item), respondingTo: refresh)
+        }
+        let hostTask = Task { @MainActor in
+            do {
+                for await event in host.events {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .outboundSignal(let payload): try await viewer.handle(payload)
+                    case .remoteMediaStateRefreshRequested(let refresh):
+                        refreshIDs.append(refresh.id)
+                        try await publish(refresh)
+                    case .mediaHandoffCommitReceived(let commit):
+                        commits.append(commit)
+                        // Deliberate native-result double, never a real Mac pause claim.
+                        try await host.acknowledgeMediaHandoffCommit(commit, result: .macPaused)
+                    case .remoteMediaCommandReceived: genericCommands += 1
+                    default: break
+                    }
+                }
+            } catch { errors.append("host: \(error)") }
+        }
+        let viewerTask = Task { @MainActor in
+            do {
+                for await event in viewer.events {
+                    if Task.isCancelled { break }
+                    switch event {
+                    case .outboundSignal(let payload): try await host.handle(payload)
+                    case .remoteMediaControlsAvailabilityChanged, .remoteMediaStateChanged,
+                         .mediaHandoffOfferReceived, .mediaHandoffCompleted:
+                        events.continuation.yield(event)
+                    default: break
+                    }
+                }
+            } catch { errors.append("viewer: \(error)") }
+        }
+        var updater: Task<Void, Never>?
+        var player: YouTubeHandoffPlayer?
+        var visibleWebView: WKWebView?
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        var failure: (any Error)?
+        do {
+            XCTAssertNotNil(consumer)
+            try await host.start()
+            try await waitForComposedHandoff("both local transports") {
+                let h = await host.isTransportHealthyForMediaForTesting
+                let v = await viewer.isTransportHealthyForMediaForTesting
+                return h && v
+            }
+            try await waitForComposedHandoff("correlated state admitted by real VM receiver") {
+                viewModel.debugMediaPipelineDiagnosticsForTests().lastEventAdmitted == true
+            }
+            XCTAssertFalse(refreshIDs.isEmpty)
+            // Keep the exact original source fresh while the provider document loads.
+            updater = Task { @MainActor in
+                do {
+                    while !Task.isCancelled {
+                        try await publish()
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                } catch is CancellationError {} catch { errors.append("state: \(error)") }
+            }
+            let id = try await host.sendMediaHandoffOffer(contextID: "composed-exact-source")
+            try await waitForComposedHandoff("real offer presents a player") {
+                coordinator.presentation != nil
+            }
+            let presented = try XCTUnwrap(coordinator.presentation)
+            let ownedPlayer = presented.player
+            player = ownedPlayer
+            XCTAssertEqual(ownedPlayer.id, id)
+            XCTAssertEqual(presented.presenterID, presenter)
+            XCTAssertNotNil(fixture.controller.mediaHandoffAudioSuppressionID)
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            XCTAssertTrue(commits.isEmpty, "Offer receipt alone cannot pause the Mac")
+            let webView = ownedPlayer.makeWebView()
+            visibleWebView = webView
+            window.rootViewController = UIViewController()
+            window.rootViewController!.view.addSubview(webView)
+            webView.frame = CGRect(x: 0, y: 0, width: 390, height: 600)
+            window.makeKeyAndVisible()
+            if retireBeforePlayback {
+                viewModel.debugMarkViewerTransportUncertainForAutomaticMicrophoneTests()
+                XCTAssertNil(coordinator.presentation)
+                XCTAssertFalse(ownedPlayer.playbackAuthorization.isValid)
+                ownedPlayer.setPresentation(isPresented: true, sceneIsActive: true)
+                XCTAssertTrue(webView.isHidden)
+                XCTAssertNotEqual(ownedPlayer.phase, .localPlayback)
+            } else {
+                ownedPlayer.setPresentation(isPresented: true, sceneIsActive: true)
+                try await waitForComposedHandoff("provider evidence -> exact commit -> completion") {
+                    ownedPlayer.phase == .localPlayback
+                }
+                XCTAssertEqual(commits.count, 1)
+                XCTAssertEqual(commits.first?.id, id)
+                XCTAssertEqual(commits.first?.contextID, "composed-exact-source")
+                XCTAssertEqual(commits.first?.videoID, videoID)
+                XCTAssertEqual(ownedPlayer.macPauseStatus, .paused)
+                XCTAssertFalse(fixture.remoteAudio.isEnabled)
+                XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
+                XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
+                    fixture.playback.deactivateCount])
+                if actualProvider {
+                    await attachActualComposedHandoffEvidence(webView: webView, player: ownedPlayer,
+                        commits: commits, genericCommands: genericCommands)
+                }
+                coordinator.dismiss(presented.id)
+            }
+            var cleanupAcknowledged = false
+            ownedPlayer.afterMediaStopped { cleanupAcknowledged = true }
+            try await waitForComposedHandoff("actual WebKit stop acknowledgment releases exact owner") {
+                cleanupAcknowledged && fixture.controller.mediaHandoffAudioSuppressionID == nil
+            }
+            XCTAssertEqual(fixture.remoteAudio.isEnabled, !retireBeforePlayback,
+                           "Cleanup cannot restore audio into an uncertain transport")
+            // An ordered refresh reply drains any earlier commit. No arbitrary sleep proves absence.
+            let barrier = UUID()
+            try await viewer.requestRemoteMediaStateRefresh(id: barrier)
+            try await waitForComposedHandoff("ordered same-channel barrier") { refreshIDs.contains(barrier) }
+            XCTAssertEqual(commits.count, retireBeforePlayback ? 0 : 1)
+            XCTAssertEqual(genericCommands, 0, "Handoff must never fall back to ordinary Pause")
+            let diagnostic = await viewer.iOSPlayoutDiagnostics()
+            XCTAssertNil(diagnostic, "No production audio device may be constructed by this fixture")
+            XCTAssertEqual(viewerDevice.snapshot.recordingStarts, 0)
+            XCTAssertEqual(hostDevice.snapshot.recordingStarts, 0)
+            XCTAssertTrue(errors.isEmpty, errors.joined(separator: "; "))
+        } catch {
+            failure = error
+            if actualProvider, let visibleWebView, let player {
+                await attachActualComposedHandoffEvidence(webView: visibleWebView, player: player,
+                    commits: commits, genericCommands: genericCommands)
+            }
+        }
+        updater?.cancel(); await updater?.value
+        coordinator.invalidate()
+        if let player {
+            var stopped = false
+            player.afterMediaStopped { stopped = true }
+            do { try await waitForComposedHandoff("failure-safe WK cleanup") { stopped } }
+            catch { if failure == nil { failure = error } }
+        }
+        window.isHidden = true
+        viewModel.disconnect()
+        events.continuation.finish(); await consumer?.value
+        hostTask.cancel(); viewerTask.cancel()
+        let hostClosed = await host.close(reason: .normal)
+        let viewerClosed = await viewer.close(reason: .normal)
+        await hostTask.value; await viewerTask.value
+        fixture.controller.stop()
+        XCTAssertTrue(hostClosed); XCTAssertTrue(viewerClosed)
+        if let failure { throw failure }
+    }
+
+    private func attachActualComposedHandoffEvidence(webView: WKWebView, player: YouTubeHandoffPlayer,
+        commits: [WebRTCReceivedMediaHandoffCommit], genericCommands: Int) async {
+        let page = try? await webView.evaluateJavaScript("JSON.stringify({visibility:document.visibilityState,ready:document.readyState,frames:Array.from(document.querySelectorAll('iframe')).map(f=>({src:f.src,bounds:f.getBoundingClientRect().toJSON()}))})")
+        let diagnostic = XCTAttachment(string: "actualProvider=true phase=\(player.phase) exactCommits=\(commits.count) videoIDs=\(commits.map(\.videoID)) genericCommands=\(genericCommands) nativeMacResult=TEST_DOUBLE page=\(String(describing: page))")
+        diagnostic.name = "actual-provider-composed-receiver"
+        diagnostic.lifetime = .keepAlways
+        add(diagnostic)
+        if let image = try? await webView.takeSnapshot(configuration: nil) {
+            let screenshot = XCTAttachment(image: image)
+            screenshot.name = "actual-provider-composed-visible-webview"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
+    }
+
+    private func waitForComposedHandoff(_ description: String,
+        condition: @MainActor () async -> Bool) async throws {
+        for _ in 0..<500 {
+            if await condition() { return }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTFail("Missing bounded composed-handoff condition: \(description)")
+        throw WebRTCTransportError.transportNotHealthy
+    }
+
+    func testMediaHandoffMutesOnlyOwnedDownlinkWithoutChangingMicrophoneOrNativeSession() throws {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+        let nativeCounts = [fixture.playback.activateCount, fixture.playback.recoverCount,
+            fixture.playback.deactivateCount, fixture.playback.prepareManualAudioDisabledCount]
+        let microphoneAllowed = fixture.controller.microphoneActivationIsAllowed()
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in
+            XCTFail("Stable playback must not invalidate its local owner")
+        })
+        XCTAssertTrue(lease.isValid)
+        XCTAssertNotNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.controller.snapshot.isPlaying)
+        XCTAssertTrue(fixture.controller.snapshot.isRemoteAudioAvailable)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Mac audio paused — phone player")
+        XCTAssertFalse(fixture.background.publications.last!.isPlaying)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.updateServerName("Same Mac")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertFalse(fixture.remoteAudio.isEnabled, "Owner publications must not undo the scoped mute")
+        XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
+        XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
+            fixture.playback.deactivateCount, fixture.playback.prepareManualAudioDisabledCount])
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+        XCTAssertTrue(fixture.controller.snapshot.isPlaying)
+        XCTAssertFalse(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertEqual(fixture.controller.microphoneActivationIsAllowed(), microphoneAllowed)
+        XCTAssertEqual(nativeCounts, [fixture.playback.activateCount, fixture.playback.recoverCount,
+            fixture.playback.deactivateCount, fixture.playback.prepareManualAudioDisabledCount])
+        fixture.controller.stop()
+    }
+
+    func testMediaHandoffRequiresPreparedHealthyProvenAudioAndFreshCallState() throws {
+        let fixture = makeFixture()
+        fixture.playback.requiresRuntimePlayoutProof = true
+        defer { fixture.controller.stop() }
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.prepare(serverName: "Mac mini")
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.transportBecameHealthy()
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        fixture.controller.updateRuntimePlayout(isReady: true)
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        fixture.callActivity.stageLiveNonEndedCallCountWithoutCallback(1)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() },
+                     "An unprocessed CallKit edge must still reject a new player")
+    }
+
+    func testMediaHandoffStaleReleaseCannotUnmuteReplacementOwnerOrSession() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let first = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        let firstID = fixture.controller.mediaHandoffAudioSuppressionID
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(first))
+        let second = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        XCTAssertNotEqual(fixture.controller.mediaHandoffAudioSuppressionID, firstID)
+        XCTAssertFalse(fixture.controller.endMediaHandoffPlayback(first))
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertTrue(second.isValid)
+        fixture.controller.stop()
+        XCTAssertFalse(second.isValid)
+        fixture.controller.prepare(serverName: "Replacement Mac")
+        let newTrack = RemoteAudioStub()
+        fixture.controller.remoteAudioBecameAvailable(newTrack)
+        fixture.controller.transportBecameHealthy()
+        let current = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        XCTAssertFalse(fixture.controller.endMediaHandoffPlayback(second))
+        XCTAssertFalse(newTrack.isEnabled)
+        XCTAssertTrue(current.isValid)
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(current))
+        XCTAssertTrue(newTrack.isEnabled)
+    }
+
+    func testMediaHandoffRevocationKeepsMuteThroughRecoveryUntilExactPlayerCleanup() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        var invalidations = 0
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { lease in
+            invalidations += 1
+            XCTAssertFalse(lease.isValid)
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        })
+        fixture.controller.transportBecameUncertain()
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNotNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        fixture.controller.transportBecameHealthy()
+        XCTAssertFalse(fixture.remoteAudio.isEnabled, "Recovery cannot race the still-closing local player")
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertTrue(fixture.remoteAudio.isEnabled)
+    }
+
+    func testMediaHandoffReleasingAfterRouteLossNeverClearsExplicitResume() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        var invalidations = 0
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in invalidations += 1 })
+        fixture.events.onRouteChanged?("Audio route changed: device unavailable")
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertFalse(lease.isValid)
+        XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        let recoverCount = fixture.playback.recoverCount
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertTrue(fixture.controller.snapshot.requiresExplicitResume)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertFalse(fixture.playback.nativeAudioEnabled)
+        XCTAssertEqual(fixture.playback.recoverCount, recoverCount)
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in XCTFail() })
+    }
+
+    func testMediaHandoffRevokesOnInterruptionCallProofLossAndTrackReplacement() throws {
+        for boundary in ["interruption", "call", "proof", "services", "track"] {
+            let fixture = makeFixture()
+            fixture.playback.requiresRuntimePlayoutProof = true
+            fixture.controller.prepare(serverName: "Mac mini")
+            fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+            fixture.controller.transportBecameHealthy()
+            fixture.controller.updateRuntimePlayout(isReady: true)
+            var invalidations = 0
+            let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { lease in
+                invalidations += 1
+                XCTAssertFalse(lease.isValid)
+                XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            })
+            switch boundary {
+            case "interruption": fixture.events.onInterruptionBegan?(.unavailable)
+            case "call": fixture.callActivity.setNonEndedCallCount(1)
+            case "proof": fixture.controller.updateRuntimePlayout(isReady: false)
+            case "services": fixture.events.onMediaServicesLost?()
+            default:
+                let replacement = RemoteAudioStub(initiallyEnabled: true)
+                fixture.controller.remoteAudioBecameAvailable(replacement)
+                XCTAssertFalse(replacement.isEnabled)
+            }
+            XCTAssertEqual(invalidations, 1, boundary)
+            XCTAssertFalse(lease.isValid, boundary)
+            fixture.controller.updateServerName("Same Mac")
+            XCTAssertEqual(invalidations, 1, boundary)
+            fixture.controller.stop()
+            XCTAssertEqual(invalidations, 1, boundary)
+        }
+    }
+
+    func testMediaHandoffInvalidationAllowsReentrantExactCleanupWithoutOpeningUnhealthyTrack() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        var cleanupCount = 0
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { lease in
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            XCTAssertFalse(lease.isValid)
+            XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+            XCTAssertFalse(fixture.remoteAudio.isEnabled)
+            cleanupCount += 1
+        })
+        fixture.controller.transportBecameUncertain()
+        XCTAssertEqual(cleanupCount, 1)
+        XCTAssertFalse(lease.isValid)
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+    }
+
+    func testMediaHandoffAdmissionDoesNotReturnOwnerRetiredBySnapshotReentrancy() {
+        let fixture = makeFixture()
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        fixture.controller.onSnapshotChanged = { _ in
+            if fixture.controller.mediaHandoffAudioSuppressionID != nil { fixture.controller.stop() }
+        }
+        var invalidations = 0
+        XCTAssertNil(fixture.controller.beginMediaHandoffPlayback { _ in invalidations += 1 })
+        XCTAssertEqual(invalidations, 1)
+        XCTAssertFalse(fixture.remoteAudio.isEnabled)
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertEqual(fixture.controller.snapshot.stateText, "Inactive")
+    }
+
+    func testMediaHandoffMuteDoesNotMaskFrozenCallbacksOrLaterUnmutedDecodeFailure() {
+        let session = UUID(), policy = UUID(), mute = UUID()
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+        func observe(_ time: Double, callbacks: UInt64, suppressed: UUID?) -> IOSOrdinaryPlayoutLivenessResult {
+            tracker.observe(sessionGeneration: session, audioPolicyGeneration: policy,
+                peerIdentity: ObjectIdentifier(self), collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(sessionGeneration: session, audioPolicyGeneration: policy,
+                    callbacks: callbacks, frames: callbacks * 480, pcmNonzero: 1_000,
+                    pcmAbsolute: 1_000_000, inboundEnergy: time + 1),
+                mediaHandoffAudioSuppressionID: suppressed)
+        }
+        XCTAssertEqual(observe(0, callbacks: 10, suppressed: mute), .waiting)
+        XCTAssertEqual(observe(1, callbacks: 11, suppressed: mute), .healthy)
+        XCTAssertEqual(observe(4.6, callbacks: 12, suppressed: mute), .healthy,
+                       "Deliberately muted PCM must not cause native recovery")
+        XCTAssertEqual(observe(5, callbacks: 12, suppressed: mute), .waiting)
+        XCTAssertEqual(observe(8.6, callbacks: 12, suppressed: mute), .recover(.callbacksFrozen))
+        XCTAssertEqual(observe(9, callbacks: 13, suppressed: nil), .waiting)
+        XCTAssertEqual(observe(10, callbacks: 14, suppressed: nil), .waiting)
+        XCTAssertEqual(observe(13.6, callbacks: 15, suppressed: nil), .recover(.inboundEnergyWithoutPCM),
+                       "Releasing the mute restores the full decoded-audio watchdog")
+    }
+
+    func testMediaHandoffMuteOwnerChangeStartsFreshLivenessWindow() {
+        let session = UUID(), policy = UUID(), first = UUID(), second = UUID()
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+        func observe(_ time: Double, suppressed: UUID?) -> IOSOrdinaryPlayoutLivenessResult {
+            tracker.observe(sessionGeneration: session, audioPolicyGeneration: policy,
+                peerIdentity: ObjectIdentifier(self), collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(sessionGeneration: session, audioPolicyGeneration: policy,
+                    callbacks: 10, frames: 4_800, pcmNonzero: 1_000, pcmAbsolute: 1_000_000, inboundEnergy: 1),
+                mediaHandoffAudioSuppressionID: suppressed)
+        }
+        XCTAssertEqual(observe(0, suppressed: first), .waiting)
+        XCTAssertEqual(observe(1, suppressed: first), .waiting)
+        XCTAssertEqual(observe(4, suppressed: second), .waiting)
+        XCTAssertEqual(observe(5, suppressed: second), .waiting)
+        XCTAssertEqual(observe(8.6, suppressed: second), .recover(.callbacksFrozen))
+    }
+
+    func testMediaHandoffRoundTripBetweenSamplesResetsLivenessWindow() throws {
+        let fixture = makeFixture()
+        defer { fixture.controller.stop() }
+        fixture.controller.prepare(serverName: "Mac mini")
+        fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+        fixture.controller.transportBecameHealthy()
+        let session = UUID(), policy = UUID()
+        var tracker = IOSOrdinaryPlayoutLivenessTracker()
+        func observe(_ time: Double) -> IOSOrdinaryPlayoutLivenessResult {
+            tracker.observe(sessionGeneration: session, audioPolicyGeneration: policy,
+                peerIdentity: ObjectIdentifier(self), collectedAt: Date(timeIntervalSince1970: time),
+                oracle: ordinaryLivenessOracle(sessionGeneration: session, audioPolicyGeneration: policy,
+                    callbacks: 10, frames: 4_800, pcmNonzero: 1_000, pcmAbsolute: 1_000_000, inboundEnergy: 1),
+                mediaHandoffAudioSuppressionID: fixture.controller.mediaHandoffAudioSuppressionID,
+                mediaHandoffAudioGeneration: fixture.controller.mediaHandoffAudioGeneration)
+        }
+        let previousGeneration = fixture.controller.mediaHandoffAudioGeneration
+        XCTAssertEqual(observe(0), .waiting)
+        XCTAssertEqual(observe(1), .waiting)
+        let lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+        let mutedGeneration = fixture.controller.mediaHandoffAudioGeneration
+        XCTAssertNotEqual(mutedGeneration, previousGeneration)
+        XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease))
+        XCTAssertNil(fixture.controller.mediaHandoffAudioSuppressionID)
+        XCTAssertNotEqual(fixture.controller.mediaHandoffAudioGeneration, mutedGeneration)
+        XCTAssertNotEqual(fixture.controller.mediaHandoffAudioGeneration, previousGeneration)
+        XCTAssertEqual(observe(4.6), .waiting, "No stale suspicion crosses an unsampled local player")
+        XCTAssertEqual(observe(5), .waiting)
+        XCTAssertEqual(observe(8.6), .recover(.callbacksFrozen))
+    }
+
+    func testMediaHandoffStatsReadCannotCrossSuppressionChangesIncludingRoundTrip() async throws {
+        for boundary in ["acquire", "release", "replacement", "roundTrip"] {
+            let fixture = makeFixture()
+            let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+            let peer = try makeAudioRacePeer()
+            fixture.controller.onPlaybackRecoveryRequested = {}
+            fixture.controller.prepare(serverName: "Mac mini")
+            fixture.controller.remoteAudioBecameAvailable(fixture.remoteAudio)
+            fixture.controller.transportBecameHealthy()
+            viewModel.debugInstallIOSPlayoutPeerForRaceTests(peer)
+            var lease: WorldwideMediaHandoffAudioLease?
+            if boundary == "release" || boundary == "replacement" {
+                lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+            }
+            let started = expectation(description: "suspended read")
+            let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+            viewModel.debugInstallIOSPlayoutDiagnosticsReader { _ in
+                started.fulfill()
+                return await gate.wait()
+            }
+            let refresh = Task { @MainActor in await viewModel.debugRefreshIOSPlayoutOracleForTests(from: peer) }
+            await fulfillment(of: [started], timeout: 2)
+            await gate.waitUntilBlocked()
+            if let lease { XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(lease)) }
+            if boundary != "release" {
+                lease = try XCTUnwrap(fixture.controller.beginMediaHandoffPlayback { _ in })
+            }
+            if boundary == "roundTrip", let acquiredLease = lease {
+                XCTAssertTrue(fixture.controller.endMediaHandoffPlayback(acquiredLease))
+                lease = nil
+            }
+            await gate.open(healthyIOSPlayoutDiagnostics())
+            await refresh.value
+            XCTAssertNil(viewModel.audioPlayoutOracle, boundary)
+            if let lease { _ = fixture.controller.endMediaHandoffPlayback(lease) }
+            viewModel.disconnect()
+            await peer.close()
+        }
     }
 
     func testWorldwidePlaybackConfigurationUsesOnlyValidExplicitOptions() {
@@ -18189,7 +18778,12 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
             fixture.playback.activateCount,
             activationCountBeforeReplacement + 1
         )
-        XCTAssertNil(viewModel.lastError)
+        // The deliberately unreachable localhost endpoint may fail as soon as the retirement
+        // gate opens. That network error is unrelated to this test's audio-retirement invariant.
+        XCTAssertNotEqual(
+            viewModel.lastError,
+            "The previous iPhone audio session could not be retired safely. Restart opensteamer before reconnecting."
+        )
 
         viewModel.disconnect()
         await oldPeer.close()
@@ -18699,6 +19293,252 @@ final class WorldwideAudioLifecycleTests: XCTestCase {
         try await assertRetiredPollingProofCannotMutateReplacement(
             diagnostics: healthyIOSPlayoutDiagnostics()
         )
+    }
+
+    func testExternalPausePublishesNotificationWhileStatisticsReaderIsSuspended() async throws {
+        let store = try XCTUnwrap(MediaNotificationStore.configured())
+        let signaling = try RendezvousSignalingClient(
+            endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [],
+            mediaTopology: .videoControlOnly, supportsAudioClientDiagnostics: false))
+        let negotiation = WebRTCRemoteMediaAuthorization()
+        func state(revision: UInt64, playing: Bool) -> WebRTCReceivedRemoteMediaState {
+            let item = WebRTCRemoteMediaItem(contextID: "external-pause-same-video",
+                sourceName: "YouTube", title: "Same video", playbackState: playing ? .playing : .paused,
+                elapsedTime: 45, duration: 120, playbackRate: playing ? 1 : 0,
+                capabilities: .init(canPlay: !playing, canPause: playing,
+                                    canSkipForward: false, canSkipBackward: false),
+                artwork: .init(videoID: "AAAAAAAAAAA"))
+            return WebRTCReceivedRemoteMediaState(envelope: .init(authorization: negotiation,
+                update: .init(revision: revision, item: item)))
+        }
+        viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
+            state: state(revision: 2, playing: true)) { _ in }
+        XCTAssertNotNil(viewModel.screenVideoPlaybackEvidence)
+        let initial = try? store.readSnapshot()
+        XCTAssertEqual(initial?.revision, 2)
+        XCTAssertEqual(initial?.entries.first?.isPlaying, true)
+
+        let readerStarted = expectation(description: "statistics native reader suspended")
+        let readerReturned = expectation(description: "statistics native reader drained")
+        let pausePublished = expectation(description: "unsolicited pause reached notification store")
+        let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        var readerCompleted = false
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readerStarted.fulfill()
+            let value = await gate.wait()
+            readerCompleted = true
+            readerReturned.fulfill()
+            return value
+        }
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        guard let consumer = viewModel.debugStartPeerEventLoopForTests(
+            events: events.stream, signaling: signaling) else {
+            viewModel.disconnect()
+            await peer.close()
+            XCTFail("Configured peer must start the production event consumer")
+            return
+        }
+        events.continuation.yield(.statistics(.init(), wholePeerReportWasCollected: false))
+        await fulfillment(of: [readerStarted], timeout: 2)
+        events.continuation.yield(.remoteMediaStateChanged(state(revision: 3, playing: false)))
+        let publicationObserver = Task { @MainActor in
+            for _ in 0..<100 {
+                if let snapshot = try? store.readSnapshot(), snapshot.revision == 3,
+                   snapshot.entries.first?.isPlaying == false {
+                    pausePublished.fulfill()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        await fulfillment(of: [pausePublished], timeout: 2)
+        XCTAssertFalse(readerCompleted, "Pause publication must precede completion of the held native read")
+        XCTAssertNil(viewModel.screenVideoPlaybackEvidence,
+                     "The same admitted Mac pause must also release video wake evidence")
+        let whileHeld = try? store.readSnapshot()
+        XCTAssertEqual(whileHeld?.revision, 3)
+        XCTAssertEqual(whileHeld?.entries.first?.isPlaying, false)
+
+        let acceptedTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertEqual(acceptedTrace.lastEventRevision, 3)
+        XCTAssertEqual(acceptedTrace.lastEventAdmitted, true)
+        XCTAssertEqual(acceptedTrace.applied?.revision, 3)
+        XCTAssertEqual(acceptedTrace.applied?.playingMask, 0)
+        XCTAssertEqual(acceptedTrace.published?.revision, 3)
+        XCTAssertEqual(acceptedTrace.publicationStatus, .ready)
+        XCTAssertNil(acceptedTrace.received, "An injected VM event must not manufacture native peer receipt")
+
+        events.continuation.yield(.remoteMediaStateChanged(state(revision: 2, playing: true)))
+        for _ in 0..<100 {
+            if viewModel.debugMediaPipelineDiagnosticsForTests().lastEventRevision == 2 { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let rejectedTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertEqual(rejectedTrace.lastEventRevision, 2)
+        XCTAssertNil(viewModel.screenVideoPlaybackEvidence,
+                     "Rejected older playing state cannot re-acquire wake evidence")
+        XCTAssertEqual(rejectedTrace.lastEventAdmitted, false)
+        XCTAssertEqual(rejectedTrace.applied?.revision, 3)
+        XCTAssertEqual(rejectedTrace.published?.revision, 3,
+                       "Rejected event evidence cannot rewrite applied/published state")
+
+        // Drain the non-cooperative reader even when the publication assertions fail.
+        await gate.open(healthyIOSPlayoutDiagnostics())
+        await fulfillment(of: [readerReturned], timeout: 2)
+        await viewModel.debugWaitForStatisticsProofWorkForTests()
+        publicationObserver.cancel()
+        await publicationObserver.value
+        events.continuation.finish()
+        await consumer.value
+        viewModel.disconnect()
+        let retiredTrace = viewModel.debugMediaPipelineDiagnosticsForTests()
+        XCTAssertNil(viewModel.screenVideoPlaybackEvidence)
+        XCTAssertNil(retiredTrace.applied)
+        XCTAssertNil(retiredTrace.lastEventRevision)
+        await peer.close()
+    }
+
+    func testStatisticsProofCoalescesNewestSampleWhileExternalPausePublishes() async throws {
+        let store = try XCTUnwrap(MediaNotificationStore.configured())
+        let signaling = try RendezvousSignalingClient(endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [],
+            mediaTopology: .videoControlOnly, supportsAudioClientDiagnostics: false))
+        let negotiation = WebRTCRemoteMediaAuthorization()
+        viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
+            state: statisticsNotificationState(negotiation: negotiation, revision: 2, playing: true)) { _ in }
+        let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        let firstReadStarted = expectation(description: "first coalesced reader suspended")
+        let pausePublished = expectation(description: "consumer passed queued statistics and published pause")
+        var readCount = 0
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readCount += 1
+            if readCount == 1 {
+                firstReadStarted.fulfill()
+                return await gate.wait()
+            }
+            return iosPlayoutDiagnostics(callbacks: 2, frames: 960, failures: 0)
+        }
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        guard let consumer = viewModel.debugStartPeerEventLoopForTests(
+            events: events.stream, signaling: signaling) else {
+            viewModel.disconnect()
+            await peer.close()
+            XCTFail("Configured peer must start the production event consumer")
+            return
+        }
+        func sample(energy: Double) -> WebRTCTransportEvent {
+            .statistics(.init(inboundAudio: .init(totalAudioEnergy: energy, totalSamplesDuration: energy)),
+                        wholePeerReportWasCollected: false)
+        }
+        events.continuation.yield(sample(energy: 1))
+        await fulfillment(of: [firstReadStarted], timeout: 2)
+        events.continuation.yield(sample(energy: 2))
+        events.continuation.yield(sample(energy: 3))
+        events.continuation.yield(.remoteMediaStateChanged(
+            statisticsNotificationState(negotiation: negotiation, revision: 3, playing: false)))
+        let observer = Task { @MainActor in
+            for _ in 0..<100 {
+                if let snapshot = try? store.readSnapshot(), snapshot.revision == 3,
+                   snapshot.entries.first?.isPlaying == false {
+                    pausePublished.fulfill()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        await fulfillment(of: [pausePublished], timeout: 2)
+        XCTAssertEqual(readCount, 1, "Coalesced statistics must not overlap the retained native read")
+        await gate.open(healthyIOSPlayoutDiagnostics())
+        await viewModel.debugWaitForStatisticsProofWorkForTests()
+        XCTAssertEqual(readCount, 2, "Only the first and newest queued statistics may read native state")
+        XCTAssertEqual(viewModel.audioPlayoutOracle?.inboundAudioEnergy, 3)
+        observer.cancel()
+        await observer.value
+        events.continuation.finish()
+        await consumer.value
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    func testTransportRevocationRetiresHeldStatisticsProofAndPendingSample() async throws {
+        let store = try XCTUnwrap(MediaNotificationStore.configured())
+        let signaling = try RendezvousSignalingClient(endpoint: URL(string: "wss://example.invalid")!,
+            invitation: RemoteInvitationCode.generate(), role: .viewer)
+        let fixture = makeFixture()
+        let viewModel = WorldwideSessionViewModel(audioLifecycle: fixture.controller)
+        let peer = try WebRTCPeer(configuration: .init(role: .viewer, iceServers: [],
+            mediaTopology: .videoControlOnly, supportsAudioClientDiagnostics: false))
+        let negotiation = WebRTCRemoteMediaAuthorization()
+        viewModel.debugInstallRemoteMediaCommandPathForTests(peer: peer,
+            state: statisticsNotificationState(negotiation: negotiation, revision: 2, playing: true)) { _ in }
+        let gate = AudioNonCooperativeGate<WebRTCIOSPlayoutDiagnostics>()
+        let readerStarted = expectation(description: "transport retirement reader suspended")
+        let revocationConsumed = expectation(description: "transport revocation passed held statistics")
+        var readCount = 0
+        viewModel.debugInstallIOSPlayoutDiagnosticsReader { requestedPeer in
+            XCTAssertTrue(requestedPeer === peer)
+            readCount += 1
+            if readCount == 1 { readerStarted.fulfill() }
+            return await gate.wait()
+        }
+        let events = AsyncStream<WebRTCTransportEvent>.makeStream()
+        guard let consumer = viewModel.debugStartPeerEventLoopForTests(
+            events: events.stream, signaling: signaling) else {
+            viewModel.disconnect()
+            await peer.close()
+            XCTFail("Configured peer must start the production event consumer")
+            return
+        }
+        events.continuation.yield(.statistics(.init(), wholePeerReportWasCollected: false))
+        await fulfillment(of: [readerStarted], timeout: 2)
+        events.continuation.yield(.statistics(.init(), wholePeerReportWasCollected: false))
+        events.continuation.yield(.iceStateChanged(.disconnected))
+        events.continuation.yield(.remoteMediaStateChanged(
+            statisticsNotificationState(negotiation: negotiation, revision: 3, playing: false)))
+        events.continuation.yield(.diagnosticFailure("statistics-retirement-consumer-barrier"))
+        let observer = Task { @MainActor in
+            for _ in 0..<100 {
+                if viewModel.lastDiagnostic == "statistics-retirement-consumer-barrier" {
+                    revocationConsumed.fulfill()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(10)) } catch { return }
+            }
+        }
+        await fulfillment(of: [revocationConsumed], timeout: 2)
+        XCTAssertEqual((try? store.readSnapshot())?.ready, false,
+                       "Transport revocation must remove notification authority before the native reader returns")
+        await gate.open(healthyIOSPlayoutDiagnostics())
+        await viewModel.debugWaitForStatisticsProofWorkForTests()
+        XCTAssertEqual(readCount, 1, "Revocation must discard the coalesced pending sample")
+        XCTAssertNil(viewModel.audioPlayoutOracle, "A retired native completion must not republish playout proof")
+        XCTAssertEqual((try? store.readSnapshot())?.ready, false)
+        observer.cancel()
+        await observer.value
+        events.continuation.finish()
+        await consumer.value
+        viewModel.disconnect()
+        await peer.close()
+    }
+
+    private func statisticsNotificationState(
+        negotiation: WebRTCRemoteMediaAuthorization, revision: UInt64, playing: Bool
+    ) -> WebRTCReceivedRemoteMediaState {
+        let item = WebRTCRemoteMediaItem(contextID: "external-pause-same-video", sourceName: "YouTube",
+            title: "Same video", playbackState: playing ? .playing : .paused, elapsedTime: 45, duration: 120,
+            playbackRate: playing ? 1 : 0, capabilities: .init(canPlay: !playing, canPause: playing,
+                canSkipForward: false, canSkipBackward: false))
+        return WebRTCReceivedRemoteMediaState(envelope: .init(authorization: negotiation,
+            update: .init(revision: revision, item: item)))
     }
 
     func testRetiredPollingProofCannotApplyTerminalDiagnosticsToReplacementAudio() async throws {
@@ -23317,7 +24157,7 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
         XCTAssertTrue(MPRemoteCommandCenter.shared().togglePlayPauseCommand.isEnabled)
     }
 
-    func testAllFourCommandsRequireExactReadyPublishedContext() {
+    func testAllSixCommandsRequireExactReadyPublishedContext() {
         let gate = RemoteMediaCommandDispatchGate()
         let owner = RemoteMediaCommandOwnerToken()
         let recorder = LockedRemoteMediaCommandRecorder()
@@ -23331,7 +24171,9 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
                 canPlay: true,
                 canPause: true,
                 canSkipForward: true,
-                canSkipBackward: true
+                canSkipBackward: true,
+                canSeekForward: true,
+                canSeekBackward: true
             )
         )
         let sender: RemoteMediaCommandSender = { dispatch in
@@ -23352,10 +24194,11 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
             state: makeReceivedState(item: item, revision: 4),
             transportIsReady: true
         )
-        for command in WebRTCRemoteMediaCommand.allCases {
+        let fixedCommands = WebRTCRemoteMediaCommand.allCases.filter { $0 != .seekToPosition }
+        for command in fixedCommands {
             XCTAssertTrue(gate.dispatch(command))
         }
-        XCTAssertEqual(recorder.values.map(\.command), WebRTCRemoteMediaCommand.allCases)
+        XCTAssertEqual(recorder.values.map(\.command), fixedCommands)
         XCTAssertTrue(recorder.values.allSatisfy { $0.contextID == "context-a" })
         XCTAssertTrue(recorder.values.allSatisfy { $0.revision == 4 })
 
@@ -23365,7 +24208,7 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
             transportIsReady: true
         )
         XCTAssertFalse(gate.dispatch(.pause))
-        XCTAssertEqual(recorder.values.count, 4)
+        XCTAssertEqual(recorder.values.count, 6)
     }
 
     func testReplacementContextCannotReuseOldCapabilities() {
@@ -23597,8 +24440,6 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
             commandCenter.changePlaybackRateCommand,
             commandCenter.changeRepeatModeCommand,
             commandCenter.changeShuffleModeCommand,
-            commandCenter.skipForwardCommand,
-            commandCenter.skipBackwardCommand,
             commandCenter.seekForwardCommand,
             commandCenter.seekBackwardCommand,
             commandCenter.changePlaybackPositionCommand,
@@ -23901,7 +24742,9 @@ final class RemoteMediaCommandDispatchGateTests: XCTestCase {
                 canPlay: canPlay,
                 canPause: canPause,
                 canSkipForward: canSkipForward,
-                canSkipBackward: true
+                canSkipBackward: true,
+                canSeekForward: true,
+                canSeekBackward: true
             )
         )
     }
@@ -24767,6 +25610,130 @@ private final class AudioSessionEventsStub: AudioSessionEventMonitoring {
 
 final class IOSAudioDiagnosticsJournalTests: XCTestCase {
     private let second: UInt64 = 1_000_000_000
+
+    func testRoutineHeartbeatCadenceKeepsNativeEvidenceFreshAcrossBoundedSamplingAndDeliveryDelay() throws {
+        let current = try routineHeartbeatDeliveries()
+        let legacy = try routineHeartbeatDeliveries(legacyFiveSecondCadence: true)
+        XCTAssertGreaterThan(current.count, 10)
+        XCTAssertTrue(current.allSatisfy { $0.nativeAgeMilliseconds == 1_001 })
+
+        // The host expires native evidence at five seconds even when the heartbeat
+        // itself remains fresh for ten seconds. Keep that receiver contract fixed.
+        let currentAges = nativeAgesImmediatelyBeforeNextDelivery(current)
+        let legacyAges = nativeAgesImmediatelyBeforeNextDelivery(legacy)
+        XCTAssertTrue(currentAges.allSatisfy { $0 <= 5_000 }, "\(currentAges)")
+        XCTAssertTrue(legacyAges.contains { $0 > 5_000 }, "The prior cadence must expose the routine evidence gap.")
+        XCTAssertTrue(legacyAges.allSatisfy { $0 < 10_000 })
+    }
+
+    func testHeartbeatSchedulePreservesOneSecondEventBurstForThirtySeconds() {
+        var schedule = IOSAudioClientDiagnosticsSchedule()
+        for tick in 0...30 {
+            let now = UInt64(tick) * second
+            XCTAssertTrue(schedule.shouldSend(at: now, latestEventSequence: 1))
+            schedule.recordSendAttempt(at: now)
+            XCTAssertFalse(schedule.shouldSend(at: now + second / 2, latestEventSequence: 1))
+        }
+        XCTAssertFalse(schedule.shouldSend(at: second * 31, latestEventSequence: 1))
+        XCTAssertTrue(schedule.shouldSend(at: second * 32, latestEventSequence: 1))
+        schedule.recordSendAttempt(at: second * 32)
+
+        // A new event renews the burst; repeated delivery of the same event does not.
+        XCTAssertTrue(schedule.shouldSend(at: second * 33, latestEventSequence: 2))
+        schedule.recordSendAttempt(at: second * 33)
+        for tick in 34...63 {
+            let now = UInt64(tick) * second
+            XCTAssertTrue(schedule.shouldSend(at: now, latestEventSequence: 2))
+            schedule.recordSendAttempt(at: now)
+        }
+        XCTAssertFalse(schedule.shouldSend(at: second * 64, latestEventSequence: 2))
+        XCTAssertTrue(schedule.shouldSend(at: second * 65, latestEventSequence: 2))
+    }
+
+    func testHeartbeatScheduleConsumesOnlyAttemptedSendAndResetsForNewSession() {
+        var schedule = IOSAudioClientDiagnosticsSchedule()
+        XCTAssertTrue(schedule.shouldSend(at: second, latestEventSequence: 1))
+        XCTAssertTrue(schedule.shouldSend(at: second, latestEventSequence: 1),
+                      "Missing negotiation context must not consume a send slot.")
+        schedule.recordSendAttempt(at: second)
+        XCTAssertFalse(schedule.shouldSend(at: second, latestEventSequence: 1))
+        schedule = IOSAudioClientDiagnosticsSchedule()
+        XCTAssertTrue(schedule.shouldSend(at: second, latestEventSequence: 1))
+    }
+
+    func testRoutineHeartbeatsDoNotRefreshMissingNativeSamplesOrUndeliveredEvidence() throws {
+        let frozen = try routineHeartbeatDeliveries(stopNativeSampling: true)
+        XCTAssertGreaterThan(frozen.count, 10)
+        XCTAssertTrue(zip(frozen, frozen.dropFirst()).allSatisfy { before, after in
+            before.sequence < after.sequence
+        })
+        XCTAssertTrue(frozen.contains { $0.nativeAgeMilliseconds > 5_000 },
+                      "Sending new heartbeats must preserve the age of a blocked native read.")
+        XCTAssertTrue(zip(frozen, frozen.dropFirst()).allSatisfy { before, after in
+            before.nativeAgeMilliseconds < after.nativeAgeMilliseconds
+        })
+        let last = try XCTUnwrap(try routineHeartbeatDeliveries().last)
+        let deadline = last.receivedAt + (5_000 - last.nativeAgeMilliseconds) * 1_000_000
+        XCTAssertEqual(nativeAge(at: deadline, since: last), 5_000)
+        XCTAssertGreaterThan(nativeAge(at: deadline + 1_000_000, since: last), 5_000,
+                             "A delivery outage must still expire the last native observation.")
+    }
+
+    private struct TimedAudioHeartbeat {
+        let receivedAt: UInt64
+        let nativeAgeMilliseconds: UInt64
+        let sequence: UInt64
+    }
+
+    private func routineHeartbeatDeliveries(
+        legacyFiveSecondCadence: Bool = false,
+        stopNativeSampling: Bool = false
+    ) throws -> [TimedAudioHeartbeat] {
+        var schedule = IOSAudioClientDiagnosticsSchedule()
+        var journal = IOSAudioDiagnosticsJournal()
+        let policy = UUID()
+        journal.reset(sessionID: UUID(), policyID: policy, at: 0)
+        XCTAssertTrue(schedule.shouldSend(at: 0, latestEventSequence: journal.events.last?.sequence))
+        schedule.recordSendAttempt(at: 0)
+        var legacyLastSent: UInt64 = 0
+        var deliveries: [TimedAudioHeartbeat] = []
+        let firstTick = second * 40
+        let sampleAge: UInt64 = 1_001_000_000
+        // Exercise the real send policy after its event burst. The existing one-second
+        // loop takes an extra 250ms per tick; delivery alternates between 0 and 750ms.
+        for tick in 0...32 {
+            let now = firstTick + UInt64(tick) * 1_250_000_000
+            if !stopNativeSampling || tick == 0 {
+                var native = WebRTCAudioClientNativeSnapshot()
+                native.playoutCallbackCount = UInt64(tick + 1)
+                native.playoutFrameCount = UInt64(tick + 1) * 480
+                journal.observeNative(native, policyID: policy, at: now - sampleAge)
+            }
+            let due = legacyFiveSecondCadence
+                ? now - legacyLastSent >= second * 5
+                : schedule.shouldSend(at: now, latestEventSequence: journal.events.last?.sequence)
+            guard due else { continue }
+            let heartbeat = try XCTUnwrap(journal.heartbeat(build: .init(), at: now))
+            schedule.recordSendAttempt(at: now)
+            legacyLastSent = now
+            deliveries.append(.init(
+                receivedAt: now + (deliveries.count.isMultiple(of: 2) ? 0 : 750_000_000),
+                nativeAgeMilliseconds: try XCTUnwrap(heartbeat.snapshot.nativeObservationAgeMilliseconds),
+                sequence: heartbeat.sequence
+            ))
+        }
+        return deliveries
+    }
+
+    private func nativeAgesImmediatelyBeforeNextDelivery(_ deliveries: [TimedAudioHeartbeat]) -> [UInt64] {
+        zip(deliveries, deliveries.dropFirst()).map { before, after in
+            nativeAge(at: after.receivedAt - 1, since: before)
+        }
+    }
+
+    private func nativeAge(at now: UInt64, since delivery: TimedAudioHeartbeat) -> UInt64 {
+        delivery.nativeAgeMilliseconds + (now - delivery.receivedAt) / 1_000_000
+    }
 
     func testCategoryObservationFirstDetailSurvivesGenericAuthorityAndLaterDetails() throws {
         var journal = IOSAudioDiagnosticsJournal()

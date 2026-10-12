@@ -103,6 +103,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             unavailable.lastFailureCategory,
             .outputUnavailable
         )
+        XCTAssertEqual(unavailable.attemptGeneration, 1)
 
         factory.append(ready)
         await retryGate.open()
@@ -124,6 +125,7 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertTrue(final.exactTrackAdmitted)
         XCTAssertTrue(final.queueRunning)
         XCTAssertTrue(final.hiddenWriterSelectionProven)
+        XCTAssertEqual(final.attemptGeneration, 2)
         XCTAssertEqual(
             final.currentKey?.deviceGeneration,
             1
@@ -1968,6 +1970,170 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
         XCTAssertTrue(healthy.inboundMediaFresh)
     }
 
+    func testAttemptGenerationDistinguishesSameKeyRestallAfterFreshMediaRevival()
+        async throws {
+        let watchdog = DriverTestMediaFreshnessWatchdog()
+        let outputs = (0..<2).map { _ in
+            DriverTestOutput(
+                progressSnapshots: readyProgressSnapshots()
+            )
+        }
+        let factory = DriverTestOutputFactory(outputs: outputs)
+        let harness = DriverTestHarness(
+            factory: factory,
+            maximumAttemptCountPerKey: 1,
+            mediaFreshnessTimeoutNanoseconds: 100,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+
+        await prepare(
+            harness: harness,
+            epoch: epoch,
+            peer: peer,
+            track: track
+        )
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(
+            snapshot(
+                epoch: epoch,
+                generation: 1,
+                available: true
+            )
+        )
+
+        let firstDeadlineReady = await eventually {
+            watchdog.scheduleCount >= 1
+        }
+        XCTAssertTrue(firstDeadlineReady)
+        await harness.publishInboundMedia(
+            packets: 10,
+            bytes: 800
+        )
+        await harness.publishInboundMedia(
+            packets: 11,
+            bytes: 880
+        )
+        let initiallyHealthy = await harness.snapshot()
+        XCTAssertEqual(initiallyHealthy.phase, .forwardingHealthy)
+
+        watchdog.advance(to: 100)
+        let firstQuiescentReady = await eventually {
+            let snapshot = await harness.snapshot()
+            return snapshot.phase == .sourceMediaStalled
+                && snapshot.currentAttemptID == nil
+        }
+        XCTAssertTrue(firstQuiescentReady)
+        let firstQuiescent = await harness.snapshot()
+        let forwardingKey = try XCTUnwrap(
+            firstQuiescent.lastAttemptedKey
+        )
+        let firstAttemptID = try XCTUnwrap(
+            firstQuiescent.lastAttemptID
+        )
+        XCTAssertEqual(firstQuiescent.attemptGeneration, 1)
+        XCTAssertNil(firstQuiescent.currentKey)
+        XCTAssertEqual(firstQuiescent.progress, .zero)
+        XCTAssertEqual(firstQuiescent.inboundMediaAdvancementCount, 0)
+        XCTAssertEqual(firstQuiescent.consecutiveStaleInboundMediaSamples, 0)
+        XCTAssertFalse(firstQuiescent.inboundMediaFresh)
+        XCTAssertGreaterThan(firstQuiescent.inboundMediaSampleSequence, 0)
+
+        await harness.publishInboundMedia(
+            packets: 12,
+            bytes: 960
+        )
+        let revived = await eventually {
+            let snapshot = await harness.snapshot()
+            return factory.requestCount == 2
+                && snapshot.currentAttemptID != nil
+                && snapshot.exactTrackAdmitted
+        }
+        XCTAssertTrue(revived)
+        let revivedSnapshot = await harness.snapshot()
+        XCTAssertEqual(revivedSnapshot.currentKey, forwardingKey)
+        XCTAssertEqual(revivedSnapshot.lastAttemptedKey, forwardingKey)
+        XCTAssertNotEqual(revivedSnapshot.lastAttemptID, firstAttemptID)
+        XCTAssertEqual(revivedSnapshot.attemptGeneration, 2)
+
+        await harness.publishInboundMedia(
+            packets: 13,
+            bytes: 1_040
+        )
+        let healthy = await harness.snapshot()
+        XCTAssertEqual(healthy.phase, .forwardingHealthy)
+        XCTAssertTrue(healthy.inboundMediaFresh)
+
+        watchdog.advance(to: 200)
+        let secondQuiescentReady = await eventually {
+            let snapshot = await harness.snapshot()
+            return snapshot.phase == .sourceMediaStalled
+                && snapshot.currentAttemptID == nil
+        }
+        XCTAssertTrue(secondQuiescentReady)
+        let secondQuiescent = await harness.snapshot()
+        XCTAssertEqual(secondQuiescent.lastAttemptedKey, forwardingKey)
+        XCTAssertEqual(
+            secondQuiescent.monitorEpoch,
+            firstQuiescent.monitorEpoch
+        )
+        XCTAssertEqual(
+            secondQuiescent.deviceGeneration,
+            firstQuiescent.deviceGeneration
+        )
+        XCTAssertEqual(
+            secondQuiescent.peerGeneration,
+            firstQuiescent.peerGeneration
+        )
+        XCTAssertEqual(
+            secondQuiescent.transportAuthorizationEpoch,
+            firstQuiescent.transportAuthorizationEpoch
+        )
+        XCTAssertEqual(
+            secondQuiescent.trackGeneration,
+            firstQuiescent.trackGeneration
+        )
+        XCTAssertNotEqual(secondQuiescent.lastAttemptID, firstAttemptID)
+        XCTAssertEqual(
+            secondQuiescent.attemptGeneration,
+            firstQuiescent.attemptGeneration + 1
+        )
+        XCTAssertNil(secondQuiescent.currentKey)
+        XCTAssertEqual(secondQuiescent.progress, .zero)
+        XCTAssertEqual(secondQuiescent.inboundMediaAdvancementCount, 0)
+        XCTAssertEqual(secondQuiescent.consecutiveStaleInboundMediaSamples, 0)
+        XCTAssertFalse(secondQuiescent.inboundMediaFresh)
+        XCTAssertGreaterThan(
+            secondQuiescent.inboundMediaSampleSequence,
+            firstQuiescent.inboundMediaSampleSequence
+        )
+        XCTAssertEqual(outputs.map(\.stopCount), [1, 1])
+        XCTAssertFalse(track.isEnabled)
+
+        let message = WorldwideScreenService
+            .iPhoneMicrophoneForwardingLogMessage(secondQuiescent)
+        XCTAssertTrue(message.contains("attemptGeneration=2 "))
+        XCTAssertTrue(
+            message.contains("lastAttemptedKeyMatchesSnapshot=true ")
+        )
+        XCTAssertFalse(message.contains("attemptID="))
+        XCTAssertFalse(
+            message.localizedCaseInsensitiveContains(
+                firstAttemptID.uuidString
+            )
+        )
+        if let secondAttemptID = secondQuiescent.lastAttemptID {
+            XCTAssertFalse(
+                message.localizedCaseInsensitiveContains(
+                    secondAttemptID.uuidString
+                )
+            )
+        }
+    }
+
     func testAdvancingSilentQueueAwaitsDelayedFirstPCMWithoutRetiringAttempt()
         async {
         let silentOne = progress(
@@ -2234,6 +2400,821 @@ final class WorldwideIPhoneMicrophoneForwardingDriverTests:
             result.transportAuthorizationEpoch,
             0
         )
+    }
+
+    func testRustEvidenceHealthyDriverRetainsActualAttemptAndOutput() async {
+        await exerciseRustEvidenceDriver(.none)
+    }
+
+    func testRustReadinessRefusalRetiresOwnedOutputAndSurvivesChurn() async {
+        let faults: [DriverTestEvidenceFault] = [
+            .readinessWrongVote, .readinessStatusZero,
+        ]
+        for fault in faults {
+            await exerciseRustEvidenceDriver(fault)
+        }
+    }
+
+    func testRustWatermarkRefusalRetiresOwnedOutputAndSurvivesChurn() async {
+        let faults: [DriverTestEvidenceFault] = [
+            .watermarkWrongAdvance, .watermarkStatusZero,
+        ]
+        for fault in faults {
+            await exerciseRustEvidenceDriver(fault)
+        }
+    }
+
+    func testRustFreshnessRefusalRetiresOwnedOutputWithoutExtraClockRead() async {
+        let faults: [DriverTestEvidenceFault] = [
+            .freshnessPlanWrongVote, .freshnessPlanStatusZero,
+            .freshnessDecisionWrongVote, .freshnessDecisionStatusZero,
+        ]
+        for fault in faults {
+            await exerciseRustEvidenceDriver(fault)
+        }
+    }
+
+    func testRustEvidenceRefusalCleanupReentryPreservesTerminalShutdown() async {
+        let cuts: [DriverTestEvidenceCleanup] = [.trackDisable, .outputStop]
+        for cut in cuts {
+            await exerciseRustEvidenceDriver(.watermarkStatusZero, cleanup: cut)
+        }
+    }
+
+    func testRustEvidenceFrameRejectsNestedSnapshotAndNativeGetterSupersession() async {
+        let cuts: [DriverTestEvidenceReentry] = [
+            .nestedWatermarkSnapshot, .progressShutdown, .freshnessClockShutdown,
+        ]
+        for cut in cuts {
+            let output = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let unusedOutput = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let factory = DriverTestOutputFactory(outputs: [output, unusedOutput])
+            let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+            let harness = DriverTestHarness(
+                factory: factory,
+                mediaFreshnessTimeoutNanoseconds: 100,
+                mediaFreshnessWatchdog: watchdog,
+                automaticallyAdvanceInboundMedia: false
+            )
+            await harness.configureEvidenceObservation(cut, output: output, watchdog: watchdog)
+            let peer = DriverTestPeer()
+            let track = DriverTestTrack()
+            let epoch = UUID()
+            await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+            await harness.authorize(peer: peer, generation: 1)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+            let initialSleep = await eventually { watchdog.scheduleCount > 0 }
+            XCTAssertTrue(initialSleep)
+            await harness.publishInboundMedia(packets: 10, bytes: 800)
+            let priorSchedules = watchdog.scheduleCount
+            await harness.publishInboundMedia(packets: 11, bytes: 880)
+            let renewedSleep = await eventually { watchdog.scheduleCount > priorSchedules }
+            XCTAssertTrue(renewedSleep)
+            let healthy = await harness.snapshot()
+            XCTAssertEqual(healthy.phase, .forwardingHealthy)
+            XCTAssertNotNil(healthy.currentAttemptID)
+            XCTAssertNotNil(healthy.currentKey)
+            XCTAssertTrue(healthy.exactTrackAdmitted)
+            XCTAssertTrue(healthy.inboundMediaFresh)
+            XCTAssertTrue(track.isEnabled)
+            XCTAssertEqual(output.stopCount, 0)
+            XCTAssertEqual(output.evidenceCorruptionCounts, [0, 0, 0])
+
+            let progressBefore = output.progressReadCount
+            let clockBefore = watchdog.nowReadCount
+            let disablesBefore = track.disableCount
+            let callsBefore = output.evidenceCallCounts
+            let votesBefore = output.freshnessVotes.count
+            await harness.armEvidenceReentry(cut, output: output, watchdog: watchdog)
+            let observed: WorldwideIPhoneMicrophoneForwardingHostSnapshot
+            if cut == .nestedWatermarkSnapshot {
+                await harness.publishInboundMedia(packets: 12, bytes: 960)
+                observed = await harness.snapshot()
+            } else {
+                observed = await harness.snapshot()
+            }
+            XCTAssertNil(observed.currentAttemptID)
+            XCTAssertNil(observed.currentKey)
+            XCTAssertFalse(observed.exactTrackAdmitted)
+            XCTAssertFalse(observed.queueRunning)
+            XCTAssertEqual(observed.progress, .zero)
+            XCTAssertFalse(observed.inboundMediaFresh)
+            XCTAssertEqual(observed.inboundMediaAdvancementCount, 0)
+            XCTAssertEqual(observed.attemptGeneration, 1)
+            XCTAssertEqual(output.startCount, 1)
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertFalse(track.isEnabled)
+            XCTAssertEqual(factory.requestCount, 1)
+            XCTAssertEqual(output.progressReadCount - progressBefore, 1)
+            XCTAssertEqual(output.evidenceCorruptionCounts, [0, 0, 0])
+            let actualCallDelta = zip(output.evidenceCallCounts, callsBefore).map { pair in pair.0 - pair.1 }
+            switch cut {
+            case .nestedWatermarkSnapshot:
+                XCTAssertEqual(observed.phase, .runtimeFailed)
+                XCTAssertEqual(observed.lastFailureCategory, .evidenceBridgeRefused)
+                XCTAssertEqual(track.disableCount - disablesBefore, 1)
+                XCTAssertEqual(actualCallDelta, [0, 1, 2])
+                XCTAssertEqual(watchdog.nowReadCount - clockBefore, 1)
+                let nested = output.nestedObservation
+                XCTAssertNotNil(nested)
+                XCTAssertEqual(nested?.phase, .runtimeFailed)
+                XCTAssertEqual(nested?.queueRunning, false)
+                XCTAssertEqual(nested?.inboundMediaFresh, false)
+                XCTAssertEqual(nested?.progressReadDelta, 0)
+                XCTAssertEqual(nested?.clockReadDelta, 0)
+                XCTAssertEqual(nested?.producerDelta, [0, 0, 0])
+                XCTAssertEqual(output.nestedSnapshotCount, 1)
+                XCTAssertEqual(output.progressHookCount, 0)
+                XCTAssertEqual(watchdog.nowHookCount, 0)
+            case .progressShutdown:
+                XCTAssertEqual(observed.phase, .stopped)
+                XCTAssertNil(observed.lastFailureCategory)
+                XCTAssertFalse(observed.transportAuthorized)
+                XCTAssertEqual(track.disableCount - disablesBefore, 2)
+                XCTAssertEqual(actualCallDelta, [0, 0, 0])
+                XCTAssertEqual(watchdog.nowReadCount - clockBefore, 0)
+                XCTAssertEqual(output.progressHookCount, 1)
+                XCTAssertEqual(watchdog.nowHookCount, 0)
+                XCTAssertEqual(output.nestedSnapshotCount, 0)
+            case .freshnessClockShutdown:
+                XCTAssertEqual(observed.phase, .stopped)
+                XCTAssertNil(observed.lastFailureCategory)
+                XCTAssertFalse(observed.transportAuthorized)
+                XCTAssertEqual(track.disableCount - disablesBefore, 2)
+                XCTAssertEqual(actualCallDelta, [0, 0, 1])
+                XCTAssertEqual(watchdog.nowReadCount - clockBefore, 1)
+                XCTAssertEqual(Array(output.freshnessVotes.dropFirst(votesBefore)), [[0, 2]])
+                XCTAssertEqual(watchdog.nowHookCount, 1)
+                XCTAssertEqual(output.progressHookCount, 0)
+                XCTAssertEqual(output.nestedSnapshotCount, 0)
+            }
+
+            let settledCalls = output.evidenceCallCounts
+            let settledProgress = output.progressReadCount
+            let settledClock = watchdog.nowReadCount
+            await harness.invalidateTransport()
+            let replacementPeer = DriverTestPeer()
+            let replacementTrack = DriverTestTrack()
+            await harness.replacePeer(replacementPeer, generation: 2)
+            await harness.installTrack(replacementTrack)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 2, available: true))
+            await harness.authorize(peer: replacementPeer, generation: 2)
+            await harness.publishInboundMedia(packets: 100, bytes: 8_000)
+            let again = await harness.snapshot()
+            XCTAssertEqual(again.phase, observed.phase)
+            XCTAssertEqual(again.lastFailureCategory, observed.lastFailureCategory)
+            XCTAssertNil(again.currentAttemptID)
+            XCTAssertNil(again.currentKey)
+            XCTAssertFalse(again.exactTrackAdmitted)
+            XCTAssertFalse(again.inboundMediaFresh)
+            XCTAssertFalse(replacementTrack.isEnabled)
+            XCTAssertEqual(factory.requestCount, 1)
+            XCTAssertEqual(replacementPeer.admissionCount, 0)
+            XCTAssertEqual(unusedOutput.startCount, 0)
+            XCTAssertEqual(unusedOutput.stopCount, 0)
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertEqual(output.evidenceCallCounts, settledCalls)
+            XCTAssertEqual(output.progressReadCount, settledProgress)
+            XCTAssertEqual(watchdog.nowReadCount, settledClock)
+            await harness.shutdown()
+            watchdog.advance(to: UInt64.max)
+            XCTAssertEqual(output.stopCount, 1)
+        }
+    }
+
+    func testRustRetryAllFourOperationsRejectStatusAndCoherentCorruption() async {
+        for operation in UInt32(1)...4 {
+            for fault in [DriverTestRetryFault.statusZero, .coherentCorruption] {
+                await exerciseRustRetryRefusal(operation: operation, fault: fault)
+            }
+        }
+    }
+
+    func testRustRetryNestedSnapshotPoisonsEveryOperationWithoutRecursiveProducer() async {
+        for operation in UInt32(1)...4 {
+            await exerciseRustRetryRefusal(operation: operation, fault: .nestedSnapshot)
+        }
+    }
+
+    func testRustRetryShutdownAtNativeCleanupPreservesStoppedAndSkipsRetry() async {
+        for cut in [DriverTestEvidenceCleanup.trackDisable, .outputStop] {
+            let output = DriverTestOutput(startError: DriverTestError.start)
+            let unused = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let factory = DriverTestOutputFactory(outputs: [output, unused])
+            let harness = DriverTestHarness(factory: factory, automaticallyAdvanceInboundMedia: false)
+            let peer = DriverTestPeer(), track = DriverTestTrack(), epoch = UUID()
+            await harness.configureRetryEvidence(factory: factory, track: track)
+            await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+            await harness.authorize(peer: peer, generation: 1)
+            let disableBaseline = track.disableCount
+            await harness.armCleanupShutdown(cut, output: output, track: track)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+            let observed = await harness.snapshot()
+            let key = retryKey(epoch: epoch, snapshot: observed)
+            let row = await harness.retryObservation(key)
+            XCTAssertEqual(observed.phase, .stopped)
+            XCTAssertNil(observed.currentAttemptID)
+            XCTAssertFalse(observed.transportAuthorized)
+            XCTAssertEqual(observed.attemptGeneration, 1)
+            XCTAssertEqual(row.count, 1)
+            XCTAssertEqual(row.mayRetry, false)
+            XCTAssertFalse(row.bridgeFaulted)
+            XCTAssertEqual(row.faultExhaustCalls, 0)
+            XCTAssertEqual(factory.retryCalls.map(\.opcode), [1, 2])
+            XCTAssertEqual(factory.attemptIDCount, 1)
+            XCTAssertEqual(factory.requestCount, 1)
+            XCTAssertEqual(output.startCount, 1)
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertEqual(track.disableCount - disableBaseline, 2)
+            XCTAssertFalse(track.isEnabled)
+            XCTAssertEqual(track.cleanupHookCount, cut == .trackDisable ? 1 : 0)
+            XCTAssertEqual(output.cleanupHookCount, cut == .outputStop ? 1 : 0)
+            await harness.shutdown()
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertEqual(unused.startCount, 0)
+        }
+    }
+
+    func testRustRetryStrictBudgetAndLazyNonretryableFailureKeepExactHistory() async {
+        for maximum in [1, 3] {
+            let outputs = (0..<maximum).map { _ in DriverTestOutput(startError: DriverTestError.start) }
+            let unused = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let factory = DriverTestOutputFactory(outputs: outputs + [unused])
+            let harness = DriverTestHarness(factory: factory, maximumAttemptCountPerKey: maximum,
+                                            automaticallyAdvanceInboundMedia: false)
+            let peer = DriverTestPeer(), track = DriverTestTrack(), epoch = UUID()
+            await harness.configureRetryEvidence(factory: factory, track: track)
+            await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+            await harness.authorize(peer: peer, generation: 1)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+            let observed = await harness.snapshot()
+            let key = retryKey(epoch: epoch, snapshot: observed)
+            let row = await harness.retryObservation(key)
+            XCTAssertEqual(observed.phase, .startFailed)
+            XCTAssertEqual(observed.attemptGeneration, UInt64(maximum))
+            XCTAssertNil(observed.currentAttemptID)
+            XCTAssertEqual(row.count, maximum)
+            XCTAssertEqual(row.mayRetry, false)
+            XCTAssertFalse(row.bridgeFaulted)
+            XCTAssertFalse(row.redrive)
+            XCTAssertEqual(row.retainedKeys, [key])
+            XCTAssertEqual(factory.attemptIDCount, maximum)
+            XCTAssertEqual(factory.requestCount, maximum)
+            XCTAssertEqual(outputs.map(\.startCount), Array(repeating: 1, count: maximum))
+            XCTAssertEqual(outputs.map(\.stopCount), Array(repeating: 1, count: maximum))
+            let records = factory.retryCalls.filter { $0.opcode == 2 }
+            XCTAssertEqual(records.map(\.beforeCount), (0..<maximum).map(Int64.init))
+            XCTAssertEqual(records.map(\.beforePresent), [0] + Array(repeating: 1, count: maximum - 1))
+            XCTAssertEqual(records.map(\.afterCount), (1...maximum).map(Int64.init))
+            XCTAssertEqual(records.map(\.afterMayRetry), Array(repeating: 0, count: maximum))
+            let failures = factory.retryCalls.filter { $0.opcode == 3 }
+            XCTAssertEqual(failures.map(\.beforeCount), (1...maximum).map(Int64.init))
+            XCTAssertEqual(failures.map(\.decision), Array(repeating: 1, count: maximum - 1) + [0])
+            XCTAssertEqual(failures.map(\.redrive), Array(repeating: 2, count: maximum - 1) + [1])
+            XCTAssertTrue(failures.allSatisfy { $0.nativeStopCount == 1 && $0.nativeTrackEnabled == false })
+            XCTAssertEqual(unused.startCount, 0)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+            XCTAssertEqual(factory.requestCount, maximum)
+            await harness.shutdown()
+        }
+
+        // This original typed output error uses allowRetry:false: operation three
+        // must not run, rather than a Swift false vote or a Rust category fallback.
+        let output = DriverTestOutput(startError:
+            BlackHoleMicrophoneOutputError.sharedClockUnsafe(capturedSharedClockRejection()))
+        let factory = DriverTestOutputFactory(outputs: [output])
+        let harness = DriverTestHarness(factory: factory, automaticallyAdvanceInboundMedia: false)
+        let peer = DriverTestPeer(), track = DriverTestTrack(), epoch = UUID()
+        await harness.configureRetryEvidence(factory: factory, track: track)
+        await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+        let observed = await harness.snapshot()
+        let row = await harness.retryObservation(retryKey(epoch: epoch, snapshot: observed))
+        XCTAssertEqual(observed.phase, .sharedClockUnsafe)
+        XCTAssertEqual(observed.lastFailureCategory, .sharedClockUnsafe)
+        XCTAssertEqual(factory.retryCalls.filter { $0.opcode == 3 }.count, 0)
+        XCTAssertEqual(row.count, 1)
+        XCTAssertEqual(row.mayRetry, false)
+        XCTAssertFalse(row.bridgeFaulted)
+        XCTAssertEqual(row.faultExhaustCalls, 0)
+        XCTAssertEqual(output.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+        await harness.shutdown()
+
+        // A genuine admission failure invokes op3 and receives accepted false;
+        // it must retain the present, already-consumed row rather than refuse.
+        let deniedOutput = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+        let deniedFactory = DriverTestOutputFactory(outputs: [deniedOutput])
+        let deniedHarness = DriverTestHarness(factory: deniedFactory, automaticallyAdvanceInboundMedia: false)
+        let deniedPeer = DriverTestPeer(healthy: false), deniedTrack = DriverTestTrack(), deniedEpoch = UUID()
+        await deniedHarness.configureRetryEvidence(factory: deniedFactory, track: deniedTrack)
+        await prepare(harness: deniedHarness, epoch: deniedEpoch, peer: deniedPeer, track: deniedTrack)
+        await deniedHarness.authorize(peer: deniedPeer, generation: 1)
+        await deniedHarness.updateDevice(snapshot(epoch: deniedEpoch, generation: 1, available: true))
+        let denied = await deniedHarness.snapshot()
+        let deniedRow = await deniedHarness.retryObservation(retryKey(epoch: deniedEpoch, snapshot: denied))
+        let falseVotes = deniedFactory.retryCalls.filter { $0.opcode == 3 }
+        XCTAssertEqual(falseVotes.count, 1)
+        XCTAssertEqual(falseVotes.first?.status, 1)
+        XCTAssertEqual(falseVotes.first?.category, 4)
+        XCTAssertEqual(falseVotes.first?.decision, 0)
+        XCTAssertEqual(falseVotes.first?.beforeMayRetry, 0)
+        XCTAssertEqual(falseVotes.first?.afterMayRetry, 0)
+        XCTAssertEqual(falseVotes.first?.redrive, 1)
+        XCTAssertEqual(denied.phase, .admissionFailed)
+        XCTAssertEqual(deniedRow.count, 1)
+        XCTAssertEqual(deniedRow.mayRetry, false)
+        XCTAssertFalse(deniedRow.bridgeFaulted)
+        XCTAssertEqual(deniedFactory.requestCount, 1)
+        XCTAssertEqual(deniedOutput.stopCount, 1)
+        XCTAssertFalse(deniedTrack.isEnabled)
+        await deniedHarness.shutdown()
+    }
+
+    func testRustRetryValidResultCannotPublishAcrossShutdownOrPeerReplacement() async {
+        for operation in UInt32(1)...4 {
+            for fault in [DriverTestRetryFault.shutdown, .replacePeer] {
+                let first = DriverTestOutput(startError: operation >= 3 ? DriverTestError.start : nil,
+                                             progressSnapshots: readyProgressSnapshots())
+                let successor = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+                let factory = DriverTestOutputFactory(outputs: [first, successor])
+                let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+                let harness = DriverTestHarness(factory: factory, retrySleepThrowsAfterGate: operation == 4,
+                                                mediaFreshnessWatchdog: watchdog,
+                                                automaticallyAdvanceInboundMedia: false)
+                let peer = DriverTestPeer(), replacementPeer = DriverTestPeer()
+                let track = DriverTestTrack(), replacementTrack = DriverTestTrack(), epoch = UUID()
+                await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+                await harness.authorize(peer: peer, generation: 1)
+                let originalState = await harness.snapshot()
+                let originalKey = retryKey(epoch: epoch, snapshot: originalState)
+                await harness.configureRetryEvidence(factory: factory, target: operation, fault: fault,
+                    output: first, track: track, replacementPeer: replacementPeer, observationKey: originalKey)
+                factory.armRetryFault()
+                await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+                let observed = await harness.snapshot()
+                let row = await harness.retryObservation(originalKey)
+                XCTAssertNil(observed.currentAttemptID)
+                XCTAssertFalse(row.bridgeFaulted)
+                XCTAssertEqual(row.faultExhaustCalls, 0)
+                XCTAssertEqual(row.count, operation >= 3 ? 1 : nil)
+                XCTAssertEqual(row.mayRetry, operation >= 3 ? (operation == 4) : nil)
+                XCTAssertEqual(factory.retryMutationCount, 1)
+                XCTAssertEqual(factory.requestCount, operation >= 3 ? 1 : 0)
+                XCTAssertEqual(factory.attemptIDCount, operation >= 3 ? 1 : 0)
+                XCTAssertEqual(first.stopCount, operation >= 3 ? 1 : 0)
+                XCTAssertEqual(factory.retryCalls.filter { $0.opcode == operation }.count, 1)
+                XCTAssertEqual(factory.retryCalls.filter { $0.opcode == operation }.first?.status, 1)
+                XCTAssertFalse(track.isEnabled)
+                if fault == .shutdown {
+                    XCTAssertEqual(observed.phase, .stopped)
+                    XCTAssertFalse(observed.transportAuthorized)
+                    let calls = factory.retryCalls
+                    await harness.replacePeer(replacementPeer, generation: 2)
+                    await harness.installTrack(replacementTrack)
+                    await harness.authorize(peer: replacementPeer, generation: 2)
+                    XCTAssertEqual(factory.retryCalls, calls)
+                    XCTAssertEqual(replacementPeer.admissionCount, 0)
+                    XCTAssertEqual(successor.startCount, 0)
+                } else {
+                    XCTAssertEqual(observed.peerGeneration, 2)
+                    XCTAssertFalse(observed.transportAuthorized)
+                    // Use the genuine replacement's own public lifecycle, not the
+                    // old entry or a whole-state setter, to form its new candidate.
+                    await harness.replacePeer(replacementPeer, generation: 2)
+                    await harness.installTrack(replacementTrack)
+                    await harness.authorize(peer: replacementPeer, generation: 2)
+                    let replacement = await harness.snapshot()
+                    XCTAssertNotNil(replacement.currentAttemptID)
+                    XCTAssertEqual(replacement.currentKey?.peerGeneration, 2)
+                    XCTAssertTrue(replacement.exactTrackAdmitted)
+                    XCTAssertTrue(replacementTrack.isEnabled)
+                    XCTAssertEqual(replacementPeer.admissionCount, 1)
+                    XCTAssertEqual(factory.requestCount, operation >= 3 ? 2 : 1)
+                    XCTAssertEqual(factory.attemptIDCount, operation >= 3 ? 2 : 1)
+                    let retainedOld = await harness.retryObservation(originalKey)
+                    XCTAssertEqual(retainedOld.count, row.count)
+                    XCTAssertEqual(retainedOld.mayRetry, row.mayRetry)
+                    XCTAssertFalse(retainedOld.bridgeFaulted)
+                    let newRecord = factory.retryCalls.filter { $0.opcode == 2 }.last
+                    XCTAssertEqual(newRecord?.beforePresent, 0)
+                    XCTAssertEqual(newRecord?.afterCount, 1)
+                    XCTAssertEqual(newRecord?.afterMayRetry, 0)
+                }
+                await harness.shutdown()
+                watchdog.advance(to: UInt64.max)
+            }
+        }
+    }
+
+    func testRustRetryAwaitResumptionUsesFreshGenerationAndRevivedAbsentHistory() async {
+        // A generation replacement during the original suspended retry cannot
+        // Record the captured old row or apply Exhaust to the newer key.
+        do {
+            let first = DriverTestOutput(startError: DriverTestError.start)
+            let successor = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let factory = DriverTestOutputFactory(outputs: [first, successor])
+            let gate = DriverSuspensionGate()
+            let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+            let harness = DriverTestHarness(factory: factory, retryGate: gate,
+                mediaFreshnessWatchdog: watchdog, automaticallyAdvanceInboundMedia: false)
+            let peer = DriverTestPeer(), track = DriverTestTrack(), epoch = UUID()
+            await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+            await harness.authorize(peer: peer, generation: 1)
+            let before = await harness.snapshot()
+            let oldKey = retryKey(epoch: epoch, snapshot: before)
+            await harness.configureRetryEvidence(factory: factory, track: track, observationKey: oldKey)
+            let initialDevice = snapshot(epoch: epoch, generation: 1, available: true)
+            let pending = Task { await harness.updateDevice(initialDevice) }
+            let sleeping = await eventually { await gate.hasEntered() }
+            XCTAssertTrue(sleeping)
+            let oldRow = await harness.retryObservation(oldKey)
+            XCTAssertEqual(oldRow.count, 1)
+            XCTAssertEqual(oldRow.mayRetry, true)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 2, available: true))
+            await gate.open()
+            await pending.value
+            let current = await harness.snapshot()
+            let newKey = retryKey(epoch: epoch, snapshot: current, deviceGeneration: 2)
+            XCTAssertEqual(current.currentKey, newKey)
+            XCTAssertEqual(current.attemptGeneration, 2)
+            XCTAssertTrue(current.exactTrackAdmitted)
+            let retainedOld = await harness.retryObservation(oldKey)
+            let newRow = await harness.retryObservation(newKey)
+            XCTAssertEqual(retainedOld.count, 1)
+            XCTAssertEqual(retainedOld.mayRetry, true)
+            XCTAssertEqual(newRow.count, 1)
+            XCTAssertEqual(newRow.mayRetry, false)
+            XCTAssertEqual(newRow.retainedKeys, [oldKey, newKey])
+            let records = factory.retryCalls.filter { $0.opcode == 2 }
+            XCTAssertEqual(records.count, 2)
+            XCTAssertEqual(records.map(\.beforePresent), [0, 0])
+            XCTAssertEqual(records.map(\.beforeCount), [0, 0])
+            XCTAssertEqual(records.map(\.afterCount), [1, 1])
+            XCTAssertEqual(factory.retryCalls.filter { $0.opcode == 4 }.count, 0)
+            XCTAssertEqual(factory.attemptIDCount, 2)
+            XCTAssertEqual(factory.requestCount, 2)
+            XCTAssertEqual(first.stopCount, 1)
+            XCTAssertEqual(successor.stopCount, 0)
+            await harness.shutdown()
+            watchdog.advance(to: UInt64.max)
+            XCTAssertEqual(successor.stopCount, 1)
+        }
+
+        // Actual RTP revival removes the same key while retrySleep is suspended.
+        // The cancelled original sleep then observes whole absence in op4 and
+        // Retain, rather than replaying the pre-await present row.
+        do {
+            let first = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let successor = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+            let factory = DriverTestOutputFactory(outputs: [first, successor])
+            let gate = DriverSuspensionGate()
+            let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+            let harness = DriverTestHarness(factory: factory, retryGate: gate, retrySleepThrowsAfterGate: true,
+                mediaFreshnessWatchdog: watchdog, automaticallyAdvanceInboundMedia: false)
+            let peer = DriverTestPeer(), track = DriverTestTrack(), epoch = UUID()
+            await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+            await harness.authorize(peer: peer, generation: 1)
+            let before = await harness.snapshot()
+            let key = retryKey(epoch: epoch, snapshot: before)
+            await harness.configureRetryEvidence(factory: factory, track: track, observationKey: key)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+            await harness.publishInboundMedia(packets: 10, bytes: 800)
+            await harness.publishInboundMedia(packets: 11, bytes: 880)
+            let healthy = await harness.snapshot()
+            XCTAssertEqual(healthy.phase, .forwardingHealthy)
+            XCTAssertEqual(healthy.currentKey, key)
+            let pending = Task { await harness.handleRuntimeFailure(first, category: .sourceMediaStalled) }
+            let sleeping = await eventually { await gate.hasEntered() }
+            XCTAssertTrue(sleeping)
+            let permitted = await harness.retryObservation(key)
+            XCTAssertEqual(permitted.count, 1)
+            XCTAssertEqual(permitted.mayRetry, true)
+            XCTAssertEqual(first.stopCount, 1)
+            await harness.publishInboundMedia(packets: 12, bytes: 960)
+            let removed = await harness.retryObservation(key)
+            XCTAssertNil(removed.count)
+            XCTAssertNil(removed.mayRetry)
+            XCTAssertEqual(removed.retainedKeys, [])
+            XCTAssertTrue(removed.redrive)
+            await gate.open()
+            let handled = await pending.value
+            XCTAssertTrue(handled)
+            let current = await harness.snapshot()
+            XCTAssertEqual(current.currentKey, key)
+            XCTAssertEqual(current.attemptGeneration, 2)
+            XCTAssertTrue(current.exactTrackAdmitted)
+            let row = await harness.retryObservation(key)
+            XCTAssertEqual(row.count, 1)
+            XCTAssertEqual(row.mayRetry, false)
+            XCTAssertEqual(row.retainedKeys, [key])
+            XCTAssertFalse(row.bridgeFaulted)
+            XCTAssertEqual(row.faultExhaustCalls, 0)
+            let exhaustion = factory.retryCalls.filter { $0.opcode == 4 }
+            XCTAssertEqual(exhaustion.count, 1)
+            XCTAssertEqual(exhaustion.first?.beforePresent, 0)
+            XCTAssertEqual(exhaustion.first?.beforeCount, 0)
+            XCTAssertEqual(exhaustion.first?.beforeMayRetry, 0)
+            XCTAssertEqual(exhaustion.first?.afterPresent, 0)
+            XCTAssertEqual(exhaustion.first?.afterCount, 0)
+            XCTAssertEqual(exhaustion.first?.decision, 0)
+            XCTAssertEqual(exhaustion.first?.redrive, 0)
+            XCTAssertEqual(exhaustion.first?.nativeRedrive, true)
+            let records = factory.retryCalls.filter { $0.opcode == 2 }
+            XCTAssertEqual(records.count, 2)
+            XCTAssertEqual(records.map(\.beforePresent), [0, 0])
+            XCTAssertEqual(records.map(\.afterCount), [1, 1])
+            XCTAssertEqual(factory.attemptIDCount, 2)
+            XCTAssertEqual(factory.requestCount, 2)
+            XCTAssertEqual(first.stopCount, 1)
+            XCTAssertEqual(successor.stopCount, 0)
+            await harness.shutdown()
+            watchdog.advance(to: UInt64.max)
+            XCTAssertEqual(successor.stopCount, 1)
+        }
+    }
+
+    private func exerciseRustRetryRefusal(operation: UInt32, fault: DriverTestRetryFault) async {
+        let output = DriverTestOutput(startError: operation >= 3 ? DriverTestError.start : nil,
+                                      progressSnapshots: readyProgressSnapshots())
+        let unused = DriverTestOutput(progressSnapshots: readyProgressSnapshots())
+        let factory = DriverTestOutputFactory(outputs: [output, unused])
+        let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+        let harness = DriverTestHarness(factory: factory,
+            retrySleepThrowsAfterGate: operation == 4,
+            mediaFreshnessWatchdog: watchdog, automaticallyAdvanceInboundMedia: false)
+        let peer = DriverTestPeer(), track = DriverTestTrack(), epoch = UUID()
+        await harness.configureRetryEvidence(factory: factory, target: operation, fault: fault,
+                                             output: output, track: track)
+        factory.armRetryFault()
+        await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+        let observed = await harness.snapshot()
+        let key = retryKey(epoch: epoch, snapshot: observed)
+        let row = await harness.retryObservation(key)
+        XCTAssertEqual(observed.phase, .runtimeFailed)
+        XCTAssertEqual(observed.lastFailureCategory, .evidenceBridgeRefused)
+        XCTAssertNil(observed.currentAttemptID)
+        XCTAssertNil(observed.currentKey)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(factory.retryMutationCount, 1)
+        XCTAssertTrue(row.bridgeFaulted)
+        XCTAssertFalse(row.redrive)
+        XCTAssertEqual(factory.attemptIDCount, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(factory.requestCount, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(observed.attemptGeneration, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(output.startCount, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(output.stopCount, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(row.count, operation >= 3 ? 1 : nil)
+        XCTAssertEqual(row.mayRetry, operation >= 3 ? (operation == 4) : nil)
+        XCTAssertEqual(row.retainedKeys, operation >= 3 ? [key] : [])
+        XCTAssertEqual(row.faultExhaustCalls, operation == 3 ? 1 : 0)
+        let targeted = factory.retryCalls.filter { $0.opcode == operation }
+        XCTAssertEqual(targeted.count, 1)
+        XCTAssertEqual(targeted.first?.status, 1)
+        if operation >= 3 {
+            XCTAssertEqual(targeted.first?.nativeStopCount, 1)
+            XCTAssertEqual(targeted.first?.nativeTrackEnabled, false)
+        }
+        if fault == .nestedSnapshot {
+            XCTAssertEqual(factory.retryNestedSnapshotCount, 1)
+            XCTAssertEqual(factory.retryNestedPhase, .runtimeFailed)
+        }
+        XCTAssertEqual(output.progressReadCount, 0)
+        let frozenCalls = factory.retryCalls
+        let frozenClocks = watchdog.nowReadCount
+        // The whole-driver latch, not a history rewrite, prevents a successor.
+        await harness.invalidateTransport()
+        let replacementPeer = DriverTestPeer(), replacementTrack = DriverTestTrack()
+        await harness.replacePeer(replacementPeer, generation: 2)
+        await harness.installTrack(replacementTrack)
+        await harness.updateDevice(snapshot(epoch: epoch, generation: 2, available: true))
+        await harness.authorize(peer: replacementPeer, generation: 2)
+        await harness.publishInboundMedia(packets: 100, bytes: 8_000)
+        let stillRefused = await harness.snapshot()
+        XCTAssertEqual(stillRefused.phase, .runtimeFailed)
+        XCTAssertNil(stillRefused.currentAttemptID)
+        XCTAssertEqual(factory.retryCalls, frozenCalls)
+        XCTAssertEqual(factory.requestCount, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(factory.attemptIDCount, operation >= 3 ? 1 : 0)
+        XCTAssertEqual(watchdog.nowReadCount, frozenClocks)
+        XCTAssertEqual(unused.startCount, 0)
+        XCTAssertEqual(replacementPeer.admissionCount, 0)
+        let again = await harness.retryObservation(key)
+        XCTAssertEqual(again.count, row.count)
+        XCTAssertEqual(again.mayRetry, row.mayRetry)
+        XCTAssertEqual(again.faultExhaustCalls, row.faultExhaustCalls)
+        await harness.shutdown()
+        watchdog.advance(to: UInt64.max)
+        XCTAssertEqual(output.stopCount, operation >= 3 ? 1 : 0)
+    }
+
+    private func retryKey(epoch: UUID, snapshot: WorldwideIPhoneMicrophoneForwardingHostSnapshot,
+                          deviceGeneration: UInt64 = 1) -> WorldwideIPhoneMicrophoneForwardingKey {
+        .init(monitorEpoch: epoch, deviceGeneration: deviceGeneration,
+              peerGeneration: snapshot.peerGeneration,
+              transportAuthorizationEpoch: snapshot.transportAuthorizationEpoch,
+              trackGeneration: snapshot.trackGeneration)
+    }
+
+    private func exerciseRustEvidenceDriver(
+        _ fault: DriverTestEvidenceFault,
+        cleanup: DriverTestEvidenceCleanup? = nil
+    ) async {
+        let output = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let unusedOutput = DriverTestOutput(
+            progressSnapshots: readyProgressSnapshots()
+        )
+        let factory = DriverTestOutputFactory(outputs: [output, unusedOutput])
+        let watchdog = DriverTestMediaFreshnessWatchdog(now: 10)
+        let harness = DriverTestHarness(
+            factory: factory,
+            mediaFreshnessTimeoutNanoseconds: 100,
+            mediaFreshnessWatchdog: watchdog,
+            automaticallyAdvanceInboundMedia: false
+        )
+        await harness.configureEvidenceFault(fault, output: output)
+        if fault.family == 0 {
+            output.armEvidenceFault()
+        }
+        let peer = DriverTestPeer()
+        let track = DriverTestTrack()
+        let epoch = UUID()
+        await prepare(harness: harness, epoch: epoch, peer: peer, track: track)
+        await harness.authorize(peer: peer, generation: 1)
+        await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+        let disablesBeforeCleanup = track.disableCount
+
+        if fault.family != 0 {
+            let initialSleep = await eventually { watchdog.scheduleCount > 0 }
+            XCTAssertTrue(initialSleep, "The original admitted watchdog must settle before read accounting.")
+            await harness.publishInboundMedia(packets: 10, bytes: 800)
+            let secondSchedules = watchdog.scheduleCount
+            await harness.publishInboundMedia(packets: 11, bytes: 880)
+            let secondSleep = await eventually { watchdog.scheduleCount > secondSchedules }
+            XCTAssertTrue(secondSleep)
+            let healthy = await harness.snapshot()
+            XCTAssertEqual(healthy.phase, .forwardingHealthy)
+            XCTAssertNil(healthy.lastFailureCategory)
+            XCTAssertNotNil(healthy.currentAttemptID)
+            XCTAssertNotNil(healthy.currentKey)
+            XCTAssertTrue(healthy.exactTrackAdmitted)
+            XCTAssertTrue(healthy.queueRunning)
+            XCTAssertTrue(healthy.inboundMediaFresh)
+            XCTAssertEqual(healthy.inboundMediaAdvancementCount, 1)
+            XCTAssertEqual(healthy.consecutiveStaleInboundMediaSamples, 0)
+            XCTAssertEqual(healthy.attemptGeneration, 1)
+            XCTAssertEqual(output.startCount, 1)
+            XCTAssertEqual(output.stopCount, 0)
+            XCTAssertTrue(track.isEnabled)
+            XCTAssertEqual(factory.requestCount, 1)
+            XCTAssertEqual(factory.requestedDeviceIDs, [89])
+            XCTAssertEqual(factory.requestedUIDs, ["com.elamin.opensteamer.virtual-microphone.writer"])
+            XCTAssertGreaterThanOrEqual(output.evidenceCallCounts[0], 2)
+            XCTAssertEqual(output.evidenceCallCounts[1], 2)
+            XCTAssertGreaterThan(output.evidenceCallCounts[2], 0)
+            XCTAssertEqual(output.evidenceCorruptionCounts, [0, 0, 0])
+
+            if fault == .none {
+                let again = await harness.snapshot()
+                XCTAssertEqual(again.phase, .forwardingHealthy)
+                XCTAssertEqual(again.currentAttemptID, healthy.currentAttemptID)
+                XCTAssertEqual(again.currentKey, healthy.currentKey)
+                XCTAssertEqual(again.inboundMediaAdvancementCount, 1)
+                XCTAssertTrue(again.inboundMediaFresh)
+                XCTAssertEqual(output.stopCount, 0)
+                XCTAssertTrue(track.isEnabled)
+                await harness.shutdown()
+                watchdog.advance(to: UInt64.max)
+                XCTAssertEqual(output.stopCount, 1)
+                XCTAssertFalse(track.isEnabled)
+                return
+            }
+            if let cleanup {
+                await harness.armCleanupShutdown(cleanup, output: output, track: track)
+            }
+            output.armEvidenceFault()
+            let nowReads = watchdog.nowReadCount
+            if fault.family == 1 {
+                await harness.publishInboundMedia(packets: 12, bytes: 960)
+            } else {
+                _ = await harness.snapshot()
+                XCTAssertEqual(
+                    watchdog.nowReadCount - nowReads,
+                    fault.isFreshnessDecision ? 1 : 0,
+                    "Rejected plan must not read Now; rejected final result may read only its one original Now."
+                )
+            }
+        }
+
+        if let cleanup {
+            let stopped = await harness.snapshot()
+            XCTAssertEqual(stopped.phase, .stopped)
+            XCTAssertNil(stopped.currentAttemptID)
+            XCTAssertNil(stopped.currentKey)
+            XCTAssertFalse(stopped.transportAuthorized)
+            XCTAssertFalse(stopped.exactTrackAdmitted)
+            XCTAssertFalse(stopped.queueRunning)
+            XCTAssertFalse(stopped.inboundMediaFresh)
+            XCTAssertEqual(stopped.attemptGeneration, 1)
+            XCTAssertEqual(output.startCount, 1)
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertFalse(track.isEnabled)
+            XCTAssertEqual(track.disableCount, disablesBeforeCleanup + 2)
+            XCTAssertEqual(factory.requestCount, 1)
+            XCTAssertEqual(output.evidenceCorruptionCounts, [0, 1, 0])
+            XCTAssertEqual(track.cleanupHookCount, cleanup == .trackDisable ? 1 : 0)
+            XCTAssertEqual(output.cleanupHookCount, cleanup == .outputStop ? 1 : 0)
+            let callsAfterShutdown = output.evidenceCallCounts
+            let clockAfterShutdown = watchdog.nowReadCount
+
+            // Returning through the outer refusal must not relabel shutdown,
+            // resurrect an attempt, stop an unused successor or read evidence.
+            await harness.invalidateTransport()
+            let replacementPeer = DriverTestPeer()
+            let replacementTrack = DriverTestTrack()
+            await harness.replacePeer(replacementPeer, generation: 2)
+            await harness.installTrack(replacementTrack)
+            await harness.updateDevice(snapshot(epoch: epoch, generation: 2, available: true))
+            await harness.authorize(peer: replacementPeer, generation: 2)
+            await harness.publishInboundMedia(packets: 100, bytes: 8_000)
+            let stillStopped = await harness.snapshot()
+            XCTAssertEqual(stillStopped.phase, .stopped)
+            XCTAssertNil(stillStopped.currentAttemptID)
+            XCTAssertNil(stillStopped.currentKey)
+            XCTAssertFalse(stillStopped.transportAuthorized)
+            XCTAssertFalse(replacementTrack.isEnabled)
+            XCTAssertEqual(replacementPeer.admissionCount, 0)
+            XCTAssertEqual(factory.requestCount, 1)
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertEqual(track.disableCount, disablesBeforeCleanup + 2)
+            XCTAssertEqual(unusedOutput.startCount, 0)
+            XCTAssertEqual(unusedOutput.stopCount, 0)
+            XCTAssertEqual(output.evidenceCallCounts, callsAfterShutdown)
+            XCTAssertEqual(watchdog.nowReadCount, clockAfterShutdown)
+            await harness.shutdown()
+            watchdog.advance(to: UInt64.max)
+            XCTAssertEqual(output.stopCount, 1)
+            XCTAssertEqual(track.cleanupHookCount, cleanup == .trackDisable ? 1 : 0)
+            XCTAssertEqual(output.cleanupHookCount, cleanup == .outputStop ? 1 : 0)
+            return
+        }
+
+        let refused = await harness.snapshot()
+        XCTAssertEqual(refused.phase, .runtimeFailed)
+        XCTAssertEqual(refused.lastFailureCategory, .evidenceBridgeRefused)
+        XCTAssertNil(refused.currentAttemptID)
+        XCTAssertNil(refused.currentKey)
+        XCTAssertFalse(refused.exactTrackAdmitted)
+        XCTAssertFalse(refused.inboundMediaFresh)
+        XCTAssertEqual(refused.inboundMediaAdvancementCount, 0)
+        XCTAssertEqual(refused.attemptGeneration, 1)
+        XCTAssertEqual(output.startCount, 1)
+        XCTAssertEqual(output.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertEqual(factory.requestCount, 1)
+        var expectedCorruptions = [0, 0, 0]
+        expectedCorruptions[fault.family] = 1
+        XCTAssertEqual(output.evidenceCorruptionCounts, expectedCorruptions)
+        let callsAfterRefusal = output.evidenceCallCounts
+
+        // Real lifecycle methods retain privacy teardown while the whole-driver
+        // refusal latch must prevent another output or evidence borrow.
+        await harness.updateDevice(snapshot(epoch: epoch, generation: 1, available: true))
+        await harness.invalidateTransport()
+        await harness.authorize(peer: peer, generation: 1)
+        let replacementPeer = DriverTestPeer()
+        let replacementTrack = DriverTestTrack()
+        await harness.replacePeer(replacementPeer, generation: 2)
+        await harness.installTrack(replacementTrack)
+        await harness.updateDevice(snapshot(epoch: epoch, generation: 2, available: true))
+        await harness.authorize(peer: replacementPeer, generation: 2)
+        await harness.publishInboundMedia(packets: 100, bytes: 8_000)
+        await harness.publishInboundMedia(packets: 101, bytes: 8_080)
+        let stillRefused = await harness.snapshot()
+        XCTAssertEqual(stillRefused.phase, .runtimeFailed)
+        XCTAssertEqual(stillRefused.lastFailureCategory, .evidenceBridgeRefused)
+        XCTAssertNil(stillRefused.currentAttemptID)
+        XCTAssertNil(stillRefused.currentKey)
+        XCTAssertFalse(stillRefused.exactTrackAdmitted)
+        XCTAssertFalse(stillRefused.inboundMediaFresh)
+        XCTAssertEqual(stillRefused.attemptGeneration, 1)
+        XCTAssertEqual(factory.requestCount, 1)
+        XCTAssertEqual(output.stopCount, 1)
+        XCTAssertFalse(track.isEnabled)
+        XCTAssertFalse(replacementTrack.isEnabled)
+        XCTAssertEqual(replacementPeer.admissionCount, 0)
+        XCTAssertEqual(unusedOutput.startCount, 0)
+        XCTAssertEqual(unusedOutput.stopCount, 0)
+        XCTAssertEqual(output.evidenceCallCounts, callsAfterRefusal)
+        XCTAssertEqual(output.evidenceCorruptionCounts, expectedCorruptions)
+        await harness.shutdown()
+        watchdog.advance(to: UInt64.max)
+        XCTAssertEqual(output.stopCount, 1)
     }
 
     private func prepare(
@@ -3957,6 +4938,659 @@ final class WorldwideBlackHoleDefaultInputCoordinatorTests:
         XCTAssertEqual(lease.acquisitions.count, 2)
     }
 
+    func testRustInputLeaseAdmissionPreservesClampedOneAndLiteralThreeBudgets() {
+        for configuredMaximum in [0, 1, 3] {
+            let actualMaximum = configuredMaximum == 3 ? 3 : 1
+            let lease = DefaultInputCoordinatorLeaseFake(
+                acquisitionResults: Array(repeating: .retryableFailure, count: 8)
+            )
+            let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled, lease: lease,
+                maximumAcquisitionAttemptCount: configuredMaximum,
+                maximumReleaseAttemptCount: 1
+            )
+            let epoch = UUID()
+            _ = coordinator.beginMonitoring(epoch: epoch)
+            _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(lease.acquisitions.count, actualMaximum)
+            XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            guard let generation = lease.acquisitions.first?.generation else {
+                return XCTFail("Expected the original bounded acquisition episode")
+            }
+            XCTAssertEqual(lease.acquisitions.map(\.generation),
+                Array(repeating: generation, count: actualMaximum))
+            XCTAssertEqual(lease.events,
+                Array(repeating: .acquisition(generation), count: actualMaximum) + [.release(generation)])
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(lease.acquisitions.count, actualMaximum,
+                "A completed cleanup must not reset the exhausted exact identity")
+            XCTAssertEqual(lease.releases, [generation])
+        }
+    }
+
+    func testRustInputLeaseNativeOutcomeKeepsProofLazyAndTerminalCleanupExact() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            acquisitionResults: [.retryableFailure, .terminalFailure, .acquired]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease,
+            maximumAcquisitionAttemptCount: 3, maximumReleaseAttemptCount: 1
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        XCTAssertEqual(lease.authorizationProofCallCount, 0,
+            "Neither retryable nor terminal acquisition may query native authorization")
+        guard let firstGeneration = lease.acquisitions.first?.generation else {
+            return XCTFail("Expected exact native attempt identity")
+        }
+        XCTAssertEqual(lease.events, [.acquisition(firstGeneration),
+            .acquisition(firstGeneration), .release(firstGeneration)])
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        guard case .selected(let replacement) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 2) else {
+            return XCTFail("Only a genuinely newer peer may acquire after the terminal episode")
+        }
+        XCTAssertNotEqual(replacement.leaseGeneration, firstGeneration)
+        XCTAssertEqual(lease.acquisitions.count, 3)
+        XCTAssertEqual(lease.authorizationProofCallCount, 1)
+        XCTAssertEqual(lease.events, [.acquisition(firstGeneration),
+            .acquisition(firstGeneration), .release(firstGeneration),
+            .acquisition(replacement.leaseGeneration)])
+    }
+
+    func testRustInputLeaseReleaseVoteKeepsOneExactCleanupEpisodeAndExternalFence() {
+        let cases: [[BlackHoleDefaultInputLeaseReleaseResult]] = [
+            [.retryableFailure, .retryableFailure, .released], [.externallySuperseded],
+        ]
+        for nativeResults in cases {
+            let lease = DefaultInputCoordinatorLeaseFake(releaseResults: nativeResults)
+            let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled, lease: lease, maximumReleaseAttemptCount: 3
+            )
+            let epoch = UUID()
+            _ = coordinator.beginMonitoring(epoch: epoch)
+            _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+            guard case .selected(let selected) =
+                    coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+                return XCTFail("Expected one genuine acquired native key")
+            }
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 1), .released)
+            let expectedCalls = nativeResults.count
+            XCTAssertEqual(lease.releases,
+                Array(repeating: selected.leaseGeneration, count: expectedCalls))
+            XCTAssertEqual(lease.events, [.acquisition(selected.leaseGeneration)]
+                + Array(repeating: .release(selected.leaseGeneration), count: expectedCalls))
+            XCTAssertEqual(lease.acquisitions.count, 1)
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 1), .noChange)
+            XCTAssertEqual(lease.releases.count, expectedCalls)
+            if nativeResults.first == .externallySuperseded {
+                XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+                XCTAssertEqual(lease.acquisitions.count, 1,
+                    "An external selector fence cannot be cleared by the same peer")
+                XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            }
+        }
+    }
+
+    func testRustInputLeaseRetainedCleanupRedrivesOnSameHealthyIdentityWithoutReadmission() {
+        for terminal in [false, true] {
+            let nativeAcquisitions: [BlackHoleDefaultInputLeaseAcquisitionResult] = terminal
+                ? [.terminalFailure, .acquired]
+                : [.retryableFailure, .retryableFailure, .retryableFailure, .acquired]
+            let lease = DefaultInputCoordinatorLeaseFake(
+                acquisitionResults: nativeAcquisitions,
+                releaseResults: [.retryableFailure, .retryableFailure, .released]
+            )
+            let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled, lease: lease,
+                maximumAcquisitionAttemptCount: 3, maximumReleaseAttemptCount: 1
+            )
+            let epoch = UUID()
+            _ = coordinator.beginMonitoring(epoch: epoch)
+            _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            let expectedAcquisitions = terminal ? 1 : 3
+            XCTAssertEqual(lease.acquisitions.count, expectedAcquisitions)
+            guard let retainedGeneration = lease.acquisitions.first?.generation else {
+                return XCTFail("Expected exact native pending cleanup ownership")
+            }
+            XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            XCTAssertEqual(lease.releases, [retainedGeneration])
+            for releaseCount in [2, 3] {
+                XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+                XCTAssertEqual(lease.releases, Array(repeating: retainedGeneration, count: releaseCount))
+                XCTAssertEqual(lease.acquisitions.count, expectedAcquisitions,
+                    "The pending-release branch must run before any same-identity admission")
+                XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            }
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(lease.releases.count, 3)
+            XCTAssertEqual(lease.acquisitions.count, expectedAcquisitions)
+            guard case .selected(let next) =
+                    coordinator.transportDidBecomeHealthy(peerGeneration: 2) else {
+                return XCTFail("A healthy-policy newer peer may acquire only after actual release")
+            }
+            XCTAssertNotEqual(next.leaseGeneration, retainedGeneration)
+            XCTAssertEqual(lease.acquisitions.count, expectedAcquisitions + 1)
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.events,
+                Array(repeating: .acquisition(retainedGeneration), count: expectedAcquisitions)
+                + Array(repeating: .release(retainedGeneration), count: 3)
+                + [.acquisition(next.leaseGeneration)])
+        }
+    }
+
+    func testNativeReleaseProtectionRetainsNestedUncertaintyAndExactPendingCleanup() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.released, .retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 1
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected the original exact-listener owner")
+        }
+        let event = BlackHoleDefaultInputLeaseUncertaintyEvent(
+            leaseGeneration: original.leaseGeneration,
+            listenerRegistrationID: original.inputAuthorization.listenerRegistrationID,
+            listenerSequence: original.inputAuthorization.acceptedListenerSequence + 1
+        )
+        var nestedOutcome: WorldwideBlackHoleDefaultInputOutcome?
+        lease.onNextRelease = {
+            nestedOutcome = coordinator.defaultInputDidBecomeUncertain(event)
+        }
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .degraded)
+        XCTAssertEqual(nestedOutcome, .degraded)
+        XCTAssertEqual(lease.acquisitions.count, 1,
+            "Old released result must not bypass the nested uncertainty protection and admit peer two")
+        XCTAssertEqual(lease.releases, [original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(coordinator.updateDeviceSnapshot(
+            snapshot(epoch: epoch, generation: 2)), .degraded,
+            "Fresh drive for the retained original healthy peer must keep its external-selector fence")
+        XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.releases.count, 2)
+        XCTAssertEqual(coordinator.invalidateCurrentConnection(), .released)
+        XCTAssertEqual(lease.releases,
+            [original.leaseGeneration, original.leaseGeneration, original.leaseGeneration],
+            "Only truthful fresh cleanup of the retained original generation may clear its key")
+        XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+            .release(original.leaseGeneration), .release(original.leaseGeneration),
+            .release(original.leaseGeneration)])
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .noChange)
+        XCTAssertEqual(lease.acquisitions.count, 1)
+    }
+
+    func testNativeReleaseContextRetainsNestedNewerPeerWhenOwnerDoesNotChange() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.released, .retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 1
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected the original peer-one owner")
+        }
+        var nestedOutcome: WorldwideBlackHoleDefaultInputOutcome?
+        lease.onNextRelease = {
+            nestedOutcome = coordinator.transportDidBecomeHealthy(peerGeneration: 3)
+        }
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .degraded)
+        XCTAssertEqual(nestedOutcome, .degraded,
+            "Nested retryable cleanup commits peer three but retains the exact old owner")
+        XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.releases, [original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+            .release(original.leaseGeneration), .release(original.leaseGeneration)])
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .noChange)
+        guard case .selected(let replacement) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 3) else {
+            return XCTFail("Fresh peer-three callback must redrive the retained native owner")
+        }
+        XCTAssertEqual(replacement.peerGeneration, 3)
+        XCTAssertEqual(replacement.connectionGeneration, original.connectionGeneration + 1)
+        XCTAssertNotEqual(replacement.leaseGeneration, original.leaseGeneration)
+        XCTAssertEqual(lease.releases,
+            [original.leaseGeneration, original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+            .release(original.leaseGeneration), .release(original.leaseGeneration),
+            .release(original.leaseGeneration), .acquisition(replacement.leaseGeneration)])
+    }
+
+    func testNativeReleaseContextRetainsNestedMonitorWhenOwnerDoesNotChange() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.released, .retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 1
+        )
+        let originalEpoch = UUID()
+        let outerEpoch = UUID()
+        let nestedEpoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: originalEpoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: originalEpoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected the original monitor owner")
+        }
+        var nestedOutcome: WorldwideBlackHoleDefaultInputOutcome?
+        lease.onNextRelease = {
+            nestedOutcome = coordinator.beginMonitoring(epoch: nestedEpoch)
+        }
+        XCTAssertEqual(coordinator.beginMonitoring(epoch: outerEpoch), .degraded)
+        XCTAssertEqual(nestedOutcome, .degraded)
+        XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.releases, [original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(coordinator.updateDeviceSnapshot(
+            snapshot(epoch: outerEpoch, generation: 1)), .noChange,
+            "The stale outer epoch must not replace the nested epoch")
+        guard case .selected(let replacement) = coordinator.updateDeviceSnapshot(
+            snapshot(epoch: nestedEpoch, generation: 1)
+        ) else { return XCTFail("The nested epoch must admit its fresh snapshot and cleanup redrive") }
+        XCTAssertEqual(replacement.monitorEpoch, nestedEpoch)
+        XCTAssertNotEqual(replacement.leaseGeneration, original.leaseGeneration)
+        XCTAssertEqual(lease.releases,
+            [original.leaseGeneration, original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(lease.acquisitions.count, 2)
+        XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+            .release(original.leaseGeneration), .release(original.leaseGeneration),
+            .release(original.leaseGeneration), .acquisition(replacement.leaseGeneration)])
+    }
+
+    func testNativeReleaseContextRetainsNestedDeviceSnapshotWhenOwnerDoesNotChange() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.released, .retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 1
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected the original device-generation owner")
+        }
+        var nestedOutcome: WorldwideBlackHoleDefaultInputOutcome?
+        lease.onNextRelease = {
+            nestedOutcome = coordinator.updateDeviceSnapshot(
+                self.snapshot(epoch: epoch, generation: 2)
+            )
+        }
+        XCTAssertEqual(coordinator.deviceRevalidationDidFail(), .degraded)
+        XCTAssertEqual(nestedOutcome, .degraded)
+        XCTAssertEqual(lease.acquisitions.count, 1)
+        XCTAssertEqual(lease.releases, [original.leaseGeneration, original.leaseGeneration])
+        guard case .selected(let replacement) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Old device failure must not erase the nested newer snapshot")
+        }
+        XCTAssertEqual(replacement.deviceGeneration, 2)
+        XCTAssertNotEqual(replacement.leaseGeneration, original.leaseGeneration)
+        XCTAssertEqual(lease.releases,
+            [original.leaseGeneration, original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(lease.acquisitions.count, 2)
+    }
+
+    func testNativeReleaseEpisodePreservesReentrantReplacementForEveryActualDisposition() {
+        let actualResults: [BlackHoleDefaultInputLeaseReleaseResult] = [
+            .released, .retryableFailure, .externallySuperseded,
+        ]
+        for actual in actualResults {
+            let lease = DefaultInputCoordinatorLeaseFake(releaseResults: [actual, .released])
+            let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+                policy: .enabled, lease: lease, maximumReleaseAttemptCount: 3
+            )
+            let epoch = UUID()
+            _ = coordinator.beginMonitoring(epoch: epoch)
+            _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+            guard case .selected(let original) =
+                    coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+                return XCTFail("Expected the original native owner")
+            }
+            var replacement: WorldwideBlackHoleDefaultInputKey?
+            lease.onNextRelease = {
+                guard case .selected(let next) =
+                        coordinator.transportDidBecomeHealthy(peerGeneration: 2) else {
+                    return XCTFail("Expected the one-shot nested replacement")
+                }
+                replacement = next
+            }
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 1), .degraded)
+            guard let replacement else { return XCTFail("The callback did not publish a replacement") }
+            XCTAssertNotEqual(replacement.leaseGeneration, original.leaseGeneration)
+            XCTAssertEqual(lease.releases, [original.leaseGeneration, original.leaseGeneration],
+                "Only the outer and nested original-owner releases may run; never retry the replacement")
+            XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+                .release(original.leaseGeneration), .release(original.leaseGeneration),
+                .acquisition(replacement.leaseGeneration)])
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 1), .noChange)
+            guard case .selected(let refreshed) =
+                    coordinator.transportDidBecomeHealthy(peerGeneration: 2) else {
+                return XCTFail("Stale native bookkeeping must not clear or fence the replacement")
+            }
+            XCTAssertEqual(refreshed, replacement)
+            XCTAssertEqual(lease.acquisitions.count, 2)
+            XCTAssertEqual(lease.releases.count, 2)
+        }
+    }
+
+    func testNativeReleaseEpisodeDoesNotOverwriteReentrantNewerHealthyPeer() {
+        let lease = DefaultInputCoordinatorLeaseFake(releaseResults: [.retryableFailure, .released])
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 3
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected original peer one")
+        }
+        var replacement: WorldwideBlackHoleDefaultInputKey?
+        lease.onNextRelease = {
+            guard case .selected(let next) =
+                    coordinator.transportDidBecomeHealthy(peerGeneration: 3) else {
+                return XCTFail("Expected the genuinely newer nested peer three")
+            }
+            replacement = next
+        }
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .degraded)
+        guard let replacement else { return XCTFail("Missing nested peer-three key") }
+        XCTAssertEqual(replacement.peerGeneration, 3)
+        XCTAssertNotEqual(replacement.leaseGeneration, original.leaseGeneration)
+        XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 2), .noChange)
+        guard case .selected(let refreshed) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 3) else {
+            return XCTFail("The outer peer-two callback must not overwrite the nested peer-three commit")
+        }
+        XCTAssertEqual(refreshed, replacement)
+        XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+            .release(original.leaseGeneration), .release(original.leaseGeneration),
+            .acquisition(replacement.leaseGeneration)])
+    }
+
+    func testNativeReleaseEpisodeDoesNotOverwriteReentrantMonitorEpoch() {
+        let lease = DefaultInputCoordinatorLeaseFake(releaseResults: [.released, .released])
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 3
+        )
+        let originalEpoch = UUID()
+        let outerEpoch = UUID()
+        let nestedEpoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: originalEpoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: originalEpoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected the original monitor owner")
+        }
+        var replacement: WorldwideBlackHoleDefaultInputKey?
+        lease.onNextRelease = {
+            XCTAssertEqual(coordinator.beginMonitoring(epoch: nestedEpoch), .released)
+            guard case .selected(let next) = coordinator.updateDeviceSnapshot(
+                self.snapshot(epoch: nestedEpoch, generation: 1)
+            ) else { return XCTFail("Expected the nested monitor snapshot to select its native owner") }
+            replacement = next
+        }
+        XCTAssertEqual(coordinator.beginMonitoring(epoch: outerEpoch), .degraded)
+        guard let replacement else { return XCTFail("Missing nested monitor owner") }
+        XCTAssertEqual(replacement.monitorEpoch, nestedEpoch)
+        guard case .selected(let refreshed) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("The outer monitor callback must not erase the nested epoch and snapshot")
+        }
+        XCTAssertEqual(refreshed, replacement)
+        XCTAssertEqual(lease.events, [.acquisition(original.leaseGeneration),
+            .release(original.leaseGeneration), .release(original.leaseGeneration),
+            .acquisition(replacement.leaseGeneration)])
+    }
+
+    func testNativeReleaseEpisodeFencesSameGenerationAuthorizationChange() {
+        let lease = DefaultInputCoordinatorLeaseFake(releaseResults: [.retryableFailure])
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 3
+        )
+        let epoch = UUID()
+        let currentSnapshot = snapshot(epoch: epoch, generation: 1)
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(currentSnapshot)
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected one native authorized owner")
+        }
+        var parked: BlackHoleDefaultInputLeaseParkingProof?
+        lease.onNextRelease = {
+            guard case .parked(let proof) =
+                    coordinator.parkForSharedClockEpochRecovery(peerGeneration: 1) else {
+                return XCTFail("Expected a same-generation native parking authorization")
+            }
+            parked = proof
+        }
+        XCTAssertEqual(coordinator.monitoringDidFail(), .degraded)
+        guard let parked else { return XCTFail("Missing nested parking proof") }
+        XCTAssertEqual(parked.leaseGeneration, original.leaseGeneration)
+        XCTAssertNotEqual(parked.acceptedListenerSequence,
+            original.inputAuthorization.acceptedListenerSequence)
+        XCTAssertEqual(lease.releases, [original.leaseGeneration],
+            "The old retryable result must not redrive the refreshed same-generation authorization")
+        XCTAssertTrue(coordinator.sharedClockParkingProofIsCurrent(
+            parked, peerGeneration: 1, snapshot: currentSnapshot))
+        guard case .selected(let restored) = coordinator.transportDidBecomeHealthyAfterSharedClockRecovery(
+            peerGeneration: 1, parkingProof: parked
+        ) else { return XCTFail("The old cleanup must not mark the nested parking owner release-pending") }
+        XCTAssertEqual(restored.leaseGeneration, original.leaseGeneration)
+        XCTAssertEqual(lease.releases, [original.leaseGeneration])
+        XCTAssertEqual(lease.acquisitions.count, 1)
+    }
+
+    func testNativeReleaseEpisodeStopsBeforeGenerationlessShutdownAfterNestedCleanup() {
+        let lease = DefaultInputCoordinatorLeaseFake(releaseResults: [.released, .released])
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease,
+            maximumReleaseAttemptCount: 3, maximumShutdownAttemptCount: 3
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        guard case .selected(let original) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected the shutdown owner")
+        }
+        var nested: WorldwideBlackHoleDefaultInputOutcome?
+        lease.onNextRelease = { nested = coordinator.shutdown() }
+        XCTAssertEqual(coordinator.shutdown(), .degraded)
+        XCTAssertEqual(nested, .released)
+        XCTAssertEqual(lease.releases, [original.leaseGeneration, original.leaseGeneration])
+        XCTAssertEqual(lease.shutdownCallCount, 1,
+            "Only nested actual cleanup may call generationless shutdown after the old episode lost its owner")
+        XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .noChange)
+        XCTAssertEqual(lease.acquisitions.count, 1)
+    }
+
+    func testRustInputLeaseActualCRefusalAfterAcquiredKeepsExactCleanupOwnership() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            acquisitionResults: [.acquired],
+            releaseResults: [.retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease,
+            maximumAcquisitionAttemptCount: 3, maximumReleaseAttemptCount: 1,
+            maximumShutdownAttemptCount: 1
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        let first = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard let generation = lease.acquisitions.first?.generation else {
+            return XCTFail("Expected the actual first native acquisition")
+        }
+        XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+        switch first {
+        case .selected(let selected):
+            XCTAssertEqual(selected.leaseGeneration, generation)
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.releases, [])
+            XCTAssertEqual(coordinator.shutdown(), .degraded)
+            XCTAssertEqual(lease.releases, [generation])
+            XCTAssertEqual(coordinator.shutdown(), .released)
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(lease.shutdownCallCount, 1)
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.events,
+                [.acquisition(generation), .release(generation), .release(generation)])
+            FileHandle.standardError.write(Data(
+                ("MIC_INPUT_LEASE_BASELINE acquired A1 R2 P1 cleanup=actual\n").utf8))
+        case .degraded:
+            XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            XCTAssertEqual(lease.releases, [generation],
+                "Refusal after native acquired must execute the first exact cleanup")
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 999), .noChange)
+            XCTAssertEqual(lease.releases, [generation],
+                "A foreign peer must not spend the retained owner's cleanup")
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(lease.releases, [generation, generation],
+                "The same identity must redrive retained retryable cleanup before admission")
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .degraded)
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            XCTAssertEqual(lease.events,
+                [.acquisition(generation), .release(generation), .release(generation)])
+            FileHandle.standardError.write(Data(
+                ("MIC_INPUT_LEASE_REFUSAL acquired A1 R2 P0 sameOwner=1 foreignCleanup=0 readmission=0\n").utf8))
+            XCTFail("MIC_INPUT_LEASE_EXPECTED_HEALTHY_ACQUIRED_BASELINE")
+        default:
+            XCTFail("Unexpected first acquired coordinator outcome")
+        }
+    }
+
+    func testRustInputLeaseActualCRefusalAtPostKeyLoopBudgetKeepsExactCleanupOwnership() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            acquisitionResults: [.retryableFailure, .acquired],
+            releaseResults: [.retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease,
+            maximumAcquisitionAttemptCount: 3, maximumReleaseAttemptCount: 1,
+            maximumShutdownAttemptCount: 1
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        let first = coordinator.transportDidBecomeHealthy(peerGeneration: 1)
+        guard let generation = lease.acquisitions.first?.generation else {
+            return XCTFail("Expected the actual first retryable native acquisition")
+        }
+        switch first {
+        case .selected(let selected):
+            XCTAssertEqual(selected.leaseGeneration, generation)
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation, generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.releases, [])
+            XCTAssertEqual(coordinator.shutdown(), .degraded)
+            XCTAssertEqual(lease.releases, [generation])
+            XCTAssertEqual(coordinator.shutdown(), .released)
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(lease.shutdownCallCount, 1)
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation, generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.events, [.acquisition(generation), .acquisition(generation),
+                .release(generation), .release(generation)])
+            FileHandle.standardError.write(Data(
+                ("MIC_INPUT_LEASE_BASELINE postKeyBudget A2 R2 P1 cleanup=actual\n").utf8))
+        case .degraded:
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            XCTAssertEqual(lease.releases, [generation],
+                "The count-one budget refusal must clean the already-minted exact pending key")
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 999), .noChange)
+            XCTAssertEqual(lease.releases, [generation])
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .degraded)
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 0)
+            XCTAssertEqual(lease.events,
+                [.acquisition(generation), .release(generation), .release(generation)])
+            FileHandle.standardError.write(Data(
+                ("MIC_INPUT_LEASE_REFUSAL postKeyBudget A1 R2 P0 sameOwner=1 foreignCleanup=0 readmission=0\n").utf8))
+            XCTFail("MIC_INPUT_LEASE_EXPECTED_HEALTHY_POST_KEY_BUDGET_BASELINE")
+        default:
+            XCTFail("Unexpected first post-key budget coordinator outcome")
+        }
+    }
+
+    func testRustInputLeaseActualCRefusalAfterFirstRetryableReleaseKeepsExactCleanupOwnership() {
+        let lease = DefaultInputCoordinatorLeaseFake(
+            releaseResults: [.retryableFailure, .released]
+        )
+        let coordinator = WorldwideBlackHoleDefaultInputCoordinator(
+            policy: .enabled, lease: lease, maximumReleaseAttemptCount: 3
+        )
+        let epoch = UUID()
+        _ = coordinator.beginMonitoring(epoch: epoch)
+        _ = coordinator.updateDeviceSnapshot(snapshot(epoch: epoch, generation: 1))
+        guard case .selected(let selected) =
+                coordinator.transportDidBecomeHealthy(peerGeneration: 1) else {
+            return XCTFail("Expected one genuine acquired and authorized native key")
+        }
+        let generation = selected.leaseGeneration
+        XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+        XCTAssertEqual(lease.authorizationProofCallCount, 1)
+        XCTAssertEqual(lease.releases, [])
+        let release = coordinator.transportDidBecomeUnhealthy(peerGeneration: 1)
+        switch release {
+        case .released:
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 1), .noChange)
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.events,
+                [.acquisition(generation), .release(generation), .release(generation)])
+            FileHandle.standardError.write(Data(
+                ("MIC_INPUT_LEASE_BASELINE releaseContinuation A1 R2 P1 cleanup=actual\n").utf8))
+        case .degraded:
+            XCTAssertEqual(lease.releases, [generation],
+                "A malformed continuation must return the first actual retryable disposition")
+            XCTAssertEqual(coordinator.transportDidBecomeUnhealthy(peerGeneration: 999), .noChange)
+            XCTAssertEqual(lease.releases, [generation])
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 1), .degraded)
+            XCTAssertEqual(lease.releases, [generation, generation],
+                "Original retained ownership must redrive even after sticky admission refusal")
+            XCTAssertEqual(coordinator.transportDidBecomeHealthy(peerGeneration: 2), .degraded)
+            XCTAssertEqual(lease.acquisitions.map(\.generation), [generation])
+            XCTAssertEqual(lease.releases, [generation, generation])
+            XCTAssertEqual(lease.authorizationProofCallCount, 1)
+            XCTAssertEqual(lease.events,
+                [.acquisition(generation), .release(generation), .release(generation)])
+            FileHandle.standardError.write(Data(
+                ("MIC_INPUT_LEASE_REFUSAL releaseContinuation A1 R2 P1 sameOwner=1 foreignCleanup=0 readmission=0\n").utf8))
+            XCTFail("MIC_INPUT_LEASE_EXPECTED_COMPLETE_RELEASE_BASELINE")
+        default:
+            XCTFail("Unexpected first retryable release coordinator outcome")
+        }
+    }
+
+
     private func snapshot(
         epoch: UUID,
         generation: UInt64
@@ -4001,6 +5635,9 @@ private final class DefaultInputCoordinatorLeaseFake:
     private(set) var events: [Event] = []
     private(set) var acquisitions: [Acquisition] = []
     private(set) var releases: [UInt64] = []
+    // TEST-only synchronous callback through the unchanged leasing protocol.
+    // Consumed before invocation, so nested release cannot replay it.
+    var onNextRelease: (() -> Void)?
     private var acquisitionResults:
         [BlackHoleDefaultInputLeaseAcquisitionResult]
     private var releaseResults:
@@ -4069,10 +5706,12 @@ private final class DefaultInputCoordinatorLeaseFake:
     ) -> BlackHoleDefaultInputLeaseReleaseResult {
         events.append(.release(generation))
         releases.append(generation)
-        guard !releaseResults.isEmpty else {
-            return .released
-        }
-        return releaseResults.removeFirst()
+        let actual: BlackHoleDefaultInputLeaseReleaseResult = releaseResults.isEmpty
+            ? .released : releaseResults.removeFirst()
+        let callback = onNextRelease
+        onNextRelease = nil
+        callback?()
+        return actual
     }
 
     func parkForClockEpochRecovery(
@@ -4192,6 +5831,65 @@ private final class DriverFormatFailureProbe:
     }
 }
 
+private enum DriverTestEvidenceReentry: Equatable, Sendable {
+    case nestedWatermarkSnapshot, progressShutdown, freshnessClockShutdown
+}
+
+private struct DriverTestNestedObservation: Equatable, Sendable {
+    let phase: WorldwideIPhoneMicrophoneForwardingPhase
+    let queueRunning: Bool
+    let inboundMediaFresh: Bool
+    let progressReadDelta: Int
+    let clockReadDelta: Int
+    let producerDelta: [Int]
+}
+
+private enum DriverTestEvidenceCleanup: Equatable, Sendable {
+    case trackDisable, outputStop
+}
+
+private enum DriverTestEvidenceFault: Equatable, Sendable {
+    case none
+    case readinessWrongVote, readinessStatusZero
+    case watermarkWrongAdvance, watermarkStatusZero
+    case freshnessPlanWrongVote, freshnessPlanStatusZero
+    case freshnessDecisionWrongVote, freshnessDecisionStatusZero
+
+    var family: Int {
+        switch self {
+        case .readinessWrongVote, .readinessStatusZero: 0
+        case .watermarkWrongAdvance, .watermarkStatusZero: 1
+        case .none, .freshnessPlanWrongVote, .freshnessPlanStatusZero,
+             .freshnessDecisionWrongVote, .freshnessDecisionStatusZero: 2
+        }
+    }
+    var isFreshnessDecision: Bool {
+        self == .freshnessDecisionWrongVote || self == .freshnessDecisionStatusZero
+    }
+}
+
+private enum DriverTestRetryFault: Equatable, Sendable {
+    case none, statusZero, coherentCorruption, nestedSnapshot, shutdown, replacePeer
+}
+
+private struct DriverTestRetryCall: Equatable, Sendable {
+    let maximum: Int64
+    let opcode: UInt32
+    let category: UInt32
+    let beforePresent: UInt32
+    let beforeCount: Int64
+    let beforeMayRetry: UInt32
+    let afterPresent: UInt32
+    let afterCount: Int64
+    let afterMayRetry: UInt32
+    let status: UInt32
+    let decision: UInt32
+    let redrive: UInt32
+    let nativeStopCount: Int?
+    let nativeTrackEnabled: Bool?
+    let nativeRedrive: Bool?
+}
+
 private actor DriverTestHarness {
     private let driver:
         WorldwideIPhoneMicrophoneForwardingDriver<
@@ -4210,6 +5908,7 @@ private actor DriverTestHarness {
         readinessGate: DriverSuspensionGate? = nil,
         readinessSampleLimit: Int = 2,
         retryGate: DriverSuspensionGate? = nil,
+        retrySleepThrowsAfterGate: Bool = false,
         maximumAttemptCountPerKey: Int = 3,
         maximumStaleInboundMediaSamples: Int = 3,
         mediaFreshnessTimeoutNanoseconds: UInt64 = 3_000_000_000,
@@ -4280,14 +5979,229 @@ private actor DriverTestHarness {
                 if let retryGate {
                     await retryGate.wait()
                 }
+                if retrySleepThrowsAfterGate { throw CancellationError() }
             },
             maximumAttemptCountPerKey:
                 maximumAttemptCountPerKey,
+            makeAttemptID: { factory.makeRecordedAttemptID() },
             sharedClockFailureHandler:
                 sharedClockFailureHandler,
             formatFailureHandler:
                 formatFailureHandler
         )
+    }
+
+    func configureRetryEvidence(
+        factory: DriverTestOutputFactory,
+        target: UInt32 = 0,
+        fault: DriverTestRetryFault = .none,
+        output: DriverTestOutput? = nil,
+        track: DriverTestTrack? = nil,
+        replacementPeer: DriverTestPeer? = nil,
+        observationKey: WorldwideIPhoneMicrophoneForwardingKey? = nil
+    ) {
+        let original = driver
+        driver.configureRetryMutationForTesting { [weak original] config, before, event, actual in
+            let nativeOutput = output ?? factory.lastProducedOutput
+            let shouldMutate = factory.recordRetryCall(.init(
+                maximum: config.maximum_attempt_count, opcode: event.opcode,
+                category: event.failure_category,
+                beforePresent: before.present, beforeCount: before.count, beforeMayRetry: before.may_retry,
+                afterPresent: actual.state.present, afterCount: actual.state.count,
+                afterMayRetry: actual.state.may_retry, status: actual.status,
+                decision: actual.decision, redrive: actual.redrive_action,
+                nativeStopCount: nativeOutput?.stopCount, nativeTrackEnabled: track?.isEnabled,
+                nativeRedrive: observationKey.flatMap { key in
+                    original?.retryObservationForTesting(isolation: nil, key: key).redrive
+                }
+            ), target: target)
+            guard shouldMutate else { return actual }
+            if fault == .nestedSnapshot {
+                if let original {
+                    let nested = original.snapshot(isolation: nil)
+                    factory.recordRetryNestedSnapshot(nested.phase)
+                }
+                return actual
+            }
+            if fault == .shutdown {
+                original?.shutdown(isolation: nil)
+                return actual
+            }
+            if fault == .replacePeer {
+                if let replacementPeer {
+                    original?.replacePeer(isolation: nil, peer: replacementPeer, peerGeneration: 2)
+                }
+                return actual
+            }
+            var result = actual
+            switch fault {
+            case .none, .nestedSnapshot, .shutdown, .replacePeer: break
+            case .statusZero: result.status = 0
+            case .coherentCorruption:
+                switch event.opcode {
+                case 1, 3: result.decision = actual.decision == 0 ? 1 : 0
+                case 2: result.state.count = actual.state.count + 1
+                case 4: result.state.may_retry = actual.state.may_retry == 0 ? 1 : 0
+                default: preconditionFailure("Closed four-operation test")
+                }
+            }
+            return result
+        }
+    }
+
+    func retryObservation(_ key: WorldwideIPhoneMicrophoneForwardingKey)
+        -> (count: Int?, mayRetry: Bool?, redrive: Bool, faultExhaustCalls: Int,
+            bridgeFaulted: Bool, retainedKeys: [WorldwideIPhoneMicrophoneForwardingKey]) {
+        driver.retryObservationForTesting(key: key)
+    }
+
+    func configureEvidenceFault(
+        _ fault: DriverTestEvidenceFault,
+        output: DriverTestOutput
+    ) {
+        driver.configureEvidenceMutationsForTesting(
+            .init(
+                readiness: { _, actual in
+                    let armed = output.evidenceCallShouldCorrupt(0)
+                    guard armed, fault.family == 0, actual.status == 1,
+                          actual.ready == 1 else { return actual }
+                    var result = actual
+                    if fault == .readinessStatusZero {
+                        result.status = 0
+                    } else {
+                        result.ready = 0
+                        result.continuing = 0
+                    }
+                    output.recordEvidenceCorruption(0)
+                    return result
+                },
+                watermark: { _, _, actual in
+                    let armed = output.evidenceCallShouldCorrupt(1)
+                    guard armed, fault.family == 1, actual.status == 1,
+                          actual.did_advance == 1 else { return actual }
+                    var result = actual
+                    if fault == .watermarkStatusZero {
+                        result.status = 0
+                    } else {
+                        result.did_advance = 0
+                    }
+                    output.recordEvidenceCorruption(1)
+                    return result
+                },
+                freshness: { _, event, actual in
+                    let armed = output.evidenceCallShouldCorrupt(2)
+                    guard armed, fault != .none, fault.family == 2 else {
+                        return actual
+                    }
+                    var result = actual
+                    if fault.isFreshnessDecision {
+                        guard event.now.present == 1, actual.status == 1 else {
+                            return actual
+                        }
+                        if fault == .freshnessDecisionStatusZero {
+                            result.status = 0
+                        } else {
+                            result.fresh = actual.fresh == 1 ? 0 : 1
+                        }
+                    } else {
+                        guard event.now.present == 0, actual.status == 2 else {
+                            return actual
+                        }
+                        if fault == .freshnessPlanStatusZero {
+                            result.status = 0
+                        } else {
+                            result.status = 1
+                            result.fresh = 1
+                        }
+                    }
+                    output.recordEvidenceCorruption(2)
+                    return result
+                }
+            )
+        )
+    }
+
+    func configureEvidenceObservation(
+        _ cut: DriverTestEvidenceReentry,
+        output: DriverTestOutput,
+        watchdog: DriverTestMediaFreshnessWatchdog
+    ) {
+        let original = driver
+        driver.configureEvidenceMutationsForTesting(
+            .init(
+                readiness: { _, actual in
+                    _ = output.evidenceCallShouldCorrupt(0)
+                    return actual
+                },
+                watermark: { [weak original] _, _, actual in
+                    let armed = output.evidenceCallShouldCorrupt(1)
+                    if armed, cut == .nestedWatermarkSnapshot,
+                       actual.status == 1, actual.did_advance == 1,
+                       let original {
+                        let reads = output.progressReadCount
+                        let clocks = watchdog.nowReadCount
+                        let calls = output.evidenceCallCounts
+                        let nested = original.snapshot(isolation: nil)
+                        output.recordNestedObservation(.init(
+                            phase: nested.phase,
+                            queueRunning: nested.queueRunning,
+                            inboundMediaFresh: nested.inboundMediaFresh,
+                            progressReadDelta: output.progressReadCount - reads,
+                            clockReadDelta: watchdog.nowReadCount - clocks,
+                            producerDelta: zip(output.evidenceCallCounts, calls).map { pair in pair.0 - pair.1 }
+                        ))
+                    }
+                    return actual
+                },
+                freshness: { _, event, actual in
+                    _ = output.evidenceCallShouldCorrupt(2)
+                    output.recordFreshnessVote(nowPresent: event.now.present, status: actual.status)
+                    return actual
+                }
+            )
+        )
+    }
+
+    func armEvidenceReentry(
+        _ cut: DriverTestEvidenceReentry,
+        output: DriverTestOutput,
+        watchdog: DriverTestMediaFreshnessWatchdog
+    ) {
+        let original = driver
+        switch cut {
+        case .nestedWatermarkSnapshot:
+            output.armEvidenceFault()
+        case .progressShutdown:
+            output.setOneShotProgressHook { [weak original] in
+                original?.shutdown(isolation: nil)
+            }
+        case .freshnessClockShutdown:
+            watchdog.setOneShotNowHook { [weak original] in
+                original?.shutdown(isolation: nil)
+            }
+        }
+    }
+
+    func armCleanupShutdown(
+        _ cut: DriverTestEvidenceCleanup,
+        output: DriverTestOutput,
+        track: DriverTestTrack
+    ) {
+        let original = driver
+        switch cut {
+        case .trackDisable:
+            track.setOneShotDisableHook { [weak original] in
+                original?.shutdown(isolation: nil)
+            }
+        case .outputStop:
+            output.setOneShotStopHook { [weak original] in
+                original?.shutdown(isolation: nil)
+            }
+        }
+    }
+
+    func shutdown() {
+        driver.shutdown()
     }
 
     func beginMonitoring(_ epoch: UUID) {
@@ -4416,6 +6330,17 @@ private final class DriverTestOutput:
     private var starts = 0
     private var stops = 0
     private var startEntered = false
+    private var evidenceFaultArmed = false
+    private var evidenceCalls = [0, 0, 0]
+    private var evidenceCorruptions = [0, 0, 0]
+    private var stopHook: (() -> Void)?
+    private var stopHookCalls = 0
+    private var progressReads = 0
+    private var progressHook: (() -> Void)?
+    private var progressHookCalls = 0
+    private var nested: DriverTestNestedObservation?
+    private var nestedSnapshots = 0
+    private var recordedFreshnessVotes: [[UInt32]] = []
 
     init(
         startGate: DriverSuspensionGate? = nil,
@@ -4449,22 +6374,68 @@ private final class DriverTestOutput:
     }
 
     func stop() {
-        lock.withLock {
+        let hook = lock.withLock { () -> (() -> Void)? in
             stops += 1
+            let hook = stopHook
+            stopHook = nil
+            if hook != nil { stopHookCalls += 1 }
+            return hook
         }
+        hook?()
+    }
+
+    func setOneShotStopHook(_ hook: @escaping () -> Void) {
+        lock.withLock {
+            precondition(stopHook == nil)
+            stopHook = hook
+        }
+    }
+
+    var cleanupHookCount: Int {
+        lock.withLock { stopHookCalls }
     }
 
     var forwardingProgressSnapshot:
         BlackHoleMicrophoneOutputProgressSnapshot {
-        lock.withLock {
+        let capture = lock.withLock { () -> (BlackHoleMicrophoneOutputProgressSnapshot, (() -> Void)?) in
+            progressReads += 1
+            let hook = progressHook
+            progressHook = nil
+            if hook != nil { progressHookCalls += 1 }
             guard !progressSnapshots.isEmpty else {
-                return .zero
+                return (.zero, hook)
             }
             if progressSnapshots.count > 1 {
-                return progressSnapshots.removeFirst()
+                return (progressSnapshots.removeFirst(), hook)
             }
-            return progressSnapshots[0]
+            return (progressSnapshots[0], hook)
         }
+        capture.1?()
+        return capture.0
+    }
+
+    func setOneShotProgressHook(_ hook: @escaping () -> Void) {
+        lock.withLock {
+            precondition(progressHook == nil)
+            progressHook = hook
+        }
+    }
+
+    var progressReadCount: Int { lock.withLock { progressReads } }
+    var progressHookCount: Int { lock.withLock { progressHookCalls } }
+    var nestedObservation: DriverTestNestedObservation? { lock.withLock { nested } }
+    var nestedSnapshotCount: Int { lock.withLock { nestedSnapshots } }
+    var freshnessVotes: [[UInt32]] { lock.withLock { recordedFreshnessVotes } }
+
+    func recordNestedObservation(_ observation: DriverTestNestedObservation) {
+        lock.withLock {
+            nestedSnapshots += 1
+            nested = observation
+        }
+    }
+
+    func recordFreshnessVote(nowPresent: UInt32, status: UInt32) {
+        lock.withLock { recordedFreshnessVotes.append([nowPresent, status]) }
     }
 
     var startCount: Int {
@@ -4473,6 +6444,31 @@ private final class DriverTestOutput:
 
     var stopCount: Int {
         lock.withLock { stops }
+    }
+
+    func armEvidenceFault() {
+        lock.withLock { evidenceFaultArmed = true }
+    }
+
+    func evidenceCallShouldCorrupt(_ family: Int) -> Bool {
+        precondition((0..<3).contains(family))
+        return lock.withLock {
+            evidenceCalls[family] += 1
+            return evidenceFaultArmed
+        }
+    }
+
+    func recordEvidenceCorruption(_ family: Int) {
+        precondition((0..<3).contains(family))
+        lock.withLock { evidenceCorruptions[family] += 1 }
+    }
+
+    var evidenceCallCounts: [Int] {
+        lock.withLock { evidenceCalls }
+    }
+
+    var evidenceCorruptionCounts: [Int] {
+        lock.withLock { evidenceCorruptions }
     }
 
     var startWasEntered: Bool {
@@ -4487,6 +6483,47 @@ private final class DriverTestOutputFactory:
     private var outputs: [DriverTestOutput]
     private var requests = 0
     private var endpoints: [BlackHoleDeviceEndpointIdentity] = []
+    private var createdOutput: DriverTestOutput?
+    private var recordedRetryCalls: [DriverTestRetryCall] = []
+    private var retryFaultArmed = false
+    private var retryMutations = 0
+    private var retryNestedSnapshots = 0
+    private var retryNestedPhaseValue: WorldwideIPhoneMicrophoneForwardingPhase?
+    private var attemptIDs = 0
+
+    func makeRecordedAttemptID() -> UUID {
+        lock.withLock { attemptIDs += 1 }
+        return UUID()
+    }
+
+    func armRetryFault() {
+        lock.withLock { retryFaultArmed = true }
+    }
+
+    func recordRetryCall(_ call: DriverTestRetryCall, target: UInt32) -> Bool {
+        lock.withLock {
+            recordedRetryCalls.append(call)
+            guard retryFaultArmed, call.opcode == target else { return false }
+            retryFaultArmed = false
+            retryMutations += 1
+            return true
+        }
+    }
+
+    func recordRetryNestedSnapshot(_ phase: WorldwideIPhoneMicrophoneForwardingPhase) {
+        lock.withLock {
+            retryNestedSnapshots += 1
+            retryNestedPhaseValue = phase
+        }
+    }
+
+    var retryCalls: [DriverTestRetryCall] { lock.withLock { recordedRetryCalls } }
+    var retryMutationCount: Int { lock.withLock { retryMutations } }
+    var retryNestedSnapshotCount: Int { lock.withLock { retryNestedSnapshots } }
+    var retryNestedPhase: WorldwideIPhoneMicrophoneForwardingPhase? { lock.withLock { retryNestedPhaseValue } }
+    var attemptIDCount: Int { lock.withLock { attemptIDs } }
+    var lastProducedOutput: DriverTestOutput? { lock.withLock { createdOutput } }
+
 
     init(outputs: [DriverTestOutput]) {
         self.outputs = outputs
@@ -4501,7 +6538,9 @@ private final class DriverTestOutputFactory:
             guard !outputs.isEmpty else {
                 return nil
             }
-            return outputs.removeFirst()
+            let output = outputs.removeFirst()
+            createdOutput = output
+            return output
         }
     }
 
@@ -5137,15 +7176,40 @@ private final class RuntimeDisposalBufferAllocation:
 private final class DriverTestTrack: @unchecked Sendable {
     private let lock = NSLock()
     private var enabled = false
+    private var disableHook: (() -> Void)?
+    private var disableHookCalls = 0
+    private var disabledCalls = 0
 
     var isEnabled: Bool {
         lock.withLock { enabled }
     }
 
     func setEnabled(_ enabled: Bool) {
-        lock.withLock {
+        let hook = lock.withLock { () -> (() -> Void)? in
             self.enabled = enabled
+            guard !enabled else { return nil }
+            disabledCalls += 1
+            let hook = disableHook
+            disableHook = nil
+            if hook != nil { disableHookCalls += 1 }
+            return hook
         }
+        hook?()
+    }
+
+    func setOneShotDisableHook(_ hook: @escaping () -> Void) {
+        lock.withLock {
+            precondition(disableHook == nil)
+            disableHook = hook
+        }
+    }
+
+    var cleanupHookCount: Int {
+        lock.withLock { disableHookCalls }
+    }
+
+    var disableCount: Int {
+        lock.withLock { disabledCalls }
     }
 }
 
@@ -5161,13 +7225,37 @@ private final class DriverTestMediaFreshnessWatchdog:
     private var currentNanoseconds: UInt64
     private var waiters: [Waiter] = []
     private var scheduledDeadlineCount = 0
+    private var nowReads = 0
+    private var nowHook: (() -> Void)?
+    private var nowHookCalls = 0
 
     init(now: UInt64 = 0) {
         currentNanoseconds = now
     }
 
     var now: UInt64 {
-        lock.withLock { currentNanoseconds }
+        let capture = lock.withLock { () -> (UInt64, (() -> Void)?) in
+            nowReads += 1
+            let hook = nowHook
+            nowHook = nil
+            if hook != nil { nowHookCalls += 1 }
+            return (currentNanoseconds, hook)
+        }
+        capture.1?()
+        return capture.0
+    }
+
+    func setOneShotNowHook(_ hook: @escaping () -> Void) {
+        lock.withLock {
+            precondition(nowHook == nil)
+            nowHook = hook
+        }
+    }
+
+    var nowHookCount: Int { lock.withLock { nowHookCalls } }
+
+    var nowReadCount: Int {
+        lock.withLock { nowReads }
     }
 
     func sleep(until deadline: UInt64) async throws {

@@ -10,12 +10,13 @@ import RemoteSessionCore
 final class ViewerPairingState: ObservableObject {
     @Published private(set) var viewerIdentity: RemoteDeviceIdentity?
     @Published private(set) var pairingRecord: RemotePairedDeviceRecord?
+    @Published private(set) var savedMacs: [RemotePairedDeviceRecord] = []
     @Published private(set) var storageError: String?
 
     private let store: any ViewerPairingStoring
     private var hydrationNeedsRetry = false
 
-    init(store: any ViewerPairingStoring = ViewerPairingNamespaceSelectorStore()) {
+    init(store: any ViewerPairingStoring = ViewerPairedMacCatalogStore()) {
         self.store = store
         hydrateSynchronously()
     }
@@ -43,19 +44,45 @@ final class ViewerPairingState: ObservableObject {
 
     /// Persists a role-valid viewer record at any crash-safe pairing phase.
     func savePairingRecord(_ record: RemotePairedDeviceRecord) throws {
+        try savePairingRecord(record, bootstrapInvitation: nil)
+    }
+
+    /// Record and invitation digest are committed atomically in the multi-Mac catalog. The
+    /// one global entry field must never authorize recovery of a different selected Mac.
+    func savePairingRecord(_ record: RemotePairedDeviceRecord, bootstrapInvitation: String?) throws {
         guard let viewerIdentity else {
             storageError = "This iPhone's secure pairing identity is unavailable."
             throw ViewerPairingStateError.viewerIdentityUnavailable
         }
 
         do {
-            try store.savePairedMac(record, for: viewerIdentity)
+            if let bootstrapInvitation, let catalog = store as? any ViewerPairedMacCatalogStoring {
+                try catalog.saveBootstrapPair(record, invitationCode: bootstrapInvitation, for: viewerIdentity)
+            } else {
+                try store.savePairedMac(record, for: viewerIdentity)
+            }
+            let saved = try savedRecords(for: viewerIdentity, selected: record)
             pairingRecord = record
+            savedMacs = saved
             storageError = nil
         } catch {
             storageError = "The authenticated Mac pairing could not be saved securely."
             throw error
         }
+    }
+
+    func recoveryInvitationMatchesSelectedMac(_ invitationCode: String) throws -> Bool {
+        guard let viewerIdentity, let pairingRecord else { return false }
+        guard let catalog = store as? any ViewerPairedMacCatalogStoring else {
+            // Original single-pair embedders retain their established recovery API.
+            return true
+        }
+        return try catalog.recoveryInvitationMatches(invitationCode, record: pairingRecord,
+                                                     for: viewerIdentity)
+    }
+
+    var boundRecoveryMac: RemotePairedDeviceRecord? {
+        store is any ViewerPairedMacCatalogStoring ? pairingRecord : nil
     }
 
     /// This boundary accepts only a record returned by the authenticated pairing protocol's
@@ -74,6 +101,7 @@ final class ViewerPairingState: ObservableObject {
         do {
             try store.deletePairedMac()
             pairingRecord = nil
+            if let viewerIdentity { savedMacs = try savedRecords(for: viewerIdentity, selected: nil) }
             storageError = nil
         } catch {
             storageError = "The paired Mac could not be forgotten securely."
@@ -81,11 +109,54 @@ final class ViewerPairingState: ObservableObject {
         }
     }
 
+    /// Call only after the prior connection and preparation have been retired.
+    func selectMac(_ deviceID: UUID?) throws {
+        guard let identity = viewerIdentity,
+              let catalog = store as? any ViewerPairedMacCatalogStoring else {
+            throw ViewerPairingStateError.viewerIdentityUnavailable
+        }
+        do {
+            try catalog.selectMac(deviceID, for: identity)
+            pairingRecord = try store.loadPairedMac(for: identity)
+            savedMacs = try catalog.loadSavedMacs(for: identity)
+            storageError = nil
+        } catch {
+            storageError = "The saved Mac selection could not be changed securely."
+            throw error
+        }
+    }
+
+    func forgetMac(_ deviceID: UUID) throws {
+        guard let identity = viewerIdentity,
+              let catalog = store as? any ViewerPairedMacCatalogStoring else {
+            throw ViewerPairingStateError.viewerIdentityUnavailable
+        }
+        do {
+            try catalog.forgetMac(deviceID, for: identity)
+            pairingRecord = try store.loadPairedMac(for: identity)
+            savedMacs = try catalog.loadSavedMacs(for: identity)
+            storageError = nil
+        } catch {
+            storageError = "The selected Mac could not be forgotten securely."
+            throw error
+        }
+    }
+
+    private func savedRecords(
+        for identity: RemoteDeviceIdentity, selected: RemotePairedDeviceRecord?
+    ) throws -> [RemotePairedDeviceRecord] {
+        if let catalog = store as? any ViewerPairedMacCatalogStoring {
+            return try catalog.loadSavedMacs(for: identity)
+        }
+        return selected.map { [$0] } ?? []
+    }
+
     private func hydrateSynchronously() {
         do {
             let identity = try store.loadOrCreateViewerIdentity()
             viewerIdentity = identity
             pairingRecord = try store.loadPairedMac(for: identity)
+            savedMacs = try savedRecords(for: identity, selected: pairingRecord)
             storageError = nil
             hydrationNeedsRetry = false
         } catch {
@@ -93,6 +164,7 @@ final class ViewerPairingState: ObservableObject {
             // regeneration could orphan a valid pairing or change the trusted device ID.
             viewerIdentity = nil
             pairingRecord = nil
+            savedMacs = []
             storageError = "This iPhone's secure pairing state could not be loaded."
             hydrationNeedsRetry = true
         }

@@ -33,6 +33,7 @@ struct ContentView: View {
                 Label("Diagnostics", systemImage: "gauge.with.dots.needle.bottom.50percent")
             }
         }
+        .modifier(YouTubeHandoffPresenter(coordinator: worldwideViewModel.mediaHandoff, priority: 0))
         .task {
             forwardScenePhase(scenePhase)
             // Discovery is idempotent, so tying it to the view task also covers root recreation.

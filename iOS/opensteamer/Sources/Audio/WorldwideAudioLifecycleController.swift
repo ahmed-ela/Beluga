@@ -208,6 +208,32 @@ enum WorldwideIPhoneMicrophoneOutputOnlyCompletion {
     case recoveryFailed
 }
 
+/// A single local phone player owns only decoded Mac-audio suppression. This is neither
+/// microphone authority nor permission to configure the process-wide audio session.
+@MainActor
+final class WorldwideMediaHandoffAudioLease {
+    fileprivate let id = UUID()
+    fileprivate let preparedLifetime: UUID
+    fileprivate let trackIdentity: ObjectIdentifier
+    private(set) var isValid = true
+    private let onInvalidated: @MainActor (WorldwideMediaHandoffAudioLease) -> Void
+
+    fileprivate init(preparedLifetime: UUID, track: any WorldwideRemoteAudioControlling,
+                     onInvalidated: @escaping @MainActor (WorldwideMediaHandoffAudioLease) -> Void) {
+        self.preparedLifetime = preparedLifetime
+        trackIdentity = ObjectIdentifier(track)
+        self.onInvalidated = onInvalidated
+    }
+
+    fileprivate func invalidate() {
+        guard isValid else { return }
+        isValid = false
+        onInvalidated(self)
+    }
+
+    fileprivate func finish() { isValid = false }
+}
+
 /// Owns only the iPhone playback side of a worldwide session. Screen privacy remains
 /// independent: backgrounding can hide the Mac display while this controller keeps genuine
 /// WebRTC audio playout active under iOS's Background Audio mode.
@@ -395,6 +421,9 @@ final class WorldwideAudioLifecycleController {
     private var playbackDiagnosticText: String?
     private var serverName = "Mac mini"
     private var remoteAudioControl: (any WorldwideRemoteAudioControlling)?
+    private var mediaHandoffAudioLease: WorldwideMediaHandoffAudioLease?
+    // Changes even for an acquire/release completed between diagnostics samples (nil -> nil).
+    private(set) var mediaHandoffAudioGeneration = UUID()
     private var microphoneTopologyGeneration: UInt64 = 0
     private var microphoneTopologyIsEnabled = false
     private struct EstablishedMicrophoneTopologyIdentity {
@@ -797,6 +826,43 @@ final class WorldwideAudioLifecycleController {
         publishSnapshot()
     }
 
+    /// The caller must stop its local player before releasing, including after invalidation.
+    /// A revoked lease keeps Mac audio suppressed until that exact owner acknowledges cleanup.
+    /// This never changes microphone intent, native device/session policy or a resume latch.
+    func beginMediaHandoffPlayback(
+        onInvalidated: @escaping @MainActor (WorldwideMediaHandoffAudioLease) -> Void
+    ) -> WorldwideMediaHandoffAudioLease? {
+        guard isPrepared else { return nil }
+        synchronizeLiveCallStateIfNeeded()
+        guard mediaHandoffAudioLease == nil, mediaHandoffPlaybackIsAllowed,
+              let remoteAudioControl else { return nil }
+        let lease = WorldwideMediaHandoffAudioLease(preparedLifetime: preparedLifetime,
+            track: remoteAudioControl, onInvalidated: onInvalidated)
+        mediaHandoffAudioLease = lease
+        mediaHandoffAudioGeneration = UUID()
+        publishSnapshot()
+        // Snapshot callbacks may synchronously retire/replace the session or player.
+        guard mediaHandoffAudioLease === lease, lease.isValid,
+              lease.preparedLifetime == preparedLifetime else { return nil }
+        return lease
+    }
+
+    /// Also present while a revoked player is closing. The actual track stays suppressed
+    /// until exact owner cleanup, so silence during that interval is deliberate, not a stall.
+    var mediaHandoffAudioSuppressionID: UUID? { mediaHandoffAudioLease?.id }
+
+    @discardableResult
+    func endMediaHandoffPlayback(_ lease: WorldwideMediaHandoffAudioLease) -> Bool {
+        guard mediaHandoffAudioLease === lease,
+              lease.preparedLifetime == preparedLifetime else { return false }
+        mediaHandoffAudioLease = nil
+        mediaHandoffAudioGeneration = UUID()
+        lease.finish()
+        // Restore only what the current lifecycle permits, never the pre-handoff enabled bit.
+        publishSnapshot()
+        return true
+    }
+
     func remoteAudioBecameAvailable(_ track: any WorldwideRemoteAudioControlling) {
         guard isPrepared else { return }
         if let previous = remoteAudioControl, previous !== track {
@@ -1084,6 +1150,10 @@ final class WorldwideAudioLifecycleController {
             onCallActivityChanged?(false)
         }
         onMacHostedCallChallengeChanged?(nil)
+        let retiredHandoff = mediaHandoffAudioLease
+        mediaHandoffAudioLease = nil
+        if retiredHandoff != nil { mediaHandoffAudioGeneration = UUID() }
+        retiredHandoff?.invalidate()
         publishSnapshot()
     }
 
@@ -5809,6 +5879,10 @@ final class WorldwideAudioLifecycleController {
     /// Open the decoded-track gate so RemoteIO can produce the callbacks that constitute runtime
     /// proof. Background/Now Playing status still waits for `runtimePlayoutIsReady` above.
     private var shouldEnableRemoteAudio: Bool {
+        mediaHandoffAudioLease == nil && audioTrackPolicyIsAllowed
+    }
+
+    private var audioTrackPolicyIsAllowed: Bool {
         isPrepared
             && !interruptionEndFenceIsPending
             && playbackIsReady
@@ -5822,6 +5896,12 @@ final class WorldwideAudioLifecycleController {
             )
             && !requiresExplicitResume
             && !waitsForConnectedCallToEndBeforeRecovery
+    }
+
+    private var mediaHandoffPlaybackIsAllowed: Bool {
+        audioTrackPolicyIsAllowed && runtimePlayoutIsReady && !isCallActive
+            && !microphoneInterruptionIsActive && playbackErrorText == nil
+            && pendingDeferredRecovery == nil && deferredRecoveryAdmissionFence == nil
     }
 
     private var stateText: String {
@@ -5839,11 +5919,18 @@ final class WorldwideAudioLifecycleController {
         if !hasRemoteAudio { return "Waiting for Mac audio" }
         if !transportIsHealthy { return "Reconnecting audio" }
         if !runtimePlayoutIsReady { return "Starting playback" }
+        if mediaHandoffAudioLease != nil { return "Mac audio paused — phone player" }
         if isCallActive { return "Playing — iPhone call may reduce quality" }
         return "Playing"
     }
 
     private func publishSnapshot() {
+        if let lease = mediaHandoffAudioLease, lease.isValid,
+           !mediaHandoffPlaybackIsAllowed || lease.preparedLifetime != preparedLifetime
+                || remoteAudioControl.map({ ObjectIdentifier($0) }) != lease.trackIdentity {
+            remoteAudioControl?.setEnabled(false)
+            lease.invalidate()
+        }
         let snapshot = snapshot
         remoteAudioControl?.setEnabled(shouldEnableRemoteAudio)
         if isPrepared {

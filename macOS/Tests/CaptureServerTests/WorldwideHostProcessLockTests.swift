@@ -2,6 +2,7 @@ import Darwin
 import Dispatch
 import Foundation
 import XCTest
+@testable import BelugaUpdateCore
 @testable import CaptureServer
 
 /// Verifies cross-version exclusion, owner-only metadata, and canonical inode binding.
@@ -53,9 +54,14 @@ final class WorldwideHostProcessLockTests: XCTestCase {
         let directory = makeLockDirectoryURL()
         defer { try? FileManager.default.removeItem(at: directory) }
         let first = try WorldwideHostProcessLock.acquire(lockDirectoryURL: directory)
+        XCTAssertTrue(first.isHeld)
         first.release()
+        XCTAssertFalse(first.isHeld)
         let second = try WorldwideHostProcessLock.acquire(lockDirectoryURL: directory)
+        XCTAssertTrue(second.isHeld)
+        XCTAssertFalse(first.isHeld)
         second.release()
+        XCTAssertFalse(second.isHeld)
     }
 
     func testLockDirectoryAndFileArePrivateToCurrentUser() throws {
