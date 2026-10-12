@@ -401,8 +401,10 @@ module MicrophoneReleaseGateEnrollmentParserTests
   end
 
   def test_release_enrollment_new_native_classes_and_source_cases_are_not_silently_filtered
-    expected = Gate::UPDATER_MICROPHONE_NATIVE_PINNED
-    assert_equal [8, 10, 4, 4, 7, 62, 4, 9, 4].sort, expected.values.map(&:length).sort
+    assert_equal [8, 10, 4, 4, 7, 62, 4, 9, 4].sort,
+      Gate::UPDATER_MICROPHONE_NATIVE_PINNED.values.map(&:length).sort
+    expected = Gate.updater_microphone_native_required_map
+    assert_equal [9, 10, 4, 4, 7, 62, 4, 9, 4].sort, expected.values.map(&:length).sort
     assert_equal expected.transform_values(&:sort), Gate.updater_microphone_native_inventory(@root, @mac_methods.join("\n"))
     expected.each do |suite, methods|
       assert_includes Gate::MAC_CLASSES, suite
@@ -604,7 +606,7 @@ module MicrophoneReleaseGateEnrollmentParserTests
         enrollment_rejects { Gate.updater_microphone_native_inventory(@root, ids.join("\n")) }
       end
     end
-    assert_equal Gate::UPDATER_MICROPHONE_NATIVE_PINNED.transform_values(&:sort),
+    assert_equal Gate.updater_microphone_native_required_map.transform_values(&:sort),
       Gate.updater_microphone_native_inventory(@root, original)
   end
 
@@ -642,7 +644,7 @@ module MicrophoneReleaseGateEnrollmentParserTests
     ensure
       write(session, prior)
     end
-    assert_equal Gate::UPDATER_MICROPHONE_NATIVE_PINNED.transform_values(&:sort),
+    assert_equal Gate.updater_microphone_native_required_map.transform_values(&:sort),
       Gate.updater_microphone_native_source_inventory(@root)
   end
 
@@ -803,7 +805,7 @@ module MicrophoneReleaseGateEnrollmentParserTests
       enrollment_rejects { Gate.validate_mac_log(mac_log(@mac_methods + [id]), @mac_methods) }
     end
     assert_equal @mac_methods, Gate.validate_mac_log(mac_log, @mac_methods)
-    assert_equal Gate::UPDATER_MICROPHONE_NATIVE_PINNED.transform_values(&:sort),
+    assert_equal Gate.updater_microphone_native_required_map.transform_values(&:sort),
       Gate.updater_microphone_native_inventory(@root, @mac_methods.join("\n"))
   end
 
@@ -853,7 +855,7 @@ module MicrophoneReleaseGateEnrollmentParserTests
       names.each { |name| Gate.send(:remove_const, name); Gate.const_set(name, old_pins.fetch(name)) }
       write(path, prior)
     end
-    assert_equal Gate::UPDATER_MICROPHONE_NATIVE_PINNED.transform_values(&:sort), Gate.updater_microphone_native_source_inventory(@root)
+    assert_equal Gate.updater_microphone_native_required_map.transform_values(&:sort), Gate.updater_microphone_native_source_inventory(@root)
   end
 
   def test_abort_release_enrollment_only_reviewed_shared_epoch_and_adapter_prefix_change
@@ -1628,5 +1630,147 @@ module MicrophoneReleaseGateEnrollmentParserTests
       end
     end
     enrollment_rejects { Gate.validate_beluga_core_mutations(full.sub('cases=587', 'cases=579')) }
+  end
+
+  def test_freshness_companion_enrollment_preserves_base8_and_complete_predecessor_rosters
+    suite = 'CaptureServerTests.BelugaRustMicrophoneForwardingEvidenceTests'
+    relative = 'macOS/Tests/CaptureServerTests/FreshnessFaultBetweenPhasesTests.swift'
+    id = suite + '/testFaultBetweenFreshnessPhasesRefusesBeforeProducer'
+    base = Gate::UPDATER_MICROPHONE_NATIVE_PINNED
+    assert_equal 112, base.values.flatten.length
+    assert_equal '60f13a4bea6d5907b0853df763cff6970b9187a763d59031f377f568ddf73c6c',
+      Digest::SHA256.hexdigest(JSON.generate(base) + "\n")
+    assert_equal 8, base.fetch(suite).length
+    assert_equal 'a64b39878b055f823d4fe7fefdc71559a371d46800db612b8903c20c64847191',
+      Digest::SHA256.hexdigest(JSON.generate(base.fetch(suite)) + "\n")
+    assert_equal({ suite => { path: relative, methods: [id] } },
+      Gate::UPDATER_MICROPHONE_NATIVE_COMPANIONS)
+    assert_equal 'c4632508c25a8304f240415e6b09975fe34c65effd1157dbc33ec23e43bbe17e',
+      Gate::UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256.fetch(relative)
+    assert_equal '35afc3bfca4c334263703f0563970ac8c745db8e5915e0ede476deb0d34871a2',
+      Gate::UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256.fetch(Gate::UPDATER_MICROPHONE_NATIVE_FILES.fetch(suite))
+    effective = Gate.updater_microphone_native_required_map
+    assert_equal base.keys, effective.keys
+    assert_equal 113, effective.values.flatten.length
+    assert_equal base.fetch(suite) + [id], effective.fetch(suite)
+    assert_equal '8631d6b1dfeeddc20de85f24376df8151d055061cba2f816205a21c3f49a3236',
+      Digest::SHA256.hexdigest(JSON.generate(effective.fetch(suite)) + "\n")
+    base.each { |name, methods| assert_equal methods, effective.fetch(name) unless name == suite }
+    assert_equal [68, 565], [Gate::MAC_CLASSES.length, Gate::MAC_PINNED.length]
+    assert_equal 'c0356fa029c17c1b21f92de3dcddce972b708165eaf46b58722c8683049abb85',
+      Digest::SHA256.hexdigest(JSON.generate(Gate::MAC_CLASSES) + "\n")
+    assert_equal 'a71e8812c4c031484761d9ea5b8c409e3d16ef3632cf6063ad5d89cb902eb402',
+      Digest::SHA256.hexdigest(JSON.generate(Gate::MAC_PINNED) + "\n")
+    assert_equal '4d1a71cddabc5adf57895982c8dbbd4b2c5e3c4bd99562b24c2863e62bc6261d',
+      Digest::SHA256.hexdigest(JSON.generate(Gate::GATE_PINNED.first(230)) + "\n")
+    added = %w[
+      test_freshness_companion_enrollment_preserves_base8_and_complete_predecessor_rosters
+      test_freshness_companion_source_requires_exact_extension_hash_and_single_method
+      test_freshness_companion_requires_exact_discovery_filter_and_non_skipping_execution
+    ]
+    assert_equal 233, Gate::GATE_PINNED.length
+    assert_equal added, Gate::GATE_PINNED.drop(230)
+    reviewed_root = File.dirname(File.dirname(File.realpath(__FILE__)))
+    declarations = Gate.gate_inventory(reviewed_root)
+    assert_equal 290, declarations.length
+    added.each { |method| assert_equal 1, declarations.count(method) }
+    assert_equal effective.transform_values(&:sort), Gate.updater_microphone_native_source_inventory(@root)
+  end
+
+  def test_freshness_companion_source_requires_exact_extension_hash_and_single_method
+    suite = 'CaptureServerTests.BelugaRustMicrophoneForwardingEvidenceTests'
+    companion = Gate::UPDATER_MICROPHONE_NATIVE_COMPANIONS.fetch(suite)
+    relative = companion.fetch(:path)
+    path = File.join(@root, relative)
+    original = File.binread(path)
+    assert_equal 'c4632508c25a8304f240415e6b09975fe34c65effd1157dbc33ec23e43bbe17e',
+      Digest::SHA256.hexdigest(original)
+    alias_path = File.join(@temporary, 'freshness-companion-alias')
+    begin
+      File.unlink(path)
+      assert_raises(Errno::ENOENT) { Gate.updater_microphone_native_source_inventory(@root) }
+      write(path, original + "\n// unreviewed companion byte drift\n")
+      enrollment_rejects { Gate.updater_microphone_native_source_inventory(@root) }
+      File.unlink(path)
+      write(alias_path, original)
+      File.symlink(alias_path, path)
+      enrollment_rejects { Gate.updater_microphone_native_source_inventory(@root) }
+      File.unlink(path)
+      write(path, original)
+      name = suite.split('.').last
+      method = companion.fetch(:methods).fetch(0).split('/').last
+      changes = [
+        original.sub('extension ' + name + ' {', 'extension ForeignFreshnessCompanion {'),
+        original.sub('func ' + method + '(', 'func ' + method + 'Renamed('),
+        original.sub('    func ' + method + '(', '    func ' + method + "() {}\n    func " + method + '('),
+        original + "\nextension #{name} {}\n",
+        original + "\nfinal class ForeignFreshnessCompanion: XCTestCase {}\n"
+      ]
+      changes.each do |changed|
+        refute_equal original, changed
+        prior_pins = Gate::UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256
+        begin
+          write(path, changed)
+          Gate.send(:remove_const, :UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256)
+          Gate.const_set(:UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256,
+            prior_pins.merge(relative => Digest::SHA256.hexdigest(changed)).freeze)
+          # A fixture-only reseal must not admit the wrong role or authored method vector.
+          enrollment_rejects { Gate.updater_microphone_native_source_inventory(@root) }
+        ensure
+          Gate.send(:remove_const, :UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256)
+          Gate.const_set(:UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256, prior_pins)
+          write(path, original)
+        end
+      end
+      assert_equal Gate.updater_microphone_native_required_map.transform_values(&:sort),
+        Gate.updater_microphone_native_source_inventory(@root)
+    ensure
+      File.unlink(path) if File.symlink?(path)
+      write(path, original)
+      File.unlink(alias_path) if File.exist?(alias_path)
+    end
+  end
+
+  def test_freshness_companion_requires_exact_discovery_filter_and_non_skipping_execution
+    suite = 'CaptureServerTests.BelugaRustMicrophoneForwardingEvidenceTests'
+    id = suite + '/testFaultBetweenFreshnessPhasesRefusesBeforeProducer'
+    expected = Gate.updater_microphone_native_required_map.transform_values(&:sort)
+    assert_equal 1, @mac_methods.count(id)
+    assert_equal 9, expected.fetch(suite).length
+    assert_equal expected, Gate.updater_microphone_native_inventory(@root, @mac_methods.join("\n"))
+    missing = @mac_methods - [id]
+    duplicate = @mac_methods + [id]
+    renamed = @mac_methods.map { |method| method == id ? id + 'Renamed' : method }
+    foreign = @mac_methods.map { |method| method == id ? id.sub(suite, 'CaptureServerTests.ForeignFreshnessCompanion') : method }
+    [missing, duplicate, renamed, foreign].each do |methods|
+      enrollment_rejects { Gate.updater_microphone_native_inventory(@root, methods.join("\n")) }
+      enrollment_rejects { Gate.validate_mac_log(mac_log(methods), @mac_methods) }
+      cases = methods.map { |method| klass, name = method.split('/'); %Q{<testcase classname="#{klass}" name="#{name}"/>} }
+      enrollment_rejects { Gate.validate_xunit('<testsuite>' + cases.join + '</testsuite>', @mac_methods) }
+    end
+    full = mac_log
+    method = id.split('/').last
+    marker = "Test Case '-[#{suite} #{method}]' passed"
+    %w[failed skipped].each do |state|
+      changed = full.sub(marker, marker.sub(' passed', ' ' + state))
+      refute_equal full, changed
+      enrollment_rejects { Gate.validate_mac_log(changed, @mac_methods) }
+    end
+    cases = @mac_methods.map { |current| klass, name = current.split('/'); %Q{<testcase classname="#{klass}" name="#{name}"/>} }
+    exact_case = %Q{<testcase classname="#{suite}" name="#{method}"/>}
+    %w[failure error skipped].each do |state|
+      changed = cases.join.sub(exact_case, exact_case.sub('/>', '><' + state + '/></testcase>'))
+      refute_equal cases.join, changed
+      enrollment_rejects { Gate.validate_xunit('<testsuite>' + changed + '</testsuite>', @mac_methods) }
+    end
+    assert_equal @mac_methods, Gate.validate_mac_log(full, @mac_methods)
+    assert_equal @mac_methods, Gate.validate_xunit('<testsuite>' + cases.join + '</testsuite>', @mac_methods)
+    value = receipt
+    command = Gate.commands(@root, @evidence, value.fetch('invocation'), @tools,
+      value.fetch('simulator'), @mac_methods, @handoff_methods).fetch('mac-tests')
+    filter = Regexp.new(command.fetch(command.index('--filter') + 1))
+    assert_match filter, id
+    refute_match filter, id + 'Renamed'
+    refute_match filter, id.sub(suite, 'CaptureServerTests.ForeignFreshnessCompanion')
   end
 end

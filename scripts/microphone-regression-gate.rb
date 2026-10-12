@@ -3280,8 +3280,18 @@ module MicrophoneRegressionGate
     'CaptureServerTests.BelugaUpdateSparkleFinishedCycleTests' => 'macOS/Tests/CaptureServerTests/BelugaUpdateSparkleFinishedCycleTests.swift',
     'CaptureServerTests.BelugaRustUpdateAbortTests' => 'macOS/Tests/CaptureServerTests/BelugaRustUpdateAbortTests.swift',
   }.freeze
+  # Preserve each primary-file roster; compound suites enroll exact companions separately.
+  UPDATER_MICROPHONE_NATIVE_COMPANIONS = {
+    'CaptureServerTests.BelugaRustMicrophoneForwardingEvidenceTests' => {
+      path: 'macOS/Tests/CaptureServerTests/FreshnessFaultBetweenPhasesTests.swift',
+      methods: %w[
+        CaptureServerTests.BelugaRustMicrophoneForwardingEvidenceTests/testFaultBetweenFreshnessPhasesRefusesBeforeProducer
+      ].freeze,
+    }.freeze,
+  }.freeze
   UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256 = {
     'macOS/Tests/CaptureServerTests/BelugaRustMicrophoneForwardingEvidenceTests.swift' => '35afc3bfca4c334263703f0563970ac8c745db8e5915e0ede476deb0d34871a2',
+    'macOS/Tests/CaptureServerTests/FreshnessFaultBetweenPhasesTests.swift' => 'c4632508c25a8304f240415e6b09975fe34c65effd1157dbc33ec23e43bbe17e',
     'macOS/Tests/CaptureServerTests/BelugaRustMicrophoneForwardingRetryTests.swift' => '7599acfb740a0ad2c1ca219774ed76be83821800603e14a2e6fa2452a506d9e7',
     'macOS/Tests/CaptureServerTests/BelugaRustUpdateAvailabilityTests.swift' => 'd9c55190429fb28df2e73bdfe9086ebbcd4dee713baaa74c22dfe0e46581b94b',
     'macOS/Tests/CaptureServerTests/BelugaRustSparkleAdmissionTests.swift' => '13cb349aef860872cb692cce6a365ead1db8db9dca3fee561a63a521bae90d8c',
@@ -3655,6 +3665,9 @@ module MicrophoneRegressionGate
     test_rendered_menu_release_gate_each_method_requires_exact_discovery
     test_rendered_menu_release_gate_each_method_requires_passing_runtime_result
     test_rendered_menu_release_gate_package_pin_is_exact_test_only_successor
+    test_freshness_companion_enrollment_preserves_base8_and_complete_predecessor_rosters
+    test_freshness_companion_source_requires_exact_extension_hash_and_single_method
+    test_freshness_companion_requires_exact_discovery_filter_and_non_skipping_execution
   ].freeze
   SHARED_SIGNALING_SUITE = 'RemoteSessionCoreTests.DurableSignalingClientTests'.freeze
   SHARED_SIGNALING_FILTER = '^RemoteSessionCoreTests\\.DurableSignalingClientTests/'.freeze
@@ -4406,6 +4419,13 @@ module MicrophoneRegressionGate
     end
   end
 
+  def self.updater_microphone_native_required_map
+    UPDATER_MICROPHONE_NATIVE_PINNED.to_h do |suite, ids|
+      companion = UPDATER_MICROPHONE_NATIVE_COMPANIONS[suite]
+      [suite, ids + (companion ? companion.fetch(:methods) : [])]
+    end
+  end
+
   def self.updater_microphone_native_source_inventory(root)
     (UNARMED_COMPLETION_SOURCE_SHA256.to_a + ABORT_CLASSIFIER_SOURCE_SHA256.to_a + UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256.to_a).each do |relative, expected|
       path = File.join(root, relative)
@@ -4423,6 +4443,23 @@ module MicrophoneRegressionGate
                source.scan(/^[ \t]*final class #{Regexp.escape(name)}[ \t]*:[ \t]*XCTestCase[ \t]*\{/).length == 1 &&
                ids.uniq.length == ids.length && ids == UPDATER_MICROPHONE_NATIVE_PINNED.fetch(suite),
                'updater/microphone exact native source inventory differs: ' + suite)
+      if (companion = UPDATER_MICROPHONE_NATIVE_COMPANIONS[suite])
+        relative = companion.fetch(:path)
+        require!(UPDATER_MICROPHONE_NATIVE_SOURCE_SHA256.key?(relative),
+                 'updater/microphone native companion is not source-pinned: ' + suite)
+        source = utf8_text(File.binread(File.join(root, relative)), 'updater/microphone native companion')
+        classes = source.scan(/\bclass[ \t]+(\w+)/).flatten
+        extensions = source.scan(/\bextension[ \t]+(\w+)[ \t]*[^{]*\{/).flatten
+        methods = source.scan(/^[ \t]*(?:@MainActor[ \t]+)?func (test\w+)[ \t]*\(/).flatten
+        companion_ids = methods.map { |method| suite + '/' + method }
+        require!(classes.empty? && extensions == [name] &&
+                 source.scan(/^[ \t]*extension #{Regexp.escape(name)}[ \t]*\{/).length == 1 &&
+                 companion_ids.uniq.length == companion_ids.length && companion_ids == companion.fetch(:methods),
+                 'updater/microphone exact native companion inventory differs: ' + suite)
+        ids += companion_ids
+      end
+      require!(ids.uniq.length == ids.length && ids == updater_microphone_native_required_map.fetch(suite),
+               'updater/microphone exact compound native inventory differs: ' + suite)
       [suite, ids.sort]
     end
   end
