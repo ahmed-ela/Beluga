@@ -1,15 +1,20 @@
 # Beluga Mac client — release and migration ledger
 
-Current baseline: Mac 0.3.1/build102 is released; the user reports that it works.
-The Rust migration below is new source work, not a deployed replacement. Earlier
-dated checkpoints retain their original proof limits and are not current release status.
+Current baseline: Mac 0.3.2/build103 is signed, notarized, stapled and publicly
+released. The Rust migration below remains incomplete. Earlier dated checkpoints
+retain their original proof limits and are not current release status.
 
-## Mac release candidate 0.3.2/build103 — 2026-10-12
+## Mac release 0.3.2/build103 — 2026-10-12
 
-The user authorized checkpointing, PR squash merge after validation, and Mac
-distribution. This candidate is not yet built, notarized or published. Apple Silicon
-Macs on macOS 14 or newer are the current supported installer target; Intel support
-is not claimed. Browser-sharing and Android delivery remain paused.
+PR42 was squash-merged as `5431ad326e2a2e934d7c016e730631bacc366408`, preserving
+the qualified feature tree `873da2e5baff101635dc5c3f639e9a319fc64695`.
+The release was produced from its retained qualified feature commit
+`7128f1c23a0babd991c34473d71e7c230da5e457`; no unsupported squash-provenance
+claim was substituted. The public DMG SHA-256 is
+`404250c83b7b9ca9ca1e54650e82957e20e3ad4cf408ed557dec13181d94eb66`:
+https://github.com/ahmed-ela/Beluga/releases/download/mac-v0.3.2/Beluga-Mac-0.3.2-103.dmg
+Apple Silicon Macs on macOS 14 or newer are the supported installer target;
+Intel support is not claimed. Browser-sharing and Android delivery remain paused.
 
 The existing signed stable Sparkle feed and separate authenticated updater broker
 provide in-app **Check for Updates**; users do not need to reinstall from GitHub.
@@ -23,7 +28,35 @@ the full rewrite and installed/physical qualification are not declared complete.
 Current gate source seals were reviewed against their exact predecessors and
 updated for only three additive dormant/helper changes. Historical maps, mandatory
 case/control inventories, signed Simulator requirements and receipt checks remain
-unchanged. The final combined source-bound release gate is still required.
+unchanged. The final combined source-bound release gate passed all43 phases;
+its exact receipt is `a45d75230446a0f36c49e2e33c041b514410c3d066c7ef6abbe62a53d81c0880`.
+The signed stable feed was promoted only after independent anonymous payload
+readback matched, and its signatures/hash were independently audited. Neither
+public distribution nor this receipt proves an installed old-to-new upgrade,
+clean-Mac installation or physical-phone handoff. No local live host was replaced.
+
+## Rust continuation — 2026-10-13
+
+The goal remains active on a separate `feat/rust-native-admission` branch. The
+two production adaptation-owner gates remain false; actual dispatch currently
+has DEBUG fixture callers only. The retained12-case native proof is six
+dispatcher plus six final704 component cases, not completed production ownership.
+
+At qualified source438/1285, a fresh deliberately broken phase guard compiled
+and produced exactly one ordinary XCTest assertion failure at test line196
+(zero unexpected errors, native1/adapter0). Exact restoration was freshly
+compiled and the same full-stop method passed1/0fail/noSkip. Both root-owned
+sticky route observers ended naturally with zero notifications/events, clean
+teardown and unchanged BlackHole input / built-in output and system UIDs.
+Each phase sealed52 independent evidence copies before cache reuse. This closes
+phase-guard sensitivity only; no running product or phone changed.
+
+Next is sealed admission BEFORE actual701 publication, spanning preparation,
+receipt, ready attempt and dispatch settlement. Later prerequisites include a
+genuine newer-transaction rollback-false case, owned unresolved-custody disposal,
+remaining writer/live-caller enrollment, audio/updater policies and installed
+behavior. Generic stop must not discard unresolved native custody. No production
+gate activation or completed-rewrite claim follows from this component test.
 
 ## Rust migration goal — 2026-10-06
 
